@@ -647,7 +647,7 @@ ccm_inject_status() {
 
     _scan_active_windows
 
-    local refresh='#(~/Dropbox/dotfiles/ccm/ccm inject-status 2>/dev/null)'
+    local refresh='#(~/Dropbox/code/ccm/ccm inject-status 2>/dev/null)'
     local new_status
 
     local dashboard_btn="#[fg=#666666]≡#[fg=#9E9E9E]"

@@ -2,7 +2,7 @@
 # ccm - status bar setup (run after TPM completes)
 # Window-based architecture
 
-CCM="$HOME/Dropbox/dotfiles/ccm/ccm"
+CCM="$HOME/Dropbox/code/ccm/ccm"
 
 # Inject ccm status into status-right (suppress errors)
 "$CCM" inject-status 2>/dev/null || true
