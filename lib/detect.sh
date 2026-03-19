@@ -131,6 +131,11 @@ ccm_detect_window_state() {
 
         if [[ "$prev_state" == "BUSY" || "$prev_state" == "PERMIT" ]]; then
             tmux set-option -wt "$win_target" @ccm_done "1" 2>/dev/null
+            # Notify user of completion
+            local project_name
+            project_name=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
+            [[ -z "$project_name" ]] && project_name=$(tmux display-message -t "$win_target" -p '#{window_name}' 2>/dev/null)
+            tmux display-message "✔ ${project_name}: response complete" 2>/dev/null
             echo "DONE"
             return
         elif [[ "$done_flag" == "1" ]]; then
@@ -179,6 +184,52 @@ ccm_clear_done() {
     local target="$1"
     tmux set-option -wt "$target" -u @ccm_done 2>/dev/null || true
     tmux set-option -wt "$target" -u @ccm_prev_state 2>/dev/null || true
+}
+
+# Update window names with status icons
+# Called from inject-status to keep window names in sync
+ccm_update_window_names() {
+    local all_sessions
+    all_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort)
+    [[ -z "$all_sessions" ]] && return
+
+    while IFS= read -r sess; do
+        local windows
+        windows=$(tmux list-windows -t "$sess" -F '#{window_index}	#{@ccm_project}' 2>/dev/null)
+        [[ -z "$windows" ]] && continue
+
+        while IFS=$'\t' read -r win_idx project; do
+            [[ -z "$project" ]] && continue
+
+            local win_target="${sess}:${win_idx}"
+            local state
+            state=$(_detect_window_state "$win_target")
+
+            # Check DONE flag
+            local done_flag
+            done_flag=$(tmux show-option -wt "$win_target" -qv @ccm_done 2>/dev/null) || true
+            [[ "$done_flag" == "1" && "$state" == "IDLE" ]] && state="DONE"
+
+            local icon
+            case "$state" in
+                PERMIT) icon="⚠" ;;
+                BUSY)   icon="◉" ;;
+                DONE)   icon="✔" ;;
+                IDLE)   icon="●" ;;
+                SHELL)  icon="■" ;;
+                *)      icon="" ;;
+            esac
+
+            local new_name="${icon} ${project}"
+            local current_name
+            current_name=$(tmux display-message -t "$win_target" -p '#{window_name}' 2>/dev/null)
+
+            # Only rename if changed
+            if [[ "$current_name" != "$new_name" ]]; then
+                tmux rename-window -t "$win_target" "$new_name" 2>/dev/null
+            fi
+        done <<< "$windows"
+    done <<< "$all_sessions"
 }
 
 # Legacy: clear DONE flag for a session

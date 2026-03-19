@@ -1,0 +1,73 @@
+#compdef ccm
+
+_ccm() {
+    local -a subcommands
+    subcommands=(
+        'add:Add project as new window'
+        'open:Start claude in current pane'
+        'register:Register existing window as ccm project'
+        'remove:Remove a project window'
+        'attach:Switch to a project window'
+        'list:List managed project windows'
+        'status:Show all projects with Claude state'
+        'capture:Capture project window visible content'
+        'dashboard:Open interactive dashboard'
+        'statusline:One-line status for tmux status bar'
+        'snapshot:Snapshot operations'
+        'start:Start from a snapshot'
+        'stop:Stop project window(s)'
+        'menu:Interactive menu'
+        'help:Show help'
+    )
+
+    local -a projects
+    _ccm_projects() {
+        projects=(${(f)"$(ccm list 2>/dev/null | tail -n +3 | awk '{print $1}')"})
+        [[ -n "$projects" ]] && compadd -a projects
+    }
+
+    local -a snapshots
+    _ccm_snapshots() {
+        snapshots=(${(f)"$(ls ~/.local/share/ccm/snapshots/*.json 2>/dev/null | xargs -I{} basename {} .json)"})
+        [[ -n "$snapshots" ]] && compadd -a snapshots
+    }
+
+    if (( CURRENT == 2 )); then
+        _describe 'ccm command' subcommands
+    elif (( CURRENT == 3 )); then
+        case "${words[2]}" in
+            attach|a|remove|rm|capture|cap|stop)
+                _ccm_projects
+                ;;
+            add|open)
+                _directories
+                ;;
+            register|reg)
+                # Complete window names
+                local -a windows
+                windows=(${(f)"$(tmux list-windows -F '#{window_name}' 2>/dev/null)"})
+                compadd -a windows
+                ;;
+            snapshot|snap)
+                local -a snap_cmds
+                snap_cmds=('save' 'load' 'list' 'delete')
+                compadd -a snap_cmds
+                ;;
+            start)
+                _ccm_snapshots
+                ;;
+        esac
+    elif (( CURRENT == 4 )); then
+        case "${words[2]}" in
+            snapshot|snap)
+                case "${words[3]}" in
+                    load|delete|del)
+                        _ccm_snapshots
+                        ;;
+                esac
+                ;;
+        esac
+    fi
+}
+
+_ccm "$@"

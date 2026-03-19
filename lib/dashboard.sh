@@ -647,6 +647,9 @@ ccm_inject_status() {
 
     _scan_active_windows
 
+    # Update window names with status icons
+    ccm_update_window_names 2>/dev/null
+
     local refresh='#(~/Dropbox/code/ccm/ccm inject-status 2>/dev/null)'
     local new_status
 
