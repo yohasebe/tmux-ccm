@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# ccm - Claude Code Manager
+# tmux window-based multi-project management tool for Claude Code
+
+CCM_ROOT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
+
+# Background commands (inject-status, clear-done) must not fail on errors
+case "${1:-}" in
+    inject-status|clear-done) set +e ;;
+    *) set -euo pipefail ;;
+esac
+
+# Source library modules
+source "${CCM_ROOT}/lib/common.sh"
+source "${CCM_ROOT}/lib/session.sh"
+source "${CCM_ROOT}/lib/detect.sh"
+source "${CCM_ROOT}/lib/dashboard.sh"
+source "${CCM_ROOT}/lib/snapshot.sh"
+source "${CCM_ROOT}/lib/ui.sh"
+
+# Initialize runtime directories
+ccm_init_dirs
+
+ccm_usage() {
+    cat <<'USAGE'
+ccm - Claude Code Manager (window-based)
+
+Usage:
+  ccm add <dir> [name]              Add project as new window (name defaults to dir basename)
+  ccm open <dir> [name]             Start claude in current pane for a project (split-pane use)
+  ccm register <window> [name]      Register existing window as ccm project
+  ccm remove <name>                 Remove a project window
+  ccm attach <name|number>          Switch to a project window
+  ccm list                          List managed project windows
+  ccm status                        Show all projects with Claude state
+  ccm capture <name|#id>            Capture project window's visible content
+  ccm dashboard                     Open interactive dashboard (popup)
+  ccm statusline                    One-line status (for tmux status bar)
+  ccm snapshot save [name]          Save current projects as snapshot
+  ccm snapshot load [name]          Load and restore a snapshot
+  ccm snapshot list                 List available snapshots
+  ccm snapshot delete [name]        Delete a snapshot
+  ccm start [snapshot]              Start from a snapshot
+  ccm stop [--all|name]             Stop project window(s)
+  ccm menu                          Interactive menu (for keybinding)
+  ccm help                          Show this help
+USAGE
+}
+
+# Main command dispatch
+case "${1:-help}" in
+    add)
+        ccm_check_deps
+        ccm_add "${2:-}" "${3:-}"
+        ;;
+    open)
+        ccm_open "${2:-}" "${3:-}"
+        ;;
+    register|reg)
+        ccm_register "${2:-}" "${3:-}"
+        ;;
+    remove|rm)
+        ccm_remove "${2:-}"
+        ;;
+    attach|a)
+        ccm_attach "${2:-}"
+        ;;
+    list|ls)
+        ccm_list
+        ;;
+    status|st)
+        ccm_status
+        ;;
+    capture|cap)
+        ccm_capture "${2:-}"
+        ;;
+    dashboard|dash|d)
+        ccm_check_deps
+        ccm_dashboard
+        ;;
+    statusline|sl)
+        ccm_statusline
+        ;;
+    inject-status)
+        ccm_inject_status || true
+        ;;
+    clear-done)
+        # Clear DONE flag for the current window (ignore errors)
+        (
+            if [[ -n "${TMUX:-}" ]]; then
+                local_session=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+                local_win=$(tmux display-message -p '#{window_index}' 2>/dev/null)
+                if [[ -n "$local_session" && -n "$local_win" ]]; then
+                    ccm_clear_done "${local_session}:${local_win}"
+                fi
+            fi
+        ) || true
+        ;;
+    snapshot|snap)
+        ccm_check_deps
+        case "${2:-}" in
+            save)  ccm_snapshot_save "${3:-}" ;;
+            load)  ccm_snapshot_load "${3:-}" ;;
+            list)  ccm_snapshot_list ;;
+            delete|del) ccm_snapshot_delete "${3:-}" ;;
+            *)     ccm_die "Usage: ccm snapshot save|load|list|delete [name]" ;;
+        esac
+        ;;
+    start)
+        ccm_check_deps
+        if [[ -n "${2:-}" ]]; then
+            ccm_snapshot_load "$2"
+        else
+            ccm_die "Usage: ccm start <snapshot>"
+        fi
+        ;;
+    stop)
+        ccm_stop "${2:-}"
+        ;;
+    menu)
+        ccm_check_deps
+        ccm_menu
+        ;;
+    help|--help|-h)
+        ccm_usage
+        ;;
+    *)
+        ccm_die "Unknown command: $1 (try 'ccm help')"
+        ;;
+esac
