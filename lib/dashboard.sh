@@ -732,9 +732,13 @@ _dashboard_search() {
 
 # ─── Shared: scan all windows for statusline/inject ───
 
-# Scan all ccm windows and collect active (non-IDLE) ones
+# Scan ccm windows and collect their states
+# Args: [--all]  include all states (default: BUSY/PERMIT/DONE only)
 # Sets _SL_NAMES, _SL_STATES, _SL_COUNT
 _scan_active_windows() {
+    local include_all=0
+    [[ "${1:-}" == "--all" ]] && include_all=1
+
     _SL_NAMES=()
     _SL_STATES=()
     _SL_COUNT=0
@@ -780,13 +784,24 @@ _scan_active_windows() {
                 state=$(ccm_detect_window_state "$win_target")
             else
                 state=$(_detect_window_state "$win_target")
+                # Skip non-tagged windows unless they are active
+                if [[ $include_all -eq 0 ]]; then
+                    case "$state" in
+                        BUSY|PERMIT|DONE) ;;
+                        *) continue ;;
+                    esac
+                else
+                    [[ -z "$project" ]] && continue
+                fi
             fi
 
-            # Statusline: BUSY, PERMIT, and DONE
-            case "$state" in
-                BUSY|PERMIT|DONE) ;;
-                *) continue ;;
-            esac
+            # Filter for active-only mode
+            if [[ $include_all -eq 0 ]]; then
+                case "$state" in
+                    BUSY|PERMIT|DONE) ;;
+                    *) continue ;;
+                esac
+            fi
 
             local display_name
             if [[ -n "$project" ]]; then
@@ -875,6 +890,9 @@ _build_detail_entries() {
             PERMIT) color="yellow"; icon="⚠" ;;
             BUSY)   color="cyan";   icon="◉" ;;
             DONE)   color="green";  icon="✔" ;;
+            IDLE)   color="#888888"; icon="●" ;;
+            SHELL)  color="#666666"; icon="■" ;;
+            *)      color="#666666"; icon="○" ;;
         esac
         _DETAIL_ENTRIES+=("${_SL_NAMES[$i]}:#[fg=${color}]${icon}#[fg=#9E9E9E]")
     done
@@ -895,17 +913,17 @@ ccm_inject_status() {
     echo $$ > "$pidfile"
     trap 'rm -f "$pidfile"' EXIT RETURN
 
-    # Check mode: 0=disabled, 1=icon-only, 2=dedicated line(s)
+    # Check mode: 0=full details in status-right, 1=icon-only, 2=dedicated line(s)
     local mode
     mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
     mode="${mode:-1}"
 
-    if [[ "$mode" == "0" ]]; then
-        rm -f "$pidfile"
-        return
+    # Scan windows: mode 2 includes all projects, others only active
+    if [[ "$mode" == "2" ]]; then
+        _scan_active_windows --all
+    else
+        _scan_active_windows
     fi
-
-    _scan_active_windows
     ccm_update_window_names 2>/dev/null
 
     local refresh="#(${CCM_ROOT}/ccm inject-status 2>/dev/null)"
@@ -913,23 +931,35 @@ ccm_inject_status() {
     local prev_status=""
     [[ -f "$cache_file" ]] && prev_status=$(cat "$cache_file" 2>/dev/null)
 
+    # Save original status-right on first run (shared by mode 1 and 2)
+    local orig_file="${CCM_TMP_DIR}/status-right-original"
+    if [[ ! -f "$orig_file" ]]; then
+        tmux show-option -gv status-right 2>/dev/null > "$orig_file"
+    fi
+    local original
+    original=$(cat "$orig_file" 2>/dev/null)
+
     if [[ "$mode" == "2" ]]; then
-        # ── Mode 2: dedicated status line(s) ──
+        # ── Mode 2: dedicated status line(s), no icon in main bar ──
+        # Restore original status-right (no ccm icon) + refresh trigger
+        local main_status="${original}${refresh}"
+        tmux set -g status-right "$main_status" 2>/dev/null
+
         _build_detail_entries
 
         if [[ $_SL_COUNT -eq 0 ]]; then
-            # No active projects — revert to single status line
-            tmux set -g status 1 2>/dev/null
-            local new_status="mode2:idle"
+            # No ccm projects at all — show idle indicator
+            tmux set -g status 2 2>/dev/null
+            local fmt="#[align=right]#[fg=#666666,bg=#3a3a3a] ≡ ccm: no projects  "
+            tmux set -g 'status-format[1]' "$fmt" 2>/dev/null
+            local new_status="mode2:none"
             if [[ "$new_status" != "$prev_status" ]]; then
                 echo "$new_status" > "$cache_file"
-                tmux set -g -u status-format[1] 2>/dev/null
             fi
         else
             # Calculate how many lines we need based on terminal width
             local term_width
             term_width=$(tmux display-message -p '#{client_width}' 2>/dev/null || echo 120)
-            # Approximate: each entry ~20 chars, leave margin
             local entries_per_line=$(( (term_width - 10) / 22 ))
             [[ $entries_per_line -lt 1 ]] && entries_per_line=1
             local num_lines=$(( (_SL_COUNT + entries_per_line - 1) / entries_per_line ))
@@ -937,7 +967,6 @@ ccm_inject_status() {
 
             tmux set -g status $((num_lines + 1)) 2>/dev/null
 
-            # Build each line
             local line_idx=0
             local entry_idx=0
             local new_status="mode2:${_SL_COUNT}"
@@ -952,41 +981,54 @@ ccm_inject_status() {
                     count=$((count + 1))
                 done
 
-                local fmt
-                if [[ $line_idx -eq $((num_lines - 1)) ]]; then
-                    # Last line includes refresh trigger
-                    fmt="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a]${line_str} ${refresh}"
-                else
-                    fmt="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a]${line_str}"
-                fi
-                tmux set -g status-format[$((line_idx + 1))] "$fmt" 2>/dev/null
+                local fmt="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a]${line_str}  "
+                tmux set -g 'status-format['$((line_idx + 1))']' "$fmt" 2>/dev/null
                 new_status+=":${line_idx}"
             done
 
-            # Clear any extra lines from previous state
+            # Clear extra lines from previous state
             for ((extra=num_lines+1; extra<=5; extra++)); do
-                tmux set -g -u status-format[$extra] 2>/dev/null
+                tmux set -g -u 'status-format['$extra']' 2>/dev/null
             done
 
             if [[ "$new_status" != "$prev_status" ]]; then
                 echo "$new_status" > "$cache_file"
             fi
         fi
-    else
-        # ── Mode 1: icon-only in status-right ──
-        # Save original status-right on first run
-        local orig_file="${CCM_TMP_DIR}/status-right-original"
-        if [[ ! -f "$orig_file" ]]; then
-            tmux show-option -gv status-right 2>/dev/null > "$orig_file"
+    elif [[ "$mode" == "1" ]]; then
+        # ── Mode 1: icon in status-right (only when active) ──
+        local new_status
+        if [[ $_SL_COUNT -eq 0 ]]; then
+            # All idle — dim hamburger icon
+            new_status="${original}#[fg=#666666,bg=#3a3a3a] ≡ #[default]${refresh}"
+        else
+            local icon_color icon_char
+            icon_color=$(_ccm_priority_color)
+            icon_char=$(_ccm_priority_icon)
+            new_status="${original}#[fg=${icon_color},bg=#3a3a3a,bold] ${icon_char}  #[default]${refresh}"
         fi
-        local original
-        original=$(cat "$orig_file" 2>/dev/null)
 
-        local icon_color icon_char
-        icon_color=$(_ccm_priority_color)
-        icon_char=$(_ccm_priority_icon)
+        if [[ "$new_status" != "$prev_status" ]]; then
+            echo "$new_status" > "$cache_file"
+            tmux set -g status-right "$new_status" 2>/dev/null
+        fi
+    else
+        # ── Mode 0: full project details in status-right ──
+        _build_detail_entries
 
-        local new_status="${original} #[fg=${icon_color}]${icon_char}#[default] ${refresh}"
+        local dashboard_btn="#[fg=#666666]≡#[fg=#9E9E9E]"
+        local new_status
+
+        if [[ $_SL_COUNT -eq 0 ]]; then
+            new_status="#[fg=#9E9E9E,bg=#3a3a3a] ${dashboard_btn} ${refresh}"
+        else
+            local detail=""
+            for ((i=0; i<${#_DETAIL_ENTRIES[@]}; i++)); do
+                [[ $i -gt 0 ]] && detail+=" #[fg=#666666]│#[fg=#9E9E9E]"
+                detail+=" ${_DETAIL_ENTRIES[$i]}"
+            done
+            new_status="#[fg=#9E9E9E,bg=#3a3a3a]${detail} #[fg=#666666]│ ${dashboard_btn} ${refresh}"
+        fi
 
         if [[ "$new_status" != "$prev_status" ]]; then
             echo "$new_status" > "$cache_file"

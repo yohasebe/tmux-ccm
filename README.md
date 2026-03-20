@@ -87,9 +87,40 @@ set -g @ccm-status-line 1     # default
 
 | Value | Mode | Description |
 |-------|------|-------------|
-| `0` | Disabled | No status bar modification |
-| `1` | Icon | Appends `≡` icon to status-right, colored by priority state (click to open dashboard) |
-| `2` | Dedicated | Adds status line(s) with full project details (auto-expands with project count) |
+| `0` | Full | Shows all active projects with name and icon in status-right |
+| `1` | Icon (default) | Single priority icon appended to status-right |
+| `2` | Dedicated line | Adds status line(s) showing all projects including idle |
+
+#### Mode 0 — Full details in status-right
+
+Replaces status-right with project name + icon for each active (BUSY/PERMIT/DONE) project. When all projects are idle, shows `≡`. This provides the most information but overwrites your existing status-right.
+
+#### Mode 1 — Single icon (default)
+
+Appends a single icon to your existing status-right. Your clock, battery, etc. are preserved. The icon reflects the highest-priority state across all projects:
+
+| Priority | Condition | Icon | Color |
+|----------|-----------|------|-------|
+| 1 (highest) | Any project has PERMIT | `⚠` | Yellow |
+| 2 | Any project has BUSY | `◉` | Cyan |
+| 3 | Any project has DONE | `✔` | Green |
+| 4 (lowest) | All projects are IDLE | `≡` | Gray |
+
+Click the icon to open the dashboard for full details.
+
+#### Mode 2 — Dedicated status line
+
+Adds a second (or more) tmux status line below the main bar. Shows all projects including idle ones. The main status bar is not modified.
+
+| State | Icon | Color |
+|-------|------|-------|
+| PERMIT | `⚠` | Yellow |
+| BUSY | `◉` | Cyan |
+| DONE | `✔` | Green |
+| IDLE | `●` | Gray |
+| SHELL | `■` | Dark gray |
+
+Lines auto-expand based on terminal width and project count.
 
 ### Dashboard Controls
 
