@@ -1,0 +1,311 @@
+# ccm ユーザーガイド
+
+## ccmとtmuxの関係
+
+tmuxはターミナルを階層的に管理します。ccmはこの構造の中で動作します：
+
+```
+ターミナル（Ghostty, iTerm2 等）
+ └── tmux サーバー
+      └── セッション         ← 作業コンテキスト
+           ├── ウィンドウ 0   ← プロジェクトA（ccm管理）
+           ├── ウィンドウ 1   ← プロジェクトB（ccm管理）
+           ├── ウィンドウ 2   ← プロジェクトC（ccm管理）
+           └── ウィンドウ 3   ← 通常のシェル（ccm管理外）
+```
+
+**基本概念:** ccmはClaude Codeのセッションを**tmuxウィンドウ**として管理します。各プロジェクトが1つのウィンドウを持ち、ウィンドウを切り替えるだけでプロジェクト間を移動できます。
+
+### ccmがやらないこと
+
+- プロジェクトごとに別のtmuxセッションを作らない
+- ターミナルエミュレータの設定を変更しない
+- 特定のターミナルエミュレータを要求しない
+
+## はじめかた
+
+### 1. tmuxを起動
+
+```bash
+tmux new-session -s work
+```
+
+### 2. 最初のプロジェクトを追加
+
+```bash
+ccm add ~/code/my-project
+```
+
+新しいtmuxウィンドウが作られ、プロジェクトディレクトリに移動して、Claude Codeが `claude --resume` で起動します（過去の会話がある場合は選択して再開できます）。
+
+### 3. プロジェクトを追加
+
+```bash
+ccm add ~/code/another-project
+ccm add ~/code/third-project api-server   # カスタム名
+```
+
+### 4. プロジェクト間を切り替え
+
+ダッシュボード（`prefix + Tab`）を使うか：
+
+```bash
+ccm attach my-project    # 名前で
+ccm attach 2             # 番号で
+```
+
+Claude Codeが動いていないウィンドウに切り替えると、`claude --continue` で自動的に前回の会話を再開します。
+
+### 5. 状態を確認
+
+```bash
+ccm status
+```
+
+```
+STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
+------       -------              ------           -----        ---------
+◉ BUSY       my-project           main*            3000         ~/code/my-project
+● IDLE       another-project      feature-x        -            ~/code/another-project
+⚠ PERMIT     api-server           main             8080         ~/code/api-server
+```
+
+## ダッシュボード
+
+`prefix + Tab` で開きます。プロジェクト管理のメインインターフェースです。
+
+```
+  ► #1 ◉ BUSY   my-project (main*) ~/code/my-project
+    #2 ● IDLE   another-project (feature-x) ~/code/another-project
+    #3 ⚠ PERMIT api-server (main) [:8080] ~/code/api-server
+
+  [↑↓/jk] select  [Enter] attach  [s]plit  [p]review  [a]dd  [g] register
+  [r]emove  [/] search  [q/Esc] quit
+```
+
+### ダッシュボードの操作
+
+| キー | 動作 | 用途 |
+|------|------|------|
+| `↑↓` or `jk` | 選択移動 | プロジェクト間をナビゲート |
+| `Enter` | 切替 | 選択したプロジェクトのウィンドウに移動 |
+| `s` | 分割 | 選択プロジェクトを横並びペインで開く |
+| `p` | プレビュー | プロジェクトの画面内容を表示（`c` でコピー） |
+| `a` | 追加 | 新しいプロジェクトディレクトリを登録 |
+| `g` | 登録 | 既存のtmuxウィンドウをccmプロジェクトとしてタグ付け |
+| `r` | 削除 | プロジェクトウィンドウを削除 |
+| `/` | 検索 | プロジェクト名でフィルタ |
+| `q` or `Esc` | 閉じる | ダッシュボードを閉じる |
+
+ダッシュボードは2秒間隔で自動リフレッシュされます。ナビゲーションキー（`↑↓/jk`）はリフレッシュを待たずに即座に反応します。
+
+## ツリービュー
+
+`prefix + T` で開きます。tmuxの全体構造を階層表示します：
+
+```
+  ├── work ◀
+  │   ├── ◉ my-project (main*) ~/code/my-project ◀
+  │   ├── ● another-project (feature-x) ~/code/another-project
+  │   ├── ⚠ api-server (main) [:8080] ~/code/api-server
+  │   └── ■ bash ~/home
+  └── other-session
+      └── ■ bash ~/home
+
+  [↑↓/jk] select  [Enter] attach  [q/Esc] quit
+```
+
+- `◀` は現在のセッション/ウィンドウを示す
+- ウィンドウのみ選択可能（セッションやペインは選択不可）
+- ペインは複数ある場合のみ表示
+
+## 状態検出
+
+ccmはClaude Codeの状態をプロセスツリー検査で検出します。画面出力の解析はPERMIT検出のみで使用しており、Claude CodeのUI変更に強い設計です。
+
+### 各状態の検出方法
+
+| 状態 | 検出方法 | 詳細 |
+|------|----------|------|
+| **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
+| **BUSY** | プロセスツリー | `claude` プロセスが子プロセスを持っている（ツール実行中） |
+| **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし |
+| **PERMIT** | 画面キャプチャ | 末尾8行に許可キーワード（"Do you want", "Allow" 等）を検出 |
+| **DONE** | 状態遷移 | BUSY/PERMIT → IDLE への遷移を検出 |
+
+### DONE追跡
+
+Claude Codeが処理を完了すると（BUSY → IDLE）、ccmは：
+1. 状態をDONEに設定
+2. ウィンドウ名とステータスバーに `✔` を表示
+3. tmuxメッセージ `✔ project-name: response complete` を表示
+
+DONEフラグはそのウィンドウに切り替えると自動的にクリアされます。
+
+## ステータスバーモード
+
+`~/.tmux.conf` で `set -g @ccm-status-line` を設定します。
+
+### モード0 — 全詳細表示
+
+status-rightにアクティブプロジェクト名+ステータスアイコンの一覧を表示します。
+
+```
+ project-a:◉ │ project-b:⚠ │ ≡
+```
+
+- 向いている人: 最大限の情報を常に見たい人
+- 注意: 既存のstatus-right内容（時計等）を上書き
+
+### モード1 — アイコン表示（デフォルト）
+
+既存のstatus-rightにアイコン1つを追加。時計やバッテリー表示はそのまま保持されます。全プロジェクトの中で最も優先度の高い状態を表示：
+
+```
+ 21/03  07:30:00  ⚠
+```
+
+優先順: `⚠` PERMIT（黄） > `◉` BUSY（シアン） > `✔` DONE（緑） > `≡` 全IDLE（グレー）
+
+- 向いている人: ステータスバーへの影響を最小限にしたい人
+- 注意: プロジェクトごとの詳細はダッシュボードで確認
+
+### モード2 — 専用行表示
+
+メインバーの下に専用ステータス行を追加。IDLEを含む全プロジェクトを表示します。
+
+```
+ メインバー:  0:bash  1:my-project  2:api-server     21/03  07:30:00
+ ccm行:      my-project:◉ │ another-project:● │ api-server:⚠
+```
+
+| アイコン | 状態 | 色 |
+|----------|------|-----|
+| `⚠` | PERMIT | 黄 |
+| `◉` | BUSY | シアン |
+| `✔` | DONE | 緑 |
+| `●` | IDLE | グレー |
+| `■` | SHELL | 暗グレー |
+
+- 向いている人: status-rightを維持しつつ全プロジェクトを常時確認したい人
+- 注意: 画面が1行狭くなる（プロジェクト数に応じて自動拡張）
+
+## スナップショット
+
+プロジェクトのレイアウトを保存して、後から復元できます。
+
+### 保存
+
+```bash
+ccm snapshot save my-workspace
+```
+
+### 復元
+
+```bash
+ccm start my-workspace
+```
+
+### 自動保存
+
+`ccm stop --all` 実行時に、現在のレイアウトが `_autosave` として自動保存されます：
+
+```bash
+# 全プロジェクト停止（自動保存される）
+ccm stop --all
+
+# 翌日、前回の構成を復元
+ccm start _autosave
+```
+
+### スナップショット管理
+
+```bash
+ccm snapshot list          # 一覧表示
+ccm snapshot delete old    # 削除
+```
+
+## Tips
+
+### 既存ウィンドウの登録
+
+Claude Codeが既に動いているtmuxウィンドウを、再起動せずにccm管理下に置けます：
+
+1. ダッシュボード（`prefix + Tab`）を開く
+2. `g`（登録）を押す
+3. 未登録のウィンドウを選択
+4. 名前を入力
+
+コマンドラインからも可能：
+
+```bash
+ccm register 3 my-project    # ウィンドウインデックス3を登録
+```
+
+### キャプチャとコピー
+
+プロジェクトに切り替えずに画面内容を確認：
+
+```bash
+ccm capture my-project              # ターミナルに出力
+ccm capture --copy my-project       # クリップボードにコピー
+```
+
+ダッシュボードからは `p` でプレビュー、`c` でコピー。
+
+### Git連携
+
+各プロジェクトのgitブランチとdirty状態を表示：
+
+- `main` — クリーンな作業ツリー
+- `main*` — 未コミットの変更あり（ステージ済み・未ステージ含む）
+
+ダッシュボード、ツリービュー、`ccm status` で確認できます。
+
+### ポート検出
+
+プロジェクトディレクトリのプロセスがリッスンしているTCPポートを自動検出します：
+
+```
+ my-app:◉ [:3000]    api:● [:8080,8443]
+```
+
+ポート検出結果は30秒間キャッシュされます。
+
+## トラブルシューティング
+
+### ダッシュボードが開かない
+
+ダッシュボードが表示されてすぐ消える場合：
+
+```bash
+# 古いPIDファイルを削除
+rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/dashboard.pid"
+```
+
+### ステータスバーに古いデータが表示される
+
+```bash
+# キャッシュをクリア
+rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/status-cache"
+rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/status-right-original"
+tmux source-file ~/.tmux/plugins/ccm/ccm.tmux.conf
+```
+
+### セッションのコンテキストがずれる
+
+プロジェクトが間違ったセッションに表示される場合：
+
+```bash
+rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"
+```
+
+### 状態がBUSYのまま
+
+プロジェクトがBUSY表示だがClaude Codeは実際にはIDLEの場合、子プロセスが残っている可能性があります：
+
+```bash
+ccm capture my-project    # 画面の内容を確認
+```
+
+子プロセスが終了すれば、次の2秒リフレッシュで状態が修正されます。

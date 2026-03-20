@@ -193,7 +193,8 @@ ccm start _autosave   # restore previous session
 
 ## Documentation
 
-- **[User Guide](docs/guide.md)** — Detailed tutorial covering workflows, state detection, status bar modes, snapshots, tips, and troubleshooting
+- **[User Guide](docs/guide.md)** — Tutorial, workflows, state detection, status bar modes, snapshots, tips, and troubleshooting
+- **[ユーザーガイド（日本語）](docs/guide.ja.md)** — 同内容の日本語版
 
 ## License
 
