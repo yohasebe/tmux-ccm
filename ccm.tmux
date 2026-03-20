@@ -12,7 +12,7 @@ CCM_KEY_TREE=$(tmux show-option -gqv @ccm-key-tree 2>/dev/null)
 
 CCM_KEY_DASHBOARD="${CCM_KEY_DASHBOARD:-Tab}"
 CCM_KEY_MENU="${CCM_KEY_MENU:-C}"
-CCM_KEY_TREE="${CCM_KEY_TREE:-t}"
+CCM_KEY_TREE="${CCM_KEY_TREE:-T}"
 
 # Temp dir setup command (used in run-shell for session detection)
 _ccm_session_cmd='mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"'

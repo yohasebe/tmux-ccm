@@ -66,7 +66,7 @@ fpath=($HOME/.tmux/plugins/ccm/completions $fpath)
 | Key | Action |
 |-----|--------|
 | `prefix + Tab` | Toggle dashboard popup |
-| `prefix + t` | Toggle tree view popup |
+| `prefix + T` | Toggle tree view popup |
 | `prefix + C` | Open ccm menu |
 
 Customize keys in `~/.tmux.conf` (before loading the plugin):
@@ -74,7 +74,7 @@ Customize keys in `~/.tmux.conf` (before loading the plugin):
 ```tmux
 set -g @ccm-key-dashboard "Tab"
 set -g @ccm-key-menu "C"
-set -g @ccm-key-tree "t"
+set -g @ccm-key-tree "T"
 ```
 
 ### Dashboard Controls
