@@ -2,16 +2,37 @@
 # ccm - Claude Code state detection
 # Uses process tree inspection for reliability
 
+# Cached ps output to avoid repeated ps calls within the same scan cycle
+_PS_CACHE=""
+_PS_CACHE_TIME=0
+
+# Refresh ps cache (call once per scan cycle)
+_refresh_ps_cache() {
+    _PS_CACHE=$(ps -eo pid,ppid,comm 2>/dev/null)
+    _PS_CACHE_TIME=$(date +%s)
+}
+
+# Ensure ps cache is fresh (within 2 seconds)
+_ensure_ps_cache() {
+    local now
+    now=$(date +%s)
+    if [[ -z "$_PS_CACHE" || $(( now - _PS_CACHE_TIME )) -ge 2 ]]; then
+        _refresh_ps_cache
+    fi
+}
+
 # Find a claude process among children of a given PID
 _find_claude_pid() {
     local parent_pid="$1"
-    ps -eo pid,ppid,comm 2>/dev/null | awk -v p="$parent_pid" -v c="$CCM_CLAUDE_PROCESS_NAME" '$2==p && $3==c {print $1; exit}'
+    _ensure_ps_cache
+    echo "$_PS_CACHE" | awk -v p="$parent_pid" -v c="$CCM_CLAUDE_PROCESS_NAME" '$2==p && $3==c {print $1; exit}'
 }
 
 # Check if a process has any child processes
 _has_children() {
     local pid="$1"
-    ps -eo ppid 2>/dev/null | awk -v p="$pid" '$1==p {found=1; exit} END {exit !found}'
+    _ensure_ps_cache
+    echo "$_PS_CACHE" | awk -v p="$pid" '$2==p {found=1; exit} END {exit !found}'
 }
 
 # Detect state of a single pane by its PID and pane target

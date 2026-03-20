@@ -88,6 +88,9 @@ _state_icon() {
 # Deduplicates by resolved directory path
 # Current (foreground) window is placed last for easy switching
 _build_project_list() {
+    # Refresh ps cache once for this entire scan cycle
+    _refresh_ps_cache
+
     _SESSION_LINES=()
     _SESSION_NAMES=()    # window target (session:win_idx)
     _SESSION_PROJECTS=() # project name
@@ -321,8 +324,14 @@ ccm_dashboard() {
     tput civis 2>/dev/null
     trap 'tput cnorm 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
 
+    local needs_rebuild=1
+
     while true; do
-        _build_project_list
+        # Only rebuild project list on timeout or after mutations (add/remove/register)
+        if [[ $needs_rebuild -eq 1 ]]; then
+            _build_project_list
+            needs_rebuild=0
+        fi
 
         # Clamp selection
         if [[ $_SESSION_COUNT -gt 0 ]]; then
@@ -358,13 +367,17 @@ ccm_dashboard() {
                 p|P)
                     if [[ $_SESSION_COUNT -gt 0 ]]; then
                         _dashboard_preview "$selected"
+                        needs_rebuild=1
                     fi
                     ;;
-                a|A)     _dashboard_add ;;
-                g|G)     _dashboard_register "$selected" ;;
-                r|R)     _dashboard_remove ;;
+                a|A)     _dashboard_add; needs_rebuild=1 ;;
+                g|G)     _dashboard_register "$selected"; needs_rebuild=1 ;;
+                r|R)     _dashboard_remove; needs_rebuild=1 ;;
                 /)       _dashboard_search ;;
             esac
+        else
+            # Timeout — trigger rebuild on next iteration
+            needs_rebuild=1
         fi
     done
 }
@@ -1042,6 +1055,9 @@ ccm_inject_status() {
 # Build tree data into arrays for interactive display
 # Sets _TREE_LINES (display), _TREE_TARGETS (win_target or ""), _TREE_COUNT, _TREE_SELECTABLE[]
 _build_tree_data() {
+    # Refresh ps cache once for this entire scan cycle
+    _refresh_ps_cache
+
     _TREE_LINES=()
     _TREE_TARGETS=()    # window target for selectable lines, empty for non-selectable
     _TREE_COUNT=0
@@ -1192,9 +1208,13 @@ ccm_tree_interactive() {
 
     # Current selection index into _TREE_SELECTABLE array
     local sel_pos=0
+    local needs_rebuild=1
 
     while true; do
-        _build_tree_data
+        if [[ $needs_rebuild -eq 1 ]]; then
+            _build_tree_data
+            needs_rebuild=0
+        fi
 
         local sel_count=${#_TREE_SELECTABLE[@]}
         if [[ $sel_count -eq 0 ]]; then
@@ -1249,6 +1269,9 @@ ccm_tree_interactive() {
                     ;;
                 ESC|q|Q) break ;;
             esac
+        else
+            # Timeout — trigger rebuild on next iteration
+            needs_rebuild=1
         fi
     done
 }
