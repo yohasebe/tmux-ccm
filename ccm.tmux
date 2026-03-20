@@ -15,21 +15,25 @@ CCM_KEY_MENU="${CCM_KEY_MENU:-C}"
 CCM_KEY_TREE="${CCM_KEY_TREE:-T}"
 
 # Temp dir setup command (used in run-shell for session detection)
-_ccm_session_cmd='mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"'
+_session_cmd='mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"'
 
-# Keybindings
-tmux bind-key "$CCM_KEY_DASHBOARD" run-shell "$_ccm_session_cmd" \; \
-    display-popup -E -w 80% -h 60% -T " ccm Dashboard " "$CCM_BIN dashboard"
+# Keybindings — use tmux command syntax via `tmux set-option` to avoid bash escaping issues
+tmux bind-key "$CCM_KEY_DASHBOARD" \
+    run-shell "$_session_cmd" \\\; \
+    display-popup -E -w 80% -h 60% -T "\" ccm Dashboard \"" "\"$CCM_BIN\" dashboard"
 
-tmux bind-key "$CCM_KEY_MENU" run-shell "$_ccm_session_cmd" \; \
-    display-popup -E -w 60% -h 40% -T " ccm Menu " "$CCM_BIN menu"
+tmux bind-key "$CCM_KEY_MENU" \
+    run-shell "$_session_cmd" \\\; \
+    display-popup -E -w 60% -h 40% -T "\" ccm Menu \"" "\"$CCM_BIN\" menu"
 
-tmux bind-key "$CCM_KEY_TREE" run-shell "$_ccm_session_cmd" \; \
-    display-popup -E -w 80% -h 60% -T " ccm Tree " "$CCM_BIN tree-interactive"
+tmux bind-key "$CCM_KEY_TREE" \
+    run-shell "$_session_cmd" \\\; \
+    display-popup -E -w 80% -h 60% -T "\" ccm Tree \"" "\"$CCM_BIN\" tree-interactive"
 
 # Click on status-right to open dashboard
-tmux bind-key -T root MouseDown1StatusRight run-shell "$_ccm_session_cmd" \; \
-    display-popup -E -w 80% -h 60% -T " ccm Dashboard " "$CCM_BIN dashboard"
+tmux bind-key -T root MouseDown1StatusRight \
+    run-shell "$_session_cmd" \\\; \
+    display-popup -E -w 80% -h 60% -T "\" ccm Dashboard \"" "\"$CCM_BIN\" dashboard"
 
 # Restore prefix + w to default (choose-tree)
 tmux bind-key w choose-tree -Zs
