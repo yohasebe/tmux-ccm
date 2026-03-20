@@ -1,5 +1,7 @@
 # ccm - Claude Code Manager
 
+**[日本語版 README はこちら](README.ja.md)**
+
 A tmux-based multi-project manager for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Manage multiple Claude Code sessions as tmux windows with an interactive dashboard, status detection, and snapshot support.
 
 ## Features
