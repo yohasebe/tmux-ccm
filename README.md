@@ -191,6 +191,10 @@ ccm start _autosave   # restore previous session
 - Git branch and port info are cached (30s) to minimize overhead
 - Popup session context is passed via temp file (`$TMPDIR/ccm-$UID/`)
 
+## Documentation
+
+- **[User Guide](docs/guide.md)** — Detailed tutorial covering workflows, state detection, status bar modes, snapshots, tips, and troubleshooting
+
 ## License
 
 MIT
