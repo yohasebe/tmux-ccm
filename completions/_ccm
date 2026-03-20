@@ -30,7 +30,8 @@ _ccm() {
 
     local -a snapshots
     _ccm_snapshots() {
-        snapshots=(${(f)"$(ls ~/.local/share/ccm/snapshots/*.json 2>/dev/null | xargs -I{} basename {} .json)"})
+        local _snap_dir="${XDG_DATA_HOME:-$HOME/.local/share}/ccm/snapshots"
+        snapshots=(${(f)"$(ls "$_snap_dir"/*.json 2>/dev/null | xargs -I{} basename {} .json)"})
         [[ -n "$snapshots" ]] && compadd -a snapshots
     }
 

@@ -278,13 +278,19 @@ ccm_git_branch() {
         fi
     fi
 
-    local result
-    result=$(git -C "$expanded" branch --show-current 2>/dev/null || echo "")
-    echo -n "$result" > "$cache_file" 2>/dev/null
-    echo -n "$result"
+    local branch
+    branch=$(git -C "$expanded" branch --show-current 2>/dev/null || echo "")
+    if [[ -n "$branch" ]]; then
+        # Append * if there are uncommitted changes (staged or unstaged)
+        if ! git -C "$expanded" diff --quiet HEAD 2>/dev/null; then
+            branch="${branch}*"
+        fi
+    fi
+    echo -n "$branch" > "$cache_file" 2>/dev/null
+    echo -n "$branch"
 }
 
-# Expand ~ to $HOME and resolve symlinks (e.g., ~/Dropbox → ~/Library/CloudStorage/Dropbox)
+# Expand ~ to $HOME and resolve symlinks to canonical path
 ccm_expand_path() {
     local path="$1"
     path="${path/#\~/$HOME}"

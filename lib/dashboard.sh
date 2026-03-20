@@ -333,7 +333,7 @@ ccm_dashboard() {
         local buf=$'\n'
         buf+="$(_render_list "$selected")"
         buf+=$'\n'
-        buf+="  ${COLOR_DIM}[↑↓] select  [Enter] attach  [s]plit  [a]dd  [g] register  [r]emove  [q/Esc] quit${COLOR_RESET}"$'\n'
+        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [s]plit  [p]review  [a]dd  [g] register  [r]emove  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
 
         tput home 2>/dev/null
         tput ed 2>/dev/null
@@ -342,8 +342,8 @@ ccm_dashboard() {
         local key
         if key=$(_read_key_ext "$refresh_interval"); then
             case "$key" in
-                UP)    selected=$((selected - 1)) ;;
-                DOWN)  selected=$((selected + 1)) ;;
+                UP|k)  selected=$((selected - 1)) ;;
+                DOWN|j) selected=$((selected + 1)) ;;
                 ENTER)
                     if [[ $_SESSION_COUNT -gt 0 ]]; then
                         _do_attach "$selected" && break
@@ -355,9 +355,15 @@ ccm_dashboard() {
                     fi
                     ;;
                 ESC|q|Q) break ;;
+                p|P)
+                    if [[ $_SESSION_COUNT -gt 0 ]]; then
+                        _dashboard_preview "$selected"
+                    fi
+                    ;;
                 a|A)     _dashboard_add ;;
                 g|G)     _dashboard_register "$selected" ;;
                 r|R)     _dashboard_remove ;;
+                /)       _dashboard_search ;;
             esac
         fi
     done
@@ -663,6 +669,63 @@ _dashboard_register() {
                 fi
                 ;;
         esac
+    fi
+    tput civis 2>/dev/null
+}
+
+# Dashboard: preview a project's pane content
+_dashboard_preview() {
+    local idx="$1"
+    [[ "$idx" -lt 1 || "$idx" -gt "$_SESSION_COUNT" ]] && return
+
+    local win_target="${_SESSION_NAMES[$((idx-1))]}"
+    local project="${_SESSION_PROJECTS[$((idx-1))]}"
+
+    tput cnorm 2>/dev/null
+    tput home 2>/dev/null
+    tput ed 2>/dev/null
+
+    echo ""
+    echo "  ${COLOR_BOLD}Preview: ${project}${COLOR_RESET}  ${COLOR_DIM}(press any key to return, 'c' to copy)${COLOR_RESET}"
+    echo "  ${COLOR_DIM}────────────────────────────────────${COLOR_RESET}"
+    echo ""
+
+    local captured
+    captured=$(tmux capture-pane -t "$win_target" -p -S -30 2>/dev/null)
+    echo "$captured" | sed 's/^/  /'
+
+    echo ""
+
+    local key
+    if key=$(_read_key_ext 30); then
+        if [[ "$key" == "c" || "$key" == "C" ]]; then
+            echo "$captured" | pbcopy 2>/dev/null
+            echo "  ${COLOR_GREEN}Copied to clipboard${COLOR_RESET}"
+            sleep 1
+        fi
+    fi
+
+    tput civis 2>/dev/null
+}
+
+# Dashboard: search projects by name and jump to match
+_dashboard_search() {
+    [[ $_SESSION_COUNT -eq 0 ]] && return
+
+    tput cnorm 2>/dev/null
+    echo ""
+    _read_line_cancelable "  Search: "
+    if [[ $? -eq 0 && -n "$_INPUT_RESULT" ]]; then
+        local query
+        query=$(echo "$_INPUT_RESULT" | tr '[:upper:]' '[:lower:]')
+        for ((i=0; i<_SESSION_COUNT; i++)); do
+            local proj
+            proj=$(echo "${_SESSION_PROJECTS[$i]}" | tr '[:upper:]' '[:lower:]')
+            if [[ "$proj" == *"$query"* ]]; then
+                selected=$((i + 1))
+                break
+            fi
+        done
     fi
     tput civis 2>/dev/null
 }
@@ -990,7 +1053,7 @@ ccm_tree_interactive() {
         local buf=$'\n'
         buf+="$(_render_tree "$sel_line")"
         buf+=$'\n'
-        buf+="  ${COLOR_DIM}[↑↓] select  [Enter] attach  [q/Esc] quit${COLOR_RESET}"$'\n'
+        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [q/Esc] quit${COLOR_RESET}"$'\n'
 
         tput home 2>/dev/null
         tput ed 2>/dev/null
@@ -999,8 +1062,8 @@ ccm_tree_interactive() {
         local key
         if key=$(_read_key_ext "$refresh_interval"); then
             case "$key" in
-                UP)   sel_pos=$((sel_pos - 1)) ;;
-                DOWN) sel_pos=$((sel_pos + 1)) ;;
+                UP|k)   sel_pos=$((sel_pos - 1)) ;;
+                DOWN|j) sel_pos=$((sel_pos + 1)) ;;
                 ENTER)
                     if [[ $sel_count -gt 0 ]]; then
                         local win_target="${_TREE_TARGETS[${_TREE_SELECTABLE[$sel_pos]}]}"

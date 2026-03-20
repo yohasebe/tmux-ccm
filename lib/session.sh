@@ -156,6 +156,12 @@ ccm_stop() {
             echo "No active projects."
             return
         fi
+
+        # Auto-save snapshot before stopping all
+        ccm_init_dirs
+        ccm_snapshot_save "_autosave" 2>/dev/null && \
+            ccm_info "Auto-saved snapshot: _autosave"
+
         while IFS=$'\t' read -r win_idx win_name project dir; do
             local session
             session=$(_ccm_session)
@@ -170,9 +176,20 @@ ccm_stop() {
 }
 
 # Capture the visible content of a ccm project window's pane
+# Usage: ccm capture [--copy] <name|#id>
 ccm_capture() {
-    local target="$1"
-    [[ -z "$target" ]] && ccm_die "Usage: ccm capture <name|#id>"
+    local copy_mode=false
+    local target=""
+
+    # Parse flags
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --copy|-c) copy_mode=true; shift ;;
+            *) target="$1"; shift ;;
+        esac
+    done
+
+    [[ -z "$target" ]] && ccm_die "Usage: ccm capture [--copy] <name|#id>"
 
     local session idx name
     session=$(_ccm_session)
@@ -201,9 +218,17 @@ ccm_capture() {
         [[ -z "$idx" ]] && ccm_die "Project not found: $target"
     fi
 
-    echo "=== ccm capture: ${name} ==="
-    tmux capture-pane -t "${session}:${idx}" -p -S -50
-    echo "=== end ==="
+    local output
+    output=$(tmux capture-pane -t "${session}:${idx}" -p -S -50)
+
+    if [[ "$copy_mode" == "true" ]]; then
+        echo "$output" | pbcopy 2>/dev/null
+        ccm_info "Captured ${name} → clipboard"
+    else
+        echo "=== ccm capture: ${name} ==="
+        echo "$output"
+        echo "=== end ==="
+    fi
 }
 
 # Register an existing tmux window as a ccm project
