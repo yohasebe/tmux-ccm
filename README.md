@@ -95,6 +95,8 @@ set -g @ccm-key-tree "T"
 
 ```
 ccm add <dir> [name]              Add project (creates window + starts Claude)
+ccm open <dir> [name]             Start Claude in current pane (split-pane use)
+ccm register <window> [name]      Register existing window as ccm project
 ccm remove <name>                 Remove project window
 ccm attach <name|number>          Switch to project window
 ccm list                          List managed projects
@@ -102,6 +104,8 @@ ccm status                        Show projects with status, branch, ports
 ccm tree                          Show session/window/pane hierarchy
 ccm ports                         Show listening ports per project
 ccm capture [--copy] <name|#id>   Capture pane content (--copy: clipboard)
+ccm dashboard                     Open interactive dashboard popup
+ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
