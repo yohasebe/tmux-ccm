@@ -303,26 +303,23 @@ ccm_dashboard() {
     local refresh_interval="${CCM_DASHBOARD_INTERVAL:-2}"
     local selected=1
 
-    # Prevent concurrent dashboard instances (stale lock timeout: 30s)
-    local lockdir="${CCM_TMP_DIR}/dashboard.lock"
+    # Prevent concurrent dashboard instances (PID-based check)
+    local pidfile="${CCM_TMP_DIR}/dashboard.pid"
     mkdir -p "$CCM_TMP_DIR" 2>/dev/null
-    if ! mkdir "$lockdir" 2>/dev/null; then
-        local lock_age
-        lock_age=$(( $(date +%s) - $(stat -f %m "$lockdir" 2>/dev/null || stat -c %Y "$lockdir" 2>/dev/null || echo 0) ))
-        if [[ $lock_age -gt 30 ]]; then
-            rm -rf "$lockdir"
-            mkdir "$lockdir" 2>/dev/null || { echo "Dashboard already running."; return; }
-        else
-            echo "Dashboard already running."
+    if [[ -f "$pidfile" ]]; then
+        local old_pid
+        old_pid=$(cat "$pidfile" 2>/dev/null)
+        if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+            echo "Dashboard already running (pid $old_pid)."
             return
         fi
+        # Stale PID file — process is dead
+        rm -f "$pidfile"
     fi
+    echo $$ > "$pidfile"
 
-    _ccm_dashboard_cleanup() {
-        tput cnorm 2>/dev/null
-        rm -rf "$lockdir"
-    }
-    trap '_ccm_dashboard_cleanup' EXIT INT TERM HUP
+    tput civis 2>/dev/null
+    trap 'tput cnorm 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
 
     while true; do
         _build_project_list
