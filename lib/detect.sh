@@ -5,7 +5,7 @@
 # Find a claude process among children of a given PID
 _find_claude_pid() {
     local parent_pid="$1"
-    ps -eo pid,ppid,comm 2>/dev/null | awk -v p="$parent_pid" '$2==p && $3=="claude" {print $1; exit}'
+    ps -eo pid,ppid,comm 2>/dev/null | awk -v p="$parent_pid" -v c="$CCM_CLAUDE_PROCESS_NAME" '$2==p && $3==c {print $1; exit}'
 }
 
 # Check if a process has any child processes
@@ -34,7 +34,7 @@ _detect_pane_state() {
     local near_bottom
     near_bottom=$(echo "$captured" | sed '/^[[:space:]]*$/d' | tail -8)
 
-    if echo "$near_bottom" | grep -qEi '(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc to cancel)'; then
+    if echo "$near_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
         echo "PERMIT"
         return
     fi

@@ -256,7 +256,7 @@ _do_attach() {
         local state
         state=$(_detect_window_state "$win_target")
         if [[ "$state" == "SHELL" ]]; then
-            tmux send-keys -t "$win_target" "claude --continue 2>/dev/null || claude" Enter
+            tmux send-keys -t "$win_target" "$CCM_CLAUDE_CMD_RESUME" Enter
         fi
     fi
 
@@ -293,7 +293,7 @@ _do_split() {
 
     # Split the current pane horizontally and cd + start claude
     tmux split-window -h -c "$expanded_dir"
-    tmux send-keys "claude --continue 2>/dev/null || claude" Enter
+    tmux send-keys "$CCM_CLAUDE_CMD_RESUME" Enter
     return 0
 }
 
@@ -547,7 +547,7 @@ _dashboard_add() {
     if win_idx=$(tmux new-window -P -F '#{window_index}' -t "$session" -n "$name" -c "$expanded_dir" 2>&1); then
         tmux set-option -wt "${session}:${win_idx}" @ccm_project "$name" 2>/dev/null
         tmux set-option -wt "${session}:${win_idx}" @ccm_dir "$expanded_dir" 2>/dev/null
-        tmux send-keys -t "${session}:${win_idx}" "claude" Enter 2>/dev/null
+        tmux send-keys -t "${session}:${win_idx}" "$CCM_CLAUDE_CMD" Enter 2>/dev/null
         echo "  ${COLOR_GREEN}Added project: $name ($expanded_dir)${COLOR_RESET}"
         sleep 1
     else
@@ -1073,7 +1073,7 @@ ccm_tree_interactive() {
                                 local state
                                 state=$(_detect_window_state "$win_target")
                                 if [[ "$state" == "SHELL" ]]; then
-                                    tmux send-keys -t "$win_target" "claude --continue 2>/dev/null || claude" Enter
+                                    tmux send-keys -t "$win_target" "$CCM_CLAUDE_CMD_RESUME" Enter
                                 fi
                             fi
                             ccm_clear_done "$win_target"

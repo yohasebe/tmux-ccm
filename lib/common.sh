@@ -20,10 +20,15 @@ CCM_POPUP_WIDTH="80%"
 CCM_POPUP_HEIGHT="60%"
 
 # Claude Code detection patterns
-# These are centralized here so they can be easily updated when Claude Code UI changes
-PATTERN_PERMIT='(Do you want|Allow|yes.*no|y,n|y\/n|approve|permit|Would you like to|Read|Edit|Bash|Write|Execute|WebFetch|WebSearch|Glob|Grep|ToolSearch|NotebookEdit|access|permission)'
-PATTERN_IDLE='(❯|>)\s*$'
-PATTERN_COMPACT='(compact|compress|summariz)'
+# Centralized here so they can be easily updated when Claude Code UI changes.
+# These are the ONLY place where Claude Code output text is matched.
+# Process name used to find claude in the process tree.
+CCM_CLAUDE_PROCESS_NAME="claude"
+# Screen text pattern for permission prompts (grep -Ei compatible)
+CCM_PATTERN_PERMIT='(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc to cancel)'
+# Commands to start Claude Code
+CCM_CLAUDE_CMD="claude"
+CCM_CLAUDE_CMD_RESUME="claude --continue 2>/dev/null || claude"
 
 # Colors for terminal output (using $'...' for real escape characters)
 COLOR_RED=$'\033[0;31m'

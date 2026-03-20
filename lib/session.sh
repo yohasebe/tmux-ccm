@@ -52,7 +52,7 @@ ccm_add() {
     tmux set-option -wt "${session}:${win_idx}" @ccm_dir "$dir"
 
     if [[ "$start_claude" == "true" ]]; then
-        tmux send-keys -t "${session}:${win_idx}" "claude" Enter
+        tmux send-keys -t "${session}:${win_idx}" "$CCM_CLAUDE_CMD" Enter
     fi
 
     ccm_info "Added project: $name ($dir)"
@@ -136,7 +136,7 @@ ccm_attach() {
     local state
     state=$(_detect_window_state "$pane_target")
     if [[ "$state" == "SHELL" ]]; then
-        tmux send-keys -t "$pane_target" "claude --continue 2>/dev/null || claude" Enter
+        tmux send-keys -t "$pane_target" "$CCM_CLAUDE_CMD_RESUME" Enter
     fi
 
     # Clear DONE flag when switching to this window
