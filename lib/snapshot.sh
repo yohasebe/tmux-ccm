@@ -43,7 +43,7 @@ ccm_snapshot_save() {
         --arg name "$name" \
         --arg created "$created" \
         --argjson projects "$projects" \
-        '{"name": $name, "created": $created, "projects": $projects}')
+        '{"version": 1, "name": $name, "created": $created, "projects": $projects}')
 
     local file="${CCM_SNAPSHOT_DIR}/${name}.json"
     echo "$snapshot" > "$file"

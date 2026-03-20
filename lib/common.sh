@@ -9,6 +9,9 @@ CCM_DATA_DIR="${HOME}/.local/share/ccm"
 CCM_SNAPSHOT_DIR="${CCM_DATA_DIR}/snapshots"
 CCM_STATE_DIR="${CCM_DATA_DIR}/state"
 
+# Temp directory (user-scoped to avoid multi-user collisions)
+CCM_TMP_DIR="${TMPDIR:-/tmp}/ccm-${UID}"
+
 # Dashboard refresh interval (seconds)
 CCM_DASHBOARD_INTERVAL=2
 
@@ -43,7 +46,7 @@ STATUS_DOWN="○ DOWN"
 
 # Ensure runtime directories exist
 ccm_init_dirs() {
-    mkdir -p "$CCM_SNAPSHOT_DIR" "$CCM_STATE_DIR"
+    mkdir -p "$CCM_SNAPSHOT_DIR" "$CCM_STATE_DIR" "$CCM_TMP_DIR" 2>/dev/null
 }
 
 # Auto-detect current tmux session
@@ -51,11 +54,11 @@ ccm_current_session() {
     # 1. Check popup session file (written by keybinding via run-shell)
     #    Fresh file (< 60s) takes priority because tmux display-message
     #    may return wrong session inside popups
-    if [[ -f /tmp/ccm-popup-session ]]; then
+    if [[ -f ${CCM_TMP_DIR}/popup-session ]]; then
         local file_age
-        file_age=$(( $(date +%s) - $(stat -f %m /tmp/ccm-popup-session 2>/dev/null || stat -c %Y /tmp/ccm-popup-session 2>/dev/null || echo 0) ))
+        file_age=$(( $(date +%s) - $(stat -f %m ${CCM_TMP_DIR}/popup-session 2>/dev/null || stat -c %Y ${CCM_TMP_DIR}/popup-session 2>/dev/null || echo 0) ))
         if [[ $file_age -lt 60 ]]; then
-            cat /tmp/ccm-popup-session
+            cat ${CCM_TMP_DIR}/popup-session
             return
         fi
     fi
@@ -159,6 +162,21 @@ ccm_session_exists() {
     tmux has-session -t "$session" 2>/dev/null
 }
 
+# Validate and sanitize a project name
+# Returns sanitized name or exits with error if invalid
+ccm_validate_name() {
+    local name="$1"
+    # Remove leading/trailing whitespace
+    name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    # Replace tabs, newlines, spaces with hyphens
+    name=$(echo "$name" | tr '[:space:]' '-' | tr -s '-')
+    # Remove characters that break tmux or shell parsing
+    name=$(echo "$name" | tr -d "'\"\`\$\\;&|<>()")
+    # Must not be empty after sanitization
+    [[ -z "$name" ]] && return 1
+    echo "$name"
+}
+
 # Print an error message and exit
 ccm_die() {
     echo -e "${COLOR_RED}Error: $1${COLOR_RESET}" >&2
@@ -191,7 +209,7 @@ ccm_check_deps() {
 # Detect listening TCP ports for processes whose cwd matches a directory
 # Returns comma-separated port list (e.g., "3000,8080") or empty string
 # Uses a short-lived cache (10 seconds) to avoid repeated lsof calls in dashboard
-CCM_PORT_CACHE_DIR="/tmp/ccm-port-cache"
+CCM_PORT_CACHE_DIR="${CCM_TMP_DIR}/port-cache"
 
 ccm_detect_ports() {
     local dir="$1"
@@ -207,7 +225,7 @@ ccm_detect_ports() {
     if [[ -f "$cache_file" ]]; then
         local cache_age
         cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0) ))
-        if [[ $cache_age -lt 10 ]]; then
+        if [[ $cache_age -lt 30 ]]; then
             cat "$cache_file"
             return
         fi
@@ -238,11 +256,32 @@ ccm_detect_ports() {
 }
 
 # Get git branch name for a directory (empty string if not a git repo)
+# Uses a short-lived cache (30 seconds) to avoid repeated git calls in dashboard
+CCM_GIT_CACHE_DIR="${CCM_TMP_DIR}/git-cache"
+
 ccm_git_branch() {
     local dir="$1"
     local expanded
     expanded=$(ccm_expand_path "$dir")
-    git -C "$expanded" branch --show-current 2>/dev/null || echo ""
+
+    # Check cache
+    mkdir -p "$CCM_GIT_CACHE_DIR" 2>/dev/null
+    local cache_key
+    cache_key=$(echo "$expanded" | md5 2>/dev/null || echo "$expanded" | md5sum 2>/dev/null | cut -d' ' -f1)
+    local cache_file="${CCM_GIT_CACHE_DIR}/${cache_key}"
+    if [[ -f "$cache_file" ]]; then
+        local cache_age
+        cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0) ))
+        if [[ $cache_age -lt 30 ]]; then
+            cat "$cache_file"
+            return
+        fi
+    fi
+
+    local result
+    result=$(git -C "$expanded" branch --show-current 2>/dev/null || echo "")
+    echo -n "$result" > "$cache_file" 2>/dev/null
+    echo -n "$result"
 }
 
 # Expand ~ to $HOME and resolve symlinks (e.g., ~/Dropbox → ~/Library/CloudStorage/Dropbox)

@@ -303,8 +303,23 @@ ccm_dashboard() {
     local refresh_interval="${CCM_DASHBOARD_INTERVAL:-2}"
     local selected=1
 
+    # Prevent concurrent dashboard instances
+    local lockdir="${CCM_TMP_DIR}/dashboard.lock"
+    mkdir -p "$CCM_TMP_DIR" 2>/dev/null
+    if ! mkdir "$lockdir" 2>/dev/null; then
+        local lock_age
+        lock_age=$(( $(date +%s) - $(stat -f %m "$lockdir" 2>/dev/null || stat -c %Y "$lockdir" 2>/dev/null || echo 0) ))
+        if [[ $lock_age -gt 300 ]]; then
+            rm -rf "$lockdir"
+            mkdir "$lockdir" 2>/dev/null || { echo "Dashboard already running."; return; }
+        else
+            echo "Dashboard already running."
+            return
+        fi
+    fi
+
     tput civis 2>/dev/null
-    trap 'tput cnorm 2>/dev/null' EXIT
+    trap 'tput cnorm 2>/dev/null; rm -rf "$lockdir"' EXIT
 
     while true; do
         _build_project_list
@@ -343,11 +358,6 @@ ccm_dashboard() {
                 a|A)     _dashboard_add ;;
                 g|G)     _dashboard_register "$selected" ;;
                 r|R)     _dashboard_remove ;;
-                [1-9])
-                    if [[ "$key" -le "$_SESSION_COUNT" ]]; then
-                        _do_attach "$key" && break
-                    fi
-                    ;;
             esac
         fi
     done
@@ -482,6 +492,13 @@ _dashboard_add() {
     [[ $? -ne 0 ]] && { tput civis 2>/dev/null; return; }
     local name="$_INPUT_RESULT"
     [[ -z "$name" ]] && name="$default_name"
+    name=$(ccm_validate_name "$name")
+    if [[ -z "$name" ]]; then
+        echo "  ${COLOR_RED}Invalid project name${COLOR_RESET}"
+        sleep 1
+        tput civis 2>/dev/null
+        return
+    fi
 
     # Create window directly (not via ccm_add) to avoid subshell/session issues in popup
     local session
@@ -628,6 +645,13 @@ _dashboard_register() {
                     if [[ $? -eq 0 ]]; then
                         local new_name="$_INPUT_RESULT"
                         [[ -z "$new_name" ]] && new_name="$default_name"
+                        new_name=$(ccm_validate_name "$new_name")
+                        if [[ -z "$new_name" ]]; then
+                            echo "  ${COLOR_RED}Invalid project name${COLOR_RESET}"
+                            sleep 1
+                            tput civis 2>/dev/null
+                            return
+                        fi
 
                         local win_target="${session}:${win_idx}"
                         tmux set-option -wt "$win_target" @ccm_project "$new_name"
@@ -739,7 +763,8 @@ ccm_statusline() {
 
 ccm_inject_status() {
     # Prevent concurrent execution (use mkdir for atomic lock)
-    local lockdir="/tmp/ccm-inject.lock"
+    local lockdir="${CCM_TMP_DIR}/inject.lock"
+    mkdir -p "$CCM_TMP_DIR" 2>/dev/null
     if ! mkdir "$lockdir" 2>/dev/null; then
         # Check for stale lock
         local lock_age
@@ -758,7 +783,7 @@ ccm_inject_status() {
     # Update window names with status icons
     ccm_update_window_names 2>/dev/null
 
-    local refresh='#(~/Dropbox/code/ccm/ccm inject-status 2>/dev/null)'
+    local refresh="#(${CCM_ROOT}/ccm inject-status 2>/dev/null)"
     local new_status
 
     local dashboard_btn="#[fg=#666666]≡#[fg=#9E9E9E]"
@@ -781,7 +806,7 @@ ccm_inject_status() {
     fi
 
     # Only update tmux if status actually changed (prevents flicker)
-    local cache_file="/tmp/ccm-status-cache"
+    local cache_file="${CCM_TMP_DIR}/status-cache"
     local prev_status=""
     [[ -f "$cache_file" ]] && prev_status=$(cat "$cache_file" 2>/dev/null)
 

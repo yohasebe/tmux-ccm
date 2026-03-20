@@ -17,6 +17,9 @@ ccm_add() {
     # Default name from directory basename
     [[ -z "$name" ]] && name=$(basename "$dir")
 
+    # Sanitize project name
+    name=$(ccm_validate_name "$name") || ccm_die "Invalid project name"
+
     local session
     session=$(_ccm_session)
     [[ -z "$session" ]] && ccm_die "Not inside a tmux session"
@@ -237,6 +240,7 @@ ccm_register() {
     fi
 
     local name="${new_name:-$win_name}"
+    name=$(ccm_validate_name "$name") || ccm_die "Invalid project name"
 
     # Check for duplicate project name
     if ccm_project_exists "$name"; then
