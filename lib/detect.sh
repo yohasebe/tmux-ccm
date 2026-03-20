@@ -285,13 +285,173 @@ ccm_status() {
         return
     fi
 
-    printf "${COLOR_BOLD}%-12s %-20s %s${COLOR_RESET}\n" "STATUS" "PROJECT" "DIRECTORY"
-    printf "%-12s %-20s %s\n" "------" "-------" "---------"
+    printf "${COLOR_BOLD}%-12s %-20s %-16s %-12s %s${COLOR_RESET}\n" "STATUS" "PROJECT" "BRANCH" "PORTS" "DIRECTORY"
+    printf "%-12s %-20s %-16s %-12s %s\n" "------" "-------" "------" "-----" "---------"
 
     while IFS=$'\t' read -r win_idx win_name project dir; do
         local win_target="${session}:${win_idx}"
         local status
         status=$(ccm_format_window_status "$win_target")
-        printf "%-22s %-20s %s\n" "$status" "$project" "$dir"
+        local branch
+        branch=$(ccm_git_branch "$dir")
+        [[ -z "$branch" ]] && branch="-"
+        local ports
+        ports=$(ccm_detect_ports "$dir")
+        [[ -z "$ports" ]] && ports="-"
+        printf "%-22s %-20s %-16s %-12s %s\n" "$status" "$project" "$branch" "$ports" "$dir"
     done <<< "$windows"
+}
+
+# Show listening ports per project
+ccm_ports() {
+    local session
+    session=$(_ccm_session)
+    [[ -z "$session" ]] && { echo "Not inside a tmux session."; return; }
+
+    local windows
+    windows=$(ccm_list_windows)
+
+    if [[ -z "$windows" ]]; then
+        echo "No active projects."
+        return
+    fi
+
+    printf "${COLOR_BOLD}%-20s %-16s %s${COLOR_RESET}\n" "PROJECT" "PORTS" "DIRECTORY"
+    printf "%-20s %-16s %s\n" "-------" "-----" "---------"
+
+    while IFS=$'\t' read -r win_idx win_name project dir; do
+        local ports
+        ports=$(ccm_detect_ports "$dir")
+        [[ -z "$ports" ]] && ports="-"
+        printf "%-20s %-16s %s\n" "$project" "$ports" "$dir"
+    done <<< "$windows"
+}
+
+# Show hierarchical tree of all sessions, windows, and panes
+ccm_tree() {
+    local all_sessions
+    all_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort)
+    [[ -z "$all_sessions" ]] && { echo "No tmux sessions."; return; }
+
+    local current_session
+    current_session=$(_ccm_session)
+    local current_win_idx
+    current_win_idx=$(tmux display-message -p '#{window_index}' 2>/dev/null)
+    local current_pane_id
+    current_pane_id=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+
+    local session_count
+    session_count=$(echo "$all_sessions" | wc -l | tr -d ' ')
+    local s_idx=0
+
+    while IFS= read -r sess; do
+        s_idx=$((s_idx + 1))
+        local s_prefix="├── "
+        local s_cont="│   "
+        [[ $s_idx -eq $session_count ]] && { s_prefix="└── "; s_cont="    "; }
+
+        # Session line
+        local s_marker=""
+        [[ "$sess" == "$current_session" ]] && s_marker=" ${COLOR_GREEN}◀${COLOR_RESET}"
+        printf "${s_prefix}${COLOR_BOLD}%s${COLOR_RESET}%s\n" "$sess" "$s_marker"
+
+        # Windows in this session
+        local windows
+        windows=$(tmux list-windows -t "$sess" -F '#{window_index}	#{window_name}	#{@ccm_project}	#{@ccm_dir}' 2>/dev/null)
+        [[ -z "$windows" ]] && continue
+
+        local win_count
+        win_count=$(echo "$windows" | wc -l | tr -d ' ')
+        local w_idx=0
+
+        while IFS=$'\t' read -r win_idx win_name project dir; do
+            w_idx=$((w_idx + 1))
+            local w_prefix="${s_cont}├── "
+            local w_cont="${s_cont}│   "
+            [[ $w_idx -eq $win_count ]] && { w_prefix="${s_cont}└── "; w_cont="${s_cont}    "; }
+
+            local win_target="${sess}:${win_idx}"
+
+            # Window status
+            local state icon=""
+            if [[ -n "$project" ]]; then
+                state=$(ccm_detect_window_state "$win_target")
+            else
+                state=$(_detect_window_state "$win_target")
+            fi
+            case "$state" in
+                PERMIT) icon="${COLOR_YELLOW}⚠${COLOR_RESET} " ;;
+                BUSY)   icon="${COLOR_CYAN}◉${COLOR_RESET} " ;;
+                DONE)   icon="${COLOR_GREEN}✔${COLOR_RESET} " ;;
+                IDLE)   icon="${COLOR_GREEN}●${COLOR_RESET} " ;;
+                SHELL)  icon="${COLOR_BLUE}■${COLOR_RESET} " ;;
+                DOWN)   icon="${COLOR_DIM}○${COLOR_RESET} " ;;
+            esac
+
+            # Git branch
+            local branch_info=""
+            local check_dir="${dir:-}"
+            if [[ -n "$check_dir" ]]; then
+                local branch
+                branch=$(ccm_git_branch "$check_dir")
+                [[ -n "$branch" ]] && branch_info=" ${COLOR_CYAN}(${branch})${COLOR_RESET}"
+            fi
+
+            # Port info
+            local port_info=""
+            if [[ -n "$check_dir" ]]; then
+                local ports
+                ports=$(ccm_detect_ports "$check_dir" 2>/dev/null)
+                [[ -n "$ports" ]] && port_info=" ${COLOR_DIM}[${ports}]${COLOR_RESET}"
+            fi
+
+            # Current window marker
+            local w_marker=""
+            [[ "$sess" == "$current_session" && "$win_idx" == "$current_win_idx" ]] && w_marker=" ${COLOR_GREEN}◀${COLOR_RESET}"
+
+            # Display name
+            local display_name
+            if [[ -n "$project" ]]; then
+                display_name="${COLOR_BOLD}${project}${COLOR_RESET}"
+            else
+                display_name="${win_name}"
+            fi
+
+            local display_dir=""
+            [[ -n "$dir" ]] && display_dir=" ${COLOR_DIM}${dir/#$HOME/\~}${COLOR_RESET}"
+
+            printf "${w_prefix}${icon}${display_name}${branch_info}${port_info}${display_dir}${w_marker}\n"
+
+            # Panes in this window
+            local panes
+            panes=$(tmux list-panes -t "$win_target" -F '#{pane_id}	#{pane_pid}	#{pane_current_path}	#{pane_width}x#{pane_height}' 2>/dev/null)
+            local pane_count
+            pane_count=$(echo "$panes" | wc -l | tr -d ' ')
+            # Only show panes if more than 1
+            if [[ $pane_count -gt 1 ]]; then
+                local p_idx=0
+                while IFS=$'\t' read -r pane_id pane_pid pane_path pane_size; do
+                    p_idx=$((p_idx + 1))
+                    local p_prefix="${w_cont}├── "
+                    [[ $p_idx -eq $pane_count ]] && p_prefix="${w_cont}└── "
+
+                    local pane_state
+                    pane_state=$(_detect_pane_state "$pane_pid" "$pane_id")
+                    local p_icon=""
+                    case "$pane_state" in
+                        PERMIT) p_icon="${COLOR_YELLOW}⚠${COLOR_RESET}" ;;
+                        BUSY)   p_icon="${COLOR_CYAN}◉${COLOR_RESET}" ;;
+                        IDLE)   p_icon="${COLOR_GREEN}●${COLOR_RESET}" ;;
+                        SHELL)  p_icon="${COLOR_BLUE}■${COLOR_RESET}" ;;
+                    esac
+
+                    local p_marker=""
+                    [[ "$pane_id" == "$current_pane_id" ]] && p_marker=" ${COLOR_GREEN}◀${COLOR_RESET}"
+
+                    local pane_dir="${pane_path/#$HOME/\~}"
+                    printf "${p_prefix}${p_icon} ${COLOR_DIM}${pane_id} (${pane_size}) ${pane_dir}${COLOR_RESET}${p_marker}\n"
+                done <<< "$panes"
+            fi
+        done <<< "$windows"
+    done <<< "$all_sessions"
 }

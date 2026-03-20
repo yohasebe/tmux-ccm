@@ -33,7 +33,9 @@ Usage:
   ccm attach <name|number>          Switch to a project window
   ccm list                          List managed project windows
   ccm status                        Show all projects with Claude state
+  ccm tree                          Show session/window/pane hierarchy
   ccm capture <name|#id>            Capture project window's visible content
+  ccm ports                          Show listening ports per project
   ccm dashboard                     Open interactive dashboard (popup)
   ccm statusline                    One-line status (for tmux status bar)
   ccm snapshot save [name]          Save current projects as snapshot
@@ -70,6 +72,15 @@ case "${1:-help}" in
         ;;
     status|st)
         ccm_status
+        ;;
+    tree)
+        ccm_tree
+        ;;
+    tree-interactive|ti)
+        ccm_tree_interactive
+        ;;
+    ports)
+        ccm_ports
         ;;
     capture|cap)
         ccm_capture "${2:-}"

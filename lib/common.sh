@@ -48,7 +48,28 @@ ccm_init_dirs() {
 
 # Auto-detect current tmux session
 ccm_current_session() {
-    tmux display-message -p '#{session_name}' 2>/dev/null
+    # 1. Check popup session file (written by keybinding via run-shell)
+    #    Fresh file (< 60s) takes priority because tmux display-message
+    #    may return wrong session inside popups
+    if [[ -f /tmp/ccm-popup-session ]]; then
+        local file_age
+        file_age=$(( $(date +%s) - $(stat -f %m /tmp/ccm-popup-session 2>/dev/null || stat -c %Y /tmp/ccm-popup-session 2>/dev/null || echo 0) ))
+        if [[ $file_age -lt 60 ]]; then
+            cat /tmp/ccm-popup-session
+            return
+        fi
+    fi
+
+    # 2. Try tmux display-message (works in normal panes)
+    local session
+    session=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+    if [[ -n "$session" ]]; then
+        echo "$session"
+        return
+    fi
+
+    # 3. Last resort: first attached client's session
+    tmux list-clients -F '#{session_name}' 2>/dev/null | head -1
 }
 
 # Get session name (defaults to current session)
@@ -165,6 +186,63 @@ ccm_check_deps() {
     if [[ ${#missing[@]} -gt 0 ]]; then
         ccm_die "Missing dependencies: ${missing[*]}"
     fi
+}
+
+# Detect listening TCP ports for processes whose cwd matches a directory
+# Returns comma-separated port list (e.g., "3000,8080") or empty string
+# Uses a short-lived cache (10 seconds) to avoid repeated lsof calls in dashboard
+CCM_PORT_CACHE_DIR="/tmp/ccm-port-cache"
+
+ccm_detect_ports() {
+    local dir="$1"
+    local expanded
+    expanded=$(ccm_expand_path "$dir")
+    [[ ! -d "$expanded" ]] && return
+
+    # Check cache (valid for 10 seconds)
+    mkdir -p "$CCM_PORT_CACHE_DIR" 2>/dev/null
+    local cache_key
+    cache_key=$(echo "$expanded" | md5 2>/dev/null || echo "$expanded" | md5sum 2>/dev/null | cut -d' ' -f1)
+    local cache_file="${CCM_PORT_CACHE_DIR}/${cache_key}"
+    if [[ -f "$cache_file" ]]; then
+        local cache_age
+        cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0) ))
+        if [[ $cache_age -lt 10 ]]; then
+            cat "$cache_file"
+            return
+        fi
+    fi
+
+    # Collect PIDs of processes whose cwd starts with the directory
+    local pids
+    pids=$(lsof -d cwd 2>/dev/null \
+        | awk -v d="$expanded" '$0 ~ d {print $2}' \
+        | sort -un)
+
+    local result=""
+    if [[ -n "$pids" ]]; then
+        # Build a comma-separated PID list for lsof
+        local pid_list
+        pid_list=$(echo "$pids" | paste -sd, -)
+
+        # Find listening TCP ports for those PIDs
+        result=$(lsof -nP -iTCP -sTCP:LISTEN -a -p "$pid_list" -F n 2>/dev/null \
+            | awk -F: '/^n/ {print $NF}' \
+            | sort -un \
+            | paste -sd, -)
+    fi
+
+    # Write cache
+    echo -n "$result" > "$cache_file" 2>/dev/null
+    echo -n "$result"
+}
+
+# Get git branch name for a directory (empty string if not a git repo)
+ccm_git_branch() {
+    local dir="$1"
+    local expanded
+    expanded=$(ccm_expand_path "$dir")
+    git -C "$expanded" branch --show-current 2>/dev/null || echo ""
 }
 
 # Expand ~ to $HOME and resolve symlinks (e.g., ~/Dropbox → ~/Library/CloudStorage/Dropbox)

@@ -93,6 +93,8 @@ _build_project_list() {
     _SESSION_PROJECTS=() # project name
     _SESSION_DIRS=()     # project directory
     _SESSION_STATES=()
+    _SESSION_BRANCHES=() # git branch name
+    _SESSION_PORTS=()    # listening ports
     _SESSION_COUNT=0
 
     # Track seen directories (resolved) for deduplication
@@ -194,16 +196,26 @@ _build_project_list() {
         display_dir=$(_format_dir "$display_dir")
         local status_icon
         status_icon=$(_state_icon "$state")
+        local branch
+        branch=$(ccm_git_branch "$dir")
+        local branch_display=""
+        [[ -n "$branch" ]] && branch_display="${COLOR_DIM}(${COLOR_RESET}${COLOR_CYAN}${branch}${COLOR_RESET}${COLOR_DIM})${COLOR_RESET}"
+        local ports
+        ports=$(ccm_detect_ports "$dir" 2>/dev/null)
+        local port_display=""
+        [[ -n "$ports" ]] && port_display=" ${COLOR_DIM}[${COLOR_RESET}${COLOR_YELLOW}:${ports}${COLOR_RESET}${COLOR_DIM}]${COLOR_RESET}"
 
         if [[ "$tagged" == "1" ]]; then
-            _SESSION_LINES+=("${COLOR_DIM}#${_SESSION_COUNT}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET}  ${COLOR_DIM}${display_dir}${COLOR_RESET}")
+            _SESSION_LINES+=("${COLOR_DIM}#${_SESSION_COUNT}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET} ${branch_display}${port_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
         else
-            _SESSION_LINES+=("${COLOR_DIM}#${_SESSION_COUNT}${COLOR_RESET} ${status_icon}  ${COLOR_DIM}${project}${COLOR_RESET}  ${COLOR_DIM}${display_dir}${COLOR_RESET}")
+            _SESSION_LINES+=("${COLOR_DIM}#${_SESSION_COUNT}${COLOR_RESET} ${status_icon}  ${COLOR_DIM}${project}${COLOR_RESET} ${branch_display}${port_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
         fi
         _SESSION_NAMES+=("$win_target")
         _SESSION_PROJECTS+=("$project")
         _SESSION_DIRS+=("$dir")
         _SESSION_STATES+=("$state")
+        _SESSION_BRANCHES+=("$branch")
+        _SESSION_PORTS+=("$ports")
     done
 }
 
@@ -348,19 +360,19 @@ _read_path_with_completion() {
     _INPUT_RESULT=""
     echo -n "$prompt"
     local line=""
-    local completion_msg=""
+    local completion_showing=0
 
     while true; do
         local ch
         IFS= read -rsn1 ch
 
-        # Clear previous completion message if any
-        if [[ -n "$completion_msg" ]]; then
-            # Move up and clear the completion line
-            printf '\033[1A\033[2K'
-            # Reprint prompt + current input
-            printf '\r%s%s' "$prompt" "$line"
-            completion_msg=""
+        # Clear previous completion candidates if any
+        if [[ $completion_showing -eq 1 ]]; then
+            # Restore cursor to saved position (end of prompt+line, before candidates)
+            printf '\033[u'
+            # Clear from cursor to end of screen (removes all candidate lines)
+            printf '\033[J'
+            completion_showing=0
         fi
 
         if [[ "$ch" == $'\033' ]]; then
@@ -418,6 +430,9 @@ _read_path_with_completion() {
                     printf '%s' "$to_append"
                 fi
 
+                # Save cursor position (at end of prompt+line, before candidates)
+                printf '\033[s'
+
                 # Show candidates below
                 echo ""
                 echo "$matches" | while read -r m; do
@@ -426,8 +441,7 @@ _read_path_with_completion() {
                 local shown
                 shown=$(echo "$matches" | wc -l | tr -d ' ')
                 [[ "$shown" -gt 10 ]] && echo "  ... and $((shown - 10)) more"
-                completion_msg="shown"
-                printf '%s%s' "$prompt" "$line"
+                completion_showing=1
             fi
         else
             line+="$ch"
@@ -449,9 +463,19 @@ _dashboard_add() {
     dir="${dir%/}"
     [[ -z "$dir" ]] && { tput civis 2>/dev/null; return; }
 
+    # Expand and validate directory
+    local expanded_dir
+    expanded_dir=$(ccm_expand_path "$dir")
+    if [[ ! -d "$expanded_dir" ]]; then
+        echo "  ${COLOR_RED}Directory not found: $dir${COLOR_RESET}"
+        sleep 1
+        tput civis 2>/dev/null
+        return
+    fi
+
     # 2) Derive default name from last directory component
     local default_name
-    default_name=$(basename "$(ccm_expand_path "$dir")")
+    default_name=$(basename "$expanded_dir")
 
     # 3) Let user edit the name (pre-filled with default)
     _read_line_cancelable "  Project name [${default_name}] (Esc=cancel): "
@@ -459,8 +483,56 @@ _dashboard_add() {
     local name="$_INPUT_RESULT"
     [[ -z "$name" ]] && name="$default_name"
 
-    ccm_add "$dir" "$name" 2>&1
-    sleep 1
+    # Create window directly (not via ccm_add) to avoid subshell/session issues in popup
+    local session
+    session=$(_ccm_session)
+    if [[ -z "$session" ]]; then
+        echo "  ${COLOR_RED}Cannot detect tmux session${COLOR_RESET}"
+        sleep 1
+        tput civis 2>/dev/null
+        return
+    fi
+
+    # Check if project name already exists
+    if ccm_project_exists "$name"; then
+        echo "  ${COLOR_RED}Project already exists: $name${COLOR_RESET}"
+        sleep 1
+        tput civis 2>/dev/null
+        return
+    fi
+
+    # Check for duplicate directory (resolved path comparison)
+    local real_dir
+    real_dir=$(realpath "$expanded_dir" 2>/dev/null || echo "$expanded_dir")
+    local existing_windows
+    existing_windows=$(ccm_list_windows)
+    if [[ -n "$existing_windows" ]]; then
+        while IFS=$'\t' read -r _idx _wname _proj existing_dir; do
+            local real_existing
+            real_existing=$(realpath "$existing_dir" 2>/dev/null || echo "$existing_dir")
+            if [[ "$real_dir" == "$real_existing" ]]; then
+                echo "  ${COLOR_RED}Directory already registered as '$_proj'${COLOR_RESET}"
+                sleep 1
+                tput civis 2>/dev/null
+                return
+            fi
+        done <<< "$existing_windows"
+    fi
+
+    # Create new window, tag it, and start Claude
+    local win_idx
+    if win_idx=$(tmux new-window -P -F '#{window_index}' -t "$session" -n "$name" -c "$expanded_dir" 2>&1); then
+        tmux set-option -wt "${session}:${win_idx}" @ccm_project "$name" 2>/dev/null
+        tmux set-option -wt "${session}:${win_idx}" @ccm_dir "$expanded_dir" 2>/dev/null
+        tmux send-keys -t "${session}:${win_idx}" "claude" Enter 2>/dev/null
+        echo "  ${COLOR_GREEN}Added project: $name ($expanded_dir)${COLOR_RESET}"
+        sleep 1
+    else
+        echo ""
+        echo "  ${COLOR_RED}Failed to create window: $win_idx${COLOR_RESET}"
+        echo "  ${COLOR_DIM}Press any key to continue...${COLOR_RESET}"
+        read -rsn1 -t 10
+    fi
     tput civis 2>/dev/null
 }
 
@@ -481,7 +553,9 @@ _dashboard_remove() {
                 if [[ "$key" -le "$_SESSION_COUNT" ]]; then
                     local project="${_SESSION_PROJECTS[$((key-1))]}"
                     if [[ -n "$project" ]]; then
-                        ccm_remove "$project" 2>&1
+                        local session
+                        session=$(_ccm_session)
+                        (CCM_SESSION="$session" ccm_remove "$project") 2>&1
                         sleep 1
                     fi
                 fi
@@ -491,47 +565,81 @@ _dashboard_remove() {
     tput civis 2>/dev/null
 }
 
-# Dashboard: register selected window as ccm project
+# Dashboard: register an unregistered window as ccm project
 _dashboard_register() {
-    local idx="$1"
-    [[ "$idx" -lt 1 || "$idx" -gt "$_SESSION_COUNT" ]] && return
+    local _unused="$1"  # selected idx (kept for backward compat signature)
 
-    local win_target="${_SESSION_NAMES[$((idx-1))]}"
-    local project="${_SESSION_PROJECTS[$((idx-1))]}"
+    # Collect unregistered windows from current session
+    local session
+    session=$(_ccm_session)
+    [[ -z "$session" ]] && return
 
-    # Check if already tagged
-    local existing
-    existing=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
-    if [[ -n "$existing" ]]; then
+    local -a unreg_indices=() unreg_names=() unreg_dirs=()
+    local unreg_count=0
+
+    local windows
+    windows=$(tmux list-windows -t "$session" -F '#{window_index}	#{window_name}	#{@ccm_project}' 2>/dev/null)
+    [[ -z "$windows" ]] && return
+
+    while IFS=$'\t' read -r win_idx win_name project; do
+        if [[ -z "$project" ]]; then
+            local dir
+            dir=$(tmux display-message -t "${session}:${win_idx}" -p '#{pane_current_path}' 2>/dev/null)
+            unreg_count=$((unreg_count + 1))
+            unreg_indices+=("$win_idx")
+            unreg_names+=("$win_name")
+            unreg_dirs+=("$dir")
+        fi
+    done <<< "$windows"
+
+    if [[ $unreg_count -eq 0 ]]; then
         echo ""
-        echo "  Already a ccm project: $existing"
+        echo "  No unregistered windows found."
         sleep 1
         return
     fi
 
+    # Show unregistered windows
     tput cnorm 2>/dev/null
     echo ""
+    echo "  ${COLOR_BOLD}Unregistered windows:${COLOR_RESET}"
+    for ((i=0; i<unreg_count; i++)); do
+        local display_dir="${unreg_dirs[$i]/#$HOME/\~}"
+        echo "  ${COLOR_DIM}$((i+1)))${COLOR_RESET} ${unreg_names[$i]}  ${COLOR_DIM}${display_dir}${COLOR_RESET}"
+    done
+    echo ""
+    echo -n "  Select window number (Esc=cancel): "
 
-    _read_line_cancelable "  Register '${project}' as (Esc=cancel, Enter=${project}): "
-    [[ $? -ne 0 ]] && { tput civis 2>/dev/null; return; }
-    local new_name="$_INPUT_RESULT"
-    [[ -z "$new_name" ]] && new_name="$project"
+    local key
+    if key=$(_read_key_ext 10); then
+        case "$key" in
+            ESC) tput civis 2>/dev/null; return ;;
+            [1-9])
+                echo "$key"
+                if [[ "$key" -le "$unreg_count" ]]; then
+                    local sel_idx=$((key - 1))
+                    local win_idx="${unreg_indices[$sel_idx]}"
+                    local win_name="${unreg_names[$sel_idx]}"
+                    local dir="${unreg_dirs[$sel_idx]}"
+                    local default_name
+                    default_name=$(basename "$dir")
 
-    # Extract window index from win_target
-    local win_idx="${win_target##*:}"
-    local session="${win_target%%:*}"
+                    _read_line_cancelable "  Project name [${default_name}] (Esc=cancel): "
+                    if [[ $? -eq 0 ]]; then
+                        local new_name="$_INPUT_RESULT"
+                        [[ -z "$new_name" ]] && new_name="$default_name"
 
-    # Get directory
-    local dir
-    dir=$(tmux display-message -t "$win_target" -p '#{pane_current_path}' 2>/dev/null)
-
-    # Tag the window
-    tmux set-option -wt "$win_target" @ccm_project "$new_name"
-    tmux set-option -wt "$win_target" @ccm_dir "$dir"
-    tmux rename-window -t "$win_target" "$new_name"
-
-    ccm_info "Registered: $project → $new_name"
-    sleep 1
+                        local win_target="${session}:${win_idx}"
+                        tmux set-option -wt "$win_target" @ccm_project "$new_name"
+                        tmux set-option -wt "$win_target" @ccm_dir "$dir"
+                        tmux rename-window -t "$win_target" "$new_name"
+                        ccm_info "  Registered: ${win_name} → ${new_name}"
+                        sleep 1
+                    fi
+                fi
+                ;;
+        esac
+    fi
     tput civis 2>/dev/null
 }
 
@@ -681,4 +789,220 @@ ccm_inject_status() {
         echo "$new_status" > "$cache_file"
         tmux set -g status-right "$new_status" 2>/dev/null
     fi
+}
+
+# ─── Interactive Tree (popup) ───
+
+# Build tree data into arrays for interactive display
+# Sets _TREE_LINES (display), _TREE_TARGETS (win_target or ""), _TREE_COUNT, _TREE_SELECTABLE[]
+_build_tree_data() {
+    _TREE_LINES=()
+    _TREE_TARGETS=()    # window target for selectable lines, empty for non-selectable
+    _TREE_COUNT=0
+    _TREE_SELECTABLE=() # indices of selectable lines (0-based)
+
+    local current_session
+    current_session=$(_ccm_session)
+    local current_win_idx
+    current_win_idx=$(tmux display-message -p '#{window_index}' 2>/dev/null)
+
+    local all_sessions
+    all_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort)
+    [[ -z "$all_sessions" ]] && return
+
+    local session_count
+    session_count=$(echo "$all_sessions" | wc -l | tr -d ' ')
+    local s_idx=0
+
+    while IFS= read -r sess; do
+        s_idx=$((s_idx + 1))
+        local s_prefix="├── "
+        local s_cont="│   "
+        [[ $s_idx -eq $session_count ]] && { s_prefix="└── "; s_cont="    "; }
+
+        local s_marker=""
+        [[ "$sess" == "$current_session" ]] && s_marker=" ${COLOR_GREEN}◀${COLOR_RESET}"
+
+        _TREE_LINES+=("${s_prefix}${COLOR_BOLD}${sess}${COLOR_RESET}${s_marker}")
+        _TREE_TARGETS+=("")
+        _TREE_COUNT=$((_TREE_COUNT + 1))
+
+        local windows
+        windows=$(tmux list-windows -t "$sess" -F '#{window_index}	#{window_name}	#{@ccm_project}	#{@ccm_dir}' 2>/dev/null)
+        [[ -z "$windows" ]] && continue
+
+        local win_count
+        win_count=$(echo "$windows" | wc -l | tr -d ' ')
+        local w_idx=0
+
+        while IFS=$'\t' read -r win_idx win_name project dir; do
+            w_idx=$((w_idx + 1))
+            local w_prefix="${s_cont}├── "
+            local w_cont="${s_cont}│   "
+            [[ $w_idx -eq $win_count ]] && { w_prefix="${s_cont}└── "; w_cont="${s_cont}    "; }
+
+            local win_target="${sess}:${win_idx}"
+
+            local state icon=""
+            if [[ -n "$project" ]]; then
+                state=$(ccm_detect_window_state "$win_target")
+            else
+                state=$(_detect_window_state "$win_target")
+            fi
+            case "$state" in
+                PERMIT) icon="${COLOR_YELLOW}⚠${COLOR_RESET} " ;;
+                BUSY)   icon="${COLOR_CYAN}◉${COLOR_RESET} " ;;
+                DONE)   icon="${COLOR_GREEN}✔${COLOR_RESET} " ;;
+                IDLE)   icon="${COLOR_GREEN}●${COLOR_RESET} " ;;
+                SHELL)  icon="${COLOR_BLUE}■${COLOR_RESET} " ;;
+                DOWN)   icon="${COLOR_DIM}○${COLOR_RESET} " ;;
+            esac
+
+            local branch_info=""
+            if [[ -n "${dir:-}" ]]; then
+                local branch
+                branch=$(ccm_git_branch "$dir")
+                [[ -n "$branch" ]] && branch_info=" ${COLOR_CYAN}(${branch})${COLOR_RESET}"
+            fi
+
+            local port_info=""
+            if [[ -n "${dir:-}" ]]; then
+                local ports
+                ports=$(ccm_detect_ports "$dir" 2>/dev/null)
+                [[ -n "$ports" ]] && port_info=" ${COLOR_DIM}[${ports}]${COLOR_RESET}"
+            fi
+
+            local w_marker=""
+            [[ "$sess" == "$current_session" && "$win_idx" == "$current_win_idx" ]] && w_marker=" ${COLOR_GREEN}◀${COLOR_RESET}"
+
+            local display_name
+            if [[ -n "$project" ]]; then
+                display_name="${COLOR_BOLD}${project}${COLOR_RESET}"
+            else
+                display_name="${win_name}"
+            fi
+
+            local display_dir=""
+            [[ -n "$dir" ]] && display_dir=" ${COLOR_DIM}${dir/#$HOME/\~}${COLOR_RESET}"
+
+            _TREE_LINES+=("${w_prefix}${icon}${display_name}${branch_info}${port_info}${display_dir}${w_marker}")
+            _TREE_TARGETS+=("$win_target")
+            _TREE_SELECTABLE+=($((_TREE_COUNT)))  # 0-based index
+            _TREE_COUNT=$((_TREE_COUNT + 1))
+
+            # Panes (only if >1)
+            local panes
+            panes=$(tmux list-panes -t "$win_target" -F '#{pane_id}	#{pane_pid}	#{pane_current_path}	#{pane_width}x#{pane_height}' 2>/dev/null)
+            local pane_count
+            pane_count=$(echo "$panes" | wc -l | tr -d ' ')
+            if [[ $pane_count -gt 1 ]]; then
+                local p_idx=0
+                while IFS=$'\t' read -r pane_id pane_pid pane_path pane_size; do
+                    p_idx=$((p_idx + 1))
+                    local p_prefix="${w_cont}├── "
+                    [[ $p_idx -eq $pane_count ]] && p_prefix="${w_cont}└── "
+
+                    local pane_state p_icon=""
+                    pane_state=$(_detect_pane_state "$pane_pid" "$pane_id")
+                    case "$pane_state" in
+                        PERMIT) p_icon="${COLOR_YELLOW}⚠${COLOR_RESET}" ;;
+                        BUSY)   p_icon="${COLOR_CYAN}◉${COLOR_RESET}" ;;
+                        IDLE)   p_icon="${COLOR_GREEN}●${COLOR_RESET}" ;;
+                        SHELL)  p_icon="${COLOR_BLUE}■${COLOR_RESET}" ;;
+                    esac
+
+                    local pane_dir="${pane_path/#$HOME/\~}"
+                    _TREE_LINES+=("${p_prefix}${p_icon} ${COLOR_DIM}${pane_id} (${pane_size}) ${pane_dir}${COLOR_RESET}")
+                    _TREE_TARGETS+=("")
+                    _TREE_COUNT=$((_TREE_COUNT + 1))
+                done <<< "$panes"
+            fi
+        done <<< "$windows"
+    done <<< "$all_sessions"
+}
+
+# Render tree with selection highlight
+_render_tree() {
+    local sel_line="$1"  # 0-based line index of selected item
+    local buf=""
+
+    for ((i=0; i<_TREE_COUNT; i++)); do
+        if [[ "$i" -eq "$sel_line" ]]; then
+            buf+="  ${COLOR_BOLD}▶${COLOR_RESET} ${_TREE_LINES[$i]}"$'\n'
+        else
+            buf+="    ${_TREE_LINES[$i]}"$'\n'
+        fi
+    done
+
+    echo -n "$buf"
+}
+
+# Interactive tree popup
+ccm_tree_interactive() {
+    local refresh_interval="${CCM_DASHBOARD_INTERVAL:-2}"
+
+    tput civis 2>/dev/null
+    trap 'tput cnorm 2>/dev/null' EXIT
+
+    # Current selection index into _TREE_SELECTABLE array
+    local sel_pos=0
+
+    while true; do
+        _build_tree_data
+
+        local sel_count=${#_TREE_SELECTABLE[@]}
+        if [[ $sel_count -eq 0 ]]; then
+            sel_pos=0
+        else
+            [[ $sel_pos -lt 0 ]] && sel_pos=$((sel_count - 1))
+            [[ $sel_pos -ge $sel_count ]] && sel_pos=0
+        fi
+
+        # The actual line index of the selected item
+        local sel_line=-1
+        [[ $sel_count -gt 0 ]] && sel_line=${_TREE_SELECTABLE[$sel_pos]}
+
+        local buf=$'\n'
+        buf+="$(_render_tree "$sel_line")"
+        buf+=$'\n'
+        buf+="  ${COLOR_DIM}[↑↓] select  [Enter] attach  [q/Esc] quit${COLOR_RESET}"$'\n'
+
+        tput home 2>/dev/null
+        tput ed 2>/dev/null
+        printf '%s' "$buf"
+
+        local key
+        if key=$(_read_key_ext "$refresh_interval"); then
+            case "$key" in
+                UP)   sel_pos=$((sel_pos - 1)) ;;
+                DOWN) sel_pos=$((sel_pos + 1)) ;;
+                ENTER)
+                    if [[ $sel_count -gt 0 ]]; then
+                        local win_target="${_TREE_TARGETS[${_TREE_SELECTABLE[$sel_pos]}]}"
+                        if [[ -n "$win_target" ]]; then
+                            # Auto-start Claude if SHELL
+                            local project_tag
+                            project_tag=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
+                            if [[ -n "$project_tag" ]]; then
+                                local state
+                                state=$(_detect_window_state "$win_target")
+                                if [[ "$state" == "SHELL" ]]; then
+                                    tmux send-keys -t "$win_target" "claude --continue 2>/dev/null || claude" Enter
+                                fi
+                            fi
+                            ccm_clear_done "$win_target"
+
+                            local target_session="${win_target%%:*}"
+                            local current_session
+                            current_session=$(_ccm_session)
+                            [[ "$target_session" != "$current_session" ]] && tmux switch-client -t "$target_session"
+                            tmux select-window -t "$win_target"
+                            break
+                        fi
+                    fi
+                    ;;
+                ESC|q|Q) break ;;
+            esac
+        fi
+    done
 }

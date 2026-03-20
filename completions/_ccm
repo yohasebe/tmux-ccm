@@ -10,6 +10,8 @@ _ccm() {
         'attach:Switch to a project window'
         'list:List managed project windows'
         'status:Show all projects with Claude state'
+        'tree:Show session/window/pane hierarchy'
+        'ports:Show listening ports per project'
         'capture:Capture project window visible content'
         'dashboard:Open interactive dashboard'
         'statusline:One-line status for tmux status bar'
