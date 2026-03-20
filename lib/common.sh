@@ -47,6 +47,10 @@ STATUS_DOWN="○ DOWN"
 # Ensure runtime directories exist
 ccm_init_dirs() {
     mkdir -p "$CCM_SNAPSHOT_DIR" "$CCM_STATE_DIR" "$CCM_TMP_DIR" 2>/dev/null
+
+    # Clean up stale cache/lock files (older than 1 hour)
+    find "$CCM_TMP_DIR" -maxdepth 2 -type f -mmin +60 -delete 2>/dev/null || true
+    find "$CCM_TMP_DIR" -maxdepth 2 -type d -empty -mmin +60 -delete 2>/dev/null || true
 }
 
 # Auto-detect current tmux session

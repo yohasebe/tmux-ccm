@@ -825,21 +825,19 @@ ccm_statusline() {
 # ─── Inject status into tmux status-right (called via run-shell) ───
 
 ccm_inject_status() {
-    # Prevent concurrent execution (use mkdir for atomic lock)
-    local lockdir="${CCM_TMP_DIR}/inject.lock"
+    # Prevent concurrent execution (PID-based check)
+    local pidfile="${CCM_TMP_DIR}/inject.pid"
     mkdir -p "$CCM_TMP_DIR" 2>/dev/null
-    if ! mkdir "$lockdir" 2>/dev/null; then
-        # Check for stale lock
-        local lock_age
-        lock_age=$(( $(date +%s) - $(stat -f %m "$lockdir" 2>/dev/null || echo 0) ))
-        if [[ $lock_age -gt 5 ]]; then
-            rm -rf "$lockdir"
-            mkdir "$lockdir" 2>/dev/null || return
-        else
+    if [[ -f "$pidfile" ]]; then
+        local old_pid
+        old_pid=$(cat "$pidfile" 2>/dev/null)
+        if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
             return
         fi
+        rm -f "$pidfile"
     fi
-    trap 'rm -rf "$lockdir"' EXIT RETURN
+    echo $$ > "$pidfile"
+    trap 'rm -f "$pidfile"' EXIT RETURN
 
     _scan_active_windows
 
