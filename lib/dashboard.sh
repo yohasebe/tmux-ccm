@@ -303,13 +303,13 @@ ccm_dashboard() {
     local refresh_interval="${CCM_DASHBOARD_INTERVAL:-2}"
     local selected=1
 
-    # Prevent concurrent dashboard instances
+    # Prevent concurrent dashboard instances (stale lock timeout: 30s)
     local lockdir="${CCM_TMP_DIR}/dashboard.lock"
     mkdir -p "$CCM_TMP_DIR" 2>/dev/null
     if ! mkdir "$lockdir" 2>/dev/null; then
         local lock_age
         lock_age=$(( $(date +%s) - $(stat -f %m "$lockdir" 2>/dev/null || stat -c %Y "$lockdir" 2>/dev/null || echo 0) ))
-        if [[ $lock_age -gt 300 ]]; then
+        if [[ $lock_age -gt 30 ]]; then
             rm -rf "$lockdir"
             mkdir "$lockdir" 2>/dev/null || { echo "Dashboard already running."; return; }
         else
@@ -318,8 +318,11 @@ ccm_dashboard() {
         fi
     fi
 
-    tput civis 2>/dev/null
-    trap 'tput cnorm 2>/dev/null; rm -rf "$lockdir"' EXIT
+    _ccm_dashboard_cleanup() {
+        tput cnorm 2>/dev/null
+        rm -rf "$lockdir"
+    }
+    trap '_ccm_dashboard_cleanup' EXIT INT TERM HUP
 
     while true; do
         _build_project_list
