@@ -2,7 +2,18 @@
 # ccm - Claude Code Manager
 # tmux window-based multi-project management tool for Claude Code
 
-CCM_ROOT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
+# Resolve symlinks and find the real directory of this script
+_ccm_resolve() {
+    local src="$1"
+    while [[ -L "$src" ]]; do
+        local dir
+        dir=$(cd -P "$(dirname "$src")" && pwd)
+        src=$(readlink "$src")
+        [[ "$src" != /* ]] && src="$dir/$src"
+    done
+    cd -P "$(dirname "$src")" && pwd
+}
+CCM_ROOT="$(_ccm_resolve "$0")"
 
 # Background commands (inject-status, clear-done) must not fail on errors
 case "${1:-}" in
