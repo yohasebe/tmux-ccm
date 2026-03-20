@@ -544,7 +544,7 @@ _dashboard_add() {
 
     # Create new window, tag it, and start Claude
     local win_idx
-    if win_idx=$(tmux new-window -P -F '#{window_index}' -t "$session" -n "$name" -c "$expanded_dir" 2>&1); then
+    if win_idx=$(tmux new-window -P -F '#{window_index}' -t "$session:" -n "$name" -c "$expanded_dir" 2>&1); then
         tmux set-option -wt "${session}:${win_idx}" @ccm_project "$name" 2>/dev/null
         tmux set-option -wt "${session}:${win_idx}" @ccm_dir "$expanded_dir" 2>/dev/null
         tmux send-keys -t "${session}:${win_idx}" "$CCM_CLAUDE_CMD" Enter 2>/dev/null

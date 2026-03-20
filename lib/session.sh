@@ -45,7 +45,7 @@ ccm_add() {
 
     # Create new window in current session and capture its index
     local win_idx
-    win_idx=$(tmux new-window -P -F '#{window_index}' -t "$session" -n "$name" -c "$dir")
+    win_idx=$(tmux new-window -P -F '#{window_index}' -t "$session:" -n "$name" -c "$dir")
 
     # Tag the window with ccm metadata
     tmux set-option -wt "${session}:${win_idx}" @ccm_project "$name"
