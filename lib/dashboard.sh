@@ -826,32 +826,49 @@ ccm_statusline() {
 #
 # Modes controlled by @ccm-status-line:
 #   0: disabled (no status bar modification)
-#   1: compact summary appended to existing status-right (default)
-#   2: dedicated 2nd status line with full project details
+#   1: icon-only in status-right — ≡ colored by priority state (default)
+#   2: dedicated status line(s) with full project details (auto-expands)
 
-# Build compact summary: "◉3 ⚠1 ✔2" (count per state)
-_build_compact_status() {
-    local busy=0 permit=0 done=0
+# Determine the highest-priority color from scanned states
+# Priority: PERMIT (yellow) > BUSY (cyan) > DONE (green) > idle (gray)
+_ccm_priority_color() {
+    local has_permit=0 has_busy=0 has_done=0
     for ((i=0; i<_SL_COUNT; i++)); do
         case "${_SL_STATES[$i]}" in
-            BUSY)   busy=$((busy + 1)) ;;
-            PERMIT) permit=$((permit + 1)) ;;
-            DONE)   done=$((done + 1)) ;;
+            PERMIT) has_permit=1 ;;
+            BUSY)   has_busy=1 ;;
+            DONE)   has_done=1 ;;
         esac
     done
 
-    local parts=()
-    [[ $busy -gt 0 ]]   && parts+=("#[fg=cyan]◉${busy}")
-    [[ $permit -gt 0 ]] && parts+=("#[fg=yellow]⚠${permit}")
-    [[ $done -gt 0 ]]   && parts+=("#[fg=green]✔${done}")
-
-    local IFS=" "
-    echo "${parts[*]}"
+    if [[ $has_permit -eq 1 ]]; then echo "yellow"
+    elif [[ $has_busy -eq 1 ]]; then echo "cyan"
+    elif [[ $has_done -eq 1 ]]; then echo "green"
+    else echo "#666666"
+    fi
 }
 
-# Build detailed status: "name:◉ name:⚠ name:✔" (per project)
-_build_detailed_status() {
-    local ccm_str=""
+# Determine the highest-priority icon
+_ccm_priority_icon() {
+    local has_permit=0 has_busy=0 has_done=0
+    for ((i=0; i<_SL_COUNT; i++)); do
+        case "${_SL_STATES[$i]}" in
+            PERMIT) has_permit=1 ;;
+            BUSY)   has_busy=1 ;;
+            DONE)   has_done=1 ;;
+        esac
+    done
+
+    if [[ $has_permit -eq 1 ]]; then echo "⚠"
+    elif [[ $has_busy -eq 1 ]]; then echo "◉"
+    elif [[ $has_done -eq 1 ]]; then echo "✔"
+    else echo "≡"
+    fi
+}
+
+# Build detailed status entries as an array of "name:icon" strings
+_build_detail_entries() {
+    _DETAIL_ENTRIES=()
     for ((i=0; i<_SL_COUNT; i++)); do
         local color icon
         case "${_SL_STATES[$i]}" in
@@ -859,10 +876,8 @@ _build_detailed_status() {
             BUSY)   color="cyan";   icon="◉" ;;
             DONE)   color="green";  icon="✔" ;;
         esac
-        [[ $i -gt 0 ]] && ccm_str+=" #[fg=#666666]│#[fg=#9E9E9E]"
-        ccm_str+=" ${_SL_NAMES[$i]}:#[fg=${color}]${icon}#[fg=#9E9E9E]"
+        _DETAIL_ENTRIES+=("${_SL_NAMES[$i]}:#[fg=${color}]${icon}#[fg=#9E9E9E]")
     done
-    echo "$ccm_str"
 }
 
 ccm_inject_status() {
@@ -880,7 +895,7 @@ ccm_inject_status() {
     echo $$ > "$pidfile"
     trap 'rm -f "$pidfile"' EXIT RETURN
 
-    # Check mode: 0=disabled, 1=compact in status-right, 2=dedicated 2nd line
+    # Check mode: 0=disabled, 1=icon-only, 2=dedicated line(s)
     local mode
     mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
     mode="${mode:-1}"
@@ -891,8 +906,6 @@ ccm_inject_status() {
     fi
 
     _scan_active_windows
-
-    # Update window names with status icons
     ccm_update_window_names 2>/dev/null
 
     local refresh="#(${CCM_ROOT}/ccm inject-status 2>/dev/null)"
@@ -901,24 +914,66 @@ ccm_inject_status() {
     [[ -f "$cache_file" ]] && prev_status=$(cat "$cache_file" 2>/dev/null)
 
     if [[ "$mode" == "2" ]]; then
-        # Mode 2: dedicated 2nd status line
-        tmux set -g status 2 2>/dev/null
+        # ── Mode 2: dedicated status line(s) ──
+        _build_detail_entries
 
-        local new_status
         if [[ $_SL_COUNT -eq 0 ]]; then
-            new_status="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a] ccm: all idle ${refresh}"
+            # No active projects — revert to single status line
+            tmux set -g status 1 2>/dev/null
+            local new_status="mode2:idle"
+            if [[ "$new_status" != "$prev_status" ]]; then
+                echo "$new_status" > "$cache_file"
+                tmux set -g -u status-format[1] 2>/dev/null
+            fi
         else
-            local detail
-            detail=$(_build_detailed_status)
-            new_status="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a]${detail} #[fg=#666666]│#[fg=#9E9E9E] ${refresh}"
-        fi
+            # Calculate how many lines we need based on terminal width
+            local term_width
+            term_width=$(tmux display-message -p '#{client_width}' 2>/dev/null || echo 120)
+            # Approximate: each entry ~20 chars, leave margin
+            local entries_per_line=$(( (term_width - 10) / 22 ))
+            [[ $entries_per_line -lt 1 ]] && entries_per_line=1
+            local num_lines=$(( (_SL_COUNT + entries_per_line - 1) / entries_per_line ))
+            [[ $num_lines -lt 1 ]] && num_lines=1
 
-        if [[ "$new_status" != "$prev_status" ]]; then
-            echo "$new_status" > "$cache_file"
-            tmux set -g status-format[1] "$new_status" 2>/dev/null
+            tmux set -g status $((num_lines + 1)) 2>/dev/null
+
+            # Build each line
+            local line_idx=0
+            local entry_idx=0
+            local new_status="mode2:${_SL_COUNT}"
+
+            for ((line_idx=0; line_idx<num_lines; line_idx++)); do
+                local line_str=""
+                local count=0
+                while [[ $entry_idx -lt $_SL_COUNT && $count -lt $entries_per_line ]]; do
+                    [[ $count -gt 0 ]] && line_str+=" #[fg=#666666]│#[fg=#9E9E9E]"
+                    line_str+=" ${_DETAIL_ENTRIES[$entry_idx]}"
+                    entry_idx=$((entry_idx + 1))
+                    count=$((count + 1))
+                done
+
+                local fmt
+                if [[ $line_idx -eq $((num_lines - 1)) ]]; then
+                    # Last line includes refresh trigger
+                    fmt="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a]${line_str} ${refresh}"
+                else
+                    fmt="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a]${line_str}"
+                fi
+                tmux set -g status-format[$((line_idx + 1))] "$fmt" 2>/dev/null
+                new_status+=":${line_idx}"
+            done
+
+            # Clear any extra lines from previous state
+            for ((extra=num_lines+1; extra<=5; extra++)); do
+                tmux set -g -u status-format[$extra] 2>/dev/null
+            done
+
+            if [[ "$new_status" != "$prev_status" ]]; then
+                echo "$new_status" > "$cache_file"
+            fi
         fi
     else
-        # Mode 1: compact summary appended to status-right
+        # ── Mode 1: icon-only in status-right ──
         # Save original status-right on first run
         local orig_file="${CCM_TMP_DIR}/status-right-original"
         if [[ ! -f "$orig_file" ]]; then
@@ -927,22 +982,15 @@ ccm_inject_status() {
         local original
         original=$(cat "$orig_file" 2>/dev/null)
 
-        local new_status
-        if [[ $_SL_COUNT -eq 0 ]]; then
-            new_status="${original}"
-        else
-            local compact
-            compact=$(_build_compact_status)
-            new_status="${original} #[fg=#666666]│ ${compact}#[fg=#9E9E9E]"
-        fi
+        local icon_color icon_char
+        icon_color=$(_ccm_priority_color)
+        icon_char=$(_ccm_priority_icon)
 
-        # Append self-refresh
-        new_status="${new_status} ${refresh}"
+        local new_status="${original} #[fg=${icon_color}]${icon_char}#[default] ${refresh}"
 
         if [[ "$new_status" != "$prev_status" ]]; then
             echo "$new_status" > "$cache_file"
             tmux set -g status-right "$new_status" 2>/dev/null
-            tmux set -g status-right-length 120 2>/dev/null
         fi
     fi
 }

@@ -88,8 +88,8 @@ set -g @ccm-status-line 1     # default
 | Value | Mode | Description |
 |-------|------|-------------|
 | `0` | Disabled | No status bar modification |
-| `1` | Compact | Appends summary to existing status-right (e.g., `◉3 ⚠1 ✔2`) |
-| `2` | Dedicated line | Uses tmux 2nd status line with full project details |
+| `1` | Icon | Appends `≡` icon to status-right, colored by priority state (click to open dashboard) |
+| `2` | Dedicated | Adds status line(s) with full project details (auto-expands with project count) |
 
 ### Dashboard Controls
 
