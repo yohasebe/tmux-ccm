@@ -77,6 +77,20 @@ set -g @ccm-key-menu "C"
 set -g @ccm-key-tree "T"
 ```
 
+### Status Bar
+
+ccm shows active project status in the tmux status bar. Configure the display mode:
+
+```tmux
+set -g @ccm-status-line 1     # default
+```
+
+| Value | Mode | Description |
+|-------|------|-------------|
+| `0` | Disabled | No status bar modification |
+| `1` | Compact | Appends summary to existing status-right (e.g., `◉3 ⚠1 ✔2`) |
+| `2` | Dedicated line | Uses tmux 2nd status line with full project details |
+
 ### Dashboard Controls
 
 | Key | Action |

@@ -822,7 +822,48 @@ ccm_statusline() {
     echo "| ${parts[*]} |"
 }
 
-# ─── Inject status into tmux status-right (called via run-shell) ───
+# ─── Inject status into tmux status bar (called via run-shell) ───
+#
+# Modes controlled by @ccm-status-line:
+#   0: disabled (no status bar modification)
+#   1: compact summary appended to existing status-right (default)
+#   2: dedicated 2nd status line with full project details
+
+# Build compact summary: "◉3 ⚠1 ✔2" (count per state)
+_build_compact_status() {
+    local busy=0 permit=0 done=0
+    for ((i=0; i<_SL_COUNT; i++)); do
+        case "${_SL_STATES[$i]}" in
+            BUSY)   busy=$((busy + 1)) ;;
+            PERMIT) permit=$((permit + 1)) ;;
+            DONE)   done=$((done + 1)) ;;
+        esac
+    done
+
+    local parts=()
+    [[ $busy -gt 0 ]]   && parts+=("#[fg=cyan]◉${busy}")
+    [[ $permit -gt 0 ]] && parts+=("#[fg=yellow]⚠${permit}")
+    [[ $done -gt 0 ]]   && parts+=("#[fg=green]✔${done}")
+
+    local IFS=" "
+    echo "${parts[*]}"
+}
+
+# Build detailed status: "name:◉ name:⚠ name:✔" (per project)
+_build_detailed_status() {
+    local ccm_str=""
+    for ((i=0; i<_SL_COUNT; i++)); do
+        local color icon
+        case "${_SL_STATES[$i]}" in
+            PERMIT) color="yellow"; icon="⚠" ;;
+            BUSY)   color="cyan";   icon="◉" ;;
+            DONE)   color="green";  icon="✔" ;;
+        esac
+        [[ $i -gt 0 ]] && ccm_str+=" #[fg=#666666]│#[fg=#9E9E9E]"
+        ccm_str+=" ${_SL_NAMES[$i]}:#[fg=${color}]${icon}#[fg=#9E9E9E]"
+    done
+    echo "$ccm_str"
+}
 
 ccm_inject_status() {
     # Prevent concurrent execution (PID-based check)
@@ -839,41 +880,70 @@ ccm_inject_status() {
     echo $$ > "$pidfile"
     trap 'rm -f "$pidfile"' EXIT RETURN
 
+    # Check mode: 0=disabled, 1=compact in status-right, 2=dedicated 2nd line
+    local mode
+    mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
+    mode="${mode:-1}"
+
+    if [[ "$mode" == "0" ]]; then
+        rm -f "$pidfile"
+        return
+    fi
+
     _scan_active_windows
 
     # Update window names with status icons
     ccm_update_window_names 2>/dev/null
 
     local refresh="#(${CCM_ROOT}/ccm inject-status 2>/dev/null)"
-    local new_status
-
-    local dashboard_btn="#[fg=#666666]≡#[fg=#9E9E9E]"
-
-    if [[ $_SL_COUNT -eq 0 ]]; then
-        new_status="#[fg=#9E9E9E,bg=#3a3a3a] ${dashboard_btn} ${refresh}"
-    else
-        local ccm_str=""
-        for ((i=0; i<_SL_COUNT; i++)); do
-            local color icon
-            case "${_SL_STATES[$i]}" in
-                PERMIT) color="yellow"; icon="⚠" ;;
-                BUSY)   color="cyan";   icon="◉" ;;
-                DONE)   color="green";  icon="✔" ;;
-            esac
-            [[ $i -gt 0 ]] && ccm_str+=" #[fg=#666666]│#[fg=#9E9E9E]"
-            ccm_str+=" ${_SL_NAMES[$i]}:#[fg=${color}]${icon}#[fg=#9E9E9E]"
-        done
-        new_status="#[fg=#9E9E9E,bg=#3a3a3a]${ccm_str} #[fg=#666666]│ ${dashboard_btn} ${refresh}"
-    fi
-
-    # Only update tmux if status actually changed (prevents flicker)
     local cache_file="${CCM_TMP_DIR}/status-cache"
     local prev_status=""
     [[ -f "$cache_file" ]] && prev_status=$(cat "$cache_file" 2>/dev/null)
 
-    if [[ "$new_status" != "$prev_status" ]]; then
-        echo "$new_status" > "$cache_file"
-        tmux set -g status-right "$new_status" 2>/dev/null
+    if [[ "$mode" == "2" ]]; then
+        # Mode 2: dedicated 2nd status line
+        tmux set -g status 2 2>/dev/null
+
+        local new_status
+        if [[ $_SL_COUNT -eq 0 ]]; then
+            new_status="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a] ccm: all idle ${refresh}"
+        else
+            local detail
+            detail=$(_build_detailed_status)
+            new_status="#[align=right]#[fg=#9E9E9E,bg=#3a3a3a]${detail} #[fg=#666666]│#[fg=#9E9E9E] ${refresh}"
+        fi
+
+        if [[ "$new_status" != "$prev_status" ]]; then
+            echo "$new_status" > "$cache_file"
+            tmux set -g status-format[1] "$new_status" 2>/dev/null
+        fi
+    else
+        # Mode 1: compact summary appended to status-right
+        # Save original status-right on first run
+        local orig_file="${CCM_TMP_DIR}/status-right-original"
+        if [[ ! -f "$orig_file" ]]; then
+            tmux show-option -gv status-right 2>/dev/null > "$orig_file"
+        fi
+        local original
+        original=$(cat "$orig_file" 2>/dev/null)
+
+        local new_status
+        if [[ $_SL_COUNT -eq 0 ]]; then
+            new_status="${original}"
+        else
+            local compact
+            compact=$(_build_compact_status)
+            new_status="${original} #[fg=#666666]│ ${compact}#[fg=#9E9E9E]"
+        fi
+
+        # Append self-refresh
+        new_status="${new_status} ${refresh}"
+
+        if [[ "$new_status" != "$prev_status" ]]; then
+            echo "$new_status" > "$cache_file"
+            tmux set -g status-right "$new_status" 2>/dev/null
+            tmux set -g status-right-length 120 2>/dev/null
+        fi
     fi
 }
 
