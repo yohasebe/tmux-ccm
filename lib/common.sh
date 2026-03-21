@@ -176,14 +176,16 @@ ccm_session_exists() {
 ccm_validate_name() {
     local name="$1"
     # Remove leading/trailing whitespace
-    name=$(echo "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    name=$(printf '%s' "$name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     # Replace tabs, newlines, spaces with hyphens
-    name=$(echo "$name" | tr '[:space:]' '-' | tr -s '-')
+    name=$(printf '%s' "$name" | tr '[:space:]' '-' | tr -s '-')
     # Remove characters that break tmux or shell parsing
-    name=$(echo "$name" | tr -d "'\"\`\$\\;&|<>()")
+    name=$(printf '%s' "$name" | tr -d "'\"\`\$\\;&|<>()")
+    # Remove leading/trailing hyphens
+    name=$(printf '%s' "$name" | sed 's/^-*//;s/-*$//')
     # Must not be empty after sanitization
     [[ -z "$name" ]] && return 1
-    echo "$name"
+    printf '%s' "$name"
 }
 
 # Print an error message and exit
