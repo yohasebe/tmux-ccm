@@ -39,14 +39,11 @@ tmux bind-key -T root MouseDown1StatusRight \
 tmux bind-key w choose-tree -Zs
 
 # Save clean status-right before ccm modifies it
-# Use tmux option to avoid file save/restore issues
-_ccm_orig_sr=$(tmux show-option -gqv @ccm-orig-status-right 2>/dev/null)
-if [[ -n "$_ccm_orig_sr" ]]; then
-    # Re-source: restore original first
-    tmux set -g status-right "$_ccm_orig_sr" 2>/dev/null
-fi
-tmux set -g @ccm-orig-status-right "$(tmux show-option -gv status-right 2>/dev/null)" 2>/dev/null
-unset _ccm_orig_sr
+# Strip any ccm artifacts (inject-status refs, ccm icons) from current value
+_ccm_current_sr=$(tmux show-option -gv status-right 2>/dev/null)
+_ccm_clean_sr=$(printf '%s' "$_ccm_current_sr" | sed 's/#([^)]*inject-status[^)]*)//g; s/#\[fg=[^]]*\] [⚠◉✔●≡]  #\[default\]//g; s/#\[fg=#9E9E9E,bg=#3a3a3a\][^│]*│#\[default\]//g')
+tmux set -g @ccm-orig-status-right "$_ccm_clean_sr" 2>/dev/null
+unset _ccm_current_sr _ccm_clean_sr
 
 # Initialize status injection
 tmux run-shell "$CCM_BIN inject-status 2>/dev/null || true"
