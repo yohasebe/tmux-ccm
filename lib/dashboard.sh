@@ -1119,6 +1119,23 @@ ccm_inject_status() {
             tmux set -g status-right "$new_status" 2>/dev/null
         fi
     fi
+
+    # Periodic auto-save snapshot (every 5 minutes)
+    local autosave_marker="${CCM_TMP_DIR}/autosave-time"
+    local now
+    now=$(date +%s)
+    local last_save=0
+    [[ -f "$autosave_marker" ]] && last_save=$(cat "$autosave_marker" 2>/dev/null)
+    if [[ $(( now - last_save )) -ge 300 ]]; then
+        # Only save if there are ccm projects
+        local windows
+        windows=$(ccm_list_windows 2>/dev/null)
+        if [[ -n "$windows" ]]; then
+            ccm_init_dirs
+            (ccm_snapshot_save "_autosave") 2>/dev/null
+            echo "$now" > "$autosave_marker"
+        fi
+    fi
 }
 
 # ─── Interactive Tree (popup) ───
