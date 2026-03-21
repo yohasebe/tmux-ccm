@@ -971,7 +971,7 @@ ccm_inject_status() {
     }
 
     if [[ "$mode" == "0" ]]; then
-        # ── Mode 0: window name icons only, no status bar modification ──
+        # ── Mode 0: icons in window names, no status-right modification ──
         _cleanup_mode2
         # Just need the refresh trigger in status-right (invisible)
         local refresh="#(${CCM_ROOT}/ccm inject-status 2>/dev/null)"
@@ -1016,6 +1016,8 @@ ccm_inject_status() {
 
     if [[ "$mode" == "2" ]]; then
         # ── Mode 2: dedicated status line(s) with branch/port details ──
+        _apply_colored_window_format
+
         # Restore original status-right (no ccm icon) + refresh trigger
         local main_status="${original}${refresh}"
         tmux set -g status-right "$main_status" 2>/dev/null
@@ -1076,6 +1078,7 @@ ccm_inject_status() {
     elif [[ "$mode" == "1" ]]; then
         # ── Mode 1: icon in status-right (only when active) ──
         _cleanup_mode2
+        _restore_window_format
         local new_status
         if [[ $_SL_COUNT -eq 0 ]]; then
             # All idle — dim hamburger icon
