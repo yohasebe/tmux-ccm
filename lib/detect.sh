@@ -241,7 +241,6 @@ ccm_update_window_names() {
                 *)      icon="";  state_color="default" ;;
             esac
 
-            # Window name = icon + project name (always)
             local new_name="${icon} ${project}"
             local current_name
             current_name=$(tmux display-message -t "$win_target" -p '#{window_name}' 2>/dev/null)
