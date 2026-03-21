@@ -794,28 +794,28 @@ _scan_active_windows() {
             # Deduplicate by resolved directory
             _sl_is_seen_dir "$actual_dir" && continue
 
-            local state
-            if [[ -n "$project" ]]; then
-                state=$(ccm_detect_window_state "$win_target")
-            else
+            # Skip non-tagged windows in --all mode
+            if [[ -z "$project" ]]; then
+                if [[ $include_all -eq 1 ]]; then
+                    continue
+                fi
+                # In active-only mode, check if claude is running
+                local state
                 state=$(_detect_window_state "$win_target")
-                # Skip non-tagged windows unless they are active
+                case "$state" in
+                    BUSY|PERMIT|DONE) ;;
+                    *) continue ;;
+                esac
+            else
+                local state
+                state=$(ccm_detect_window_state "$win_target")
+                # In active-only mode, filter
                 if [[ $include_all -eq 0 ]]; then
                     case "$state" in
                         BUSY|PERMIT|DONE) ;;
                         *) continue ;;
                     esac
-                else
-                    [[ -z "$project" ]] && continue
                 fi
-            fi
-
-            # Filter for active-only mode
-            if [[ $include_all -eq 0 ]]; then
-                case "$state" in
-                    BUSY|PERMIT|DONE) ;;
-                    *) continue ;;
-                esac
             fi
 
             local display_name
@@ -958,38 +958,61 @@ ccm_inject_status() {
     # Always update window name icons
     ccm_update_window_names 2>/dev/null
 
-    # Helper: clean up mode 2 dedicated status lines
-    _cleanup_mode2() {
+    # Helper: clean up dedicated status lines only
+    _cleanup_extra_lines() {
+        tmux set -g status on 2>/dev/null
+        for ((n=1; n<=5; n++)); do
+            tmux set -g -u 'status-format['$n']' 2>/dev/null
+        done
+    }
+
+    # Helper: full cleanup from mode 0/2 (restore window list + remove extra lines)
+    _cleanup_mode02() {
         local marker="${CCM_TMP_DIR}/mode2-active"
         if [[ -f "$marker" ]]; then
             rm -f "$marker"
-            tmux set -g status on 2>/dev/null
-            for ((n=1; n<=5; n++)); do
-                tmux set -g -u 'status-format['$n']' 2>/dev/null
-            done
+            tmux set -g -u window-status-format 2>/dev/null
+            tmux set -g -u window-status-current-format 2>/dev/null
+            _cleanup_extra_lines
         fi
     }
 
     if [[ "$mode" == "0" ]]; then
-        # ── Mode 0: icons in window names, no status-right modification ──
-        _cleanup_mode2
-        # Just need the refresh trigger in status-right (invisible)
+        # ── Mode 0: ccm-style window list in main bar (no branch/port) ──
+        _cleanup_extra_lines
+        _scan_active_windows --all
+
+        # Hide standard window list and mark for restoration
+        touch "${CCM_TMP_DIR}/mode2-active" 2>/dev/null
+        tmux set -g window-status-format '' 2>/dev/null
+        tmux set -g window-status-current-format '' 2>/dev/null
+
+        _build_detail_entries  # no extras (no branch/port)
+
         local refresh="#(${CCM_ROOT}/ccm inject-status 2>/dev/null)"
         local cache_file="${CCM_TMP_DIR}/status-cache"
         local prev_status=""
         [[ -f "$cache_file" ]] && prev_status=$(cat "$cache_file" 2>/dev/null)
 
-        local orig_file="${CCM_TMP_DIR}/status-right-original"
-        if [[ ! -f "$orig_file" ]]; then
-            tmux show-option -gv status-right 2>/dev/null > "$orig_file"
-        fi
         local original
-        original=$(cat "$orig_file" 2>/dev/null)
+        original=$(tmux show-option -gqv @ccm-orig-status-right 2>/dev/null)
 
-        local new_status="${original}${refresh}"
+        local new_status
+        if [[ $_SL_COUNT -eq 0 ]]; then
+            new_status="#[fg=#666666]≡#[default] ${original}${refresh}"
+        else
+            local detail=""
+            for ((i=0; i<${#_DETAIL_ENTRIES[@]}; i++)); do
+                [[ $i -gt 0 ]] && detail+=" #[fg=#666666]│#[fg=#9E9E9E]"
+                detail+=" ${_DETAIL_ENTRIES[$i]}"
+            done
+            new_status="#[fg=#9E9E9E,bg=#3a3a3a]${detail}  #[default]${original}${refresh}"
+        fi
+
         if [[ "$new_status" != "$prev_status" ]]; then
             echo "$new_status" > "$cache_file"
             tmux set -g status-right "$new_status" 2>/dev/null
+            tmux set -g status-right-length 200 2>/dev/null
         fi
         return
     fi
@@ -1006,13 +1029,8 @@ ccm_inject_status() {
     local prev_status=""
     [[ -f "$cache_file" ]] && prev_status=$(cat "$cache_file" 2>/dev/null)
 
-    # Save original status-right on first run (shared by mode 1 and 2)
-    local orig_file="${CCM_TMP_DIR}/status-right-original"
-    if [[ ! -f "$orig_file" ]]; then
-        tmux show-option -gv status-right 2>/dev/null > "$orig_file"
-    fi
     local original
-    original=$(cat "$orig_file" 2>/dev/null)
+    original=$(tmux show-option -gqv @ccm-orig-status-right 2>/dev/null)
 
     if [[ "$mode" == "2" ]]; then
         # ── Mode 2: dedicated status line(s) with branch/port details ──
@@ -1022,8 +1040,10 @@ ccm_inject_status() {
         local main_status="${original}${refresh}"
         tmux set -g status-right "$main_status" 2>/dev/null
 
-        # Mark mode 2 as active
+        # Mark mode 2 as active and hide window list (dedicated line has this info)
         touch "${CCM_TMP_DIR}/mode2-active" 2>/dev/null
+        tmux set -g window-status-format '' 2>/dev/null
+        tmux set -g window-status-current-format '' 2>/dev/null
 
         _build_detail_entries extras
 
@@ -1077,8 +1097,7 @@ ccm_inject_status() {
         fi
     elif [[ "$mode" == "1" ]]; then
         # ── Mode 1: icon in status-right (only when active) ──
-        _cleanup_mode2
-        _restore_window_format
+        _cleanup_mode02
         local new_status
         if [[ $_SL_COUNT -eq 0 ]]; then
             # All idle — dim hamburger icon
