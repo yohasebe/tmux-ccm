@@ -89,13 +89,13 @@ set -g @ccm-status-line 1     # default
 
 | Value | Mode | Description |
 |-------|------|-------------|
-| `0` | Full | Shows all active projects with name and icon in status-right |
+| `0` | Minimal | Window name icons only (no status-right modification) |
 | `1` | Icon (default) | Single priority icon appended to status-right |
-| `2` | Dedicated line | Adds status line(s) showing all projects including idle |
+| `2` | Dedicated line | Adds status line(s) with branch/port details for all projects |
 
-#### Mode 0 — Full details in status-right
+#### Mode 0 — Minimal (window icons only)
 
-Replaces status-right with project name + icon for each active (BUSY/PERMIT/DONE) project. When all projects are idle, shows `≡`. This provides the most information but overwrites your existing status-right.
+No status-right modification. Project status is shown only through window name icons (`⚠ project`, `◉ project`, etc.) in the standard tmux window list. The lightest option that preserves your tmux layout completely.
 
 #### Mode 1 — Single icon (default)
 
@@ -112,7 +112,11 @@ Click the icon to open the dashboard for full details.
 
 #### Mode 2 — Dedicated status line
 
-Adds a second (or more) tmux status line below the main bar. Shows all projects including idle ones. The main status bar is not modified.
+Adds a second (or more) tmux status line below the main bar. Shows all projects including idle ones with git branch and port details. The main status bar is not modified.
+
+```
+my-project:◉(main*) │ api:●(dev)[:8080] │ ccm:✔(main*)
+```
 
 | State | Icon | Color |
 |-------|------|-------|
