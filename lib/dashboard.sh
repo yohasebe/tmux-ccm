@@ -324,6 +324,11 @@ ccm_dashboard() {
     tput civis 2>/dev/null
     trap 'tput cnorm 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
 
+    # Show loading indicator immediately
+    tput home 2>/dev/null
+    tput ed 2>/dev/null
+    printf '\n  %s\n' "${COLOR_DIM}Loading...${COLOR_RESET}"
+
     local needs_rebuild=1
 
     while true; do
@@ -1271,6 +1276,11 @@ ccm_tree_interactive() {
 
     tput civis 2>/dev/null
     trap 'tput cnorm 2>/dev/null' EXIT
+
+    # Show loading indicator immediately
+    tput home 2>/dev/null
+    tput ed 2>/dev/null
+    printf '\n  %s\n' "${COLOR_DIM}Loading...${COLOR_RESET}"
 
     # Current selection index into _TREE_SELECTABLE array
     local sel_pos=0
