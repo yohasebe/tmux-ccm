@@ -84,7 +84,7 @@ set -g @ccm-key-tree "T"
 ccm shows active project status in the tmux status bar. Configure the display mode:
 
 ```tmux
-set -g @ccm-status-line 1     # default
+set -g @ccm-status-line 0     # default
 ```
 
 | Value | Mode | Description |

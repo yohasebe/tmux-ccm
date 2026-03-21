@@ -82,7 +82,7 @@ set -g @ccm-key-tree "T"
 tmuxステータスバーにプロジェクト状態を表示します。表示モードを設定：
 
 ```tmux
-set -g @ccm-status-line 1     # デフォルト
+set -g @ccm-status-line 0     # デフォルト
 ```
 
 | 値 | モード | 説明 |
