@@ -89,15 +89,11 @@ set -g @ccm-status-line 1     # default
 
 | Value | Mode | Description |
 |-------|------|-------------|
-| `0` | Minimal | Window name icons only (no status-right modification) |
-| `1` | Icon (default) | Single priority icon appended to status-right |
+| `0` | Icon (default) | Single priority icon appended to status-right |
+| `1` | Full | Replaces window list with ccm-style colored entries |
 | `2` | Dedicated line | Adds status line(s) with branch/port details for all projects |
 
-#### Mode 0 — Minimal (window icons only)
-
-No status-right modification. Project status is shown only through window name icons (`⚠ project`, `◉ project`, etc.) in the standard tmux window list. The lightest option that preserves your tmux layout completely.
-
-#### Mode 1 — Single icon (default)
+#### Mode 0 — Single icon (default)
 
 Appends a single icon to your existing status-right. Your clock, battery, etc. are preserved. The icon reflects the highest-priority state across all projects:
 
@@ -109,6 +105,14 @@ Appends a single icon to your existing status-right. Your clock, battery, etc. a
 | 4 (lowest) | All projects are IDLE | `≡` | Gray |
 
 Click the icon to open the dashboard for full details.
+
+#### Mode 1 — Full (ccm-style window list)
+
+Replaces the standard tmux window list with ccm-style colored entries showing project name and status icon. Your existing status-right (clock, etc.) is preserved.
+
+```
+openai-workflow:● │ ccm:◉ │ monadic-chat:● │ 21:30 2026-03-21
+```
 
 #### Mode 2 — Dedicated status line
 

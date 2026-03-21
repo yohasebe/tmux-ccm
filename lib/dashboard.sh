@@ -953,7 +953,7 @@ ccm_inject_status() {
     # Check mode: 0=window icons only, 1=icon in status-right, 2=dedicated line(s)
     local mode
     mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
-    mode="${mode:-1}"
+    mode="${mode:-0}"
 
     # Always update window name icons
     ccm_update_window_names 2>/dev/null
@@ -977,8 +977,8 @@ ccm_inject_status() {
         fi
     }
 
-    if [[ "$mode" == "0" ]]; then
-        # ── Mode 0: ccm-style window list in main bar (no branch/port) ──
+    if [[ "$mode" == "1" ]]; then
+        # ── Mode 1: ccm-style window list in main bar (no branch/port) ──
         _cleanup_extra_lines
         _scan_active_windows --all
 
@@ -1006,7 +1006,7 @@ ccm_inject_status() {
                 [[ $i -gt 0 ]] && detail+=" #[fg=#666666]│#[fg=#9E9E9E]"
                 detail+=" ${_DETAIL_ENTRIES[$i]}"
             done
-            new_status="#[fg=#9E9E9E,bg=#3a3a3a]${detail}  #[default]${original}${refresh}"
+            new_status="#[fg=#9E9E9E,bg=#3a3a3a]${detail} #[fg=#666666]│#[default]${original}${refresh}"
         fi
 
         if [[ "$new_status" != "$prev_status" ]]; then
@@ -1017,7 +1017,7 @@ ccm_inject_status() {
         return
     fi
 
-    # Scan windows: mode 2 includes all projects, mode 1 only active
+    # Scan windows: mode 2 includes all projects, mode 0 only active
     if [[ "$mode" == "2" ]]; then
         _scan_active_windows --all
     else
@@ -1095,8 +1095,8 @@ ccm_inject_status() {
                 echo "$new_status" > "$cache_file"
             fi
         fi
-    elif [[ "$mode" == "1" ]]; then
-        # ── Mode 1: icon in status-right (only when active) ──
+    elif [[ "$mode" == "0" ]]; then
+        # ── Mode 0: icon in status-right (default) ──
         _cleanup_mode02
         local new_status
         if [[ $_SL_COUNT -eq 0 ]]; then

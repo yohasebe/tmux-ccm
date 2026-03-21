@@ -146,18 +146,7 @@ The DONE flag clears automatically when you switch to that window.
 
 Configure with `set -g @ccm-status-line` in your `~/.tmux.conf`.
 
-### Mode 0 — Minimal (window icons only)
-
-No status-right modification. Project status is shown only through window name icons in the standard tmux window list:
-
-```
- 0:◉ my-project  1:⚠ api-server  2:● another-project
-```
-
-- Best for: users who want zero status bar impact
-- Trade-off: no consolidated status view (use dashboard for details)
-
-### Mode 1 — Single icon (default)
+### Mode 0 — Single icon (default)
 
 Appends one icon to your existing status-right. The icon shows the highest-priority state:
 
@@ -169,6 +158,17 @@ Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (cyan) > `✔` DONE (green) >
 
 - Best for: users who want minimal status bar impact
 - Trade-off: no per-project detail (use dashboard for that)
+
+### Mode 1 — Full (ccm-style window list)
+
+Replaces the standard tmux window list with ccm-style colored entries. Your existing status-right is preserved.
+
+```
+ openai-workflow:● │ ccm:◉ │ monadic-chat:● │ 21:30 2026-03-21
+```
+
+- Best for: users who want colored project status in the main bar
+- Trade-off: replaces the standard tmux window list
 
 ### Mode 2 — Dedicated line
 
