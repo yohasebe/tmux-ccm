@@ -958,13 +958,21 @@ ccm_inject_status() {
     # Always update window name icons
     ccm_update_window_names 2>/dev/null
 
+    # Helper: clean up mode 2 dedicated status lines
+    _cleanup_mode2() {
+        local marker="${CCM_TMP_DIR}/mode2-active"
+        if [[ -f "$marker" ]]; then
+            rm -f "$marker"
+            tmux set -g status on 2>/dev/null
+            for ((n=1; n<=5; n++)); do
+                tmux set -g -u 'status-format['$n']' 2>/dev/null
+            done
+        fi
+    }
+
     if [[ "$mode" == "0" ]]; then
         # ── Mode 0: window name icons only, no status bar modification ──
-        # Restore window list if switching from mode 2
-        tmux set -g -u window-status-format 2>/dev/null
-        tmux set -g -u window-status-current-format 2>/dev/null
-        tmux set -g status on 2>/dev/null
-        tmux set -g -u 'status-format[1]' 2>/dev/null
+        _cleanup_mode2
         # Just need the refresh trigger in status-right (invisible)
         local refresh="#(${CCM_ROOT}/ccm inject-status 2>/dev/null)"
         local cache_file="${CCM_TMP_DIR}/status-cache"
@@ -1012,9 +1020,8 @@ ccm_inject_status() {
         local main_status="${original}${refresh}"
         tmux set -g status-right "$main_status" 2>/dev/null
 
-        # Hide standard window list (info is in the dedicated line)
-        tmux set -g window-status-format '' 2>/dev/null
-        tmux set -g window-status-current-format '' 2>/dev/null
+        # Mark mode 2 as active
+        touch "${CCM_TMP_DIR}/mode2-active" 2>/dev/null
 
         _build_detail_entries extras
 
@@ -1068,11 +1075,7 @@ ccm_inject_status() {
         fi
     elif [[ "$mode" == "1" ]]; then
         # ── Mode 1: icon in status-right (only when active) ──
-        # Restore window list if switching from mode 2
-        tmux set -g -u window-status-format 2>/dev/null
-        tmux set -g -u window-status-current-format 2>/dev/null
-        tmux set -g status on 2>/dev/null
-        tmux set -g -u 'status-format[1]' 2>/dev/null
+        _cleanup_mode2
         local new_status
         if [[ $_SL_COUNT -eq 0 ]]; then
             # All idle — dim hamburger icon

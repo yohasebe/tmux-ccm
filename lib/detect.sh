@@ -231,21 +231,20 @@ ccm_update_window_names() {
             done_flag=$(tmux show-option -wt "$win_target" -qv @ccm_done 2>/dev/null) || true
             [[ "$done_flag" == "1" && "$state" == "IDLE" ]] && state="DONE"
 
-            local icon
+            local icon state_color
             case "$state" in
-                PERMIT) icon="⚠" ;;
-                BUSY)   icon="◉" ;;
-                DONE)   icon="✔" ;;
-                IDLE)   icon="●" ;;
-                SHELL)  icon="■" ;;
-                *)      icon="" ;;
+                PERMIT) icon="⚠"; state_color="yellow" ;;
+                BUSY)   icon="◉"; state_color="cyan" ;;
+                DONE)   icon="✔"; state_color="green" ;;
+                IDLE)   icon="●"; state_color="colour244" ;;
+                SHELL)  icon="■"; state_color="colour240" ;;
+                *)      icon="";  state_color="default" ;;
             esac
 
+            # Window name = icon + project name
             local new_name="${icon} ${project}"
             local current_name
             current_name=$(tmux display-message -t "$win_target" -p '#{window_name}' 2>/dev/null)
-
-            # Only rename if changed
             if [[ "$current_name" != "$new_name" ]]; then
                 tmux rename-window -t "$win_target" "$new_name" 2>/dev/null
             fi
