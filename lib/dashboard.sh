@@ -755,6 +755,7 @@ _scan_active_windows() {
     _SL_NAMES=()
     _SL_STATES=()
     _SL_DIRS=()
+    _SL_WINIDS=()
     _SL_COUNT=0
 
     local -a _sl_seen_dirs=()
@@ -827,6 +828,7 @@ _scan_active_windows() {
             _SL_NAMES+=("$display_name")
             _SL_STATES+=("$state")
             _SL_DIRS+=("$actual_dir")
+            _SL_WINIDS+=("$win_idx")
         done <<< "$windows"
     done <<< "$all_sessions"
 }
@@ -898,7 +900,7 @@ _ccm_priority_icon() {
 
 # Build detailed status entries as an array of "name:icon" strings
 _build_detail_entries() {
-    local with_extras="${1:-}"  # pass "extras" to include branch/port info
+    local with_extras="${1:-}"  # pass "extras" to include window id, branch, port
     _DETAIL_ENTRIES=()
     for ((i=0; i<_SL_COUNT; i++)); do
         local color icon
@@ -910,18 +912,26 @@ _build_detail_entries() {
             SHELL)  color="#666666"; icon="■" ;;
             *)      color="#666666"; icon="○" ;;
         esac
-        local entry="${_SL_NAMES[$i]}:#[fg=${color}]${icon}#[fg=#9E9E9E]"
 
-        if [[ "$with_extras" == "extras" && -n "${_SL_DIRS[$i]:-}" ]]; then
-            local branch
-            branch=$(ccm_git_branch "${_SL_DIRS[$i]}")
-            [[ -n "$branch" ]] && entry+="#[fg=#666666](#[fg=cyan]${branch}#[fg=#666666])#[fg=#9E9E9E]"
-            local ports
-            ports=$(ccm_detect_ports "${_SL_DIRS[$i]}" 2>/dev/null)
-            [[ -n "$ports" ]] && entry+="#[fg=#666666][:${ports}]#[fg=#9E9E9E]"
+        if [[ "$with_extras" == "extras" ]]; then
+            # Format: "0:name (branch)[:port]:icon"
+            local winid="${_SL_WINIDS[$i]:-}"
+            local entry="#[fg=#666666]${winid}:#[fg=#9E9E9E]${_SL_NAMES[$i]}"
+
+            if [[ -n "${_SL_DIRS[$i]:-}" ]]; then
+                local branch
+                branch=$(ccm_git_branch "${_SL_DIRS[$i]}")
+                [[ -n "$branch" ]] && entry+=" #[fg=#666666](#[fg=cyan]${branch}#[fg=#666666])#[fg=#9E9E9E]"
+                local ports
+                ports=$(ccm_detect_ports "${_SL_DIRS[$i]}" 2>/dev/null)
+                [[ -n "$ports" ]] && entry+="#[fg=#666666][:${ports}]#[fg=#9E9E9E]"
+            fi
+
+            entry+=":#[fg=${color}]${icon}#[fg=#9E9E9E]"
+            _DETAIL_ENTRIES+=("$entry")
+        else
+            _DETAIL_ENTRIES+=("${_SL_NAMES[$i]}:#[fg=${color}]${icon}#[fg=#9E9E9E]")
         fi
-
-        _DETAIL_ENTRIES+=("$entry")
     done
 }
 
@@ -950,6 +960,11 @@ ccm_inject_status() {
 
     if [[ "$mode" == "0" ]]; then
         # ── Mode 0: window name icons only, no status bar modification ──
+        # Restore window list if switching from mode 2
+        tmux set -g -u window-status-format 2>/dev/null
+        tmux set -g -u window-status-current-format 2>/dev/null
+        tmux set -g status on 2>/dev/null
+        tmux set -g -u 'status-format[1]' 2>/dev/null
         # Just need the refresh trigger in status-right (invisible)
         local refresh="#(${CCM_ROOT}/ccm inject-status 2>/dev/null)"
         local cache_file="${CCM_TMP_DIR}/status-cache"
@@ -996,6 +1011,10 @@ ccm_inject_status() {
         # Restore original status-right (no ccm icon) + refresh trigger
         local main_status="${original}${refresh}"
         tmux set -g status-right "$main_status" 2>/dev/null
+
+        # Hide standard window list (info is in the dedicated line)
+        tmux set -g window-status-format '' 2>/dev/null
+        tmux set -g window-status-current-format '' 2>/dev/null
 
         _build_detail_entries extras
 
@@ -1049,6 +1068,11 @@ ccm_inject_status() {
         fi
     elif [[ "$mode" == "1" ]]; then
         # ── Mode 1: icon in status-right (only when active) ──
+        # Restore window list if switching from mode 2
+        tmux set -g -u window-status-format 2>/dev/null
+        tmux set -g -u window-status-current-format 2>/dev/null
+        tmux set -g status on 2>/dev/null
+        tmux set -g -u 'status-format[1]' 2>/dev/null
         local new_status
         if [[ $_SL_COUNT -eq 0 ]]; then
             # All idle — dim hamburger icon
