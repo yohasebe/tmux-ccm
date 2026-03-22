@@ -123,6 +123,8 @@ Disable notification sound:
 set -g @ccm-notify-sound "off"    # default: on
 ```
 
+> **Tip:** Install [terminal-notifier](https://github.com/julienXX/terminal-notifier) (`brew install terminal-notifier`) to show your terminal app's icon instead of the default Script Editor icon.
+
 ### Status Bar
 
 ccm shows active project status in the tmux status bar. Configure the display mode:

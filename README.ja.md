@@ -121,6 +121,8 @@ set -g @ccm-notify "permit,done"     # PERMITとDONEで通知
 set -g @ccm-notify-sound "off"    # デフォルト: on
 ```
 
+> **Tip:** [terminal-notifier](https://github.com/julienXX/terminal-notifier)（`brew install terminal-notifier`）をインストールすると、通知にターミナルアプリのアイコンが表示されます。
+
 ### ステータスバー
 
 tmuxステータスバーにプロジェクト状態を表示します。表示モードを設定：
