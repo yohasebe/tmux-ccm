@@ -35,6 +35,7 @@
 ## 動作要件
 
 - tmux 3.2+（popup対応）
+- [TPM](https://github.com/tmux-plugins/tpm)（プラグインインストール用。手動インストールも可）
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)

@@ -37,6 +37,7 @@ A tmux-based multi-project manager for [Claude Code](https://docs.anthropic.com/
 ## Requirements
 
 - tmux 3.2+ (popup support required)
+- [TPM](https://github.com/tmux-plugins/tpm) (for plugin installation; or use manual install)
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
