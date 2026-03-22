@@ -34,11 +34,13 @@ CCM_CLAUDE_CMD_RESUME="claude --continue 2>/dev/null || claude"
 # Controlled by @ccm-notify option: "off" (default), "permit", "done",
 # "permit,done", "all"
 _ccm_notify() {
-    local title="$1" body="$2"
+    local title="$1" body="$2" sound="${3:-}"
     if command -v osascript &>/dev/null; then
-        osascript -e "display notification \"$body\" with title \"$title\"" 2>/dev/null &
+        local sound_opt=""
+        [[ -n "$sound" ]] && sound_opt=" sound name \"$sound\""
+        osascript -e "display notification \"$body\" with title \"$title\"${sound_opt}" 2>/dev/null &
     elif command -v notify-send &>/dev/null; then
-        notify-send "$title" "$body" 2>/dev/null &
+        notify-send -u "${4:-normal}" "$title" "$body" 2>/dev/null &
     fi
 }
 
@@ -61,10 +63,10 @@ ccm_notify() {
     esac
 
     case "$state" in
-        PERMIT) _ccm_notify "ccm: $project" "⚠ Permission required" ;;
-        DONE)   _ccm_notify "ccm: $project" "✔ Response complete" ;;
-        BUSY)   _ccm_notify "ccm: $project" "◉ Processing started" ;;
-        IDLE)   _ccm_notify "ccm: $project" "● Waiting for input" ;;
+        PERMIT) _ccm_notify "ccm ⚠ $project" "Action required — switch to this project and respond to the permission prompt" "Basso" "critical" ;;
+        DONE)   _ccm_notify "ccm ✔ $project" "Claude has finished responding — review the output when ready" "" "normal" ;;
+        BUSY)   _ccm_notify "ccm ◉ $project" "Claude is now processing your request" "" "low" ;;
+        IDLE)   _ccm_notify "ccm $project" "Waiting for your input" "" "low" ;;
     esac
 }
 
