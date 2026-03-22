@@ -358,7 +358,7 @@ ccm_dashboard() {
         local buf=$'\n'
         buf+="$(_render_list "$selected")"
         buf+=$'\n'
-        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [s]plit  [p]review  [a]dd  [g] register  [r]emove  [S]ave  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
+        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register  [r]emove  [s]ave  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
         [[ -n "$autosave_info" ]] && buf+="${autosave_info}"$'\n'
 
         tput home 2>/dev/null
@@ -375,12 +375,7 @@ ccm_dashboard() {
                         _do_attach "$selected" && break
                     fi
                     ;;
-                s)
-                    if [[ $_SESSION_COUNT -gt 0 ]]; then
-                        _do_split "$selected" && break
-                    fi
-                    ;;
-                S)  _dashboard_save ;;
+                s|S)  _dashboard_save ;;
                 ESC|q|Q) break ;;
                 p|P)
                     if [[ $_SESSION_COUNT -gt 0 ]]; then
