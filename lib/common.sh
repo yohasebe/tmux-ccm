@@ -34,25 +34,13 @@ CCM_CLAUDE_CMD_RESUME="claude --continue 2>/dev/null || claude"
 # Controlled by @ccm-notify option: "off" (default), "permit", "done",
 # "permit,done", "all"
 _ccm_notify() {
-    local title="$1" body="$2" sound="${3:-}" urgency="${4:-normal}"
-    if command -v terminal-notifier &>/dev/null; then
-        # terminal-notifier: supports custom app icon via -sender
-        local sender=""
-        [[ -n "$TERM_PROGRAM" ]] && case "$TERM_PROGRAM" in
-            Ghostty)    sender="-sender com.mitchellh.ghostty" ;;
-            iTerm.app)  sender="-sender com.googlecode.iterm2" ;;
-            Apple_Terminal) sender="-sender com.apple.Terminal" ;;
-            WezTerm)    sender="-sender com.github.wez.wezterm" ;;
-        esac
-        local sound_opt=""
-        [[ -n "$sound" ]] && sound_opt="-sound $sound"
-        terminal-notifier -title "$title" -message "$body" $sender $sound_opt -group ccm 2>/dev/null &
-    elif command -v osascript &>/dev/null; then
+    local title="$1" body="$2" sound="${3:-}"
+    if command -v osascript &>/dev/null; then
         local sound_opt=""
         [[ -n "$sound" ]] && sound_opt=" sound name \"$sound\""
         osascript -e "display notification \"$body\" with title \"$title\"${sound_opt}" 2>/dev/null &
     elif command -v notify-send &>/dev/null; then
-        notify-send -u "$urgency" "$title" "$body" 2>/dev/null &
+        notify-send "$title" "$body" 2>/dev/null &
     fi
 }
 
