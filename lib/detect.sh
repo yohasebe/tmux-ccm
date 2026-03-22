@@ -87,7 +87,13 @@ _detect_pane_state() {
         return
     fi
 
-    echo "IDLE"
+    # No children — check if prompt is visible (truly idle) or absent (generating text)
+    # Search last few non-empty lines since Claude Code's status bar may be below the prompt
+    if echo "$near_bottom" | grep -qE "$CCM_PATTERN_IDLE"; then
+        echo "IDLE"
+    else
+        echo "BUSY"
+    fi
 }
 
 # Detect the raw state of a window by scanning all its panes

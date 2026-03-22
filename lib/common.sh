@@ -26,6 +26,8 @@ CCM_POPUP_HEIGHT="60%"
 CCM_CLAUDE_PROCESS_NAME="claude"
 # Screen text pattern for permission prompts (grep -Ei compatible)
 CCM_PATTERN_PERMIT='(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc to cancel)'
+# Screen text pattern for Claude Code idle prompt (grep -E compatible)
+CCM_PATTERN_IDLE='(❯)\s*$'
 # Commands to start Claude Code
 CCM_CLAUDE_CMD="claude --resume 2>/dev/null || claude"
 CCM_CLAUDE_CMD_RESUME="claude --continue 2>/dev/null || claude"
