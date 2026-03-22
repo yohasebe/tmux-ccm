@@ -174,14 +174,24 @@ ccm_detect_window_state() {
         [[ -n "$project_name" ]] && ccm_notify "PERMIT" "$project_name"
     fi
 
-    # DONE detection: BUSY/PERMIT→IDLE transition = response completed
+    # DONE detection: requires 2 consecutive IDLE detections after BUSY/PERMIT
+    # This prevents false DONE when Claude briefly pauses between tool calls
     if [[ "$raw_state" == "IDLE" ]]; then
         local done_flag
         done_flag=$(tmux show-option -wt "$win_target" -qv @ccm_done 2>/dev/null) || true
+        local idle_count
+        idle_count=$(tmux show-option -wt "$win_target" -qv @ccm_idle_count 2>/dev/null) || true
+        idle_count="${idle_count:-0}"
 
         if [[ "$prev_state" == "BUSY" || "$prev_state" == "PERMIT" ]]; then
+            # First IDLE after BUSY — start counting, not DONE yet
+            tmux set-option -wt "$win_target" @ccm_idle_count "1" 2>/dev/null
+            echo "BUSY"
+            return
+        elif [[ "$idle_count" == "1" ]]; then
+            # Second consecutive IDLE — now confirmed DONE
             tmux set-option -wt "$win_target" @ccm_done "1" 2>/dev/null
-            # Notify user of completion
+            tmux set-option -wt "$win_target" -u @ccm_idle_count 2>/dev/null
             local project_name
             project_name=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
             [[ -z "$project_name" ]] && project_name=$(tmux display-message -t "$win_target" -p '#{window_name}' 2>/dev/null)
@@ -195,6 +205,7 @@ ccm_detect_window_state() {
         fi
     else
         tmux set-option -wt "$win_target" -u @ccm_done 2>/dev/null || true
+        tmux set-option -wt "$win_target" -u @ccm_idle_count 2>/dev/null || true
     fi
 
     echo "$raw_state"
