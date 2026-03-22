@@ -250,9 +250,7 @@ _do_attach() {
     if [[ -n "$project_tag" ]]; then
         local state
         state=$(_detect_window_state "$win_target")
-        if [[ "$state" == "SHELL" ]]; then
-            tmux send-keys -t "$win_target" "$CCM_CLAUDE_CMD_RESUME" Enter
-        fi
+        [[ "$state" == "SHELL" ]] && ccm_auto_start_claude "$win_target"
     fi
 
     # Clear DONE flag
@@ -1387,9 +1385,7 @@ ccm_tree_interactive() {
                             if [[ -n "$project_tag" ]]; then
                                 local state
                                 state=$(_detect_window_state "$win_target")
-                                if [[ "$state" == "SHELL" ]]; then
-                                    tmux send-keys -t "$win_target" "$CCM_CLAUDE_CMD_RESUME" Enter
-                                fi
+                                [[ "$state" == "SHELL" ]] && ccm_auto_start_claude "$win_target"
                             fi
                             ccm_clear_done "$win_target"
 

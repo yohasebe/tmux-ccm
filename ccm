@@ -17,7 +17,7 @@ CCM_ROOT="$(_ccm_resolve "$0")"
 
 # Background commands (inject-status, clear-done) must not fail on errors
 case "${1:-}" in
-    inject-status|clear-done) set +e ;;
+    inject-status|clear-done|dashboard|dash|d|tree-interactive|ti) set +e ;;
     *) set -euo pipefail ;;
 esac
 

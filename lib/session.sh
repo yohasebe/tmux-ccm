@@ -179,9 +179,7 @@ ccm_attach() {
     local pane_target="${session}:${idx}"
     local state
     state=$(_detect_window_state "$pane_target")
-    if [[ "$state" == "SHELL" ]]; then
-        tmux send-keys -t "$pane_target" "$CCM_CLAUDE_CMD_RESUME" Enter
-    fi
+    [[ "$state" == "SHELL" ]] && ccm_auto_start_claude "$pane_target"
 
     # Clear DONE flag when switching to this window
     ccm_clear_done "$pane_target"

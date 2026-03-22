@@ -77,6 +77,18 @@ ccm_notify() {
     esac
 }
 
+# Auto-start Claude Code when switching to SHELL-state windows
+# Controlled by @ccm-auto-start: "on" (default) or "off"
+ccm_auto_start_claude() {
+    local win_target="$1"
+    local auto_start
+    auto_start=$(tmux show-option -gqv @ccm-auto-start 2>/dev/null)
+    auto_start="${auto_start:-on}"
+    [[ "$auto_start" != "on" ]] && return
+
+    tmux send-keys -t "$win_target" "$CCM_CLAUDE_CMD_RESUME" Enter 2>/dev/null
+}
+
 # Colors for terminal output (using $'...' for real escape characters)
 COLOR_RED=$'\033[0;31m'
 COLOR_GREEN=$'\033[0;32m'
