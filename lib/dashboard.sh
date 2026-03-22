@@ -344,10 +344,22 @@ ccm_dashboard() {
             [[ $selected -gt $_SESSION_COUNT ]] && selected=1
         fi
 
+        # Last autosave time
+        local autosave_info=""
+        local autosave_file="${CCM_SNAPSHOT_DIR}/_autosave.json"
+        if [[ -f "$autosave_file" ]]; then
+            local save_time
+            save_time=$(stat -f %m "$autosave_file" 2>/dev/null || stat -c %Y "$autosave_file" 2>/dev/null || echo 0)
+            local save_date
+            save_date=$(date -r "$save_time" '+%H:%M:%S' 2>/dev/null || date -d "@$save_time" '+%H:%M:%S' 2>/dev/null || echo "")
+            [[ -n "$save_date" ]] && autosave_info="  ${COLOR_DIM}Last saved: ${save_date}${COLOR_RESET}"
+        fi
+
         local buf=$'\n'
         buf+="$(_render_list "$selected")"
         buf+=$'\n'
-        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [s]plit  [p]review  [a]dd  [g] register  [r]emove  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
+        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [s]plit  [p]review  [a]dd  [g] register  [r]emove  [S]ave  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
+        [[ -n "$autosave_info" ]] && buf+="${autosave_info}"$'\n'
 
         tput home 2>/dev/null
         tput ed 2>/dev/null
@@ -363,11 +375,12 @@ ccm_dashboard() {
                         _do_attach "$selected" && break
                     fi
                     ;;
-                s|S)
+                s)
                     if [[ $_SESSION_COUNT -gt 0 ]]; then
                         _do_split "$selected" && break
                     fi
                     ;;
+                S)  _dashboard_save ;;
                 ESC|q|Q) break ;;
                 p|P)
                     if [[ $_SESSION_COUNT -gt 0 ]]; then
@@ -724,6 +737,38 @@ _dashboard_preview() {
         fi
     fi
 
+    tput civis 2>/dev/null
+}
+
+# Dashboard: save snapshot
+_dashboard_save() {
+    [[ $_SESSION_COUNT -eq 0 ]] && return
+
+    tput cnorm 2>/dev/null
+    echo ""
+    _read_line_cancelable "  Snapshot name [_autosave] (Esc=cancel): "
+    if [[ $? -ne 0 ]]; then
+        tput civis 2>/dev/null
+        return
+    fi
+
+    local name="$_INPUT_RESULT"
+    [[ -z "$name" ]] && name="_autosave"
+    name=$(ccm_validate_name "$name")
+    if [[ -z "$name" ]]; then
+        echo "  ${COLOR_RED}Invalid name${COLOR_RESET}"
+        sleep 1
+        tput civis 2>/dev/null
+        return
+    fi
+
+    ccm_init_dirs
+    if (ccm_snapshot_save "$name") 2>/dev/null; then
+        echo "  ${COLOR_GREEN}Saved: $name${COLOR_RESET}"
+    else
+        echo "  ${COLOR_RED}Save failed${COLOR_RESET}"
+    fi
+    sleep 1
     tput civis 2>/dev/null
 }
 
