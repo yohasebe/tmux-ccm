@@ -115,6 +115,12 @@ set -g @ccm-notify "permit,done"     # PERMITとDONEで通知
 | `permit,done` | 両方 |
 | `all` | 全ての状態変化 |
 
+通知音を無効化：
+
+```tmux
+set -g @ccm-notify-sound "off"    # デフォルト: on
+```
+
 ### ステータスバー
 
 tmuxステータスバーにプロジェクト状態を表示します。表示モードを設定：

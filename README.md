@@ -117,6 +117,12 @@ set -g @ccm-notify "permit,done"     # notify on PERMIT and DONE
 | `permit,done` | Both |
 | `all` | All state changes |
 
+Disable notification sound:
+
+```tmux
+set -g @ccm-notify-sound "off"    # default: on
+```
+
 ### Status Bar
 
 ccm shows active project status in the tmux status bar. Configure the display mode:
