@@ -95,7 +95,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects.
 | `p` | Preview | See what's on the project's screen (press `c` to copy) |
 | `a` | Add | Register a new project directory |
 | `g` | Register | Tag an existing tmux window as a ccm project |
-| `r` | Remove | Remove a project window |
+| `r` | Remove | Choose [u]nregister (keep window) or [d]elete (kill window) |
 | `/` | Search | Filter projects by name |
 | `q` or `Esc` | Quit | Close the dashboard |
 

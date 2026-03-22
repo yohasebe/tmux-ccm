@@ -40,7 +40,8 @@ Usage:
   ccm add <dir> [name]              Add project as new window (name defaults to dir basename)
   ccm open <dir> [name]             Start claude in current pane for a project (split-pane use)
   ccm register <window> [name]      Register existing window as ccm project
-  ccm remove <name>                 Remove a project window
+  ccm unregister <name>             Unregister window from ccm (keep window alive)
+  ccm remove <name>                 Remove a project window (kill window)
   ccm attach <name|number>          Switch to a project window
   ccm list                          List managed project windows
   ccm status                        Show all projects with Claude state
@@ -71,6 +72,9 @@ case "${1:-help}" in
         ;;
     register|reg)
         ccm_register "${2:-}" "${3:-}"
+        ;;
+    unregister|unreg)
+        ccm_unregister "${2:-}"
         ;;
     remove|rm)
         ccm_remove "${2:-}"

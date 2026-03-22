@@ -163,7 +163,7 @@ my-project:◉(main*) │ api:●(dev)[:8080] │ ccm:✔(main*)
 | `p` | プレビュー表示（`c` でクリップボードにコピー） |
 | `a` | プロジェクト追加 |
 | `g` | 既存ウィンドウを登録 |
-| `r` | プロジェクト削除 |
+| `r` | 削除 — [u]nregister（ウィンドウ残す）か [d]elete を選択 |
 | `/` | プロジェクト名で検索 |
 | `q` / `Esc` | 閉じる |
 
@@ -173,7 +173,8 @@ my-project:◉(main*) │ api:●(dev)[:8080] │ ccm:✔(main*)
 ccm add <dir> [name]              プロジェクト追加（ウィンドウ作成+Claude起動）
 ccm open <dir> [name]             現在のペインでClaude起動（split-pane用）
 ccm register <window> [name]      既存ウィンドウをccmプロジェクトとして登録
-ccm remove <name>                 プロジェクトウィンドウ削除
+ccm unregister <name>             ccm管理から外す（ウィンドウは残る）
+ccm remove <name>                 プロジェクトウィンドウ削除（ウィンドウを閉じる）
 ccm attach <name|number>          プロジェクトウィンドウに切替
 ccm list                          管理中プロジェクト一覧
 ccm status                        全プロジェクト状態表示（ブランチ・ポート含む）

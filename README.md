@@ -165,7 +165,7 @@ Lines auto-expand based on terminal width and project count.
 | `p` | Preview pane content (`c` to copy) |
 | `a` | Add new project |
 | `g` | Register existing window |
-| `r` | Remove project |
+| `r` | Remove — choose [u]nregister (keep window) or [d]elete |
 | `/` | Search projects |
 | `q` / `Esc` | Close |
 
@@ -175,7 +175,8 @@ Lines auto-expand based on terminal width and project count.
 ccm add <dir> [name]              Add project (creates window + starts Claude)
 ccm open <dir> [name]             Start Claude in current pane (split-pane use)
 ccm register <window> [name]      Register existing window as ccm project
-ccm remove <name>                 Remove project window
+ccm unregister <name>             Unregister window from ccm (keep window)
+ccm remove <name>                 Remove project window (kill window)
 ccm attach <name|number>          Switch to project window
 ccm list                          List managed projects
 ccm status                        Show projects with status, branch, ports

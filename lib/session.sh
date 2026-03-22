@@ -65,7 +65,44 @@ ccm_add() {
     (ccm_snapshot_save "_autosave") 2>/dev/null
 }
 
-# Remove a ccm project window
+# Unregister a window from ccm (keep window alive, restore original name)
+ccm_unregister() {
+    local name="$1"
+    [[ -z "$name" ]] && ccm_die "Project name is required"
+
+    local session idx
+    session=$(_ccm_session)
+    idx=$(ccm_find_window "$name")
+
+    if [[ -z "$idx" ]]; then
+        ccm_die "Project window not found: $name"
+    fi
+
+    local win_target="${session}:${idx}"
+
+    # Restore original window name if saved
+    local orig_name
+    orig_name=$(tmux show-option -wt "$win_target" -qv @ccm_orig_name 2>/dev/null)
+    if [[ -n "$orig_name" ]]; then
+        tmux rename-window -t "$win_target" "$orig_name" 2>/dev/null
+    fi
+
+    # Restore automatic-rename
+    tmux set-option -wt "$win_target" -u automatic-rename 2>/dev/null
+
+    # Remove all ccm tags
+    tmux set-option -wt "$win_target" -u @ccm_project 2>/dev/null
+    tmux set-option -wt "$win_target" -u @ccm_dir 2>/dev/null
+    tmux set-option -wt "$win_target" -u @ccm_orig_name 2>/dev/null
+    tmux set-option -wt "$win_target" -u @ccm_prev_state 2>/dev/null
+    tmux set-option -wt "$win_target" -u @ccm_done 2>/dev/null
+    tmux set-option -wt "$win_target" -u @ccm_state_icon 2>/dev/null
+    tmux set-option -wt "$win_target" -u @ccm_state_color 2>/dev/null
+
+    ccm_info "Unregistered: $name (window kept)"
+}
+
+# Remove a ccm project window (kill window)
 ccm_remove() {
     local name="$1"
     [[ -z "$name" ]] && ccm_die "Project name is required"

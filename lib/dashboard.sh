@@ -565,7 +565,7 @@ _dashboard_remove() {
 
     tput cnorm 2>/dev/null
     echo ""
-    echo -n "  Project number to remove (Esc=cancel): "
+    echo -n "  Project number (Esc=cancel): "
 
     local key
     if key=$(_read_key_ext 10); then
@@ -576,10 +576,23 @@ _dashboard_remove() {
                 if [[ "$key" -le "$_SESSION_COUNT" ]]; then
                     local project="${_SESSION_PROJECTS[$((key-1))]}"
                     if [[ -n "$project" ]]; then
-                        local session
-                        session=$(_ccm_session)
-                        (CCM_SESSION="$session" ccm_remove "$project") 2>&1
-                        sleep 1
+                        echo -n "  [u]nregister (keep window) or [d]elete (kill window)? "
+                        local action
+                        if action=$(_read_key_ext 10); then
+                            local session
+                            session=$(_ccm_session)
+                            case "$action" in
+                                u|U)
+                                    (CCM_SESSION="$session" ccm_unregister "$project") 2>&1
+                                    sleep 1
+                                    ;;
+                                d|D)
+                                    (CCM_SESSION="$session" ccm_remove "$project") 2>&1
+                                    sleep 1
+                                    ;;
+                                *) ;;
+                            esac
+                        fi
                     fi
                 fi
                 ;;
