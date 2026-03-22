@@ -142,7 +142,9 @@ When Claude Code finishes processing (BUSY → IDLE), ccm:
 2. Shows `✔` in the window name and status bar
 3. Displays a tmux message: `✔ project-name: response complete`
 
-The DONE flag clears automatically when you switch to that window.
+The DONE flag clears when:
+- You switch to the window (via dashboard, tree, or `ccm attach`)
+- You send a new prompt (Claude goes BUSY, clearing the flag)
 
 ## Status Bar Modes
 
