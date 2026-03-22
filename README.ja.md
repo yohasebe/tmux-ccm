@@ -26,7 +26,7 @@
 `~/.tmux.conf` に追加：
 
 ```tmux
-set -g @plugin 'yohasebe/ccm'
+set -g @plugin 'yohasebe/tmux-claude-code-manager'
 ```
 
 tmuxをリロードし、`prefix + I` でインストール。
@@ -34,13 +34,13 @@ tmuxをリロードし、`prefix + I` でインストール。
 ### 手動インストール
 
 ```bash
-git clone https://github.com/yohasebe/ccm.git ~/.tmux/plugins/ccm
+git clone https://github.com/yohasebe/tmux-claude-code-manager.git ~/.tmux/plugins/tmux-claude-code-manager
 ```
 
 `~/.tmux.conf` に追加：
 
 ```tmux
-source-file ~/.tmux/plugins/ccm/ccm.tmux.conf
+source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
 ```
 
 ### PATHに追加
@@ -49,14 +49,14 @@ CLI（`ccm add`、`ccm status` 等）を使うには、プラグインディレ�
 
 ```bash
 # .zshrc または .bashrc に追加
-export PATH="$HOME/.tmux/plugins/ccm:$PATH"
+export PATH="$HOME/.tmux/plugins/tmux-claude-code-manager:$PATH"
 ```
 
 ### Zsh補完（オプション）
 
 ```bash
 # .zshrc に追加（compinit の前）
-fpath=($HOME/.tmux/plugins/ccm/completions $fpath)
+fpath=($HOME/.tmux/plugins/tmux-claude-code-manager/completions $fpath)
 ```
 
 ## 使い方
@@ -206,9 +206,9 @@ ccm start _autosave   # 前回のセッションを復元
 1. `~/.tmux.conf` から削除：
    ```tmux
    # この行を削除:
-   set -g @plugin 'yohasebe/ccm'
+   set -g @plugin 'yohasebe/tmux-claude-code-manager'
    # または source-file の場合:
-   # source-file ~/.tmux/plugins/ccm/ccm.tmux.conf
+   # source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
    ```
 
 2. tmux状態をクリーンアップ：

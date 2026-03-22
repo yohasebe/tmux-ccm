@@ -28,7 +28,7 @@ A tmux-based multi-project manager for [Claude Code](https://docs.anthropic.com/
 Add to your `~/.tmux.conf`:
 
 ```tmux
-set -g @plugin 'yohasebe/ccm'
+set -g @plugin 'yohasebe/tmux-claude-code-manager'
 ```
 
 Reload tmux and press `prefix + I` to install.
@@ -36,13 +36,13 @@ Reload tmux and press `prefix + I` to install.
 ### Manual
 
 ```bash
-git clone https://github.com/yohasebe/ccm.git ~/.tmux/plugins/ccm
+git clone https://github.com/yohasebe/tmux-claude-code-manager.git ~/.tmux/plugins/tmux-claude-code-manager
 ```
 
 Add to your `~/.tmux.conf`:
 
 ```tmux
-source-file ~/.tmux/plugins/ccm/ccm.tmux.conf
+source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
 ```
 
 ### Add to PATH
@@ -51,14 +51,14 @@ For CLI usage (`ccm add`, `ccm status`, etc.), add the plugin directory to your 
 
 ```bash
 # In your .zshrc or .bashrc
-export PATH="$HOME/.tmux/plugins/ccm:$PATH"
+export PATH="$HOME/.tmux/plugins/tmux-claude-code-manager:$PATH"
 ```
 
 ### Zsh Completion (optional)
 
 ```bash
 # In your .zshrc (before compinit)
-fpath=($HOME/.tmux/plugins/ccm/completions $fpath)
+fpath=($HOME/.tmux/plugins/tmux-claude-code-manager/completions $fpath)
 ```
 
 ## Usage
@@ -208,9 +208,9 @@ ccm start _autosave   # restore previous session
 1. Remove from `~/.tmux.conf`:
    ```tmux
    # Delete this line:
-   set -g @plugin 'yohasebe/ccm'
+   set -g @plugin 'yohasebe/tmux-claude-code-manager'
    # Or if using source-file:
-   # source-file ~/.tmux/plugins/ccm/ccm.tmux.conf
+   # source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
    ```
 
 2. Clean up tmux state:
