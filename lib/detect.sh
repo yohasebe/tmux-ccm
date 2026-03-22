@@ -40,7 +40,7 @@ _find_claude_pid() {
 # Check if a process has any meaningful child processes
 # Excludes caffeinate (always running) to avoid false BUSY detection
 # Check if a process has any meaningful child processes
-# Excludes: caffeinate (always running), ccm's own process group
+# Excludes ccm's own process group to avoid self-detection
 # PS_CACHE format: pid ppid pgid comm
 _CCM_PGID=""
 
@@ -49,7 +49,7 @@ _has_children() {
     [[ -z "$_CCM_PGID" ]] && _CCM_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
     _ensure_ps_cache
     echo "$_PS_CACHE" | awk -v p="$pid" -v cpg="$_CCM_PGID" '
-        $2==p && $4!="caffeinate" && $3!=cpg {found=1; exit}
+        $2==p && $3!=cpg {found=1; exit}
         END {exit !found}
     '
 }
@@ -87,13 +87,7 @@ _detect_pane_state() {
         return
     fi
 
-    # No children — check if prompt is visible (truly idle) or absent (generating text)
-    # Search last few non-empty lines since Claude Code's status bar may be below the prompt
-    if echo "$near_bottom" | grep -qE "$CCM_PATTERN_IDLE"; then
-        echo "IDLE"
-    else
-        echo "BUSY"
-    fi
+    echo "IDLE"
 }
 
 # Detect the raw state of a window by scanning all its panes
