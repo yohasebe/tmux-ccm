@@ -12,6 +12,8 @@ _refresh_scan_cache() {
     _PS_CACHE=$(ps -eo pid,ppid,comm 2>/dev/null)
     # Batch: get all panes across all sessions in one call
     _PANES_CACHE=$(tmux list-panes -a -F '#{session_name}:#{window_index}	#{pane_pid}	#{pane_id}' 2>/dev/null)
+    # Extended pane info for tree view (includes path and size)
+    _PANES_EXT_CACHE=$(tmux list-panes -a -F '#{session_name}:#{window_index}	#{pane_id}	#{pane_pid}	#{pane_current_path}	#{pane_width}x#{pane_height}' 2>/dev/null)
     _SCAN_CACHE_TIME=$(date +%s)
 }
 
@@ -451,9 +453,10 @@ ccm_tree() {
 
             printf "${w_prefix}${icon}${display_name}${branch_info}${port_info}${display_dir}${w_marker}\n"
 
-            # Panes in this window
+            # Panes in this window (from batch cache)
+            _ensure_scan_cache
             local panes
-            panes=$(tmux list-panes -t "$win_target" -F '#{pane_id}	#{pane_pid}	#{pane_current_path}	#{pane_width}x#{pane_height}' 2>/dev/null)
+            panes=$(echo "$_PANES_EXT_CACHE" | awk -F'\t' -v w="$win_target" '$1==w {print $2"\t"$3"\t"$4"\t"$5}')
             local pane_count
             pane_count=$(echo "$panes" | wc -l | tr -d ' ')
             # Only show panes if more than 1
