@@ -7,19 +7,24 @@ A tmux-based multi-project manager for [Claude Code](https://docs.anthropic.com/
 **Dashboard** (`prefix + Tab`):
 
 ```
-  ▶ #1 ◉ BUSY    my-app (main*) [:3000] ~/code/my-app
-    #2 ⚠ PERMIT  api-server (dev) ~/code/api-server
-    #3 ✔ DONE    web-client (main) ~/code/web-client
-    #4 ● IDLE    docs (main) ~/code/docs
-
-  [↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [s]ave  [q] quit
-  Last saved: 10:30:45
+╔══ ccm Dashboard ════════════════════════════════════════════╗
+║                                                            ║
+║  ▶ #1 ◉ BUSY    my-app (main*) [:3000] ~/code/my-app      ║
+║    #2 ⚠ PERMIT  api-server (dev) ~/code/api-server         ║
+║    #3 ✔ DONE    web-client (main) ~/code/web-client        ║
+║    #4 ● IDLE    docs (main) ~/code/docs                    ║
+║                                                            ║
+║  [↑↓/jk] select [Enter] attach [p]review [a]dd [s]ave [q] ║
+║  Last saved: 10:30:45                                      ║
+╚════════════════════════════════════════════════════════════ ╝
 ```
 
 **Status bar** (mode 0):
 
 ```
-  0:◉ my-app  1:⚠ api*  2:✔ web  3:● docs      10:30  ◉ BUSY
+╭────────────────────────────────────────────────────────────╮
+│ 0:◉ my-app  1:⚠ api*  2:✔ web  3:● docs    10:30 ◉ BUSY │
+╰────────────────────────────────────────────────────────────╯
 ```
 
 ## Features
