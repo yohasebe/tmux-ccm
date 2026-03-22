@@ -74,14 +74,16 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 
 Open with `prefix + Tab`. This is the primary interface for managing projects.
 
-```
-  ► #1 ◉ BUSY   my-project (main*) ~/code/my-project
-    #2 ● IDLE   another-project (feature-x) ~/code/another-project
-    #3 ⚠ PERMIT api-server (main) [:8080] ~/code/api-server
-
-  [↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register
-  [r]emove  [s]ave  [/] search  [q/Esc] quit
-```
+> ```
+> -- ccm Dashboard --
+>
+> > #1 ◉ BUSY    my-project (main*) ~/code/my-project
+>   #2 ● IDLE    another-project (feature-x) ~/code/another-project
+>   #3 ⚠ PERMIT  api-server (main) [:8080] ~/code/api-server
+>
+> [↑↓/jk] select [Enter] attach [p]review [a]dd [s]ave [q] quit
+> Last saved: 10:30:45
+> ```
 
 ### Dashboard actions
 
@@ -103,17 +105,17 @@ The dashboard auto-refreshes every 2 seconds to keep status icons up to date. Na
 
 Open with `prefix + T`. Shows the full tmux hierarchy:
 
-```
-  ├── work ◀
-  │   ├── ◉ my-project (main*) ~/code/my-project ◀
-  │   ├── ● another-project (feature-x) ~/code/another-project
-  │   ├── ⚠ api-server (main) [:8080] ~/code/api-server
-  │   └── ■ bash ~/home
-  └── other-session
-      └── ■ bash ~/home
-
-  [↑↓/jk] select  [Enter] attach  [q/Esc] quit
-```
+> ```
+> work <
+>   ◉ my-project (main*) ~/code/my-project <
+>   ● another-project (feature-x) ~/code/another-project
+>   ⚠ api-server (main) [:8080] ~/code/api-server
+>   ■ bash ~/home
+> other-session
+>   ■ bash ~/home
+>
+> [↑↓/jk] select  [Enter] attach  [q/Esc] quit
+> ```
 
 - `◀` marks your current session/window
 - Only windows (not sessions or panes) are selectable
@@ -150,9 +152,9 @@ Configure with `set -g @ccm-status-line` in your `~/.tmux.conf`.
 
 Appends one icon to your existing status-right. The icon shows the highest-priority state:
 
-```
- 21/03  07:30:00  ⚠
-```
+> ```
+> 0:◉ my-project  1:⚠ api*  2:✔ web  3:● docs      07:30  ⚠ PERMIT
+> ```
 
 Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (cyan) > `✔` DONE (green) > `≡` all idle (gray)
 
@@ -163,9 +165,9 @@ Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (cyan) > `✔` DONE (green) >
 
 Replaces the standard tmux window list with ccm-style colored entries. Your existing status-right is preserved.
 
-```
- openai-workflow:● │ ccm:◉ │ monadic-chat:● │ 21:30 2026-03-21
-```
+> ```
+> openai-workflow:● | ccm:◉ | monadic-chat:● | 21:30 2026-03-21
+> ```
 
 - Best for: users who want colored project status in the main bar
 - Trade-off: replaces the standard tmux window list
@@ -174,10 +176,10 @@ Replaces the standard tmux window list with ccm-style colored entries. Your exis
 
 Adds a second status bar line below the main bar, showing all projects including idle ones with git branch and port details.
 
-```
- Main bar:  0:bash  1:my-project  2:api-server     21/03  07:30:00
- ccm line:  my-project:◉(main*) │ another-project:●(dev) │ api-server:⚠(main)[:8080]
-```
+> ```
+> Main bar:  0:bash  1:my-project  2:api-server     21/03  07:30:00
+> ccm line:  my-project:◉(main*) | another-project:●(dev) | api-server:⚠(main)[:8080]
+> ```
 
 | Icon | State | Color |
 |------|-------|-------|

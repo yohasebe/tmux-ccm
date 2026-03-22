@@ -74,14 +74,16 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 
 `prefix + Tab` で開きます。プロジェクト管理のメインインターフェースです。
 
-```
-  ► #1 ◉ BUSY   my-project (main*) ~/code/my-project
-    #2 ● IDLE   another-project (feature-x) ~/code/another-project
-    #3 ⚠ PERMIT api-server (main) [:8080] ~/code/api-server
-
-  [↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register
-  [r]emove  [s]ave  [/] search  [q/Esc] quit
-```
+> ```
+> -- ccm Dashboard --
+>
+> > #1 ◉ BUSY    my-project (main*) ~/code/my-project
+>   #2 ● IDLE    another-project (feature-x) ~/code/another-project
+>   #3 ⚠ PERMIT  api-server (main) [:8080] ~/code/api-server
+>
+> [↑↓/jk] select [Enter] attach [p]review [a]dd [s]ave [q] quit
+> Last saved: 10:30:45
+> ```
 
 ### ダッシュボードの操作
 
@@ -103,17 +105,17 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 
 `prefix + T` で開きます。tmuxの全体構造を階層表示します：
 
-```
-  ├── work ◀
-  │   ├── ◉ my-project (main*) ~/code/my-project ◀
-  │   ├── ● another-project (feature-x) ~/code/another-project
-  │   ├── ⚠ api-server (main) [:8080] ~/code/api-server
-  │   └── ■ bash ~/home
-  └── other-session
-      └── ■ bash ~/home
-
-  [↑↓/jk] select  [Enter] attach  [q/Esc] quit
-```
+> ```
+> work <
+>   ◉ my-project (main*) ~/code/my-project <
+>   ● another-project (feature-x) ~/code/another-project
+>   ⚠ api-server (main) [:8080] ~/code/api-server
+>   ■ bash ~/home
+> other-session
+>   ■ bash ~/home
+>
+> [↑↓/jk] select  [Enter] attach  [q/Esc] quit
+> ```
 
 - `◀` は現在のセッション/ウィンドウを示す
 - ウィンドウのみ選択可能（セッションやペインは選択不可）
@@ -150,9 +152,9 @@ DONEフラグはそのウィンドウに切り替えると自動的にクリア�
 
 既存のstatus-rightにアイコン1つを追加。時計やバッテリー表示はそのまま保持されます。全プロジェクトの中で最も優先度の高い状態を表示：
 
-```
- 21/03  07:30:00  ⚠
-```
+> ```
+> 0:◉ my-project  1:⚠ api*  2:✔ web  3:● docs      07:30  ⚠ PERMIT
+> ```
 
 優先順: `⚠` PERMIT（黄） > `◉` BUSY（シアン） > `✔` DONE（緑） > `≡` 全IDLE（グレー）
 
@@ -163,9 +165,9 @@ DONEフラグはそのウィンドウに切り替えると自動的にクリア�
 
 tmux標準のウィンドウリストをccm形式の色付きエントリに置換。既存のstatus-rightは保持。
 
-```
- openai-workflow:● │ ccm:◉ │ monadic-chat:● │ 21:30 2026-03-21
-```
+> ```
+> openai-workflow:● | ccm:◉ | monadic-chat:● | 21:30 2026-03-21
+> ```
 
 - 向いている人: メインバーに色付きプロジェクト状態を常時表示したい人
 - 注意: tmux標準のウィンドウリストが置換される
@@ -174,10 +176,10 @@ tmux標準のウィンドウリストをccm形式の色付きエントリに置�
 
 メインバーの下に専用ステータス行を追加。IDLEを含む全プロジェクトをgitブランチ・ポート情報付きで表示します。
 
-```
- メインバー:  0:bash  1:my-project  2:api-server     21/03  07:30:00
- ccm行:      my-project:◉(main*) │ another-project:●(dev) │ api-server:⚠(main)[:8080]
-```
+> ```
+> メインバー:  0:bash  1:my-project  2:api-server     21/03  07:30:00
+> ccm行:      my-project:◉(main*) | another-project:●(dev) | api-server:⚠(main)[:8080]
+> ```
 
 | アイコン | 状態 | 色 |
 |----------|------|-----|
