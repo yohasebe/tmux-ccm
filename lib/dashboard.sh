@@ -124,20 +124,13 @@ _build_project_list() {
     current_win_idx=$(tmux display-message -p '#{window_index}' 2>/dev/null)
     local current_target="${current_session}:${current_win_idx}"
 
-    local all_sessions
-    all_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort)
-    [[ -z "$all_sessions" ]] && return
+    # Batch: get all windows in one tmux call, current session first
+    local all_windows
+    all_windows=$(tmux list-windows -a -F '#{session_name}	#{window_index}	#{window_name}	#{@ccm_project}	#{@ccm_dir}' 2>/dev/null \
+        | awk -F'\t' -v cs="$current_session" 'BEGIN{OFS="\t"} $1==cs{print; next} {other[NR]=$0} END{for(i in other) print other[i]}')
+    [[ -z "$all_windows" ]] && return
 
-    # Process current session first (priority), then others
-    local ordered_sessions
-    ordered_sessions=$(echo "$all_sessions" | awk -v cs="$current_session" 'BEGIN{print cs} $0!=cs{print $0}')
-
-    while IFS= read -r sess; do
-        local windows
-        windows=$(tmux list-windows -t "$sess" -F '#{window_index}	#{window_name}	#{@ccm_project}	#{@ccm_dir}' 2>/dev/null)
-        [[ -z "$windows" ]] && continue
-
-        while IFS=$'\t' read -r win_idx win_name project dir; do
+    while IFS=$'\t' read -r sess win_idx win_name project dir; do
             local win_target="${sess}:${win_idx}"
 
             if [[ -n "$project" ]]; then
@@ -171,8 +164,7 @@ _build_project_list() {
                         ;;
                 esac
             fi
-        done <<< "$windows"
-    done <<< "$all_sessions"
+    done <<< "$all_windows"
 
     # Reorder: current window goes last, others keep order
     local -a order=()
@@ -799,16 +791,12 @@ _scan_active_windows() {
         return 1
     }
 
-    local all_sessions
-    all_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | sort)
-    [[ -z "$all_sessions" ]] && return
+    # Batch: get all windows across all sessions in one tmux call
+    local all_windows
+    all_windows=$(tmux list-windows -a -F '#{session_name}	#{window_index}	#{window_name}	#{@ccm_project}	#{@ccm_dir}' 2>/dev/null)
+    [[ -z "$all_windows" ]] && return
 
-    while IFS= read -r sess; do
-        local windows
-        windows=$(tmux list-windows -t "$sess" -F '#{window_index}	#{window_name}	#{@ccm_project}	#{@ccm_dir}' 2>/dev/null)
-        [[ -z "$windows" ]] && continue
-
-        while IFS=$'\t' read -r win_idx win_name project tag_dir; do
+    while IFS=$'\t' read -r sess win_idx win_name project tag_dir; do
             local win_target="${sess}:${win_idx}"
 
             # Get the actual directory
@@ -857,8 +845,7 @@ _scan_active_windows() {
             _SL_STATES+=("$state")
             _SL_DIRS+=("$actual_dir")
             _SL_WINIDS+=("$win_idx")
-        done <<< "$windows"
-    done <<< "$all_sessions"
+    done <<< "$all_windows"
 }
 
 # ─── Statusline (plain text, for #() usage) ───

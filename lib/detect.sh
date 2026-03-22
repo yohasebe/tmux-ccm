@@ -2,24 +2,31 @@
 # ccm - Claude Code state detection
 # Uses process tree inspection for reliability
 
-# Cached ps output to avoid repeated ps calls within the same scan cycle
+# Cached outputs to avoid repeated calls within the same scan cycle
 _PS_CACHE=""
-_PS_CACHE_TIME=0
+_PANES_CACHE=""
+_SCAN_CACHE_TIME=0
 
-# Refresh ps cache (call once per scan cycle)
-_refresh_ps_cache() {
+# Refresh all caches (call once per scan cycle)
+_refresh_scan_cache() {
     _PS_CACHE=$(ps -eo pid,ppid,comm 2>/dev/null)
-    _PS_CACHE_TIME=$(date +%s)
+    # Batch: get all panes across all sessions in one call
+    _PANES_CACHE=$(tmux list-panes -a -F '#{session_name}:#{window_index}	#{pane_pid}	#{pane_id}' 2>/dev/null)
+    _SCAN_CACHE_TIME=$(date +%s)
 }
 
-# Ensure ps cache is fresh (within 2 seconds)
-_ensure_ps_cache() {
+# Ensure caches are fresh (within 2 seconds)
+_ensure_scan_cache() {
     local now
     now=$(date +%s)
-    if [[ -z "$_PS_CACHE" || $(( now - _PS_CACHE_TIME )) -ge 2 ]]; then
-        _refresh_ps_cache
+    if [[ -z "$_PS_CACHE" || $(( now - _SCAN_CACHE_TIME )) -ge 2 ]]; then
+        _refresh_scan_cache
     fi
 }
+
+# Legacy aliases for backward compat
+_refresh_ps_cache() { _refresh_scan_cache; }
+_ensure_ps_cache() { _ensure_scan_cache; }
 
 # Find a claude process among children of a given PID
 _find_claude_pid() {
@@ -76,9 +83,11 @@ _detect_pane_state() {
 # Priority: PERMIT > BUSY > IDLE > SHELL > DOWN
 _detect_window_state() {
     local win_target="$1"
+    _ensure_scan_cache
 
+    # Extract panes for this window from batch cache (no tmux call needed)
     local pane_info
-    pane_info=$(tmux list-panes -t "$win_target" -F '#{pane_pid} #{pane_id}' 2>/dev/null)
+    pane_info=$(echo "$_PANES_CACHE" | awk -F'\t' -v w="$win_target" '$1==w {print $2, $3}')
     if [[ -z "$pane_info" ]]; then
         echo "DOWN"
         return
@@ -109,8 +118,9 @@ _detect_raw_state() {
         return
     fi
 
+    _ensure_scan_cache
     local pane_info
-    pane_info=$(tmux list-panes -t "$session" -s -F '#{pane_pid} #{pane_id}' 2>/dev/null)
+    pane_info=$(echo "$_PANES_CACHE" | awk -F'\t' -v s="$session:" 'index($1,s)==1 {print $2, $3}')
     if [[ -z "$pane_info" ]]; then
         echo "DOWN"
         return
