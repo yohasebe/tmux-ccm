@@ -157,6 +157,13 @@ ccm_detect_window_state() {
 
     tmux set-option -wt "$win_target" @ccm_prev_state "$raw_state" 2>/dev/null
 
+    # PERMIT notification: notify when newly entering PERMIT state
+    if [[ "$raw_state" == "PERMIT" && "$prev_state" != "PERMIT" ]]; then
+        local project_name
+        project_name=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
+        [[ -n "$project_name" ]] && ccm_notify "PERMIT" "$project_name"
+    fi
+
     # DONE detection: BUSY/PERMIT→IDLE transition = response completed
     if [[ "$raw_state" == "IDLE" ]]; then
         local done_flag
@@ -169,6 +176,7 @@ ccm_detect_window_state() {
             project_name=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
             [[ -z "$project_name" ]] && project_name=$(tmux display-message -t "$win_target" -p '#{window_name}' 2>/dev/null)
             tmux display-message "✔ ${project_name}: response complete" 2>/dev/null
+            ccm_notify "DONE" "$project_name"
             echo "DONE"
             return
         elif [[ "$done_flag" == "1" ]]; then

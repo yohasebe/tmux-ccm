@@ -30,6 +30,44 @@ CCM_PATTERN_PERMIT='(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc t
 CCM_CLAUDE_CMD="claude --resume 2>/dev/null || claude"
 CCM_CLAUDE_CMD_RESUME="claude --continue 2>/dev/null || claude"
 
+# Desktop notification (macOS / Linux)
+# Controlled by @ccm-notify option: "off" (default), "permit", "done",
+# "permit,done", "all"
+_ccm_notify() {
+    local title="$1" body="$2"
+    if command -v osascript &>/dev/null; then
+        osascript -e "display notification \"$body\" with title \"$title\"" 2>/dev/null &
+    elif command -v notify-send &>/dev/null; then
+        notify-send "$title" "$body" 2>/dev/null &
+    fi
+}
+
+ccm_notify() {
+    local state="$1" project="$2"
+    local notify_setting
+    notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null)
+    notify_setting="${notify_setting:-off}"
+
+    [[ "$notify_setting" == "off" ]] && return
+
+    local state_lower
+    state_lower=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
+
+    # Check if this state should trigger a notification
+    case "$notify_setting" in
+        all) ;;
+        *"$state_lower"*) ;;
+        *) return ;;
+    esac
+
+    case "$state" in
+        PERMIT) _ccm_notify "ccm: $project" "⚠ Permission required" ;;
+        DONE)   _ccm_notify "ccm: $project" "✔ Response complete" ;;
+        BUSY)   _ccm_notify "ccm: $project" "◉ Processing started" ;;
+        IDLE)   _ccm_notify "ccm: $project" "● Waiting for input" ;;
+    esac
+}
+
 # Colors for terminal output (using $'...' for real escape characters)
 COLOR_RED=$'\033[0;31m'
 COLOR_GREEN=$'\033[0;32m'

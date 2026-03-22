@@ -99,6 +99,22 @@ set -g @ccm-key-menu "C"
 set -g @ccm-key-tree "T"
 ```
 
+### デスクトップ通知
+
+プロジェクトの状態変化時にデスクトップ通知（macOS / Linux対応）を送信できます：
+
+```tmux
+set -g @ccm-notify "permit,done"     # PERMITとDONEで通知
+```
+
+| 値 | 動作 |
+|----|------|
+| `off`（デフォルト） | 通知なし |
+| `permit` | 許可が必要な時に通知 |
+| `done` | レスポンス完了時に通知 |
+| `permit,done` | 両方 |
+| `all` | 全ての状態変化 |
+
 ### ステータスバー
 
 tmuxステータスバーにプロジェクト状態を表示します。表示モードを設定：

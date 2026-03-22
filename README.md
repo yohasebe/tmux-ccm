@@ -101,6 +101,22 @@ set -g @ccm-key-menu "C"
 set -g @ccm-key-tree "T"
 ```
 
+### Desktop Notifications
+
+ccm can send desktop notifications (macOS and Linux) when project states change:
+
+```tmux
+set -g @ccm-notify "permit,done"     # notify on PERMIT and DONE
+```
+
+| Value | Behavior |
+|-------|----------|
+| `off` (default) | No notifications |
+| `permit` | Notify when permission is needed |
+| `done` | Notify when response completes |
+| `permit,done` | Both |
+| `all` | All state changes |
+
 ### Status Bar
 
 ccm shows active project status in the tmux status bar. Configure the display mode:
