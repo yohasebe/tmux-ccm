@@ -281,25 +281,6 @@ _do_attach() {
     return 0
 }
 
-# Open selected project in a split pane (side-by-side)
-_do_split() {
-    local idx="$1"
-    [[ "$idx" -lt 1 || "$idx" -gt "$_SESSION_COUNT" ]] && return 1
-
-    local dir="${_SESSION_DIRS[$((idx-1))]}"
-    local project="${_SESSION_PROJECTS[$((idx-1))]}"
-
-    [[ -z "$dir" ]] && return 1
-
-    local expanded_dir
-    expanded_dir=$(ccm_expand_path "$dir")
-
-    # Split the current pane horizontally and cd + start claude
-    tmux split-window -h -c "$expanded_dir"
-    tmux send-keys "$CCM_CLAUDE_CMD_RESUME" Enter
-    return 0
-}
-
 # ─── Dashboard (modal popup) ───
 
 ccm_dashboard() {

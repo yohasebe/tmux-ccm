@@ -39,12 +39,14 @@ tmux bind-key -T root MouseDown1StatusRight \
 tmux bind-key w choose-tree -Zs
 
 # Save clean status-right before ccm modifies it
-# Only save if not already saved (first load only)
-_ccm_saved_sr=$(tmux show-option -gqv @ccm-orig-status-right 2>/dev/null)
-if [[ -z "$_ccm_saved_sr" ]]; then
-    tmux set -g @ccm-orig-status-right "$(tmux show-option -gv status-right 2>/dev/null)" 2>/dev/null
+# Save if: (1) not yet saved, or (2) current value has no ccm artifacts
+# This allows theme changes to be picked up on re-source
+_ccm_current_sr=$(tmux show-option -gv status-right 2>/dev/null)
+if ! printf '%s' "$_ccm_current_sr" | grep -q 'inject-status' 2>/dev/null; then
+    # Current status-right is clean (no ccm artifacts) — save it
+    tmux set -g @ccm-orig-status-right "$_ccm_current_sr" 2>/dev/null
 fi
-unset _ccm_saved_sr
+unset _ccm_current_sr
 
 # Initialize status injection
 tmux run-shell "$CCM_BIN inject-status 2>/dev/null || true"

@@ -56,6 +56,9 @@ ccm_add() {
     fi
 
     ccm_info "Added project: $name ($dir)"
+
+    # Trigger immediate autosave so the new project is captured
+    (ccm_snapshot_save "_autosave") 2>/dev/null
 }
 
 # Remove a ccm project window
