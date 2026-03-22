@@ -312,6 +312,40 @@ ccm capture my-project    # check what's on screen
 
 The state will correct itself on the next 2-second refresh cycle once the child processes exit.
 
+## Using with Agent Teams
+
+ccm works alongside Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams). The two operate at different levels and complement each other:
+
+- **ccm** manages projects as tmux **windows** (one Claude Code per project)
+- **Agent Teams** runs parallel agents as tmux **panes** within a single window
+
+### How they work together
+
+When you run Agent Teams inside a ccm-managed project window, ccm's state detection automatically aggregates across all panes. For example:
+
+- If any teammate pane is in PERMIT state → the project shows `⚠ PERMIT` in ccm
+- If any teammate is BUSY → the project shows `◉ BUSY`
+- When all teammates are idle → the project shows `● IDLE`
+
+This means ccm's dashboard and status bar give you visibility into Agent Teams activity without any extra configuration.
+
+### No conflicts
+
+| Feature | Agent Teams | ccm | Conflict |
+|---------|------------|-----|----------|
+| Keyboard shortcuts | `Shift+↓`, `Ctrl+T` (inside Claude Code) | `prefix + Tab/T/C` (tmux level) | None |
+| Pane management | Splits panes within window | Manages windows | None |
+| Window naming | Does not rename windows | Sets icon + name | None |
+
+### Typical workflow
+
+1. Use `ccm add` to register multiple projects
+2. Switch to a project with the dashboard (`prefix + Tab`)
+3. Inside that project, tell Claude Code to create an Agent Team
+4. Agent Teams splits the window into panes for each teammate
+5. ccm's dashboard shows the aggregated state of all teammates
+6. Switch to another project with `prefix + Tab` while the team works
+
 ## Known Limitations
 
 ### tmux-resurrect / tmux-continuum

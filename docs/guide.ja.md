@@ -312,6 +312,40 @@ ccm capture my-project    # 画面の内容を確認
 
 子プロセスが終了すれば、次の2秒リフレッシュで状態が修正されます。
 
+## Agent Teamsとの併用
+
+ccmはClaude Codeの[Agent Teams](https://code.claude.com/docs/en/agent-teams)と併用できます。両者は異なるレベルで動作し、補完関係にあります：
+
+- **ccm** はプロジェクトをtmuxの**ウィンドウ**として管理（1プロジェクト = 1 Claude Code）
+- **Agent Teams** は1つのウィンドウ内で並行エージェントを**ペイン**として実行
+
+### 連携の仕組み
+
+ccm管理のプロジェクトウィンドウ内でAgent Teamsを実行すると、ccmの状態検出が全ペインを自動的に集約します：
+
+- いずれかのチームメイトがPERMIT状態 → プロジェクトは `⚠ PERMIT` と表示
+- いずれかがBUSY → `◉ BUSY` と表示
+- 全チームメイトがIDLE → `● IDLE` と表示
+
+ccmのダッシュボードやステータスバーで、追加設定なしにAgent Teamsの活動状況を確認できます。
+
+### 競合なし
+
+| 機能 | Agent Teams | ccm | 競合 |
+|------|------------|-----|------|
+| キーボードショートカット | `Shift+↓`, `Ctrl+T`（Claude Code内部） | `prefix + Tab/T/C`（tmuxレベル） | なし |
+| ペイン管理 | ウィンドウ内でペイン分割 | ウィンドウを管理 | なし |
+| ウィンドウ名 | 変更しない | アイコン+名前を設定 | なし |
+
+### 典型的なワークフロー
+
+1. `ccm add` で複数プロジェクトを登録
+2. ダッシュボード（`prefix + Tab`）でプロジェクトに切替
+3. そのプロジェクト内でClaude Codeに Agent Team を作成させる
+4. Agent Teamsがウィンドウを各チームメイト用にペイン分割
+5. ccmのダッシュボードに全チームメイトの集約状態が表示される
+6. チームが作業中に `prefix + Tab` で別プロジェクトに切替可能
+
 ## 既知の制限
 
 ### tmux-resurrect / tmux-continuum
