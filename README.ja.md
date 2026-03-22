@@ -31,6 +31,7 @@
 - **スナップショット** — プロジェクトレイアウトのJSON保存・復元
 - **自動起動** — SHELL状態のウィンドウに切り替えるとClaude Codeを自動起動
 - **ステータスライン** — アクティブプロジェクトの状態をtmuxステータスバーに表示
+- **Agent Teams対応** — Claude Codeの[Agent Teams](https://code.claude.com/docs/en/agent-teams)と併用可能：ccmでプロジェクトを管理しつつ、各プロジェクト内で並行エージェントを実行
 
 ## 動作要件
 

@@ -33,6 +33,7 @@ A tmux-based multi-project manager for [Claude Code](https://docs.anthropic.com/
 - **Snapshots** — Save and restore project layouts as JSON
 - **Auto-start** — Claude Code auto-launches when switching to a SHELL-state window
 - **Status Line** — Inject active project status into tmux status bar
+- **Agent Teams Compatible** — Works alongside Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams): manage projects with ccm while running parallel agents within each project
 
 ## Requirements
 
