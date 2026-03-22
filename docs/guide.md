@@ -79,8 +79,8 @@ Open with `prefix + Tab`. This is the primary interface for managing projects.
     #2 ● IDLE   another-project (feature-x) ~/code/another-project
     #3 ⚠ PERMIT api-server (main) [:8080] ~/code/api-server
 
-  [↑↓/jk] select  [Enter] attach  [s]plit  [p]review  [a]dd  [g] register
-  [r]emove  [/] search  [q/Esc] quit
+  [↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register
+  [r]emove  [s]ave  [/] search  [q/Esc] quit
 ```
 
 ### Dashboard actions
@@ -89,7 +89,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects.
 |-----|--------|-------------|
 | `↑↓` or `jk` | Move selection | Navigate between projects |
 | `Enter` | Switch to project | Jump to the selected project window |
-| `s` | Split | Open project in a side-by-side pane |
+| `s` | Save | Save snapshot (enter name or default `_autosave`) |
 | `p` | Preview | See what's on the project's screen (press `c` to copy) |
 | `a` | Add | Register a new project directory |
 | `g` | Register | Tag an existing tmux window as a ccm project |

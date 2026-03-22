@@ -79,8 +79,8 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
     #2 ● IDLE   another-project (feature-x) ~/code/another-project
     #3 ⚠ PERMIT api-server (main) [:8080] ~/code/api-server
 
-  [↑↓/jk] select  [Enter] attach  [s]plit  [p]review  [a]dd  [g] register
-  [r]emove  [/] search  [q/Esc] quit
+  [↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register
+  [r]emove  [s]ave  [/] search  [q/Esc] quit
 ```
 
 ### ダッシュボードの操作
@@ -89,7 +89,7 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 |------|------|------|
 | `↑↓` or `jk` | 選択移動 | プロジェクト間をナビゲート |
 | `Enter` | 切替 | 選択したプロジェクトのウィンドウに移動 |
-| `s` | 分割 | 選択プロジェクトを横並びペインで開く |
+| `s` | 保存 | スナップショット保存（名前を入力、デフォルトは `_autosave`） |
 | `p` | プレビュー | プロジェクトの画面内容を表示（`c` でコピー） |
 | `a` | 追加 | 新しいプロジェクトディレクトリを登録 |
 | `g` | 登録 | 既存のtmuxウィンドウをccmプロジェクトとしてタグ付け |

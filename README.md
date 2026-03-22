@@ -138,7 +138,7 @@ Lines auto-expand based on terminal width and project count.
 |-----|--------|
 | `↑↓` / `jk` | Navigate projects |
 | `Enter` | Attach to selected project |
-| `s` | Split (open project side-by-side) |
+| `s` | Save snapshot |
 | `p` | Preview pane content (`c` to copy) |
 | `a` | Add new project |
 | `g` | Register existing window |
