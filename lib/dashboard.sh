@@ -896,9 +896,9 @@ _ccm_priority_icon() {
         esac
     done
 
-    if [[ $has_permit -eq 1 ]]; then echo "⚠"
-    elif [[ $has_busy -eq 1 ]]; then echo "◉"
-    elif [[ $has_done -eq 1 ]]; then echo "✔"
+    if [[ $has_permit -eq 1 ]]; then echo "⚠ PERMIT"
+    elif [[ $has_busy -eq 1 ]]; then echo "◉ BUSY"
+    elif [[ $has_done -eq 1 ]]; then echo "✔ DONE"
     else echo "≡"
     fi
 }
