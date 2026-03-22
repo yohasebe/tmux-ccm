@@ -1,4 +1,4 @@
-# ccm - Claude Code Manager
+# ccm - Claude Code Manager for tmux
 
 **[日本語版 README はこちら](README.ja.md)**
 
