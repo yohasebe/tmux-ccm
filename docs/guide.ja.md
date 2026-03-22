@@ -309,3 +309,37 @@ ccm capture my-project    # 画面の内容を確認
 ```
 
 子プロセスが終了すれば、次の2秒リフレッシュで状態が修正されます。
+
+## 既知の制限
+
+### tmux-resurrect / tmux-continuum
+
+ccmのウィンドウオプション（`@ccm_project`、`@ccm_dir`）はセッション復元プラグインでは自動保持されません。tmux復元後は `ccm start _autosave` で最後のautosaveスナップショットからプロジェクトを再登録してください。
+
+### ステータス更新間隔
+
+ccmのステータスバー更新はtmuxの `status-interval` 設定（デフォルト: 15秒）に依存します。より高速な更新が必要な場合：
+
+```tmux
+set -g status-interval 5    # 5秒ごとに更新
+```
+
+値を下げるとCPU使用量がわずかに増加します。
+
+### デバッグ
+
+ccmの現在の状態を確認するには：
+
+```bash
+ccm status                    # 全プロジェクトの状態を表示
+ccm tree                      # 全体の階層を表示
+tmux show-option -gv status-right   # status-rightの内容を確認
+tmux show-option -gqv @ccm-status-line  # 現在のモード（0/1/2）
+```
+
+ccmの状態を完全にリセットするには：
+
+```bash
+rm -rf "${TMPDIR:-/tmp}/ccm-$(id -u)"
+tmux source-file ~/.tmux.conf
+```

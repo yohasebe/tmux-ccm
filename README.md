@@ -132,6 +132,8 @@ my-project:◉(main*) │ api:●(dev)[:8080] │ ccm:✔(main*)
 
 Lines auto-expand based on terminal width and project count.
 
+> **Note:** Mode 2 uses `status-format[1]` through `status-format[5]`. If other plugins also use these indices, conflicts may occur.
+
 ### Dashboard Controls
 
 | Key | Action |
@@ -200,6 +202,34 @@ ccm start _autosave   # restore previous session
 - DONE state is auto-detected on BUSY/PERMIT → IDLE transitions
 - Git branch and port info are cached (30s) to minimize overhead
 - Popup session context is passed via temp file (`$TMPDIR/ccm-$UID/`)
+
+## Uninstall
+
+1. Remove from `~/.tmux.conf`:
+   ```tmux
+   # Delete this line:
+   set -g @plugin 'yohasebe/ccm'
+   # Or if using source-file:
+   # source-file ~/.tmux/plugins/ccm/ccm.tmux.conf
+   ```
+
+2. Clean up tmux state:
+   ```bash
+   # Remove ccm options
+   tmux set -g -u @ccm-orig-status-right 2>/dev/null
+   tmux set -g -u @ccm-orig-sr-length 2>/dev/null
+   tmux set -g -u @ccm-status-line 2>/dev/null
+   tmux set -g -u window-status-format 2>/dev/null
+   tmux set -g -u window-status-current-format 2>/dev/null
+
+   # Remove temp files
+   rm -rf "${TMPDIR:-/tmp}/ccm-$(id -u)"
+
+   # Remove runtime data (optional — keeps snapshots)
+   rm -rf ~/.local/share/ccm
+   ```
+
+3. Reload tmux: `tmux source-file ~/.tmux.conf`
 
 ## Documentation
 

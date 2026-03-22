@@ -47,9 +47,13 @@ ccm_add() {
     local win_idx
     win_idx=$(tmux new-window -P -F '#{window_index}' -t "$session:" -n "$name" -c "$dir")
 
-    # Tag the window with ccm metadata
+    # Tag the window with ccm metadata and save original name for restoration
+    local orig_name
+    orig_name=$(tmux display-message -t "${session}:${win_idx}" -p '#{window_name}' 2>/dev/null)
+    tmux set-option -wt "${session}:${win_idx}" @ccm_orig_name "$orig_name" 2>/dev/null
     tmux set-option -wt "${session}:${win_idx}" @ccm_project "$name"
     tmux set-option -wt "${session}:${win_idx}" @ccm_dir "$dir"
+    tmux set-option -wt "${session}:${win_idx}" automatic-rename off 2>/dev/null
 
     if [[ "$start_claude" == "true" ]]; then
         tmux send-keys -t "${session}:${win_idx}" "$CCM_CLAUDE_CMD" Enter
@@ -279,9 +283,11 @@ ccm_register() {
     local dir
     dir=$(tmux display-message -t "${session}:${win_idx}" -p '#{pane_current_path}' 2>/dev/null)
 
-    # Tag the window
+    # Tag the window and save original name for restoration
+    tmux set-option -wt "${session}:${win_idx}" @ccm_orig_name "$win_name" 2>/dev/null
     tmux set-option -wt "${session}:${win_idx}" @ccm_project "$name"
     tmux set-option -wt "${session}:${win_idx}" @ccm_dir "$dir"
+    tmux set-option -wt "${session}:${win_idx}" automatic-rename off 2>/dev/null
 
     # Rename window to project name
     tmux rename-window -t "${session}:${win_idx}" "$name"

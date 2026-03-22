@@ -30,11 +30,6 @@ tmux bind-key "$CCM_KEY_TREE" \
     run-shell "$_session_cmd" \\\; \
     display-popup -E -w 80% -h 60% -T " ccm Tree " "$CCM_BIN tree-interactive"
 
-# Click on status-right to open dashboard
-tmux bind-key -T root MouseDown1StatusRight \
-    run-shell "$_session_cmd" \\\; \
-    display-popup -E -w 80% -h 60% -T " ccm Dashboard " "$CCM_BIN dashboard"
-
 # Restore prefix + w to default (choose-tree)
 tmux bind-key w choose-tree -Zs
 
@@ -43,8 +38,9 @@ tmux bind-key w choose-tree -Zs
 # This allows theme changes to be picked up on re-source
 _ccm_current_sr=$(tmux show-option -gv status-right 2>/dev/null)
 if ! printf '%s' "$_ccm_current_sr" | grep -q 'inject-status' 2>/dev/null; then
-    # Current status-right is clean (no ccm artifacts) — save it
     tmux set -g @ccm-orig-status-right "$_ccm_current_sr" 2>/dev/null
+    # Also save status-right-length
+    tmux set -g @ccm-orig-sr-length "$(tmux show-option -gv status-right-length 2>/dev/null)" 2>/dev/null
 fi
 unset _ccm_current_sr
 

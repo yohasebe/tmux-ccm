@@ -983,6 +983,16 @@ ccm_inject_status() {
     mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
     mode="${mode:-0}"
 
+    # Notify on mode change
+    local prev_mode_file="${CCM_TMP_DIR}/status-mode"
+    local prev_mode=""
+    [[ -f "$prev_mode_file" ]] && prev_mode=$(cat "$prev_mode_file" 2>/dev/null)
+    if [[ "$mode" != "$prev_mode" && -n "$prev_mode" ]]; then
+        local mode_names=([0]="icon" [1]="full" [2]="dedicated")
+        tmux display-message "ccm: status mode ${mode} (${mode_names[$mode]:-unknown})" 2>/dev/null
+    fi
+    printf '%s' "$mode" > "$prev_mode_file" 2>/dev/null
+
     # Always update window name icons
     ccm_update_window_names 2>/dev/null
 
@@ -1003,6 +1013,10 @@ ccm_inject_status() {
             tmux set -g -u window-status-current-format 2>/dev/null
             _cleanup_extra_lines
         fi
+        # Restore original status-right-length
+        local orig_len
+        orig_len=$(tmux show-option -gqv @ccm-orig-sr-length 2>/dev/null)
+        [[ -n "$orig_len" ]] && tmux set -g status-right-length "$orig_len" 2>/dev/null
     }
 
     if [[ "$mode" == "1" ]]; then
@@ -1040,7 +1054,13 @@ ccm_inject_status() {
         if [[ "$new_status" != "$prev_status" ]]; then
             echo "$new_status" > "$cache_file"
             tmux set -g status-right "$new_status" 2>/dev/null
-            tmux set -g status-right-length 200 2>/dev/null
+            # Extend status-right-length for ccm content (at least 120, or 2x original)
+            local orig_len
+            orig_len=$(tmux show-option -gqv @ccm-orig-sr-length 2>/dev/null)
+            orig_len="${orig_len:-40}"
+            local new_len=$(( orig_len * 2 ))
+            [[ $new_len -lt 120 ]] && new_len=120
+            tmux set -g status-right-length "$new_len" 2>/dev/null
         fi
         return
     fi

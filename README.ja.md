@@ -130,6 +130,8 @@ my-project:◉(main*) │ api:●(dev)[:8080] │ ccm:✔(main*)
 
 端末幅とプロジェクト数に応じて行数が自動拡張。
 
+> **注意:** モード2は `status-format[1]` 〜 `status-format[5]` を使用します。他のプラグインがこれらのインデックスを使用している場合、衝突が発生する可能性があります。
+
 ### ダッシュボード操作
 
 | キー | 動作 |
@@ -198,6 +200,34 @@ ccm start _autosave   # 前回のセッションを復元
 - DONE状態はBUSY/PERMIT → IDLE遷移で自動検出
 - gitブランチとポート情報は30秒キャッシュで負荷軽減
 - ポップアップ内のセッション検出は一時ファイル（`$TMPDIR/ccm-$UID/`）経由
+
+## アンインストール
+
+1. `~/.tmux.conf` から削除：
+   ```tmux
+   # この行を削除:
+   set -g @plugin 'yohasebe/ccm'
+   # または source-file の場合:
+   # source-file ~/.tmux/plugins/ccm/ccm.tmux.conf
+   ```
+
+2. tmux状態をクリーンアップ：
+   ```bash
+   # ccmオプションを削除
+   tmux set -g -u @ccm-orig-status-right 2>/dev/null
+   tmux set -g -u @ccm-orig-sr-length 2>/dev/null
+   tmux set -g -u @ccm-status-line 2>/dev/null
+   tmux set -g -u window-status-format 2>/dev/null
+   tmux set -g -u window-status-current-format 2>/dev/null
+
+   # 一時ファイルを削除
+   rm -rf "${TMPDIR:-/tmp}/ccm-$(id -u)"
+
+   # ランタイムデータを削除（任意 — スナップショットも消えます）
+   rm -rf ~/.local/share/ccm
+   ```
+
+3. tmuxをリロード: `tmux source-file ~/.tmux.conf`
 
 ## ドキュメント
 

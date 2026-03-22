@@ -309,3 +309,37 @@ ccm capture my-project    # check what's on screen
 ```
 
 The state will correct itself on the next 2-second refresh cycle once the child processes exit.
+
+## Known Limitations
+
+### tmux-resurrect / tmux-continuum
+
+ccm's window options (`@ccm_project`, `@ccm_dir`) are not automatically preserved by session restoration plugins. After a tmux restore, use `ccm start _autosave` to re-register projects from the last autosave snapshot.
+
+### Status refresh interval
+
+ccm's status bar updates are triggered by tmux's `status-interval` setting (default: 15 seconds). To get faster updates:
+
+```tmux
+set -g status-interval 5    # update every 5 seconds
+```
+
+Lower values increase CPU usage slightly.
+
+### Debugging
+
+To check ccm's current state:
+
+```bash
+ccm status                    # show all projects with state
+ccm tree                      # show full hierarchy
+tmux show-option -gv status-right   # inspect status-right content
+tmux show-option -gqv @ccm-status-line  # current mode (0/1/2)
+```
+
+To reset ccm state completely:
+
+```bash
+rm -rf "${TMPDIR:-/tmp}/ccm-$(id -u)"
+tmux source-file ~/.tmux.conf
+```
