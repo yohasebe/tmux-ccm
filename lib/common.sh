@@ -62,8 +62,15 @@ ccm_notify() {
         *) return ;;
     esac
 
+    # Sound option: @ccm-notify-sound (default: on)
+    local sound_setting
+    sound_setting=$(tmux show-option -gqv @ccm-notify-sound 2>/dev/null)
+    sound_setting="${sound_setting:-on}"
+    local permit_sound=""
+    [[ "$sound_setting" == "on" ]] && permit_sound="Basso"
+
     case "$state" in
-        PERMIT) _ccm_notify "ccm ⚠ $project" "Action required — switch to this project and respond to the permission prompt" "Basso" "critical" ;;
+        PERMIT) _ccm_notify "ccm ⚠ $project" "Action required — switch to this project and respond to the permission prompt" "$permit_sound" "critical" ;;
         DONE)   _ccm_notify "ccm ✔ $project" "Claude has finished responding — review the output when ready" "" "normal" ;;
         BUSY)   _ccm_notify "ccm ◉ $project" "Claude is now processing your request" "" "low" ;;
         IDLE)   _ccm_notify "ccm $project" "Waiting for your input" "" "low" ;;
