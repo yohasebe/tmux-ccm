@@ -9,7 +9,7 @@ _SCAN_CACHE_TIME=0
 
 # Refresh all caches (call once per scan cycle)
 _refresh_scan_cache() {
-    _PS_CACHE=$(ps -eo pid,ppid,comm 2>/dev/null)
+    _PS_CACHE=$(ps -eo pid,ppid,pgid,comm 2>/dev/null)
     # Batch: get all panes across all sessions in one call
     _PANES_CACHE=$(tmux list-panes -a -F '#{session_name}:#{window_index}	#{pane_pid}	#{pane_id}' 2>/dev/null)
     # Extended pane info for tree view (includes path and size)
@@ -34,14 +34,24 @@ _ensure_ps_cache() { _ensure_scan_cache; }
 _find_claude_pid() {
     local parent_pid="$1"
     _ensure_ps_cache
-    echo "$_PS_CACHE" | awk -v p="$parent_pid" -v c="$CCM_CLAUDE_PROCESS_NAME" '$2==p && $3==c {print $1; exit}'
+    echo "$_PS_CACHE" | awk -v p="$parent_pid" -v c="$CCM_CLAUDE_PROCESS_NAME" '$2==p && $4==c {print $1; exit}'
 }
 
-# Check if a process has any child processes
+# Check if a process has any meaningful child processes
+# Excludes caffeinate (always running) to avoid false BUSY detection
+# Check if a process has any meaningful child processes
+# Excludes: caffeinate (always running), ccm's own process group
+# PS_CACHE format: pid ppid pgid comm
+_CCM_PGID=""
+
 _has_children() {
     local pid="$1"
+    [[ -z "$_CCM_PGID" ]] && _CCM_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
     _ensure_ps_cache
-    echo "$_PS_CACHE" | awk -v p="$pid" '$2==p {found=1; exit} END {exit !found}'
+    echo "$_PS_CACHE" | awk -v p="$pid" -v cpg="$_CCM_PGID" '
+        $2==p && $4!="caffeinate" && $3!=cpg {found=1; exit}
+        END {exit !found}
+    '
 }
 
 # Detect state of a single pane by its PID and pane target
