@@ -763,7 +763,8 @@ _dashboard_save() {
     fi
 
     ccm_init_dirs
-    if (ccm_snapshot_save "$name") 2>/dev/null; then
+    local save_output
+    if save_output=$( (ccm_snapshot_save "$name") 2>&1 ); then
         echo "  ${COLOR_GREEN}Saved: $name${COLOR_RESET}"
     else
         echo "  ${COLOR_RED}Save failed${COLOR_RESET}"
