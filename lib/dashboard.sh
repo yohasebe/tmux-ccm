@@ -1069,7 +1069,6 @@ ccm_inject_status() {
 
     if [[ "$mode" == "2" ]]; then
         # ── Mode 2: dedicated status line(s) with branch/port details ──
-        _apply_colored_window_format
 
         # Restore original status-right (no ccm icon) + refresh trigger
         local main_status="${original}${refresh}"
