@@ -566,8 +566,9 @@ _dashboard_add() {
         tmux set-option -wt "${session}:${win_idx}" @ccm_project "$name" 2>/dev/null
         tmux set-option -wt "${session}:${win_idx}" @ccm_dir "$expanded_dir" 2>/dev/null
         tmux send-keys -t "${session}:${win_idx}" "$CCM_CLAUDE_CMD" Enter 2>/dev/null
-        echo "  ${COLOR_GREEN}Added project: $name ($expanded_dir)${COLOR_RESET}"
-        sleep 1
+        echo "  ${COLOR_GREEN}Added: $name${COLOR_RESET}"
+        echo "  ${COLOR_DIM}Select it and press Enter to switch, or q/Esc to close${COLOR_RESET}"
+        sleep 2
     else
         echo ""
         echo "  ${COLOR_RED}Failed to create window: $win_idx${COLOR_RESET}"
