@@ -295,10 +295,15 @@ ccm_dashboard() {
     tput civis 2>/dev/null
     trap 'tput cnorm 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
 
-    # Show loading indicator immediately
+    # Show cached snapshot immediately (from previous inject-status), or Loading...
+    local snapshot_file="${CCM_TMP_DIR}/dashboard-snapshot"
     tput home 2>/dev/null
     tput ed 2>/dev/null
-    printf '\n  %s\n' "${COLOR_DIM}Loading...${COLOR_RESET}"
+    if [[ -f "$snapshot_file" ]]; then
+        cat "$snapshot_file"
+    else
+        printf '\n  %s\n' "${COLOR_DIM}Loading...${COLOR_RESET}"
+    fi
 
     local needs_rebuild=1
 
@@ -335,6 +340,9 @@ ccm_dashboard() {
         tput home 2>/dev/null
         tput ed 2>/dev/null
         printf '%s' "$buf"
+
+        # Save for instant display on next dashboard open
+        printf '%s' "$buf" > "${CCM_TMP_DIR}/dashboard-snapshot" 2>/dev/null
 
         local key
         if key=$(_read_key_ext "$refresh_interval"); then
