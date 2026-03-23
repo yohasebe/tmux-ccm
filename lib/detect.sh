@@ -14,6 +14,8 @@ _refresh_scan_cache() {
     _PANES_CACHE=$(tmux list-panes -a -F '#{session_name}:#{window_index}	#{pane_pid}	#{pane_id}' 2>/dev/null)
     # Extended pane info for tree view (includes path and size)
     _PANES_EXT_CACHE=$(tmux list-panes -a -F '#{session_name}:#{window_index}	#{pane_id}	#{pane_pid}	#{pane_current_path}	#{pane_width}x#{pane_height}' 2>/dev/null)
+    # Batch: get all ccm window options in one call
+    _WIN_OPTS_CACHE=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_prev_state}	#{@ccm_done}	#{@ccm_project}' 2>/dev/null)
     _SCAN_CACHE_TIME=$(date +%s)
 }
 
@@ -68,7 +70,15 @@ _detect_pane_state() {
         return
     fi
 
-    # Check for permission prompt via screen capture
+    # Check children first (cheap, from ps cache)
+    # If no children → IDLE (skip expensive capture-pane)
+    if ! _has_children "$claude_pid"; then
+        echo "IDLE"
+        return
+    fi
+
+    # Has children → BUSY or PERMIT
+    # Use capture-pane (expensive) only when needed to detect PERMIT
     local captured
     captured=$(tmux capture-pane -t "$pane_target" -p -S -10 2>/dev/null)
     local near_bottom
@@ -79,15 +89,7 @@ _detect_pane_state() {
         return
     fi
 
-    # Process-based BUSY detection:
-    # Claude Code spawns child processes (caffeinate, gh, zsh) while actively working.
-    # When idle (waiting for user input), claude has zero children.
-    if _has_children "$claude_pid"; then
-        echo "BUSY"
-        return
-    fi
-
-    echo "IDLE"
+    echo "BUSY"
 }
 
 # Detect the raw state of a window by scanning all its panes
@@ -162,28 +164,24 @@ ccm_detect_window_state() {
     local raw_state
     raw_state=$(_detect_window_state "$win_target")
 
-    local prev_state
-    prev_state=$(tmux show-option -wt "$win_target" -qv @ccm_prev_state 2>/dev/null) || true
+    _ensure_scan_cache
+    # Read prev_state and done_flag from batch cache (no tmux call)
+    local cached_line
+    cached_line=$(echo "$_WIN_OPTS_CACHE" | awk -F'\t' -v w="$win_target" '$1==w {print $2"\t"$3"\t"$4; exit}')
+    local prev_state done_flag project_name
+    IFS=$'\t' read -r prev_state done_flag project_name <<< "$cached_line"
 
     tmux set-option -wt "$win_target" @ccm_prev_state "$raw_state" 2>/dev/null
 
     # PERMIT notification: notify when newly entering PERMIT state
     if [[ "$raw_state" == "PERMIT" && "$prev_state" != "PERMIT" ]]; then
-        local project_name
-        project_name=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
         [[ -n "$project_name" ]] && ccm_notify "PERMIT" "$project_name"
     fi
 
     # DONE detection: BUSY/PERMIT → IDLE transition
-    # Prompt check (❯) already prevents false IDLE during text generation
     if [[ "$raw_state" == "IDLE" ]]; then
-        local done_flag
-        done_flag=$(tmux show-option -wt "$win_target" -qv @ccm_done 2>/dev/null) || true
-
         if [[ "$prev_state" == "BUSY" || "$prev_state" == "PERMIT" ]]; then
             tmux set-option -wt "$win_target" @ccm_done "1" 2>/dev/null
-            local project_name
-            project_name=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
             [[ -z "$project_name" ]] && project_name=$(tmux display-message -t "$win_target" -p '#{window_name}' 2>/dev/null)
             tmux display-message "✔ ${project_name}: response complete" 2>/dev/null
             ccm_notify "DONE" "$project_name"
