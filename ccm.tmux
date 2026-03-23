@@ -24,7 +24,7 @@ tmux bind-key "$CCM_KEY_DASHBOARD" \
 
 tmux bind-key "$CCM_KEY_MENU" \
     run-shell "$_session_cmd" \\\; \
-    display-popup -E -w 60% -h 40% -T " ccm Menu " "$CCM_BIN menu"
+    display-popup -E -w 80% -h 60% -T " ccm Menu " "$CCM_BIN menu"
 
 tmux bind-key "$CCM_KEY_TREE" \
     run-shell "$_session_cmd" \\\; \

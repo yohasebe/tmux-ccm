@@ -49,8 +49,7 @@ ccm_menu() {
 
     case "$choice" in
         "Dashboard")
-            # Launch dashboard in a new popup with proper size (current popup closes on exit)
-            tmux display-popup -E -w 80% -h 60% -T " ccm Dashboard " "$CCM_ROOT/ccm dashboard"
+            ccm_dashboard
             ;;
         "Add Project")
             echo -n "Directory: "
