@@ -56,6 +56,26 @@ _read_line_cancelable() {
     done
 }
 
+# Format elapsed time since a Unix timestamp (e.g., "5s", "3m", "2h", "1d")
+# Uses $_FORMAT_NOW if set (avoid repeated date +%s calls in loops)
+_format_elapsed() {
+    local ts="$1"
+    [[ -z "$ts" || "$ts" == "0" ]] && return
+    local now="${_FORMAT_NOW:-$(date +%s)}"
+    local elapsed=$(( now - ts ))
+    [[ $elapsed -lt 0 ]] && return
+
+    if [[ $elapsed -lt 60 ]]; then
+        echo "${elapsed}s"
+    elif [[ $elapsed -lt 3600 ]]; then
+        echo "$(( elapsed / 60 ))m"
+    elif [[ $elapsed -lt 86400 ]]; then
+        echo "$(( elapsed / 3600 ))h"
+    else
+        echo "$(( elapsed / 86400 ))d"
+    fi
+}
+
 # Shorten directory path based on available width
 _format_dir() {
     local dir="$1"
@@ -79,8 +99,119 @@ _state_icon() {
         DONE)   echo "${COLOR_GREEN}✔ DONE${COLOR_RESET}" ;;
         SHELL)  echo "${COLOR_BLUE}■ SHELL${COLOR_RESET}" ;;
         DOWN)   echo "${COLOR_DIM}○ DOWN${COLOR_RESET}" ;;
-        WORK)   echo "${COLOR_GREEN}★ WORK${COLOR_RESET}" ;;
     esac
+}
+
+# Instant project list from saved tmux options + hook signal files
+# Uses @ccm_prev_state + hook signals for most up-to-date state
+_build_project_list_cached() {
+    local current_session
+    current_session=$(_ccm_session)
+    local current_win_idx
+    current_win_idx=$(tmux display-message -p '#{window_index}' 2>/dev/null)
+    local current_target="${current_session}:${current_win_idx}"
+
+    # Single tmux call to get all ccm-tagged windows
+    # Use awk to emit fixed 7 fields (replace empty with "-") to avoid bash read skipping
+    local all_windows
+    all_windows=$(tmux list-windows -a -F '#{session_name}	#{window_index}	#{@ccm_project}	#{@ccm_dir}	#{@ccm_prev_state}	#{@ccm_done}	#{@ccm_last_done}' 2>/dev/null \
+        | awk -F'\t' '$3 != "" {OFS="\t"; for(i=1;i<=7;i++) if($i=="") $i="-"; print}')
+    [[ -z "$all_windows" ]] && return
+
+    local -a _tmp_targets=() _tmp_projects=() _tmp_dirs=() _tmp_states=() _tmp_last_done=()
+    local current_pos=-1
+    local _tmp_count=0
+    local now_ts
+    now_ts=$(date +%s)
+
+    while IFS=$'\t' read -r sess win_idx project dir prev_state done_flag last_done; do
+        [[ "$prev_state" == "-" ]] && prev_state=""
+        [[ "$done_flag" == "-" ]] && done_flag=""
+        [[ "$last_done" == "-" ]] && last_done=""
+        local win_target="${sess}:${win_idx}"
+        # Determine display state from cached prev_state, done_flag, and hook signals
+        local state="${prev_state:-IDLE}"
+        if [[ "$state" == "IDLE" && -n "$done_flag" ]]; then
+            local done_age=$(( now_ts - ${done_flag:-0} ))
+            [[ $done_age -ge 0 && $done_age -lt ${CCM_DONE_TIMEOUT:-30} ]] && state="DONE"
+        fi
+        # Override with hook signal if more recent (real-time accuracy)
+        if [[ "$dir" != "-" && -n "$dir" ]]; then
+            local hook_signal
+            hook_signal=$(_ccm_read_hook_signal "$dir")
+            if [[ -n "$hook_signal" ]]; then
+                local hook_ts="${hook_signal%% *}"
+                local hook_state="${hook_signal##* }"
+                local hook_age=$(( now_ts - hook_ts ))
+                if [[ "$hook_state" == "BUSY" && $hook_age -lt ${CCM_HOOK_TIMEOUT:-300} && "$state" != "PERMIT" ]]; then
+                    state="BUSY"
+                elif [[ "$hook_state" == "DONE" && $hook_age -lt ${CCM_DONE_TIMEOUT:-30} && "$state" == "IDLE" ]]; then
+                    state="DONE"
+                fi
+            fi
+        fi
+
+        if [[ "$win_target" == "$current_target" ]]; then
+            current_pos=$_tmp_count
+        fi
+        _tmp_targets+=("$win_target")
+        _tmp_projects+=("$project")
+        _tmp_dirs+=("$dir")
+        _tmp_states+=("$state")
+        _tmp_last_done+=("$last_done")
+        _tmp_count=$((_tmp_count + 1))
+    done <<< "$all_windows"
+
+    # Reorder: current window last
+    local -a order=()
+    for ((i=0; i<_tmp_count; i++)); do
+        [[ $i -ne $current_pos ]] && order+=("$i")
+    done
+    [[ $current_pos -ge 0 ]] && order+=("$current_pos")
+
+    _FORMAT_NOW=$now_ts
+    for i in "${order[@]}"; do
+        _SESSION_COUNT=$((_SESSION_COUNT + 1))
+        local project="${_tmp_projects[$i]}"
+        local dir="${_tmp_dirs[$i]}"
+        local state="${_tmp_states[$i]}"
+        local win_target="${_tmp_targets[$i]}"
+        local win_idx="${win_target##*:}"
+        local display_dir="${dir/#$HOME/~}"
+        display_dir=$(_format_dir "$display_dir")
+        local status_icon
+        status_icon=$(_state_icon "$state")
+
+        # Read git/port from cache files (no git/lsof execution)
+        local branch="" ports=""
+        local branch_display="" port_display=""
+        local expanded="${dir/#\~/$HOME}"
+        local cache_key
+        cache_key=$(_ccm_md5 "$expanded")
+        local git_cache="${CCM_GIT_CACHE_DIR}/${cache_key}"
+        local port_cache="${CCM_PORT_CACHE_DIR}/${cache_key}"
+        [[ -f "$git_cache" ]] && branch=$(cat "$git_cache" 2>/dev/null)
+        [[ -f "$port_cache" ]] && ports=$(cat "$port_cache" 2>/dev/null)
+        [[ -n "$branch" ]] && branch_display="${COLOR_DIM}(${COLOR_RESET}${COLOR_CYAN}${branch}${COLOR_RESET}${COLOR_DIM})${COLOR_RESET}"
+        [[ -n "$ports" ]] && port_display=" ${COLOR_DIM}[${COLOR_RESET}${COLOR_YELLOW}:${ports}${COLOR_RESET}${COLOR_DIM}]${COLOR_RESET}"
+
+        # Last DONE elapsed time
+        local last_done="${_tmp_last_done[$i]}"
+        local done_display=""
+        if [[ -n "$last_done" && "$last_done" != "0" ]]; then
+            local elapsed
+            elapsed=$(_format_elapsed "$last_done")
+            [[ -n "$elapsed" ]] && done_display=" ${COLOR_GREEN}✔${COLOR_DIM}${elapsed}${COLOR_RESET}"
+        fi
+
+        _SESSION_LINES+=("${COLOR_DIM}#${win_idx}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET} ${branch_display}${port_display}${done_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
+        _SESSION_NAMES+=("$win_target")
+        _SESSION_PROJECTS+=("$project")
+        _SESSION_DIRS+=("$dir")
+        _SESSION_STATES+=("$state")
+        _SESSION_BRANCHES+=("$branch")
+        _SESSION_PORTS+=("$ports")
+    done
 }
 
 # Build project list into _SESSION_LINES array and _SESSION_COUNT
@@ -88,8 +219,7 @@ _state_icon() {
 # Deduplicates by resolved directory path
 # Current (foreground) window is placed last for easy switching
 _build_project_list() {
-    # Refresh ps cache once for this entire scan cycle
-    _refresh_ps_cache
+    local mode="${1:-}"  # "cached" = use saved state, "fast" = skip git/port, "" = full
 
     _SESSION_LINES=()
     _SESSION_NAMES=()    # window target (session:win_idx)
@@ -99,6 +229,15 @@ _build_project_list() {
     _SESSION_BRANCHES=() # git branch name
     _SESSION_PORTS=()    # listening ports
     _SESSION_COUNT=0
+
+    if [[ "$mode" == "cached" ]]; then
+        # Instant build from tmux window options only (no ps/capture-pane)
+        _build_project_list_cached
+        return
+    fi
+
+    # Refresh ps cache once for this entire scan cycle
+    _refresh_scan_cache
 
     # Track seen directories (resolved) for deduplication
     local -a _seen_dirs=()
@@ -147,10 +286,10 @@ _build_project_list() {
                 _tmp_tagged+=("1")
             else
                 local state
-                state=$(_detect_window_state "$win_target")
+                state=$(ccm_detect_window_state "$win_target")
 
                 case "$state" in
-                    IDLE|BUSY|PERMIT)
+                    IDLE|BUSY|PERMIT|DONE)
                         local udir
                         udir=$(tmux display-message -t "$win_target" -p '#{pane_current_path}' 2>/dev/null)
                         _is_seen_dir "$udir" && continue
@@ -178,7 +317,8 @@ _build_project_list() {
     done
     [[ $current_pos -ge 0 ]] && order+=("$current_pos")
 
-    # Build final arrays with renumbered IDs
+    _FORMAT_NOW=$(date +%s)
+    # Build final arrays with window indices (matching tmux window list)
     for i in "${order[@]}"; do
         _SESSION_COUNT=$((_SESSION_COUNT + 1))
         local project="${_tmp_projects[$i]}"
@@ -186,24 +326,35 @@ _build_project_list() {
         local state="${_tmp_states[$i]}"
         local tagged="${_tmp_tagged[$i]}"
         local win_target="${_tmp_names[$i]}"
+        local win_idx="${win_target##*:}"
 
         local display_dir="${dir/#$HOME/~}"
         display_dir=$(_format_dir "$display_dir")
         local status_icon
         status_icon=$(_state_icon "$state")
-        local branch
-        branch=$(ccm_git_branch "$dir")
-        local branch_display=""
-        [[ -n "$branch" ]] && branch_display="${COLOR_DIM}(${COLOR_RESET}${COLOR_CYAN}${branch}${COLOR_RESET}${COLOR_DIM})${COLOR_RESET}"
-        local ports
-        ports=$(ccm_detect_ports "$dir" 2>/dev/null)
-        local port_display=""
-        [[ -n "$ports" ]] && port_display=" ${COLOR_DIM}[${COLOR_RESET}${COLOR_YELLOW}:${ports}${COLOR_RESET}${COLOR_DIM}]${COLOR_RESET}"
+        local branch="" ports=""
+        local branch_display="" port_display=""
+        if [[ "$mode" != "fast" ]]; then
+            branch=$(ccm_git_branch "$dir")
+            [[ -n "$branch" ]] && branch_display="${COLOR_DIM}(${COLOR_RESET}${COLOR_CYAN}${branch}${COLOR_RESET}${COLOR_DIM})${COLOR_RESET}"
+            ports=$(ccm_detect_ports "$dir" 2>/dev/null)
+            [[ -n "$ports" ]] && port_display=" ${COLOR_DIM}[${COLOR_RESET}${COLOR_YELLOW}:${ports}${COLOR_RESET}${COLOR_DIM}]${COLOR_RESET}"
+        fi
+
+        # Last DONE elapsed time
+        local last_done
+        last_done=$(tmux show-option -wt "$win_target" -qv @ccm_last_done 2>/dev/null) || true
+        local done_display=""
+        if [[ -n "$last_done" && "$last_done" != "0" ]]; then
+            local elapsed
+            elapsed=$(_format_elapsed "$last_done")
+            [[ -n "$elapsed" ]] && done_display=" ${COLOR_GREEN}✔${COLOR_DIM}${elapsed}${COLOR_RESET}"
+        fi
 
         if [[ "$tagged" == "1" ]]; then
-            _SESSION_LINES+=("${COLOR_DIM}#${_SESSION_COUNT}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET} ${branch_display}${port_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
+            _SESSION_LINES+=("${COLOR_DIM}#${win_idx}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET} ${branch_display}${port_display}${done_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
         else
-            _SESSION_LINES+=("${COLOR_DIM}#${_SESSION_COUNT}${COLOR_RESET} ${status_icon}  ${COLOR_DIM}${project}${COLOR_RESET} ${branch_display}${port_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
+            _SESSION_LINES+=("${COLOR_DIM}#${win_idx}${COLOR_RESET} ${status_icon}  ${COLOR_DIM}${project}${COLOR_RESET} ${branch_display}${port_display}${done_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
         fi
         _SESSION_NAMES+=("$win_target")
         _SESSION_PROJECTS+=("$project")
@@ -249,7 +400,7 @@ _do_attach() {
 
     if [[ -n "$project_tag" ]]; then
         local state
-        state=$(_detect_window_state "$win_target")
+        state=$(ccm_detect_window_state "$win_target")
         [[ "$state" == "SHELL" ]] && ccm_auto_start_claude "$win_target"
     fi
 
@@ -293,26 +444,15 @@ ccm_dashboard() {
     echo $$ > "$pidfile"
 
     tput civis 2>/dev/null
-    trap 'tput cnorm 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
+    stty -echo 2>/dev/null
+    trap 'tput cnorm 2>/dev/null; stty echo 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
 
-    # Show cached snapshot immediately (from previous inject-status), or Loading...
-    local snapshot_file="${CCM_TMP_DIR}/dashboard-snapshot"
-    tput home 2>/dev/null
-    tput ed 2>/dev/null
-    if [[ -f "$snapshot_file" ]]; then
-        cat "$snapshot_file"
-    else
-        printf '\n  %s\n' "${COLOR_DIM}Loading...${COLOR_RESET}"
-    fi
-
-    local needs_rebuild=1
+    # Instant first paint from cached tmux options (no ps/capture-pane)
+    # Full rebuild happens on the first timeout cycle (user can interact immediately)
+    _build_project_list cached
+    local needs_rebuild=0
 
     while true; do
-        # Only rebuild project list on timeout or after mutations (add/remove/register)
-        if [[ $needs_rebuild -eq 1 ]]; then
-            _build_project_list
-            needs_rebuild=0
-        fi
 
         # Clamp selection
         if [[ $_SESSION_COUNT -gt 0 ]]; then
@@ -341,8 +481,25 @@ ccm_dashboard() {
         tput ed 2>/dev/null
         printf '%s' "$buf"
 
-        # Save for instant display on next dashboard open
-        printf '%s' "$buf" > "${CCM_TMP_DIR}/dashboard-snapshot" 2>/dev/null
+        # Rebuild after rendering (first cycle: upgrade from cached to full data)
+        if [[ $needs_rebuild -eq 1 ]]; then
+            _build_project_list
+            needs_rebuild=0
+            # Process any keys typed during rebuild (arrow keys for selection)
+            while read -rsn1 -t 0.01 _key 2>/dev/null; do
+                if [[ "$_key" == $'\033' ]]; then
+                    local _seq
+                    read -rsn2 -t 0.01 _seq 2>/dev/null || true
+                    case "$_seq" in
+                        '[A') selected=$((selected - 1)) ;;
+                        '[B') selected=$((selected + 1)) ;;
+                    esac
+                elif [[ "$_key" == "j" ]]; then selected=$((selected + 1))
+                elif [[ "$_key" == "k" ]]; then selected=$((selected - 1))
+                fi
+            done
+            continue  # Re-render immediately with fresh data
+        fi
 
         local key
         if key=$(_read_key_ext "$refresh_interval"); then
@@ -609,8 +766,7 @@ _dashboard_remove() {
 
 # Dashboard: register an unregistered window as ccm project
 _dashboard_register() {
-    local _unused="$1"  # selected idx (kept for backward compat signature)
-
+    # $1 (selected idx) is not used — registration picks from untagged windows
     # Collect unregistered windows from current session
     local session
     session=$(_ccm_session)
@@ -836,7 +992,7 @@ _scan_active_windows() {
                 fi
                 # In active-only mode, check if claude is running
                 local state
-                state=$(_detect_window_state "$win_target")
+                state=$(ccm_detect_window_state "$win_target")
                 case "$state" in
                     BUSY|PERMIT|DONE) ;;
                     *) continue ;;
@@ -914,20 +1070,22 @@ _ccm_priority_color() {
     fi
 }
 
-# Determine the highest-priority icon
+# Determine the highest-priority icon (with window index for active states)
+# Format: "WIN: STATUS ICON" (e.g. "3: PERMIT ⚠") or "≡" when all idle
 _ccm_priority_icon() {
-    local has_permit=0 has_busy=0 has_done=0
+    local permit_wins="" busy_wins="" done_wins=""
     for ((i=0; i<_SL_COUNT; i++)); do
+        local win="${_SL_WINIDS[$i]}"
         case "${_SL_STATES[$i]}" in
-            PERMIT) has_permit=1 ;;
-            BUSY)   has_busy=1 ;;
-            DONE)   has_done=1 ;;
+            PERMIT) permit_wins+="${permit_wins:+,}${win}" ;;
+            BUSY)   busy_wins+="${busy_wins:+,}${win}" ;;
+            DONE)   done_wins+="${done_wins:+,}${win}" ;;
         esac
     done
 
-    if [[ $has_permit -eq 1 ]]; then echo "⚠ PERMIT"
-    elif [[ $has_busy -eq 1 ]]; then echo "◉ BUSY"
-    elif [[ $has_done -eq 1 ]]; then echo "✔ DONE"
+    if [[ -n "$permit_wins" ]]; then echo "${permit_wins}: PERMIT ⚠"
+    elif [[ -n "$busy_wins" ]]; then echo "${busy_wins}: BUSY ◉"
+    elif [[ -n "$done_wins" ]]; then echo "${done_wins}: DONE ✔"
     else echo "≡"
     fi
 }
@@ -970,19 +1128,57 @@ _build_detail_entries() {
 }
 
 ccm_inject_status() {
-    # Prevent concurrent execution (PID-based check)
+    # Prevent concurrent execution (PID + age-based check)
     local pidfile="${CCM_TMP_DIR}/inject.pid"
     mkdir -p "$CCM_TMP_DIR" 2>/dev/null
     if [[ -f "$pidfile" ]]; then
         local old_pid
         old_pid=$(cat "$pidfile" 2>/dev/null)
         if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
-            return
+            # Check age — stale if older than 30 seconds (tmux may have killed it)
+            local pid_age=0
+            local pid_mtime
+            pid_mtime=$(stat -f %m "$pidfile" 2>/dev/null || stat -c %Y "$pidfile" 2>/dev/null || echo 0)
+            local now_ts
+            now_ts=$(date +%s)
+            pid_age=$(( now_ts - pid_mtime ))
+            if [[ $pid_age -lt 30 ]]; then
+                return
+            fi
         fi
         rm -f "$pidfile"
     fi
     echo $$ > "$pidfile"
     trap 'rm -f "$pidfile"' EXIT RETURN
+
+    # Detect if status-right was changed externally (by theme plugins, etc.)
+    # If current status-right doesn't contain our inject marker, a theme/plugin
+    # has overwritten it — save the new value as the original before re-injecting.
+    local _current_sr
+    _current_sr=$(tmux show-option -gv status-right 2>/dev/null)
+    if ! printf '%s' "$_current_sr" | grep -q 'inject-status' 2>/dev/null; then
+        tmux set -g @ccm-orig-status-right "$_current_sr" 2>/dev/null
+        tmux set -g @ccm-orig-sr-length "$(tmux show-option -gv status-right-length 2>/dev/null)" 2>/dev/null
+        # Clear status cache to force re-injection
+        rm -f "${CCM_TMP_DIR}/status-cache" 2>/dev/null
+    fi
+
+    # Sanitize: ensure @ccm-orig-status-right doesn't contain inject-status calls
+    # or ccm icon fragments (can happen if a corrupted status-right was saved)
+    # Note: bg=#3a3a3a is ccm's icon background color — update regex if changed
+    local orig_check
+    orig_check=$(tmux show-option -gqv @ccm-orig-status-right 2>/dev/null)
+    if printf '%s' "$orig_check" | grep -q 'inject-status' 2>/dev/null; then
+        orig_check=$(python3 -c "
+import re, sys
+s = sys.argv[1]
+s = re.sub(r'#\([^)]*inject-status[^)]*\)', '', s)
+s = re.sub(r'#\[fg=[^]]*bg=#3a3a3a[^]]*\][^#]*#\[default\]', '', s)
+print(s, end='')
+" "$orig_check" 2>/dev/null) || true
+        tmux set -g @ccm-orig-status-right "$orig_check" 2>/dev/null
+        rm -f "${CCM_TMP_DIR}/status-cache" 2>/dev/null
+    fi
 
     # Check mode: 0=window icons only, 1=icon in status-right, 2=dedicated line(s)
     local mode
@@ -1154,13 +1350,20 @@ ccm_inject_status() {
         local new_status
         if [[ $_SL_COUNT -eq 0 ]]; then
             # All idle — dim hamburger icon
-            new_status="${original}#[fg=#666666,bg=#3a3a3a] ≡ #[default]${refresh}"
+            new_status="${original}#[fg=#666666,bg=#3a3a3a] ≡ ${refresh}"
         else
             local icon_color icon_char
             icon_color=$(_ccm_priority_color)
             icon_char=$(_ccm_priority_icon)
-            new_status="${original}#[fg=${icon_color},bg=#3a3a3a,bold] ${icon_char}  #[default]${refresh}"
+            new_status="${original}#[fg=${icon_color},bg=#3a3a3a,bold] ${icon_char} ${refresh}"
         fi
+
+        # Always ensure status-right-length is extended for ccm content
+        local orig_len
+        orig_len=$(tmux show-option -gqv @ccm-orig-sr-length 2>/dev/null)
+        orig_len="${orig_len:-40}"
+        local new_len=$(( orig_len + 40 ))
+        tmux set -g status-right-length "$new_len" 2>/dev/null
 
         if [[ "$new_status" != "$prev_status" ]]; then
             echo "$new_status" > "$cache_file"
@@ -1180,7 +1383,7 @@ ccm_inject_status() {
         windows=$(ccm_list_windows 2>/dev/null)
         if [[ -n "$windows" ]]; then
             ccm_init_dirs
-            (ccm_snapshot_save "_autosave") 2>/dev/null
+            (ccm_snapshot_save "_autosave") &>/dev/null
             echo "$now" > "$autosave_marker"
         fi
     fi
@@ -1192,7 +1395,7 @@ ccm_inject_status() {
 # Sets _TREE_LINES (display), _TREE_TARGETS (win_target or ""), _TREE_COUNT, _TREE_SELECTABLE[]
 _build_tree_data() {
     # Refresh ps cache once for this entire scan cycle
-    _refresh_ps_cache
+    _refresh_scan_cache
 
     _TREE_LINES=()
     _TREE_TARGETS=()    # window target for selectable lines, empty for non-selectable
@@ -1242,11 +1445,7 @@ _build_tree_data() {
             local win_target="${sess}:${win_idx}"
 
             local state icon=""
-            if [[ -n "$project" ]]; then
-                state=$(ccm_detect_window_state "$win_target")
-            else
-                state=$(_detect_window_state "$win_target")
-            fi
+            state=$(ccm_detect_window_state "$win_target")
             case "$state" in
                 PERMIT) icon="${COLOR_YELLOW}⚠${COLOR_RESET} " ;;
                 BUSY)   icon="${COLOR_CYAN}◉${COLOR_RESET} " ;;
@@ -1392,7 +1591,7 @@ ccm_tree_interactive() {
                             project_tag=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
                             if [[ -n "$project_tag" ]]; then
                                 local state
-                                state=$(_detect_window_state "$win_target")
+                                state=$(ccm_detect_window_state "$win_target")
                                 [[ "$state" == "SHELL" ]] && ccm_auto_start_claude "$win_target"
                             fi
                             ccm_clear_done "$win_target"

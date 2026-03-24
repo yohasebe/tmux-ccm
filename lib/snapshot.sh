@@ -26,6 +26,9 @@ ccm_snapshot_save() {
 
     local projects="[]"
     while IFS=$'\t' read -r win_idx win_name project dir; do
+        # Skip entries with empty project or dir
+        [[ -z "$project" || -z "$dir" ]] && continue
+
         # Replace $HOME with ~ for portability
         dir="${dir/#$HOME/\~}"
 
@@ -72,11 +75,18 @@ ccm_snapshot_load() {
 
     echo "Loading snapshot: $name ($project_count projects)"
 
+    # Suppress autosave during load to prevent overwriting the source snapshot
+    export _CCM_LOADING_SNAPSHOT=1
+
     for i in $(seq 0 $((project_count - 1))); do
         local proj_name proj_dir auto_start
         proj_name=$(jq -r ".projects[$i].name" "$file")
         proj_dir=$(jq -r ".projects[$i].dir" "$file")
         auto_start=$(jq -r ".projects[$i].auto_start_claude // true" "$file")
+
+        # Skip null/empty entries
+        [[ -z "$proj_name" || "$proj_name" == "null" ]] && continue
+        [[ -z "$proj_dir" || "$proj_dir" == "null" ]] && continue
 
         proj_dir=$(ccm_expand_path "$proj_dir")
 
@@ -92,6 +102,13 @@ ccm_snapshot_load() {
 
         ccm_add "$proj_dir" "$proj_name" "$auto_start"
     done
+
+    unset _CCM_LOADING_SNAPSHOT
+
+    # Save autosave after all projects are loaded
+    if ! (ccm_snapshot_save "_autosave") 2>/dev/null; then
+        ccm_warn "Failed to save autosave snapshot after load"
+    fi
 
     ccm_info "Snapshot loaded: $name"
 }

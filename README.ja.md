@@ -1,5 +1,7 @@
 # ccm - Claude Code Manager for tmux
 
+**[English README](README.md)**
+
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 向けのtmuxベースのマルチプロジェクト管理ツール。複数のClaude Codeセッションをtmuxウィンドウとして管理し、インタラクティブなダッシュボード、状態検出、スナップショット機能を提供します。
 
 **ダッシュボード** (`prefix + Tab`):
@@ -209,6 +211,8 @@ ccm menu                          インタラクティブメニュー
 ccm snapshot save|load|list|delete  スナップショット管理
 ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
+ccm setup-hooks                   Claude Codeフックをインストール（検出精度向上）
+ccm remove-hooks                  Claude Codeフックをアンインストール
 ```
 
 ### ステータスアイコン
@@ -217,10 +221,26 @@ ccm stop [--all|name]             プロジェクト停止（--all時は_autosav
 |----------|------|------|
 | ⚠ | PERMIT | ユーザーの許可待ち |
 | ◉ | BUSY | Claude処理中 |
-| ✔ | DONE | レスポンス完了（自動検出） |
+| ✔ | DONE | レスポンス完了（30秒後に自動クリア） |
 | ● | IDLE | 入力待ち |
 | ■ | SHELL | シェルのみ（Claude未起動） |
 | ○ | DOWN | ウィンドウ利用不可 |
+
+### Claude Codeフック（推奨）
+
+より正確な状態検出のために、Claude Codeフックをインストールします：
+
+```bash
+ccm setup-hooks
+```
+
+`~/.claude/settings.json` にフックが追加され、状態変化を通知します：
+- **UserPromptSubmit** → プロンプト送信時にBUSYをマーク（テキスト生成を検出）
+- **Stop** → Claude応答完了時にDONEをマーク
+
+フックなしの場合、ccmはプロセスツリー検査を使用しますが、テキスト生成中をBUSYとして検出できません（IDLEと表示されます）。フックはオプションです — インストールしなくても動作しますが、検出精度が低下します。
+
+削除するには: `ccm remove-hooks`
 
 ### スナップショット
 
@@ -238,11 +258,22 @@ ccm start my-workspace
 ccm start _autosave   # 前回のセッションを復元
 ```
 
+#### tmux起動時の自動復元
+
+tmux起動時に最後の `_autosave` スナップショットを自動復元：
+
+```tmux
+set -g @ccm-auto-restore "on"    # デフォルト: off
+```
+
+有効にすると、tmux起動時にTPM経由で `_autosave` スナップショットを自動ロードします（既にccmプロジェクトがある場合はスキップ）。
+
 ## 仕組み
 
 - プロジェクトはtmuxウィンドウの `@ccm_project` / `@ccm_dir` タグで管理
 - Claude Codeの状態はプロセスツリー検査で検出（画面スクレイピングではない）
-- DONE状態はBUSY/PERMIT → IDLE遷移で自動検出
+- DONE状態はBUSY/PERMIT → IDLE遷移で自動検出（30秒後に自動クリア）
+- tmuxテーマとの併用に対応（status-rightの変更を自動検出）
 - gitブランチとポート情報は30秒キャッシュで負荷軽減
 - ポップアップ内のセッション検出は一時ファイル（`$TMPDIR/ccm-$UID/`）経由
 

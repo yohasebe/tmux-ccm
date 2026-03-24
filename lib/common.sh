@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 # ccm - common functions and constants
 
-# Prefix for ccm-managed tmux sessions (kept for backward compat)
-CCM_SESSION_PREFIX="ccm-"
-
 # Runtime data directory
 CCM_DATA_DIR="${HOME}/.local/share/ccm"
 CCM_SNAPSHOT_DIR="${CCM_DATA_DIR}/snapshots"
@@ -14,6 +11,17 @@ CCM_TMP_DIR="${TMPDIR:-/tmp}/ccm-${UID}"
 
 # Dashboard refresh interval (seconds)
 CCM_DASHBOARD_INTERVAL=2
+
+# DONE state auto-clear timeout (seconds)
+CCM_DONE_TIMEOUT=30
+
+# Hook signal directory and timeout
+CCM_HOOK_DIR="${CCM_TMP_DIR}/hooks"
+# Safety timeout for BUSY hook signal (seconds) — if Claude crashes,
+# the BUSY signal expires after this period
+CCM_HOOK_TIMEOUT=300
+# Timeout for hook commands in Claude Code settings (milliseconds)
+CCM_HOOK_CMD_TIMEOUT=5000
 
 # Popup size (percentage)
 CCM_POPUP_WIDTH="80%"
@@ -26,6 +34,9 @@ CCM_POPUP_HEIGHT="60%"
 CCM_CLAUDE_PROCESS_NAME="claude"
 # Screen text pattern for permission prompts (grep -Ei compatible)
 CCM_PATTERN_PERMIT='(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc to cancel)'
+# Claude Code input prompt pattern (visible when IDLE, absent during PERMIT)
+# Note: Claude Code uses ❯ (U+276F) followed by non-breaking space (U+00A0)
+CCM_PATTERN_INPUT_PROMPT='^[>❯›]'
 # Commands to start Claude Code
 CCM_CLAUDE_CMD="claude --resume 2>/dev/null || claude"
 CCM_CLAUDE_CMD_RESUME="claude --continue 2>/dev/null || claude"
@@ -105,12 +116,12 @@ STATUS_IDLE="● IDLE"
 STATUS_BUSY="◉ BUSY"
 STATUS_DONE="✔ DONE"
 STATUS_SHELL="■ SHELL"
-STATUS_WORK="★ WORK"
 STATUS_DOWN="○ DOWN"
 
 # Ensure runtime directories exist
 ccm_init_dirs() {
-    mkdir -p "$CCM_SNAPSHOT_DIR" "$CCM_STATE_DIR" "$CCM_TMP_DIR" 2>/dev/null
+    mkdir -p "$CCM_SNAPSHOT_DIR" "$CCM_STATE_DIR" "$CCM_TMP_DIR" "$CCM_HOOK_DIR" \
+             "$CCM_PORT_CACHE_DIR" "$CCM_GIT_CACHE_DIR" 2>/dev/null
 
     # Clean up stale cache/lock files (older than 1 hour)
     find "$CCM_TMP_DIR" -maxdepth 2 -type f -mmin +60 -delete 2>/dev/null || true
@@ -206,30 +217,6 @@ ccm_project_dir() {
     tmux show-option -wt "${session}:${idx}" -qv @ccm_dir 2>/dev/null
 }
 
-# Legacy compatibility: session name mapping
-ccm_session_name() {
-    local name="$1"
-    echo "${CCM_SESSION_PREFIX}${name}"
-}
-
-ccm_project_name() {
-    local session="$1"
-    echo "${session#$CCM_SESSION_PREFIX}"
-}
-
-# List ccm sessions (legacy, for backward compat)
-ccm_list_sessions() {
-    tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${CCM_SESSION_PREFIX}" || true
-}
-
-# Check if a ccm session exists (legacy)
-ccm_session_exists() {
-    local name="$1"
-    local session
-    session=$(ccm_session_name "$name")
-    tmux has-session -t "$session" 2>/dev/null
-}
-
 # Validate and sanitize a project name
 # Returns sanitized name or exits with error if invalid
 ccm_validate_name() {
@@ -276,6 +263,104 @@ ccm_check_deps() {
     fi
 }
 
+# Remove ccm hook entries from a settings JSON string (helper)
+# Reads JSON from stdin, outputs cleaned JSON to stdout
+_ccm_strip_hooks() {
+    jq '
+        if .hooks then
+            .hooks.UserPromptSubmit = [
+                .hooks.UserPromptSubmit[]? |
+                select(.hooks | any(.command | test("on-prompt-submit\\.sh")) | not)
+            ] |
+            .hooks.Stop = [
+                .hooks.Stop[]? |
+                select(.hooks | any(.command | test("on-stop\\.sh")) | not)
+            ] |
+            if (.hooks.UserPromptSubmit | length) == 0 then del(.hooks.UserPromptSubmit) else . end |
+            if (.hooks.Stop | length) == 0 then del(.hooks.Stop) else . end |
+            if (.hooks | length) == 0 then del(.hooks) else . end
+        else . end
+    '
+}
+
+# Write JSON to settings file atomically (temp file + mv)
+_ccm_write_settings() {
+    local settings_file="$1"
+    local content="$2"
+    local tmp_file
+    tmp_file=$(mktemp "${settings_file}.tmp.XXXXXX") || ccm_die "Failed to create temp file"
+    printf '%s\n' "$content" > "$tmp_file" || { rm -f "$tmp_file"; ccm_die "Failed to write temp file"; }
+    mv -f "$tmp_file" "$settings_file" || { rm -f "$tmp_file"; ccm_die "Failed to replace settings file"; }
+}
+
+# Install Claude Code hooks for improved state detection
+# Adds UserPromptSubmit and Stop hooks to ~/.claude/settings.json
+ccm_setup_hooks() {
+    local settings_file="${HOME}/.claude/settings.json"
+    local hooks_dir="${CCM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/hooks"
+
+    if [[ ! -f "${hooks_dir}/on-prompt-submit.sh" ]]; then
+        ccm_die "Hook scripts not found at ${hooks_dir}/"
+    fi
+
+    # Ensure settings directory exists
+    mkdir -p "$(dirname "$settings_file")" 2>/dev/null
+
+    # Read existing settings or start with empty object
+    local existing="{}"
+    if [[ -f "$settings_file" ]]; then
+        # Create backup
+        cp "$settings_file" "${settings_file}.bak" 2>/dev/null || true
+        existing=$(cat "$settings_file")
+    fi
+
+    local prompt_hook="${hooks_dir}/on-prompt-submit.sh"
+    local stop_hook="${hooks_dir}/on-stop.sh"
+    local timeout="${CCM_HOOK_CMD_TIMEOUT:-5000}"
+
+    # Strip any existing ccm hooks first (handles path changes cleanly)
+    # then add fresh entries with current paths
+    local new_settings
+    new_settings=$(echo "$existing" | _ccm_strip_hooks | jq \
+        --arg prompt_cmd "$prompt_hook" \
+        --arg stop_cmd "$stop_hook" \
+        --argjson timeout "$timeout" '
+        .hooks //= {} |
+        .hooks.UserPromptSubmit //= [] |
+        .hooks.Stop //= [] |
+        .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $prompt_cmd, "timeout": $timeout}]}] |
+        .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}]
+    ') || ccm_die "Failed to update settings JSON"
+
+    _ccm_write_settings "$settings_file" "$new_settings"
+    ccm_info "Claude Code hooks installed successfully."
+    echo "  Settings: ${settings_file}"
+    echo "  Hooks: UserPromptSubmit → BUSY, Stop → DONE"
+    echo ""
+    echo "  Restart Claude Code to activate the hooks."
+    echo "  To remove: ccm remove-hooks"
+}
+
+# Remove ccm hooks from Claude Code settings
+ccm_remove_hooks() {
+    local settings_file="${HOME}/.claude/settings.json"
+
+    if [[ ! -f "$settings_file" ]]; then
+        ccm_warn "No settings file found at ${settings_file}"
+        return 0
+    fi
+
+    # Create backup
+    cp "$settings_file" "${settings_file}.bak" 2>/dev/null || true
+
+    local new_settings
+    new_settings=$(cat "$settings_file" | _ccm_strip_hooks) || ccm_die "Failed to update settings JSON"
+
+    _ccm_write_settings "$settings_file" "$new_settings"
+    ccm_info "ccm hooks removed from Claude Code settings."
+    echo "  Restart Claude Code to apply changes."
+}
+
 # Detect listening TCP ports for processes whose cwd matches a directory
 # Returns comma-separated port list (e.g., "3000,8080") or empty string
 # Uses a short-lived cache (10 seconds) to avoid repeated lsof calls in dashboard
@@ -288,9 +373,8 @@ ccm_detect_ports() {
     [[ ! -d "$expanded" ]] && return
 
     # Check cache (valid for 10 seconds)
-    mkdir -p "$CCM_PORT_CACHE_DIR" 2>/dev/null
     local cache_key
-    cache_key=$(echo "$expanded" | md5 2>/dev/null || echo "$expanded" | md5sum 2>/dev/null | cut -d' ' -f1)
+    cache_key=$(_ccm_md5 "$expanded")
     local cache_file="${CCM_PORT_CACHE_DIR}/${cache_key}"
     if [[ -f "$cache_file" ]]; then
         local cache_age
@@ -335,9 +419,8 @@ ccm_git_branch() {
     expanded=$(ccm_expand_path "$dir")
 
     # Check cache
-    mkdir -p "$CCM_GIT_CACHE_DIR" 2>/dev/null
     local cache_key
-    cache_key=$(echo "$expanded" | md5 2>/dev/null || echo "$expanded" | md5sum 2>/dev/null | cut -d' ' -f1)
+    cache_key=$(_ccm_md5 "$expanded")
     local cache_file="${CCM_GIT_CACHE_DIR}/${cache_key}"
     if [[ -f "$cache_file" ]]; then
         local cache_age
@@ -379,4 +462,28 @@ ccm_expand_path() {
             echo "$path"
         fi
     fi
+}
+
+# Compute MD5 hash of a string (cross-platform)
+_ccm_md5() {
+    if command -v md5 &>/dev/null; then
+        printf '%s' "$1" | md5
+    elif command -v md5sum &>/dev/null; then
+        printf '%s' "$1" | md5sum | cut -d' ' -f1
+    else
+        return 1
+    fi
+}
+
+# Read hook signal for a directory
+# Returns: "<timestamp> <state>" or empty string
+_ccm_read_hook_signal() {
+    local dir="$1"
+    local expanded
+    expanded=$(ccm_expand_path "$dir")
+
+    local cache_key
+    cache_key=$(_ccm_md5 "$expanded") || return
+    local hook_file="${CCM_HOOK_DIR}/${cache_key}"
+    [[ -f "$hook_file" ]] && cat "$hook_file"
 }

@@ -211,6 +211,8 @@ ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
+ccm setup-hooks                   Install Claude Code hooks (improved detection)
+ccm remove-hooks                  Remove ccm hooks from Claude Code settings
 ```
 
 ### Status Icons
@@ -219,10 +221,26 @@ ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 |------|-------|-------------|
 | ⚠ | PERMIT | Waiting for user permission |
 | ◉ | BUSY | Claude is processing |
-| ✔ | DONE | Response complete (auto-detected) |
+| ✔ | DONE | Response complete (auto-clears after 30s) |
 | ● | IDLE | Waiting for input |
 | ■ | SHELL | Shell active, Claude not running |
 | ○ | DOWN | Window not available |
+
+### Claude Code Hooks (Recommended)
+
+For more accurate state detection, install Claude Code hooks:
+
+```bash
+ccm setup-hooks
+```
+
+This adds hooks to `~/.claude/settings.json` that signal state changes:
+- **UserPromptSubmit** → Marks BUSY when you submit a prompt (detects text generation)
+- **Stop** → Marks DONE when Claude finishes responding
+
+Without hooks, ccm uses process tree inspection which cannot detect text generation (appears as IDLE). Hooks are optional — ccm works without them but with reduced detection accuracy.
+
+To remove: `ccm remove-hooks`
 
 ### Snapshots
 
@@ -240,11 +258,22 @@ When you run `ccm stop --all`, the current layout is auto-saved as `_autosave`:
 ccm start _autosave   # restore previous session
 ```
 
+#### Auto-Restore on tmux Start
+
+Automatically restore the last `_autosave` snapshot when tmux starts:
+
+```tmux
+set -g @ccm-auto-restore "on"    # default: off
+```
+
+When enabled, ccm loads the `_autosave` snapshot via TPM on tmux startup (only if no ccm projects are already loaded).
+
 ## How It Works
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`
 - Claude Code state is detected via process tree inspection (not screen scraping)
-- DONE state is auto-detected on BUSY/PERMIT → IDLE transitions
+- DONE state is auto-detected on BUSY/PERMIT → IDLE transitions (auto-clears after 30s)
+- Works with any tmux theme — ccm auto-detects theme changes to status-right
 - Git branch and port info are cached (30s) to minimize overhead
 - Popup session context is passed via temp file (`$TMPDIR/ccm-$UID/`)
 

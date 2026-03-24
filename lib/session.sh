@@ -62,7 +62,8 @@ ccm_add() {
     ccm_info "Added project: $name ($dir)"
 
     # Trigger immediate autosave so the new project is captured
-    (ccm_snapshot_save "_autosave") 2>/dev/null
+    # Skip during snapshot load to avoid overwriting the source snapshot
+    [[ -z "${_CCM_LOADING_SNAPSHOT:-}" ]] && (ccm_snapshot_save "_autosave") &>/dev/null
 }
 
 # Unregister a window from ccm (keep window alive, restore original name)
@@ -96,6 +97,7 @@ ccm_unregister() {
     tmux set-option -wt "$win_target" -u @ccm_orig_name 2>/dev/null
     tmux set-option -wt "$win_target" -u @ccm_prev_state 2>/dev/null
     tmux set-option -wt "$win_target" -u @ccm_done 2>/dev/null
+    tmux set-option -wt "$win_target" -u @ccm_last_done 2>/dev/null
     tmux set-option -wt "$win_target" -u @ccm_state_icon 2>/dev/null
     tmux set-option -wt "$win_target" -u @ccm_state_color 2>/dev/null
 
@@ -146,13 +148,13 @@ ccm_attach() {
     session=$(_ccm_session)
     [[ -z "$session" ]] && ccm_die "Not inside a tmux session"
 
-    # If target is a number, find by index in the project list
+    # If target is a number, treat as tmux window index
     if [[ "$target" =~ ^[0-9]+$ ]]; then
         local windows
         windows=$(ccm_list_windows)
         local line
-        line=$(echo "$windows" | sed -n "${target}p")
-        [[ -z "$line" ]] && ccm_die "No project at index: $target"
+        line=$(echo "$windows" | awk -F'\t' -v idx="$target" '$1 == idx')
+        [[ -z "$line" ]] && ccm_die "No ccm project at window index: $target"
         idx=$(echo "$line" | cut -f1)
         local name
         name=$(echo "$line" | cut -f3)
@@ -178,7 +180,7 @@ ccm_attach() {
     # If Claude Code is not running (SHELL state), auto-start it
     local pane_target="${session}:${idx}"
     local state
-    state=$(_detect_window_state "$pane_target")
+    state=$(ccm_detect_window_state "$pane_target")
     [[ "$state" == "SHELL" ]] && ccm_auto_start_claude "$pane_target"
 
     # Clear DONE flag when switching to this window
@@ -236,22 +238,22 @@ ccm_capture() {
     local session idx name
     session=$(_ccm_session)
 
-    # If target starts with # or is numeric, treat as index
+    # If target starts with # or is numeric, treat as tmux window index
     if [[ "$target" == \#* ]]; then
         local num="${target#\#}"
         local windows
         windows=$(ccm_list_windows)
         local line
-        line=$(echo "$windows" | sed -n "${num}p")
-        [[ -z "$line" ]] && ccm_die "No project at ID: $target"
+        line=$(echo "$windows" | awk -F'\t' -v idx="$num" '$1 == idx')
+        [[ -z "$line" ]] && ccm_die "No ccm project at window index: $num"
         idx=$(echo "$line" | cut -f1)
         name=$(echo "$line" | cut -f3)
     elif [[ "$target" =~ ^[0-9]+$ ]]; then
         local windows
         windows=$(ccm_list_windows)
         local line
-        line=$(echo "$windows" | sed -n "${target}p")
-        [[ -z "$line" ]] && ccm_die "No project at ID: #$target"
+        line=$(echo "$windows" | awk -F'\t' -v idx="$target" '$1 == idx')
+        [[ -z "$line" ]] && ccm_die "No ccm project at window index: $target"
         idx=$(echo "$line" | cut -f1)
         name=$(echo "$line" | cut -f3)
     else

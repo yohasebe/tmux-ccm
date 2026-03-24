@@ -123,26 +123,52 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 
 ## 状態検出
 
-ccmはClaude Codeの状態をプロセスツリー検査で検出します。画面出力の解析はPERMIT検出のみで使用しており、Claude CodeのUI変更に強い設計です。
+ccmはClaude Codeフック（推奨）とプロセスツリー検査を組み合わせたハイブリッド方式で状態を検出します。
+
+### Claude Codeフック（推奨）
+
+最良の検出精度を得るためにフックをインストールします：
+
+```bash
+ccm setup-hooks
+```
+
+`~/.claude/settings.json` に2つのフックが追加されます：
+
+| フック | 信号 | 検出内容 |
+|--------|------|----------|
+| `UserPromptSubmit` | BUSY | プロンプト送信 → Claude処理中（テキスト生成含む） |
+| `Stop` | DONE | Claude応答完了 |
+
+フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE: 30秒）。
+
+削除するには: `ccm remove-hooks`
 
 ### 各状態の検出方法
 
 | 状態 | 検出方法 | 詳細 |
 |------|----------|------|
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
-| **BUSY** | プロセスツリー | `claude` プロセスが子プロセスを持っている（ツール実行中） |
-| **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし |
+| **BUSY** | フック信号 / プロセスツリー | フック: UserPromptSubmit発火。フォールバック: `claude` が子プロセスを持つ（ツール実行中） |
+| **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし、新鮮なフック信号なし |
 | **PERMIT** | 画面キャプチャ | 末尾8行に許可キーワード（"Do you want", "Allow" 等）を検出 |
-| **DONE** | 状態遷移 | BUSY/PERMIT → IDLE への遷移を検出 |
+| **DONE** | フック信号 / 状態遷移 | フック: Stop発火。フォールバック: BUSY/PERMIT → IDLE遷移を検出 |
+
+### フックなしでの検出
+
+フックなしの場合、ccmはプロセスツリー検査のみにフォールバックします。この場合：
+- テキスト生成中（ツール未使用）はBUSYではなくIDLEと表示される
+- DONE検出はBUSY→IDLE遷移のヒューリスティクスに依存する
 
 ### DONE追跡
 
-Claude Codeが処理を完了すると（BUSY → IDLE）、ccmは：
+Claude Codeが処理を完了すると、ccmは：
 1. 状態をDONEに設定
 2. ウィンドウ名とステータスバーに `✔` を表示
-3. tmuxメッセージ `✔ project-name: response complete` を表示
+3. デスクトップ通知を送信（設定時）
 
 DONEフラグは以下の場合にクリアされます：
+- 30秒経過（自動クリア）
 - そのウィンドウに切り替えた時（ダッシュボード、ツリー、`ccm attach` 経由）
 - 新しいプロンプトを送信した時（Claudeが BUSY になりフラグがクリア）
 
@@ -191,6 +217,7 @@ tmux標準のウィンドウリストをccm形式の色付きエントリに置�
 | `●` | IDLE | グレー |
 | `■` | SHELL | 暗グレー |
 
+- DONEは30秒後に自動クリアされIDLEに戻る
 - 向いている人: status-rightを維持しつつ全プロジェクトを常時確認したい人
 - 注意: 画面が1行狭くなる（プロジェクト数に応じて自動拡張）
 
@@ -221,6 +248,16 @@ ccm stop --all
 # 翌日、前回の構成を復元
 ccm start _autosave
 ```
+
+#### tmux起動時の自動復元
+
+tmux起動時に最後の `_autosave` スナップショットを自動復元するには、`~/.tmux.conf` に以下を追加：
+
+```tmux
+set -g @ccm-auto-restore "on"    # デフォルト: off
+```
+
+TPM経由で起動時に `_autosave` をロードします。既にccmプロジェクトがある場合はスキップされます。
 
 ### スナップショット管理
 
@@ -352,7 +389,7 @@ ccmのダッシュボードやステータスバーで、追加設定なしにAg
 
 ### tmux-resurrect / tmux-continuum
 
-ccmのウィンドウオプション（`@ccm_project`、`@ccm_dir`）はセッション復元プラグインでは自動保持されません。tmux復元後は `ccm start _autosave` で最後のautosaveスナップショットからプロジェクトを再登録してください。
+ccmのウィンドウオプション（`@ccm_project`、`@ccm_dir`）はセッション復元プラグインでは自動保持されません。tmux復元後は `ccm start _autosave` で最後のautosaveスナップショットからプロジェクトを再登録してください。または `@ccm-auto-restore "on"` を設定すれば、tmux起動時に自動で復元されます。
 
 ### ステータス更新間隔
 

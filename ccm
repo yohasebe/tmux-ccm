@@ -42,11 +42,11 @@ Usage:
   ccm register <window> [name]      Register existing window as ccm project
   ccm unregister <name>             Unregister window from ccm (keep window alive)
   ccm remove <name>                 Remove a project window (kill window)
-  ccm attach <name|number>          Switch to a project window
+  ccm attach <name|window_index>    Switch to a project window
   ccm list                          List managed project windows
   ccm status                        Show all projects with Claude state
   ccm tree                          Show session/window/pane hierarchy
-  ccm capture [--copy] <name|#id>   Capture project window (--copy: to clipboard)
+  ccm capture [--copy] <name|window_index>  Capture project window (--copy: to clipboard)
   ccm ports                          Show listening ports per project
   ccm dashboard                     Open interactive dashboard (popup)
   ccm statusline                    One-line status (for tmux status bar)
@@ -57,6 +57,8 @@ Usage:
   ccm start [snapshot]              Start from a snapshot
   ccm stop [--all|name]             Stop project window(s)
   ccm menu                          Interactive menu (for keybinding)
+  ccm setup-hooks                   Install Claude Code hooks for improved state detection
+  ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm help                          Show this help
 USAGE
 }
@@ -147,6 +149,12 @@ case "${1:-help}" in
     menu)
         ccm_check_deps
         ccm_menu
+        ;;
+    setup-hooks)
+        ccm_setup_hooks
+        ;;
+    remove-hooks)
+        ccm_remove_hooks
         ;;
     help|--help|-h)
         ccm_usage

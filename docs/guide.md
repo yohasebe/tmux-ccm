@@ -123,26 +123,52 @@ Open with `prefix + T`. Shows the full tmux hierarchy:
 
 ## State Detection
 
-ccm detects Claude Code's state without parsing screen output (except for PERMIT). This makes it resilient to UI changes.
+ccm uses a hybrid approach: Claude Code hooks (recommended) combined with process tree inspection as fallback.
+
+### Claude Code Hooks (Recommended)
+
+Install hooks for the best detection accuracy:
+
+```bash
+ccm setup-hooks
+```
+
+This adds two hooks to `~/.claude/settings.json`:
+
+| Hook | Signal | Detects |
+|------|--------|---------|
+| `UserPromptSubmit` | BUSY | Prompt submitted → Claude is processing (including text generation) |
+| `Stop` | DONE | Claude finished responding |
+
+Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE: 30s).
+
+To remove: `ccm remove-hooks`
 
 ### How each state is detected
 
 | State | Method | Details |
 |-------|--------|---------|
 | **SHELL** | Process check | No `claude` process found among window's child processes |
-| **BUSY** | Process tree | `claude` process has child processes (e.g., running tools) |
-| **IDLE** | Process tree | `claude` process exists but has no children |
+| **BUSY** | Hook signal / Process tree | Hook: UserPromptSubmit fired. Fallback: `claude` has child processes (tools) |
+| **IDLE** | Process tree | `claude` process exists but has no children, no fresh hook signal |
 | **PERMIT** | Screen capture | Last 8 lines contain permission keywords ("Do you want", "Allow", etc.) |
-| **DONE** | State transition | Detected when BUSY/PERMIT transitions to IDLE |
+| **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |
+
+### Detection without hooks
+
+Without hooks, ccm falls back to process tree inspection only. This means:
+- Text generation (no tool use) appears as IDLE, not BUSY
+- DONE detection relies on BUSY→IDLE transition heuristics
 
 ### DONE tracking
 
-When Claude Code finishes processing (BUSY → IDLE), ccm:
+When Claude Code finishes processing, ccm:
 1. Sets the state to DONE
 2. Shows `✔` in the window name and status bar
-3. Displays a tmux message: `✔ project-name: response complete`
+3. Sends a desktop notification (if configured)
 
 The DONE flag clears when:
+- 30 seconds elapse (auto-clear)
 - You switch to the window (via dashboard, tree, or `ccm attach`)
 - You send a new prompt (Claude goes BUSY, clearing the flag)
 
@@ -191,6 +217,7 @@ Adds a second status bar line below the main bar, showing all projects including
 | `●` | IDLE | Gray |
 | `■` | SHELL | Dark gray |
 
+- DONE auto-clears after 30 seconds and reverts to IDLE
 - Best for: users who want full visibility without losing their status-right
 - Trade-off: uses one extra screen line (auto-expands to more if needed)
 
@@ -221,6 +248,16 @@ ccm stop --all
 # Next day, restore
 ccm start _autosave
 ```
+
+#### Auto-restore on tmux start
+
+To automatically restore the last `_autosave` snapshot when tmux starts, add to `~/.tmux.conf`:
+
+```tmux
+set -g @ccm-auto-restore "on"    # default: off
+```
+
+This loads `_autosave` via TPM on startup. If ccm projects are already loaded, the restore is skipped.
 
 ### Manage snapshots
 
@@ -352,7 +389,7 @@ This means ccm's dashboard and status bar give you visibility into Agent Teams a
 
 ### tmux-resurrect / tmux-continuum
 
-ccm's window options (`@ccm_project`, `@ccm_dir`) are not automatically preserved by session restoration plugins. After a tmux restore, use `ccm start _autosave` to re-register projects from the last autosave snapshot.
+ccm's window options (`@ccm_project`, `@ccm_dir`) are not automatically preserved by session restoration plugins. After a tmux restore, use `ccm start _autosave` to re-register projects from the last autosave snapshot. Alternatively, enable `@ccm-auto-restore "on"` to handle this automatically on tmux startup.
 
 ### Status refresh interval
 

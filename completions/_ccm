@@ -12,6 +12,7 @@ _ccm() {
         'list:List managed project windows'
         'status:Show all projects with Claude state'
         'tree:Show session/window/pane hierarchy'
+        'tree-interactive:Interactive tree view (for keybinding)'
         'ports:Show listening ports per project'
         'capture:Capture project window visible content'
         'dashboard:Open interactive dashboard'
@@ -20,6 +21,8 @@ _ccm() {
         'start:Start from a snapshot'
         'stop:Stop project window(s)'
         'menu:Interactive menu'
+        'setup-hooks:Install Claude Code hooks for improved state detection'
+        'remove-hooks:Remove ccm hooks from Claude Code settings'
         'help:Show help'
     )
 

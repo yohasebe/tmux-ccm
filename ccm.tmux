@@ -33,16 +33,26 @@ tmux bind-key "$CCM_KEY_TREE" \
 # Restore prefix + w to default (choose-tree)
 tmux bind-key w choose-tree -Zs
 
-# Save clean status-right before ccm modifies it
-# Save if: (1) not yet saved, or (2) current value has no ccm artifacts
-# This allows theme changes to be picked up on re-source
-_ccm_current_sr=$(tmux show-option -gv status-right 2>/dev/null)
-if ! printf '%s' "$_ccm_current_sr" | grep -q 'inject-status' 2>/dev/null; then
-    tmux set -g @ccm-orig-status-right "$_ccm_current_sr" 2>/dev/null
-    # Also save status-right-length
-    tmux set -g @ccm-orig-sr-length "$(tmux show-option -gv status-right-length 2>/dev/null)" 2>/dev/null
-fi
-unset _ccm_current_sr
+# Initialize status injection (delayed to let theme plugins finish loading)
+# inject-status auto-detects external status-right changes (by themes etc.)
+# and saves the correct original value before injecting ccm's status.
+tmux run-shell -b "sleep 1 && $CCM_BIN inject-status 2>/dev/null || true"
 
-# Initialize status injection
-tmux run-shell "$CCM_BIN inject-status 2>/dev/null || true"
+# Auto-restore: load _autosave snapshot on tmux start
+# Controlled by @ccm-auto-restore: "on" or "off" (default)
+CCM_AUTO_RESTORE=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)
+CCM_AUTO_RESTORE="${CCM_AUTO_RESTORE:-off}"
+if [[ "$CCM_AUTO_RESTORE" == "on" ]]; then
+    CCM_SNAPSHOT_FILE="${HOME}/.local/share/ccm/snapshots/_autosave.json"
+    if [[ -f "$CCM_SNAPSHOT_FILE" ]]; then
+        # Only restore if no ccm projects are already loaded
+        # sleep 2 to run after inject-status (sleep 1)
+        tmux run-shell -b "
+            sleep 2
+            existing=\$(tmux list-windows -a -F '#{window_id} #{@ccm_project}' 2>/dev/null | awk '\$2 != \"\" {print}')
+            if [ -z \"\$existing\" ]; then
+                $CCM_BIN start _autosave 2>/dev/null || true
+            fi
+        "
+    fi
+fi
