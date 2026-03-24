@@ -142,6 +142,8 @@ This adds two hooks to `~/.claude/settings.json`:
 
 Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE: 30s).
 
+Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
+
 To remove: `ccm remove-hooks`
 
 ### How each state is detected

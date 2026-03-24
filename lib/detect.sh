@@ -429,6 +429,14 @@ ccm_status() {
         return
     fi
 
+    # Show hooks status
+    if ccm_hooks_configured; then
+        echo -e "${COLOR_DIM}Hooks: ON${COLOR_RESET}"
+    else
+        echo -e "${COLOR_DIM}Hooks: OFF (run 'ccm setup-hooks' for improved detection)${COLOR_RESET}"
+    fi
+    echo ""
+
     printf "${COLOR_BOLD}%-12s %-20s %-16s %-12s %s${COLOR_RESET}\n" "STATUS" "PROJECT" "BRANCH" "PORTS" "DIRECTORY"
     printf "%-12s %-20s %-16s %-12s %s\n" "------" "-------" "------" "-----" "---------"
 

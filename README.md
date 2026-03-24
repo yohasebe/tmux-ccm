@@ -240,6 +240,8 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 
 Without hooks, ccm uses process tree inspection which cannot detect text generation (appears as IDLE). Hooks are optional — ccm works without them but with reduced detection accuracy.
 
+Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
+
 To remove: `ccm remove-hooks`
 
 ### Snapshots

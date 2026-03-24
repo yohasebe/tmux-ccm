@@ -142,6 +142,8 @@ ccm setup-hooks
 
 フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE: 30秒）。
 
+フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
+
 削除するには: `ccm remove-hooks`
 
 ### 各状態の検出方法

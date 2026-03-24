@@ -468,14 +468,34 @@ ccm_dashboard() {
             save_time=$(stat -f %m "$autosave_file" 2>/dev/null || stat -c %Y "$autosave_file" 2>/dev/null || echo 0)
             local save_date
             save_date=$(date -r "$save_time" '+%H:%M:%S' 2>/dev/null || date -d "@$save_time" '+%H:%M:%S' 2>/dev/null || echo "")
-            [[ -n "$save_date" ]] && autosave_info="  ${COLOR_DIM}Last saved: ${save_date}${COLOR_RESET}"
+            [[ -n "$save_date" ]] && autosave_info="Last saved: ${save_date}"
         fi
+
+        # Hook status (check only on first render, cache result)
+        if [[ -z "${_dash_hooks_status:-}" ]]; then
+            if ccm_hooks_configured; then
+                _dash_hooks_status="Hooks: ON"
+            else
+                _dash_hooks_status="Hooks: OFF"
+            fi
+        fi
+
+        local footer_info=""
+        local footer_parts=()
+        [[ -n "$autosave_info" ]] && footer_parts+=("$autosave_info")
+        footer_parts+=("$_dash_hooks_status")
+        local footer_joined=""
+        for ((fi=0; fi<${#footer_parts[@]}; fi++)); do
+            [[ $fi -gt 0 ]] && footer_joined+="  "
+            footer_joined+="${footer_parts[$fi]}"
+        done
+        footer_info="  ${COLOR_DIM}${footer_joined}${COLOR_RESET}"
 
         local buf=$'\n'
         buf+="$(_render_list "$selected")"
         buf+=$'\n'
         buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register  [r]emove  [s]ave  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
-        [[ -n "$autosave_info" ]] && buf+="${autosave_info}"$'\n'
+        buf+="${footer_info}"$'\n'
 
         tput home 2>/dev/null
         tput ed 2>/dev/null

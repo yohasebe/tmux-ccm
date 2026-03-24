@@ -63,7 +63,9 @@ ccm_add() {
 
     # Trigger immediate autosave so the new project is captured
     # Skip during snapshot load to avoid overwriting the source snapshot
-    [[ -z "${_CCM_LOADING_SNAPSHOT:-}" ]] && (ccm_snapshot_save "_autosave") &>/dev/null
+    if [[ -z "${_CCM_LOADING_SNAPSHOT:-}" ]]; then
+        (ccm_snapshot_save "_autosave") &>/dev/null || true
+    fi
 }
 
 # Unregister a window from ccm (keep window alive, restore original name)

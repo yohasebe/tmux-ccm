@@ -293,6 +293,16 @@ _ccm_write_settings() {
     mv -f "$tmp_file" "$settings_file" || { rm -f "$tmp_file"; ccm_die "Failed to replace settings file"; }
 }
 
+# Check if ccm hooks are installed in Claude Code settings
+# Returns 0 if both UserPromptSubmit and Stop hooks are present, 1 otherwise
+# Uses grep instead of jq for speed (called from dashboard footer, status display)
+ccm_hooks_configured() {
+    local settings_file="${HOME}/.claude/settings.json"
+    [[ ! -f "$settings_file" ]] && return 1
+    grep -q 'on-prompt-submit\.sh' "$settings_file" 2>/dev/null || return 1
+    grep -q 'on-stop\.sh' "$settings_file" 2>/dev/null || return 1
+}
+
 # Install Claude Code hooks for improved state detection
 # Adds UserPromptSubmit and Stop hooks to ~/.claude/settings.json
 ccm_setup_hooks() {
@@ -301,6 +311,20 @@ ccm_setup_hooks() {
 
     if [[ ! -f "${hooks_dir}/on-prompt-submit.sh" ]]; then
         ccm_die "Hook scripts not found at ${hooks_dir}/"
+    fi
+
+    # Check if already installed with correct paths
+    if ccm_hooks_configured; then
+        local prompt_hook="${hooks_dir}/on-prompt-submit.sh"
+        local stop_hook="${hooks_dir}/on-stop.sh"
+        if grep -q "$prompt_hook" "$settings_file" 2>/dev/null && \
+           grep -q "$stop_hook" "$settings_file" 2>/dev/null; then
+            ccm_info "Claude Code hooks are already installed."
+            echo "  To reinstall: ccm remove-hooks && ccm setup-hooks"
+            return 0
+        fi
+        # Hooks exist but paths differ (e.g., plugin moved) — update
+        ccm_warn "Hook paths changed, updating..."
     fi
 
     # Ensure settings directory exists
