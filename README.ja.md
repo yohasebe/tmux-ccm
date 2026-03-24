@@ -83,6 +83,18 @@ export PATH="$HOME/.tmux/plugins/tmux-claude-code-manager:$PATH"
 fpath=($HOME/.tmux/plugins/tmux-claude-code-manager/completions $fpath)
 ```
 
+## 初回セットアップ
+
+Claude Codeを初めて使う場合は、先に認証を済ませてください：
+
+```bash
+claude
+```
+
+対話的なセットアップが始まり、プラン選択（サブスクリプションまたはAPIキー）とブラウザ認証を行います。認証が完了すれば、ccmで複数プロジェクトを管理できます。
+
+> **ヒント:** `ccm add` はClaude Codeを自動起動するため、最初の認証は通常のターミナルで済ませておくとスムーズです。
+
 ## 使い方
 
 ### キーバインド
@@ -309,7 +321,7 @@ set -g @ccm-auto-restore "on"    # デフォルト: off
 
 ## ドキュメント
 
-- **[User Guide (English)](docs/guide.md)** — チュートリアル、ワークフロー、状態検出、ステータスバーモード、スナップショット、Tips、トラブルシューティング
+- **[User Guide (English)](docs/guide.md)** — チュートリアル、ワークフロー、状態検出、ステータスバーモード、スナップショット、Tips、FAQ、トラブルシューティング
 - **[ユーザーガイド（日本語）](docs/guide.ja.md)** — 同内容の日本語版
 
 ## ライセンス

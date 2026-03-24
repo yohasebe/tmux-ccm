@@ -36,10 +36,13 @@ CCM_CLAUDE_PROCESS_NAME="claude"
 CCM_PATTERN_PERMIT='(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc to cancel)'
 # Claude Code input prompt pattern (visible when IDLE, absent during PERMIT)
 # Note: Claude Code uses ❯ (U+276F) followed by non-breaking space (U+00A0)
-CCM_PATTERN_INPUT_PROMPT='^[>❯›]'
+# Matches: "❯ " (normal idle prompt), "> " (alternative)
+# Does NOT match: "❯❯ accept edits on" (edit acceptance mode — Claude may still be busy)
+CCM_PATTERN_INPUT_PROMPT='^[>❯›][[:space:]]'
+# Pattern to detect accept-edits mode (❯❯ or >>), which is NOT an idle prompt
+CCM_PATTERN_ACCEPT_EDITS='^[>❯›][>❯›]'
 # Commands to start Claude Code
-CCM_CLAUDE_CMD="claude --resume 2>/dev/null || claude"
-CCM_CLAUDE_CMD_RESUME="claude --continue 2>/dev/null || claude"
+CCM_CLAUDE_CMD="claude --continue 2>/dev/null || claude"
 
 # Desktop notification (macOS / Linux)
 # Controlled by @ccm-notify option: "off" (default), "permit", "done",
@@ -88,6 +91,22 @@ ccm_notify() {
     esac
 }
 
+# Copy text to system clipboard (cross-platform)
+# Reads from stdin. Returns 0 on success, 1 if no clipboard tool available.
+ccm_clipboard_copy() {
+    if command -v pbcopy &>/dev/null; then
+        pbcopy
+    elif command -v clip.exe &>/dev/null; then
+        clip.exe
+    elif command -v xclip &>/dev/null; then
+        xclip -selection clipboard
+    elif command -v xsel &>/dev/null; then
+        xsel -b
+    else
+        return 1
+    fi
+}
+
 # Auto-start Claude Code when switching to SHELL-state windows
 # Controlled by @ccm-auto-start: "on" (default) or "off"
 ccm_auto_start_claude() {
@@ -97,7 +116,7 @@ ccm_auto_start_claude() {
     auto_start="${auto_start:-on}"
     [[ "$auto_start" != "on" ]] && return
 
-    tmux send-keys -t "$win_target" "$CCM_CLAUDE_CMD_RESUME" Enter 2>/dev/null
+    tmux send-keys -t "$win_target" "$CCM_CLAUDE_CMD" Enter 2>/dev/null
 }
 
 # Colors for terminal output (using $'...' for real escape characters)
@@ -253,7 +272,7 @@ ccm_info() {
 # Check dependencies
 ccm_check_deps() {
     local missing=()
-    for cmd in tmux jq fzf; do
+    for cmd in tmux jq fzf claude; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi

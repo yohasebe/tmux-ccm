@@ -83,6 +83,18 @@ export PATH="$HOME/.tmux/plugins/tmux-claude-code-manager:$PATH"
 fpath=($HOME/.tmux/plugins/tmux-claude-code-manager/completions $fpath)
 ```
 
+## First-Time Setup
+
+If you haven't used Claude Code before, complete the initial authentication first:
+
+```bash
+claude
+```
+
+This opens an interactive setup where you choose your plan (subscription or API key) and authenticate via browser. Once authenticated, you can use ccm to manage multiple projects.
+
+> **Tip:** Complete authentication in a regular terminal before using `ccm add`, since ccm auto-starts Claude Code in new windows.
+
 ## Usage
 
 ### Keybindings
@@ -309,7 +321,7 @@ When enabled, ccm loads the `_autosave` snapshot via TPM on tmux startup (only i
 
 ## Documentation
 
-- **[User Guide](docs/guide.md)** — Tutorial, workflows, state detection, status bar modes, snapshots, tips, and troubleshooting
+- **[User Guide](docs/guide.md)** — Tutorial, workflows, state detection, status bar modes, snapshots, tips, FAQ, and troubleshooting
 - **[ユーザーガイド（日本語）](docs/guide.ja.md)** — 同内容の日本語版
 
 ## License

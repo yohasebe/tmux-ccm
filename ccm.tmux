@@ -39,6 +39,13 @@ if [[ "$CCM_PANE_TITLE" == "on" ]]; then
     tmux set-option pane-border-format "#{pane_title}" 2>/dev/null
 fi
 
+# Mouse click on ccm status icon → open dashboard
+# Falls back to default behavior (select-window) for non-ccm clicks
+tmux bind-key -n MouseDown1Status \
+    if-shell -F '#{==:#{mouse_status_range},ccm}' \
+    "run-shell '$_session_cmd' ; display-popup -E -w 80% -h 60% -T ' ccm Dashboard ' '$CCM_BIN dashboard'" \
+    "switch-client -t ="
+
 # Restore prefix + w to default (choose-tree)
 tmux bind-key w choose-tree -Zs
 

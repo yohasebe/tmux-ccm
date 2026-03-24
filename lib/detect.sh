@@ -10,6 +10,9 @@
 #   1. No "claude" process as child of pane shell → SHELL
 #   2. Claude exists, has non-excluded children   → capture-pane:
 #      - PERMIT pattern in bottom 8 lines         → PERMIT
+#      - Normal input prompt (❯ ) visible AND
+#        NOT accept-edits prompt (❯❯)             → IDLE
+#        (children are background workers like MCP servers, not tool execution)
 #      - Otherwise                                → BUSY
 #   3. Claude exists, no meaningful children       → IDLE
 #      (Text generation has no child processes and cannot be
@@ -66,7 +69,12 @@
 #
 # Key constants (defined in common.sh):
 #   CCM_PATTERN_PERMIT:       grep -Ei pattern for permission prompts
-#   CCM_PATTERN_INPUT_PROMPT: grep -E pattern for Claude's input prompt
+#   CCM_PATTERN_INPUT_PROMPT: grep -E pattern for Claude's normal input prompt (❯ )
+#     IMPORTANT: Must NOT match accept-edits prompt (❯❯). The ❯❯ prompt
+#     appears during edit acceptance mode where tools may still be running.
+#     Current pattern requires a space after ❯ to exclude ❯❯.
+#   CCM_PATTERN_ACCEPT_EDITS: grep -E pattern for accept-edits prompt (❯❯)
+#     Used to prevent false IDLE when children are present in accept-edits mode.
 #   CCM_DONE_TIMEOUT:         seconds before DONE auto-clears
 #   CCM_HOOK_DIR:             directory for hook signal files
 #   CCM_HOOK_TIMEOUT:         seconds before BUSY hook signal expires
@@ -138,7 +146,7 @@ _detect_pane_state() {
 
     # Check children (excluding caffeinate and ccm's own PGID)
     if _has_children "$claude_pid"; then
-        # Has meaningful children (tool execution, etc.) → BUSY or PERMIT
+        # Has meaningful children (tool execution, etc.) → BUSY, PERMIT, or IDLE
         local captured
         captured=$(tmux capture-pane -t "$pane_target" -p -S -10 2>/dev/null)
         local near_bottom
@@ -146,6 +154,16 @@ _detect_pane_state() {
 
         if echo "$near_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
             echo "PERMIT"
+            return
+        fi
+
+        # If the normal input prompt (❯ ) is visible despite children, Claude is idle.
+        # Children are background workers (MCP servers, etc.), not active tool execution.
+        # During real tool execution, the prompt is replaced by tool output/progress.
+        # Exclude accept-edits prompt (❯❯) — Claude may still be executing tools.
+        if echo "$near_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT" && \
+           ! echo "$near_bottom" | grep -qE "$CCM_PATTERN_ACCEPT_EDITS"; then
+            echo "IDLE"
             return
         fi
 
@@ -323,10 +341,12 @@ ccm_detect_window_state() {
     # If raw=IDLE (Claude running but no children) and input prompt is NOT
     # visible, Claude is likely busy (e.g., multi-turn tool use where the
     # BUSY hook signal expired, or text generation without hooks).
+    # Uses tail -8 to account for Claude Code UI elements below the prompt
+    # (help hints, context info, etc.)
     if [[ "$raw_state" == "IDLE" ]]; then
         local final_captured final_bottom
         final_captured=$(tmux capture-pane -t "$win_target" -p -S -8 2>/dev/null)
-        final_bottom=$(echo "$final_captured" | sed '/^[[:space:]]*$/d' | tail -4)
+        final_bottom=$(echo "$final_captured" | sed '/^[[:space:]]*$/d' | tail -8)
         if ! echo "$final_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
             if echo "$final_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
                 tmux set-option -wt "$win_target" @ccm_prev_state "PERMIT" 2>/dev/null

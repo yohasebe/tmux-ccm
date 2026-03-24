@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Dashboard sorts projects by state priority (PERMIT > DONE > BUSY > IDLE > SHELL), then by most recent activity within each group
+- Unified Claude Code launch command to `claude --continue` (was `--resume` for new windows)
+- Add `claude` to dependency check (`ccm_check_deps`)
+
 ### Fixed
 - Snapshot load only restoring the first project due to `set -e` catching false condition in autosave guard
+- Restore mouse click on status bar ccm icon to open dashboard (mode 0)
+- Dashboard sort now works on macOS default bash 3.2 (removed `local -n` nameref dependency)
+- False BUSY when background children (MCP servers, etc.) present but user is at input prompt
+- Safety net prompt detection range expanded from 4 to 8 non-empty lines to avoid false BUSY from Claude Code UI elements
 
 ### Added
+- First-time setup guide in README and user guide (authenticate Claude Code before using ccm)
 - `ccm_hooks_configured()` function to detect whether Claude Code hooks are installed
 - Hook status display in dashboard footer and `ccm status` output (Hooks: ON/OFF)
 - `ccm setup-hooks` now detects already-installed hooks and skips re-installation

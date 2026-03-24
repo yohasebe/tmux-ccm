@@ -76,6 +76,9 @@ _format_elapsed() {
     fi
 }
 
+# Max timestamp for sort inversion (year 2286, well beyond practical use)
+_CCM_TS_MAX=9999999999
+
 # Shorten directory path based on available width
 _format_dir() {
     local dir="$1"
@@ -119,10 +122,11 @@ _build_project_list_cached() {
     [[ -z "$all_windows" ]] && return
 
     local -a _tmp_targets=() _tmp_projects=() _tmp_dirs=() _tmp_states=() _tmp_last_done=()
-    local current_pos=-1
     local _tmp_count=0
     local now_ts
     now_ts=$(date +%s)
+    # Sort lines: "priority:neg_ts:index" (built inline, sorted once at end)
+    local _sort_lines=""
 
     while IFS=$'\t' read -r sess win_idx project dir prev_state done_flag last_done; do
         [[ "$prev_state" == "-" ]] && prev_state=""
@@ -131,6 +135,7 @@ _build_project_list_cached() {
         local win_target="${sess}:${win_idx}"
         # Determine display state from cached prev_state, done_flag, and hook signals
         local state="${prev_state:-IDLE}"
+        local sort_ts=0
         if [[ "$state" == "IDLE" && -n "$done_flag" ]]; then
             local done_age=$(( now_ts - ${done_flag:-0} ))
             [[ $done_age -ge 0 && $done_age -lt ${CCM_DONE_TIMEOUT:-30} ]] && state="DONE"
@@ -145,29 +150,38 @@ _build_project_list_cached() {
                 local hook_age=$(( now_ts - hook_ts ))
                 if [[ "$hook_state" == "BUSY" && $hook_age -lt ${CCM_HOOK_TIMEOUT:-300} && "$state" != "PERMIT" ]]; then
                     state="BUSY"
+                    sort_ts="$hook_ts"
                 elif [[ "$hook_state" == "DONE" && $hook_age -lt ${CCM_DONE_TIMEOUT:-30} && "$state" == "IDLE" ]]; then
                     state="DONE"
+                    sort_ts="$hook_ts"
                 fi
             fi
         fi
-
-        if [[ "$win_target" == "$current_target" ]]; then
-            current_pos=$_tmp_count
+        # Fallback timestamp for DONE without hook
+        if [[ "$sort_ts" == "0" && "$state" == "DONE" && -n "$done_flag" && "$done_flag" != "0" ]]; then
+            sort_ts="$done_flag"
         fi
+
         _tmp_targets+=("$win_target")
         _tmp_projects+=("$project")
         _tmp_dirs+=("$dir")
         _tmp_states+=("$state")
         _tmp_last_done+=("$last_done")
+        # Build sort key inline (no subshell)
+        local pri
+        case "$state" in
+            PERMIT) pri=0 ;; DONE) pri=1 ;; BUSY) pri=2 ;;
+            IDLE)   pri=3 ;; SHELL) pri=4 ;; *)    pri=5 ;;
+        esac
+        _sort_lines+="${pri}:$(( _CCM_TS_MAX - sort_ts )):${_tmp_count}"$'\n'
         _tmp_count=$((_tmp_count + 1))
     done <<< "$all_windows"
 
-    # Reorder: current window last
+    # Sort by state priority, then by timestamp (newest first)
     local -a order=()
-    for ((i=0; i<_tmp_count; i++)); do
-        [[ $i -ne $current_pos ]] && order+=("$i")
-    done
-    [[ $current_pos -ge 0 ]] && order+=("$current_pos")
+    while IFS=: read -r _ _ idx; do
+        [[ -n "$idx" ]] && order+=("$idx")
+    done < <(printf '%s' "$_sort_lines" | sort -t: -k1,1n -k2,2n)
 
     _FORMAT_NOW=$now_ts
     for i in "${order[@]}"; do
@@ -256,18 +270,35 @@ _build_project_list() {
     # Temporary arrays (before reordering)
     local -a _tmp_names=() _tmp_projects=() _tmp_dirs=() _tmp_states=() _tmp_tagged=()
     local _tmp_count=0
-
-    # Detect current window to move it to the end
-    local current_session current_win_idx
-    current_session=$(_ccm_session)
-    current_win_idx=$(tmux display-message -p '#{window_index}' 2>/dev/null)
-    local current_target="${current_session}:${current_win_idx}"
+    local _now_ts
+    _now_ts=$(date +%s)
+    local _sort_lines=""
 
     # Batch: get all windows in one tmux call, current session first
     local all_windows
     all_windows=$(tmux list-windows -a -F '#{session_name}	#{window_index}	#{window_name}	#{@ccm_project}	#{@ccm_dir}' 2>/dev/null \
         | awk -F'\t' -v cs="$current_session" 'BEGIN{OFS="\t"} $1==cs{print; next} {other[NR]=$0} END{for(i in other) print other[i]}')
     [[ -z "$all_windows" ]] && return
+
+    # Helper: inline sort key construction (sets _pri and _sts variables)
+    _build_sort_key() {
+        local _state="$1" _dir="$2" _done_ts="$3"
+        _sts=0
+        case "$_state" in
+            PERMIT) _pri=0 ;; DONE) _pri=1 ;; BUSY) _pri=2 ;;
+            IDLE)   _pri=3 ;; SHELL) _pri=4 ;; *)    _pri=5 ;;
+        esac
+        if [[ "$_state" == "BUSY" || "$_state" == "DONE" ]]; then
+            if [[ -n "$_dir" && "$_dir" != "-" ]]; then
+                local _hs
+                _hs=$(_ccm_read_hook_signal "$_dir")
+                [[ -n "$_hs" ]] && _sts="${_hs%% *}"
+            fi
+            if [[ "$_sts" == "0" && "$_state" == "DONE" && -n "$_done_ts" && "$_done_ts" != "0" ]]; then
+                _sts="$_done_ts"
+            fi
+        fi
+    }
 
     while IFS=$'\t' read -r sess win_idx win_name project dir; do
             local win_target="${sess}:${win_idx}"
@@ -278,12 +309,16 @@ _build_project_list() {
                 local state
                 state=$(ccm_detect_window_state "$win_target")
 
-                _tmp_count=$((_tmp_count + 1))
                 _tmp_names+=("$win_target")
                 _tmp_projects+=("$project")
                 _tmp_dirs+=("$dir")
                 _tmp_states+=("$state")
                 _tmp_tagged+=("1")
+                local _done_ts _pri _sts
+                _done_ts=$(tmux show-option -wt "$win_target" -qv @ccm_last_done 2>/dev/null) || true
+                _build_sort_key "$state" "$dir" "$_done_ts"
+                _sort_lines+="${_pri}:$(( _CCM_TS_MAX - _sts )):${_tmp_count}"$'\n'
+                _tmp_count=$((_tmp_count + 1))
             else
                 local state
                 state=$(ccm_detect_window_state "$win_target")
@@ -294,28 +329,25 @@ _build_project_list() {
                         udir=$(tmux display-message -t "$win_target" -p '#{pane_current_path}' 2>/dev/null)
                         _is_seen_dir "$udir" && continue
 
-                        _tmp_count=$((_tmp_count + 1))
                         _tmp_names+=("$win_target")
                         _tmp_projects+=("$(basename "$udir")")
                         _tmp_dirs+=("$udir")
                         _tmp_states+=("$state")
                         _tmp_tagged+=("0")
+                        local _pri _sts
+                        _build_sort_key "$state" "$udir" ""
+                        _sort_lines+="${_pri}:$(( _CCM_TS_MAX - _sts )):${_tmp_count}"$'\n'
+                        _tmp_count=$((_tmp_count + 1))
                         ;;
                 esac
             fi
     done <<< "$all_windows"
 
-    # Reorder: current window goes last, others keep order
+    # Sort by state priority, then by timestamp (newest first)
     local -a order=()
-    local current_pos=-1
-    for ((i=0; i<_tmp_count; i++)); do
-        if [[ "${_tmp_names[$i]}" == "$current_target" ]]; then
-            current_pos=$i
-        else
-            order+=("$i")
-        fi
-    done
-    [[ $current_pos -ge 0 ]] && order+=("$current_pos")
+    while IFS=: read -r _ _ idx; do
+        [[ -n "$idx" ]] && order+=("$idx")
+    done < <(printf '%s' "$_sort_lines" | sort -t: -k1,1n -k2,2n)
 
     _FORMAT_NOW=$(date +%s)
     # Build final arrays with window indices (matching tmux window list)
@@ -448,9 +480,11 @@ ccm_dashboard() {
     trap 'tput cnorm 2>/dev/null; stty echo 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
 
     # Instant first paint from cached tmux options + hook signals
-    # Full rebuild on the very next iteration (user can interact immediately)
+    # Fast rebuild (state detection, no git/port) on first iteration
+    # Full rebuild (with git/port) on second iteration
     _build_project_list cached
-    local needs_rebuild=1
+    local needs_rebuild=2  # 2=fast, 1=full, 0=none
+    local initial_load=1   # 1=show "Loading...", cleared after first full render
 
     while true; do
 
@@ -491,7 +525,23 @@ ccm_dashboard() {
         done
         footer_info="  ${COLOR_DIM}${footer_joined}${COLOR_RESET}"
 
+        local header
+        if [[ $initial_load -eq 1 && $needs_rebuild -gt 0 ]]; then
+            header="  ${COLOR_DIM}Loading...${COLOR_RESET}"
+        else
+            initial_load=0
+            local _current_session
+            _current_session=$(_ccm_session)
+            # Show session name only if it's a descriptive name (not a default number)
+            if [[ "$_current_session" =~ ^[0-9]+$ ]]; then
+                header="  ${COLOR_DIM}${_SESSION_COUNT} project(s)${COLOR_RESET}"
+            else
+                header="  ${COLOR_DIM}${_current_session} ─ ${_SESSION_COUNT} project(s)${COLOR_RESET}"
+            fi
+        fi
+
         local buf=$'\n'
+        buf+="${header}"$'\n'
         buf+="$(_render_list "$selected")"
         buf+=$'\n'
         buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register  [r]emove  [s]ave  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
@@ -501,11 +551,38 @@ ccm_dashboard() {
         tput ed 2>/dev/null
         printf '%s' "$buf"
 
-        # Rebuild after rendering (first cycle: upgrade from cached to full data)
-        if [[ $needs_rebuild -eq 1 ]]; then
-            _build_project_list
-            needs_rebuild=0
-            # Process any keys typed during rebuild (arrow keys for selection)
+        # Rebuild after rendering
+        # 2 = fast rebuild (state detection only, no git/port — quick upgrade from cached)
+        # 1 = full rebuild (includes git branch + port detection)
+        if [[ $needs_rebuild -gt 0 ]]; then
+            # Prioritize user input: if keys are buffered, handle them first
+            # and defer the rebuild. This keeps the dashboard responsive
+            # immediately after opening (cached data is good enough for navigation).
+            local _pending_key=""
+            if read -rsn1 -t 0 _pending_key 2>/dev/null && [[ -n "$_pending_key" ]]; then
+                if [[ "$_pending_key" == $'\033' ]]; then
+                    local _seq
+                    read -rsn2 -t 0.05 _seq 2>/dev/null || true
+                    case "$_seq" in
+                        '[A') selected=$((selected - 1)) ;;
+                        '[B') selected=$((selected + 1)) ;;
+                    esac
+                elif [[ "$_pending_key" == "j" ]]; then selected=$((selected + 1))
+                elif [[ "$_pending_key" == "k" ]]; then selected=$((selected - 1))
+                elif [[ "$_pending_key" == "q" || "$_pending_key" == "Q" ]]; then break
+                elif [[ "$_pending_key" == $'\033' ]]; then break
+                fi
+                continue  # Re-render with updated selection, rebuild on next cycle
+            fi
+
+            if [[ $needs_rebuild -eq 2 ]]; then
+                _build_project_list fast
+                needs_rebuild=1
+            else
+                _build_project_list
+                needs_rebuild=0
+            fi
+            # Process any keys typed during rebuild
             while read -rsn1 -t 0.01 _key 2>/dev/null; do
                 if [[ "$_key" == $'\033' ]]; then
                     local _seq
@@ -894,8 +971,11 @@ _dashboard_preview() {
     local key
     if key=$(_read_key_ext 30); then
         if [[ "$key" == "c" || "$key" == "C" ]]; then
-            echo "$captured" | pbcopy 2>/dev/null
-            echo "  ${COLOR_GREEN}Copied to clipboard${COLOR_RESET}"
+            if echo "$captured" | ccm_clipboard_copy 2>/dev/null; then
+                echo "  ${COLOR_GREEN}Copied to clipboard${COLOR_RESET}"
+            else
+                echo "  ${COLOR_RED}No clipboard tool available${COLOR_RESET}"
+            fi
             sleep 1
         fi
     fi
@@ -1370,12 +1450,12 @@ print(s, end='')
         local new_status
         if [[ $_SL_COUNT -eq 0 ]]; then
             # All idle — dim hamburger icon
-            new_status="${original}#[fg=#666666,bg=#3a3a3a] ≡ ${refresh}"
+            new_status="${original}#[range=user|ccm]#[fg=#666666,bg=#3a3a3a] ≡ #[norange]${refresh}"
         else
             local icon_color icon_char
             icon_color=$(_ccm_priority_color)
             icon_char=$(_ccm_priority_icon)
-            new_status="${original}#[fg=${icon_color},bg=#3a3a3a,bold] ${icon_char} ${refresh}"
+            new_status="${original}#[range=user|ccm]#[fg=${icon_color},bg=#3a3a3a,bold] ${icon_char} #[norange]${refresh}"
         fi
 
         # Always ensure status-right-length is extended for ccm content

@@ -24,6 +24,16 @@ Terminal (Ghostty, iTerm2, etc.)
 
 ## Getting started
 
+### 0. Authenticate Claude Code
+
+If you haven't used Claude Code before, run it once to complete the initial setup:
+
+```bash
+claude
+```
+
+Follow the interactive prompts to choose your plan (subscription or API key) and authenticate via browser. Once done, you're ready to use ccm.
+
 ### 1. Start tmux
 
 ```bash
@@ -36,7 +46,7 @@ tmux new-session -s work
 ccm add ~/code/my-project
 ```
 
-This creates a new tmux window, changes to the project directory, and launches Claude Code with `claude --resume` (so you can pick up a previous conversation if one exists).
+This creates a new tmux window, changes to the project directory, and launches Claude Code with `claude --continue` (so you can pick up the most recent conversation in that directory if one exists).
 
 ### 3. Add more projects
 
@@ -420,3 +430,35 @@ To reset ccm state completely:
 rm -rf "${TMPDIR:-/tmp}/ccm-$(id -u)"
 tmux source-file ~/.tmux.conf
 ```
+
+## FAQ
+
+### Do I lose my projects if I close my terminal app?
+
+No. tmux runs as a background server process, independent of your terminal emulator (Ghostty, iTerm2, etc.). Closing or quitting the terminal only disconnects the display — all tmux sessions, windows, and ccm projects continue running. Just reopen your terminal and run `tmux attach` to reconnect.
+
+### Do I lose my projects when my Mac goes to sleep?
+
+No. Sleep suspends all processes but does not terminate them. When you wake your Mac, tmux and all ccm projects resume exactly where they left off.
+
+### When do I need to load a snapshot?
+
+Only when the tmux server itself is terminated. This happens when:
+
+- Your computer restarts or shuts down
+- The machine crashes or loses power
+- You manually run `tmux kill-server`
+
+In these cases, run `ccm start _autosave` to restore your previous workspace. Tip: set `@ccm-auto-restore on` in your `.tmux.conf` to restore automatically on tmux start.
+
+### What is the difference between `ccm start` and `ccm snapshot load`?
+
+They are identical. `ccm start <name>` is a short alias for `ccm snapshot load <name>`. Similarly, `ccm stop --all` is the counterpart that saves an `_autosave` snapshot and closes all project windows.
+
+### Do I need to set up Claude Code before using ccm?
+
+Yes. Run `claude` once in a regular terminal to complete the initial authentication (subscription or API key setup). After that, ccm can launch Claude Code automatically in each project window.
+
+### Can I use ccm across multiple tmux sessions?
+
+ccm manages projects as windows within a single tmux session. The dashboard and status bar show projects from all sessions, but `ccm add` creates windows in your current session. If you need separate project sets, use named snapshots (`ccm snapshot save work`, `ccm snapshot save personal`).

@@ -81,6 +81,32 @@ Running tests..."
     [[ "$output" == "BUSY" ]]
 }
 
+@test "_detect_pane_state: IDLE when claude has children but input prompt visible" {
+    # Background workers (MCP servers, etc.) present but user is at prompt
+    mock_ps_cache "  100     1   100 bash
+  200   100   100 claude
+  300   200   200 node"
+    mock_panes_cache "test-session:0	100	%0"
+    mock_capture_pane "%0" "Some previous output
+❯ "
+
+    run _detect_pane_state 100 "%0"
+    [[ "$output" == "IDLE" ]]
+}
+
+@test "_detect_pane_state: BUSY when claude has children and accept-edits prompt" {
+    # Accept-edits mode (❯❯) should NOT be treated as idle
+    mock_ps_cache "  100     1   100 bash
+  200   100   100 claude
+  300   200   200 node"
+    mock_panes_cache "test-session:0	100	%0"
+    mock_capture_pane "%0" "Running tests...
+❯❯ accept edits on (shift+tab to cycle)"
+
+    run _detect_pane_state 100 "%0"
+    [[ "$output" == "BUSY" ]]
+}
+
 @test "_detect_pane_state: PERMIT when claude has children and PERMIT text" {
     mock_ps_cache "  100     1   100 bash
   200   100   100 claude

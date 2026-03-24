@@ -268,8 +268,11 @@ ccm_capture() {
     output=$(tmux capture-pane -t "${session}:${idx}" -p -S -50)
 
     if [[ "$copy_mode" == "true" ]]; then
-        echo "$output" | pbcopy 2>/dev/null
-        ccm_info "Captured ${name} → clipboard"
+        if echo "$output" | ccm_clipboard_copy 2>/dev/null; then
+            ccm_info "Captured ${name} → clipboard"
+        else
+            ccm_warn "No clipboard tool available (install pbcopy, xclip, or xsel)"
+        fi
     else
         echo "=== ccm capture: ${name} ==="
         echo "$output"
