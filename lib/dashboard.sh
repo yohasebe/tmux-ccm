@@ -220,7 +220,7 @@ _build_project_list_cached() {
         if [[ -n "$last_done" && "$last_done" != "0" ]]; then
             local elapsed
             elapsed=$(_format_elapsed "$last_done")
-            [[ -n "$elapsed" ]] && done_display=" ${COLOR_STATE_DONE}✔${COLOR_DIM}${elapsed}${COLOR_RESET}"
+            [[ -n "$elapsed" ]] && done_display=" ${COLOR_STATE_DONE}✔ ${COLOR_DIM}${elapsed}${COLOR_RESET}"
         fi
 
         _SESSION_LINES+=("${COLOR_DIM}#${win_idx}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET} ${branch_display}${port_display}${done_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
@@ -387,7 +387,7 @@ _build_project_list() {
         if [[ -n "$last_done" && "$last_done" != "0" ]]; then
             local elapsed
             elapsed=$(_format_elapsed "$last_done")
-            [[ -n "$elapsed" ]] && done_display=" ${COLOR_STATE_DONE}✔${COLOR_DIM}${elapsed}${COLOR_RESET}"
+            [[ -n "$elapsed" ]] && done_display=" ${COLOR_STATE_DONE}✔ ${COLOR_DIM}${elapsed}${COLOR_RESET}"
         fi
 
         if [[ "$tagged" == "1" ]]; then
@@ -494,6 +494,10 @@ ccm_dashboard() {
     local initial_load=1   # 1=show "Syncing...", cleared after first full render
 
     while true; do
+
+        # Keep popup-session file fresh so session detection works
+        # throughout the dashboard's lifetime (file written by keybinding on open)
+        touch "${CCM_TMP_DIR}/popup-session" 2>/dev/null
 
         # Clamp selection
         if [[ $_SESSION_COUNT -gt 0 ]]; then
@@ -1667,6 +1671,9 @@ ccm_tree_interactive() {
     local needs_rebuild=1
 
     while true; do
+        # Keep popup-session file fresh
+        touch "${CCM_TMP_DIR}/popup-session" 2>/dev/null
+
         if [[ $needs_rebuild -eq 1 ]]; then
             _build_tree_data
             needs_rebuild=0

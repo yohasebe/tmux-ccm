@@ -111,13 +111,15 @@ ccm init
 | `prefix + T` | ツリービューをトグル |
 | `prefix + C` | ccmメニューを開く |
 
-`~/.tmux.conf` でカスタマイズ可能（プラグイン読み込み前に設定）：
+`~/.tmux.conf` でカスタマイズ可能：
 
 ```tmux
 set -g @ccm-key-dashboard "Tab"
 set -g @ccm-key-menu "C"
 set -g @ccm-key-tree "T"
 ```
+
+> **重要:** すべての `set -g @ccm-*` オプションは、`~/.tmux.conf` 内のTPMの `run` 行よりも**前に**配置する必要があります。TPMは初期化時にプラグインオプションを読み取るため、`run '~/.tmux/plugins/tpm/tpm'` の後に配置された設定は反映されません。
 
 ### デスクトップ通知
 

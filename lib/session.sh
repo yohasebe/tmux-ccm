@@ -104,6 +104,9 @@ ccm_unregister() {
     tmux set-option -wt "$win_target" -u @ccm_state_color 2>/dev/null
 
     ccm_info "Unregistered: $name (window kept)"
+
+    # Trigger immediate autosave
+    (ccm_snapshot_save "_autosave") &>/dev/null || true
 }
 
 # Remove a ccm project window (kill window)
@@ -335,6 +338,9 @@ ccm_register() {
     tmux rename-window -t "${session}:${win_idx}" "$name"
 
     ccm_info "Registered: $win_name → $name"
+
+    # Trigger immediate autosave
+    (ccm_snapshot_save "_autosave") &>/dev/null || true
 }
 
 # Open claude in the CURRENT pane for a project (used for side-by-side)

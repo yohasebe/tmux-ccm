@@ -365,29 +365,46 @@ ccm_init() {
     fi
     echo ""
 
+    # Helper: write a setting to ~/.tmux.conf BEFORE TPM's "run" line
+    # TPM reads @plugin options at "run" time, so settings must come before it.
+    _ccm_save_tmux_conf() {
+        local setting="$1"  # e.g., "set -g @ccm-auto-restore on"
+        local key
+        key=$(echo "$setting" | awk '{print $3}')  # e.g., "@ccm-auto-restore"
+        # Remove any existing line with this key
+        sed -i.bak "/${key}/d" ~/.tmux.conf 2>/dev/null || true
+        # Insert before TPM "run" line if it exists, otherwise append
+        if grep -q "^run.*tpm" ~/.tmux.conf 2>/dev/null; then
+            # macOS sed requires different syntax for insert
+            local tpm_line
+            tpm_line=$(grep -n "^run.*tpm" ~/.tmux.conf | head -1 | cut -d: -f1)
+            if [[ -n "$tpm_line" ]]; then
+                sed -i.bak "${tpm_line}i\\
+${setting}
+" ~/.tmux.conf 2>/dev/null
+            fi
+        else
+            echo "$setting" >> ~/.tmux.conf
+        fi
+        rm -f ~/.tmux.conf.bak 2>/dev/null
+    }
+
     # Step 3: Auto-restore
     echo "  ${COLOR_BOLD}[3/4] Auto-restore on tmux start${COLOR_RESET}"
     echo "    Automatically load the last workspace when tmux starts."
-    if [[ $in_tmux -eq 1 ]]; then
-        local auto_restore
-        auto_restore=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)
-        if [[ "$auto_restore" == "on" ]]; then
-            echo "    ${COLOR_GREEN}✔${COLOR_RESET} Already enabled"
-        else
-            echo -n "    Enable auto-restore? [Y/n] "
-            local answer
-            read -r answer
-            if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
-                tmux set -g @ccm-auto-restore on 2>/dev/null
-                echo "    ${COLOR_GREEN}✔${COLOR_RESET} Enabled for this session"
-                echo "    ${COLOR_DIM}Add to ~/.tmux.conf to persist: set -g @ccm-auto-restore on${COLOR_RESET}"
-            else
-                echo "    ${COLOR_DIM}Skipped${COLOR_RESET}"
-            fi
-        fi
+    if grep -q '@ccm-auto-restore on' ~/.tmux.conf 2>/dev/null; then
+        echo "    ${COLOR_GREEN}✔${COLOR_RESET} Already enabled in ~/.tmux.conf"
     else
-        echo "    ${COLOR_DIM}Not inside tmux — add this to ~/.tmux.conf:${COLOR_RESET}"
-        echo "    ${COLOR_BOLD}set -g @ccm-auto-restore on${COLOR_RESET}"
+        echo -n "    Enable auto-restore? [Y/n] "
+        local answer
+        read -r answer
+        if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
+            [[ $in_tmux -eq 1 ]] && tmux set -g @ccm-auto-restore on 2>/dev/null
+            _ccm_save_tmux_conf "set -g @ccm-auto-restore on"
+            echo "    ${COLOR_GREEN}✔${COLOR_RESET} Saved to ~/.tmux.conf"
+        else
+            echo "    ${COLOR_DIM}Skipped${COLOR_RESET}"
+        fi
     fi
     echo ""
 
@@ -396,24 +413,23 @@ ccm_init() {
     echo "    0 = Icon in status-right (default, minimal)"
     echo "    1 = Replace window list with ccm entries"
     echo "    2 = Dedicated status line with full details"
+    local current_mode="0"
     if [[ $in_tmux -eq 1 ]]; then
-        local current_mode
         current_mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
         current_mode="${current_mode:-0}"
-        echo "    Current: mode ${current_mode}"
-        echo -n "    Choose mode [0/1/2] (Enter to keep current): "
-        local mode_answer
-        read -r mode_answer
-        if [[ "$mode_answer" =~ ^[012]$ && "$mode_answer" != "$current_mode" ]]; then
-            tmux set -g @ccm-status-line "$mode_answer" 2>/dev/null
-            echo "    ${COLOR_GREEN}✔${COLOR_RESET} Set to mode ${mode_answer}"
-            echo "    ${COLOR_DIM}Add to ~/.tmux.conf to persist: set -g @ccm-status-line ${mode_answer}${COLOR_RESET}"
-        else
-            echo "    ${COLOR_DIM}Keeping mode ${current_mode}${COLOR_RESET}"
-        fi
+    elif grep -q '@ccm-status-line' ~/.tmux.conf 2>/dev/null; then
+        current_mode=$(grep '@ccm-status-line' ~/.tmux.conf | awk '{print $NF}')
+    fi
+    echo "    Current: mode ${current_mode}"
+    echo -n "    Choose mode [0/1/2] (Enter to keep current): "
+    local mode_answer
+    read -r mode_answer
+    if [[ "$mode_answer" =~ ^[012]$ && "$mode_answer" != "$current_mode" ]]; then
+        [[ $in_tmux -eq 1 ]] && tmux set -g @ccm-status-line "$mode_answer" 2>/dev/null
+        _ccm_save_tmux_conf "set -g @ccm-status-line ${mode_answer}"
+        echo "    ${COLOR_GREEN}✔${COLOR_RESET} Mode ${mode_answer} saved to ~/.tmux.conf"
     else
-        echo "    ${COLOR_DIM}Not inside tmux — add this to ~/.tmux.conf:${COLOR_RESET}"
-        echo "    ${COLOR_BOLD}set -g @ccm-status-line 0${COLOR_RESET}  ${COLOR_DIM}(change 0 to 1 or 2 as desired)${COLOR_RESET}"
+        echo "    ${COLOR_DIM}Keeping mode ${current_mode}${COLOR_RESET}"
     fi
     echo ""
 

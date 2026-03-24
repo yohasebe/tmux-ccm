@@ -111,13 +111,15 @@ This guides you through hooks installation, auto-restore, and status bar configu
 | `prefix + T` | Toggle tree view popup |
 | `prefix + C` | Open ccm menu |
 
-Customize keys in `~/.tmux.conf` (before loading the plugin):
+Customize keys in `~/.tmux.conf`:
 
 ```tmux
 set -g @ccm-key-dashboard "Tab"
 set -g @ccm-key-menu "C"
 set -g @ccm-key-tree "T"
 ```
+
+> **Important:** All `set -g @ccm-*` options must be placed **before** the TPM `run` line in `~/.tmux.conf`. TPM reads plugin options when it initializes, so settings placed after `run '~/.tmux/plugins/tpm/tpm'` will not take effect.
 
 ### Desktop Notifications
 
