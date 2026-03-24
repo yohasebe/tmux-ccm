@@ -70,9 +70,10 @@
 # Key constants (defined in common.sh):
 #   CCM_PATTERN_PERMIT:       grep -Ei pattern for permission prompts
 #   CCM_PATTERN_INPUT_PROMPT: grep -E pattern for Claude's normal input prompt (❯ )
-#     IMPORTANT: Must NOT match accept-edits prompt (❯❯). The ❯❯ prompt
-#     appears during edit acceptance mode where tools may still be running.
-#     Current pattern requires a space after ❯ to exclude ❯❯.
+#     IMPORTANT: Only matches ❯ (U+276F), NOT > (ASCII greater-than).
+#     The > character appears in Claude's output (Markdown blockquotes, shell
+#     output, UI decorations) and causes false IDLE if included in the pattern.
+#     Must also NOT match accept-edits prompt (❯❯).
 #   CCM_PATTERN_ACCEPT_EDITS: grep -E pattern for accept-edits prompt (❯❯)
 #     Used to prevent false IDLE when children are present in accept-edits mode.
 #   CCM_DONE_TIMEOUT:         seconds before DONE auto-clears
@@ -220,6 +221,16 @@ ccm_detect_window_state() {
     local raw_state
     raw_state=$(_detect_window_state "$win_target")
 
+    # Single capture-pane for this window (reused by all subsequent checks)
+    # Only captured when needed (raw_state == IDLE or has children)
+    local _win_captured="" _win_bottom=""
+    _capture_win_once() {
+        if [[ -z "$_win_captured" ]]; then
+            _win_captured=$(tmux capture-pane -t "$win_target" -p -S -10 2>/dev/null)
+            _win_bottom=$(echo "$_win_captured" | sed '/^[[:space:]]*$/d' | tail -8)
+        fi
+    }
+
     _ensure_scan_cache
     # Read prev_state, done_flag, project_name, and project_dir from batch cache
     # Use newline-separated output to avoid IFS tab collapsing empty fields
@@ -250,10 +261,8 @@ ccm_detect_window_state() {
                 if [[ "$hook_state" == "BUSY" && $hook_age -lt ${CCM_HOOK_TIMEOUT:-300} ]]; then
                     # PERMIT check only on state transitions (skip when already BUSY)
                     if [[ "$prev_state" != "BUSY" || "$prev_state" == "PERMIT" ]]; then
-                        local captured near_bottom
-                        captured=$(tmux capture-pane -t "$win_target" -p -S -10 2>/dev/null)
-                        near_bottom=$(echo "$captured" | sed '/^[[:space:]]*$/d' | tail -8)
-                        if echo "$near_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
+                        _capture_win_once
+                        if echo "$_win_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
                             tmux set-option -wt "$win_target" @ccm_prev_state "PERMIT" 2>/dev/null
                             [[ -n "$project_name" ]] && ccm_notify "PERMIT" "$project_name"
                             echo "PERMIT"
@@ -268,10 +277,8 @@ ccm_detect_window_state() {
                 # Safety net: verify input prompt is visible. If not, Claude
                 # may be busy with a new task (missed/overwritten BUSY signal).
                 if [[ "$hook_state" == "DONE" && $hook_age -lt ${CCM_DONE_TIMEOUT:-30} ]]; then
-                    local done_captured done_bottom
-                    done_captured=$(tmux capture-pane -t "$win_target" -p -S -8 2>/dev/null)
-                    done_bottom=$(echo "$done_captured" | sed '/^[[:space:]]*$/d' | tail -4)
-                    if ! echo "$done_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
+                    _capture_win_once
+                    if ! echo "$_win_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
                         # No input prompt → Claude is likely busy, not done
                         echo "BUSY"
                         return
@@ -294,12 +301,10 @@ ccm_detect_window_state() {
     # --- Fallback: transition-based DONE tracking (when no hooks configured) ---
     if [[ "$raw_state" == "IDLE" ]]; then
         if [[ "$prev_state" == "BUSY" || "$prev_state" == "PERMIT" ]]; then
-            local captured near_bottom
-            captured=$(tmux capture-pane -t "$win_target" -p -S -8 2>/dev/null)
-            near_bottom=$(echo "$captured" | sed '/^[[:space:]]*$/d' | tail -6)
+            _capture_win_once
 
-            if ! echo "$near_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
-                if echo "$near_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
+            if ! echo "$_win_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
+                if echo "$_win_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
                     tmux set-option -wt "$win_target" @ccm_prev_state "PERMIT" 2>/dev/null
                     [[ -n "$project_name" ]] && ccm_notify "PERMIT" "$project_name"
                     echo "PERMIT"
@@ -316,11 +321,9 @@ ccm_detect_window_state() {
         elif [[ -n "$done_flag" ]]; then
             local done_age=$(( now_ts - ${done_flag:-0} ))
             if [[ $done_age -ge 0 && $done_age -lt ${CCM_DONE_TIMEOUT:-30} ]]; then
-                local captured near_bottom
-                captured=$(tmux capture-pane -t "$win_target" -p -S -8 2>/dev/null)
-                near_bottom=$(echo "$captured" | sed '/^[[:space:]]*$/d' | tail -6)
-                if ! echo "$near_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
-                    if echo "$near_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
+                _capture_win_once
+                if ! echo "$_win_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
+                    if echo "$_win_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
                         tmux set-option -wt "$win_target" -u @ccm_done 2>/dev/null || true
                         tmux set-option -wt "$win_target" @ccm_prev_state "PERMIT" 2>/dev/null
                         [[ -n "$project_name" ]] && ccm_notify "PERMIT" "$project_name"
@@ -344,11 +347,9 @@ ccm_detect_window_state() {
     # Uses tail -8 to account for Claude Code UI elements below the prompt
     # (help hints, context info, etc.)
     if [[ "$raw_state" == "IDLE" ]]; then
-        local final_captured final_bottom
-        final_captured=$(tmux capture-pane -t "$win_target" -p -S -8 2>/dev/null)
-        final_bottom=$(echo "$final_captured" | sed '/^[[:space:]]*$/d' | tail -8)
-        if ! echo "$final_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
-            if echo "$final_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
+        _capture_win_once
+        if ! echo "$_win_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
+            if echo "$_win_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
                 tmux set-option -wt "$win_target" @ccm_prev_state "PERMIT" 2>/dev/null
                 [[ -n "$project_name" ]] && ccm_notify "PERMIT" "$project_name"
                 echo "PERMIT"
@@ -424,12 +425,12 @@ ccm_format_window_status() {
     state=$(ccm_detect_window_state "$win_target")
 
     case "$state" in
-        PERMIT) echo -e "${COLOR_YELLOW}${STATUS_PERMIT}${COLOR_RESET}" ;;
-        IDLE)   echo -e "${COLOR_GREEN}${STATUS_IDLE}${COLOR_RESET}" ;;
-        BUSY)   echo -e "${COLOR_CYAN}${STATUS_BUSY}${COLOR_RESET}" ;;
-        DONE)   echo -e "${COLOR_GREEN}✔ DONE${COLOR_RESET}" ;;
-        SHELL)  echo -e "${COLOR_BLUE}${STATUS_SHELL}${COLOR_RESET}" ;;
-        DOWN)   echo -e "${COLOR_DIM}${STATUS_DOWN}${COLOR_RESET}" ;;
+        PERMIT) echo -e "${COLOR_STATE_PERMIT}${STATUS_PERMIT}${COLOR_RESET}" ;;
+        IDLE)   echo -e "${COLOR_STATE_IDLE}${STATUS_IDLE}${COLOR_RESET}" ;;
+        BUSY)   echo -e "${COLOR_STATE_BUSY}${STATUS_BUSY}${COLOR_RESET}" ;;
+        DONE)   echo -e "${COLOR_STATE_DONE}${STATUS_DONE}${COLOR_RESET}" ;;
+        SHELL)  echo -e "${COLOR_STATE_SHELL}${STATUS_SHELL}${COLOR_RESET}" ;;
+        DOWN)   echo -e "${COLOR_STATE_DOWN}${STATUS_DOWN}${COLOR_RESET}" ;;
     esac
 }
 
@@ -548,12 +549,12 @@ ccm_tree() {
             local state icon=""
             state=$(ccm_detect_window_state "$win_target")
             case "$state" in
-                PERMIT) icon="${COLOR_YELLOW}⚠${COLOR_RESET} " ;;
-                BUSY)   icon="${COLOR_CYAN}◉${COLOR_RESET} " ;;
-                DONE)   icon="${COLOR_GREEN}✔${COLOR_RESET} " ;;
-                IDLE)   icon="${COLOR_GREEN}●${COLOR_RESET} " ;;
-                SHELL)  icon="${COLOR_BLUE}■${COLOR_RESET} " ;;
-                DOWN)   icon="${COLOR_DIM}○${COLOR_RESET} " ;;
+                PERMIT) icon="${COLOR_STATE_PERMIT}⚠${COLOR_RESET} " ;;
+                BUSY)   icon="${COLOR_STATE_BUSY}◉${COLOR_RESET} " ;;
+                DONE)   icon="${COLOR_STATE_DONE}✔${COLOR_RESET} " ;;
+                IDLE)   icon="${COLOR_STATE_IDLE}●${COLOR_RESET} " ;;
+                SHELL)  icon="${COLOR_STATE_SHELL}■${COLOR_RESET} " ;;
+                DOWN)   icon="${COLOR_STATE_DOWN}○${COLOR_RESET} " ;;
             esac
 
             # Git branch
@@ -608,10 +609,10 @@ ccm_tree() {
                     pane_state=$(_detect_pane_state "$pane_pid" "$pane_id")
                     local p_icon=""
                     case "$pane_state" in
-                        PERMIT) p_icon="${COLOR_YELLOW}⚠${COLOR_RESET}" ;;
-                        BUSY)   p_icon="${COLOR_CYAN}◉${COLOR_RESET}" ;;
-                        IDLE)   p_icon="${COLOR_GREEN}●${COLOR_RESET}" ;;
-                        SHELL)  p_icon="${COLOR_BLUE}■${COLOR_RESET}" ;;
+                        PERMIT) p_icon="${COLOR_STATE_PERMIT}⚠${COLOR_RESET}" ;;
+                        BUSY)   p_icon="${COLOR_STATE_BUSY}◉${COLOR_RESET}" ;;
+                        IDLE)   p_icon="${COLOR_STATE_IDLE}●${COLOR_RESET}" ;;
+                        SHELL)  p_icon="${COLOR_STATE_SHELL}■${COLOR_RESET}" ;;
                     esac
 
                     local p_marker=""

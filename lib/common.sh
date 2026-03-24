@@ -36,11 +36,12 @@ CCM_CLAUDE_PROCESS_NAME="claude"
 CCM_PATTERN_PERMIT='(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc to cancel)'
 # Claude Code input prompt pattern (visible when IDLE, absent during PERMIT)
 # Note: Claude Code uses ❯ (U+276F) followed by non-breaking space (U+00A0)
-# Matches: "❯ " (normal idle prompt), "> " (alternative)
-# Does NOT match: "❯❯ accept edits on" (edit acceptance mode — Claude may still be busy)
-CCM_PATTERN_INPUT_PROMPT='^[>❯›][[:space:]]'
-# Pattern to detect accept-edits mode (❯❯ or >>), which is NOT an idle prompt
-CCM_PATTERN_ACCEPT_EDITS='^[>❯›][>❯›]'
+# IMPORTANT: Only match ❯ (U+276F), NOT > (ASCII greater-than).
+# The > character appears frequently in Claude's output (Markdown blockquotes,
+# shell output, UI decorations) and causes false IDLE detection.
+CCM_PATTERN_INPUT_PROMPT='^❯[[:space:]]'
+# Pattern to detect accept-edits mode (❯❯), which is NOT an idle prompt
+CCM_PATTERN_ACCEPT_EDITS='^❯❯'
 # Commands to start Claude Code
 CCM_CLAUDE_CMD="claude --continue 2>/dev/null || claude"
 
@@ -128,6 +129,28 @@ COLOR_CYAN=$'\033[0;36m'
 COLOR_BOLD=$'\033[1m'
 COLOR_DIM=$'\033[2m'
 COLOR_RESET=$'\033[0m'
+
+# State colors — ANSI terminal (dashboard, tree, status command)
+# Matched to Claude Code's visual language:
+#   BUSY = salmon/orange (matches Claude's "Choreographing..." text)
+#   PERMIT = yellow (warning/attention)
+#   DONE = green (success)
+#   IDLE = gray (inactive/waiting)
+#   SHELL = dark gray (not running)
+COLOR_STATE_PERMIT=$'\033[1;33m'         # bold yellow
+COLOR_STATE_BUSY=$'\033[38;5;209m'       # salmon/orange (208-210 range)
+COLOR_STATE_DONE=$'\033[0;32m'           # green
+COLOR_STATE_IDLE=$'\033[0;34m'           # blue
+COLOR_STATE_SHELL=$'\033[38;5;245m'      # gray
+COLOR_STATE_DOWN=$'\033[38;5;245m'       # gray
+
+# State colors — tmux status bar format (#[fg=...])
+TMUX_COLOR_PERMIT="yellow"
+TMUX_COLOR_BUSY="#e8967d"                # salmon matching ANSI 209
+TMUX_COLOR_DONE="green"
+TMUX_COLOR_IDLE="#5f87af"                # blue
+TMUX_COLOR_SHELL="#8a8a8a"               # gray
+TMUX_COLOR_DOWN="#8a8a8a"                # gray
 
 # Status indicators
 STATUS_PERMIT="⚠ PERMIT"
@@ -280,6 +303,134 @@ ccm_check_deps() {
     if [[ ${#missing[@]} -gt 0 ]]; then
         ccm_die "Missing dependencies: ${missing[*]}"
     fi
+}
+
+# Interactive initial setup wizard
+# Works both inside and outside tmux (tmux-dependent steps show manual instructions)
+ccm_init() {
+    local in_tmux=0
+    [[ -n "${TMUX:-}" ]] && in_tmux=1
+
+    echo ""
+    echo "  ${COLOR_BOLD}ccm — Claude Code Manager Setup${COLOR_RESET}"
+    echo ""
+
+    if [[ $in_tmux -eq 0 ]]; then
+        echo "  ${COLOR_YELLOW}Note:${COLOR_RESET} Not inside tmux. Some settings (auto-restore, status bar)"
+        echo "  can only be applied interactively inside a tmux session."
+        echo "  ${COLOR_DIM}For the full setup experience: tmux → ccm init${COLOR_RESET}"
+        echo ""
+        echo -n "  Continue anyway? [Y/n] "
+        local cont
+        read -r cont
+        if [[ -n "$cont" && ! "$cont" =~ ^[Yy] ]]; then
+            return 0
+        fi
+        echo ""
+    fi
+
+    # Step 1: Dependency check
+    echo "  ${COLOR_BOLD}[1/4] Checking dependencies${COLOR_RESET}"
+    local all_ok=1
+    for cmd in tmux jq fzf claude; do
+        if command -v "$cmd" &>/dev/null; then
+            echo "    ${COLOR_GREEN}✔${COLOR_RESET} $cmd"
+        else
+            echo "    ${COLOR_RED}✘${COLOR_RESET} $cmd — not found"
+            all_ok=0
+        fi
+    done
+    if [[ $all_ok -eq 0 ]]; then
+        echo ""
+        echo "  ${COLOR_RED}Please install missing dependencies and re-run 'ccm init'.${COLOR_RESET}"
+        return 1
+    fi
+    echo ""
+
+    # Step 2: Claude Code hooks
+    echo "  ${COLOR_BOLD}[2/4] Claude Code hooks${COLOR_RESET}"
+    echo "    Hooks improve state detection accuracy (BUSY/DONE)."
+    if ccm_hooks_configured; then
+        echo "    ${COLOR_GREEN}✔${COLOR_RESET} Already installed"
+    else
+        echo -n "    Install hooks? [Y/n] "
+        local answer
+        read -r answer
+        if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
+            ccm_setup_hooks 2>/dev/null
+            echo "    ${COLOR_GREEN}✔${COLOR_RESET} Installed"
+        else
+            echo "    ${COLOR_DIM}Skipped (you can run 'ccm setup-hooks' later)${COLOR_RESET}"
+        fi
+    fi
+    echo ""
+
+    # Step 3: Auto-restore
+    echo "  ${COLOR_BOLD}[3/4] Auto-restore on tmux start${COLOR_RESET}"
+    echo "    Automatically load the last workspace when tmux starts."
+    if [[ $in_tmux -eq 1 ]]; then
+        local auto_restore
+        auto_restore=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)
+        if [[ "$auto_restore" == "on" ]]; then
+            echo "    ${COLOR_GREEN}✔${COLOR_RESET} Already enabled"
+        else
+            echo -n "    Enable auto-restore? [Y/n] "
+            local answer
+            read -r answer
+            if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
+                tmux set -g @ccm-auto-restore on 2>/dev/null
+                echo "    ${COLOR_GREEN}✔${COLOR_RESET} Enabled for this session"
+                echo "    ${COLOR_DIM}Add to ~/.tmux.conf to persist: set -g @ccm-auto-restore on${COLOR_RESET}"
+            else
+                echo "    ${COLOR_DIM}Skipped${COLOR_RESET}"
+            fi
+        fi
+    else
+        echo "    ${COLOR_DIM}Not inside tmux — add this to ~/.tmux.conf:${COLOR_RESET}"
+        echo "    ${COLOR_BOLD}set -g @ccm-auto-restore on${COLOR_RESET}"
+    fi
+    echo ""
+
+    # Step 4: Status bar mode
+    echo "  ${COLOR_BOLD}[4/4] Status bar mode${COLOR_RESET}"
+    echo "    0 = Icon in status-right (default, minimal)"
+    echo "    1 = Replace window list with ccm entries"
+    echo "    2 = Dedicated status line with full details"
+    if [[ $in_tmux -eq 1 ]]; then
+        local current_mode
+        current_mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
+        current_mode="${current_mode:-0}"
+        echo "    Current: mode ${current_mode}"
+        echo -n "    Choose mode [0/1/2] (Enter to keep current): "
+        local mode_answer
+        read -r mode_answer
+        if [[ "$mode_answer" =~ ^[012]$ && "$mode_answer" != "$current_mode" ]]; then
+            tmux set -g @ccm-status-line "$mode_answer" 2>/dev/null
+            echo "    ${COLOR_GREEN}✔${COLOR_RESET} Set to mode ${mode_answer}"
+            echo "    ${COLOR_DIM}Add to ~/.tmux.conf to persist: set -g @ccm-status-line ${mode_answer}${COLOR_RESET}"
+        else
+            echo "    ${COLOR_DIM}Keeping mode ${current_mode}${COLOR_RESET}"
+        fi
+    else
+        echo "    ${COLOR_DIM}Not inside tmux — add this to ~/.tmux.conf:${COLOR_RESET}"
+        echo "    ${COLOR_BOLD}set -g @ccm-status-line 0${COLOR_RESET}  ${COLOR_DIM}(change 0 to 1 or 2 as desired)${COLOR_RESET}"
+    fi
+    echo ""
+
+    # Summary
+    echo "  ${COLOR_BOLD}Setup complete!${COLOR_RESET}"
+    echo ""
+    if [[ $in_tmux -eq 1 ]]; then
+        echo "  ${COLOR_DIM}Quick start:${COLOR_RESET}"
+        echo "    ccm add ~/your-project    Add a project"
+        echo "    prefix + Tab              Open dashboard"
+    else
+        echo "  ${COLOR_DIM}Next steps:${COLOR_RESET}"
+        echo "    tmux                         Start tmux"
+        echo "    ccm add ~/your-project       Add a project"
+        echo "    prefix + Tab                 Open dashboard"
+    fi
+    echo ""
 }
 
 # Remove ccm hook entries from a settings JSON string (helper)

@@ -157,11 +157,11 @@ Do you want to allow this tool call?
     # Input prompt visible → IDLE at pane level → DONE at window level
     mock_capture_pane "%0" "Here is the result.
 
-> "
+❯ "
     # Also set for window-level capture (DONE/PERMIT check)
     mock_capture_pane "test-session:0" "Here is the result.
 
-> "
+❯ "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "DONE" ]]
@@ -177,7 +177,7 @@ Do you want to allow this tool call?
 Yes    No
 Result: success
 
-> "
+❯ "
     mock_capture_pane "%0" "$content"
     mock_capture_pane "test-session:0" "$content"
 
@@ -210,10 +210,10 @@ Do you want to allow this?
     mock_win_opts_cache "test-session:0	IDLE	${old_ts}	myproject	/tmp/test-project"
     mock_capture_pane "%0" "Old output.
 
-> "
+❯ "
     mock_capture_pane "test-session:0" "Old output.
 
-> "
+❯ "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "IDLE" ]]
@@ -227,7 +227,7 @@ Do you want to allow this?
     mock_win_opts_cache "test-session:0	IDLE	${recent_ts}	myproject	/tmp/test-project"
     local content="Result complete.
 
-> "
+❯ "
     mock_capture_pane "%0" "$content"
     mock_capture_pane "test-session:0" "$content"
 
@@ -277,10 +277,10 @@ Do you want to allow this?
     mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
     mock_capture_pane "%0" "Waiting.
 
-> "
+❯ "
     mock_capture_pane "test-session:0" "Waiting.
 
-> "
+❯ "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "IDLE" ]]
@@ -394,7 +394,7 @@ test-session:0	110	%1"
     mock_hook_signal "/tmp/test-project" "$(date +%s) DONE"
     mock_capture_pane "test-session:0" "Here is the result.
 
-> "
+❯ "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "DONE" ]]
@@ -457,7 +457,7 @@ Esc to cancel"
     mock_hook_signal "/tmp/test-project" "$old_ts BUSY"
     mock_capture_pane "test-session:0" "Previous output.
 
-> "
+❯ "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "IDLE" ]]
@@ -487,7 +487,7 @@ Architecting... (8s)"
     mock_hook_signal "/tmp/test-project" "$old_ts DONE"
     mock_capture_pane "test-session:0" "Done.
 
-> "
+❯ "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "IDLE" ]]
@@ -500,7 +500,7 @@ Architecting... (8s)"
     mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
     mock_capture_pane "test-session:0" "Output.
 
-> "
+❯ "
     # No mock_hook_signal → no hook file
 
     run ccm_detect_window_state "test-session:0"

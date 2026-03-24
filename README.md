@@ -2,7 +2,9 @@
 
 **[日本語版 README](README.ja.md)**
 
-A tmux-based multi-project manager for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Manage multiple Claude Code sessions as tmux windows with an interactive dashboard, status detection, and snapshot support.
+Run multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions in parallel. Switch between projects instantly, see which ones need your attention, and never lose your workspace.
+
+ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with a live dashboard, state detection, and snapshot restore.
 
 **Dashboard** (`prefix + Tab`):
 
@@ -91,9 +93,13 @@ If you haven't used Claude Code before, complete the initial authentication firs
 claude
 ```
 
-This opens an interactive setup where you choose your plan (subscription or API key) and authenticate via browser. Once authenticated, you can use ccm to manage multiple projects.
+This opens an interactive setup where you choose your plan (subscription or API key) and authenticate via browser. Once authenticated, run the setup wizard:
 
-> **Tip:** Complete authentication in a regular terminal before using `ccm add`, since ccm auto-starts Claude Code in new windows.
+```bash
+ccm init
+```
+
+This guides you through hooks installation, auto-restore, and status bar configuration in one step.
 
 ## Usage
 

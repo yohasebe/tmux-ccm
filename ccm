@@ -17,7 +17,7 @@ CCM_ROOT="$(_ccm_resolve "$0")"
 
 # Background commands (inject-status, clear-done) must not fail on errors
 case "${1:-}" in
-    inject-status|clear-done|dashboard|dash|d|tree-interactive|ti) set +e ;;
+    inject-status|clear-done|dashboard|dash|d|tree-interactive|ti|init) set +e ;;
     *) set -euo pipefail ;;
 esac
 
@@ -58,6 +58,7 @@ Usage:
   ccm stop [--all|name]             Stop project window(s)
   ccm menu                          Interactive menu (for keybinding)
   ccm pane-title [on|off|toggle|status]  Control pane title display
+  ccm init                          Interactive setup wizard
   ccm setup-hooks                   Install Claude Code hooks for improved state detection
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm help                          Show this help
@@ -153,6 +154,9 @@ case "${1:-help}" in
         ;;
     pane-title|pt)
         ccm_pane_title "${2:-}"
+        ;;
+    init)
+        ccm_init
         ;;
     setup-hooks)
         ccm_setup_hooks

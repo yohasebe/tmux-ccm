@@ -22,6 +22,7 @@ _ccm() {
         'stop:Stop project window(s)'
         'menu:Interactive menu'
         'pane-title:Control pane title display'
+        'init:Interactive setup wizard'
         'setup-hooks:Install Claude Code hooks for improved state detection'
         'remove-hooks:Remove ccm hooks from Claude Code settings'
         'help:Show help'

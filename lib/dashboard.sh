@@ -96,12 +96,12 @@ _format_dir() {
 _state_icon() {
     local state="$1"
     case "$state" in
-        PERMIT) echo "${COLOR_YELLOW}⚠ PERMIT${COLOR_RESET}" ;;
-        IDLE)   echo "${COLOR_GREEN}● IDLE${COLOR_RESET}" ;;
-        BUSY)   echo "${COLOR_CYAN}◉ BUSY${COLOR_RESET}" ;;
-        DONE)   echo "${COLOR_GREEN}✔ DONE${COLOR_RESET}" ;;
-        SHELL)  echo "${COLOR_BLUE}■ SHELL${COLOR_RESET}" ;;
-        DOWN)   echo "${COLOR_DIM}○ DOWN${COLOR_RESET}" ;;
+        PERMIT) echo "${COLOR_STATE_PERMIT}⚠ PERMIT${COLOR_RESET}" ;;
+        IDLE)   echo "${COLOR_STATE_IDLE}● IDLE${COLOR_RESET}" ;;
+        BUSY)   echo "${COLOR_STATE_BUSY}◉ BUSY${COLOR_RESET}" ;;
+        DONE)   echo "${COLOR_STATE_DONE}✔ DONE${COLOR_RESET}" ;;
+        SHELL)  echo "${COLOR_STATE_SHELL}■ SHELL${COLOR_RESET}" ;;
+        DOWN)   echo "${COLOR_STATE_DOWN}○ DOWN${COLOR_RESET}" ;;
     esac
 }
 
@@ -157,9 +157,14 @@ _build_project_list_cached() {
                 fi
             fi
         fi
-        # Fallback timestamp for DONE without hook
-        if [[ "$sort_ts" == "0" && "$state" == "DONE" && -n "$done_flag" && "$done_flag" != "0" ]]; then
-            sort_ts="$done_flag"
+        # Fallback timestamp: use last_done for any state without a hook timestamp
+        # This ensures projects within the same state sort by most recent activity
+        if [[ "$sort_ts" == "0" ]]; then
+            if [[ -n "$done_flag" && "$done_flag" != "0" ]]; then
+                sort_ts="$done_flag"
+            elif [[ -n "$last_done" && "$last_done" != "0" ]]; then
+                sort_ts="$last_done"
+            fi
         fi
 
         _tmp_targets+=("$win_target")
@@ -215,7 +220,7 @@ _build_project_list_cached() {
         if [[ -n "$last_done" && "$last_done" != "0" ]]; then
             local elapsed
             elapsed=$(_format_elapsed "$last_done")
-            [[ -n "$elapsed" ]] && done_display=" ${COLOR_GREEN}✔${COLOR_DIM}${elapsed}${COLOR_RESET}"
+            [[ -n "$elapsed" ]] && done_display=" ${COLOR_STATE_DONE}✔${COLOR_DIM}${elapsed}${COLOR_RESET}"
         fi
 
         _SESSION_LINES+=("${COLOR_DIM}#${win_idx}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET} ${branch_display}${port_display}${done_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
@@ -288,15 +293,17 @@ _build_project_list() {
             PERMIT) _pri=0 ;; DONE) _pri=1 ;; BUSY) _pri=2 ;;
             IDLE)   _pri=3 ;; SHELL) _pri=4 ;; *)    _pri=5 ;;
         esac
+        # Try hook signal timestamp first (most recent for BUSY/DONE)
         if [[ "$_state" == "BUSY" || "$_state" == "DONE" ]]; then
             if [[ -n "$_dir" && "$_dir" != "-" ]]; then
                 local _hs
                 _hs=$(_ccm_read_hook_signal "$_dir")
                 [[ -n "$_hs" ]] && _sts="${_hs%% *}"
             fi
-            if [[ "$_sts" == "0" && "$_state" == "DONE" && -n "$_done_ts" && "$_done_ts" != "0" ]]; then
-                _sts="$_done_ts"
-            fi
+        fi
+        # Fallback: use last_done timestamp for any state
+        if [[ "$_sts" == "0" && -n "$_done_ts" && "$_done_ts" != "0" ]]; then
+            _sts="$_done_ts"
         fi
     }
 
@@ -380,7 +387,7 @@ _build_project_list() {
         if [[ -n "$last_done" && "$last_done" != "0" ]]; then
             local elapsed
             elapsed=$(_format_elapsed "$last_done")
-            [[ -n "$elapsed" ]] && done_display=" ${COLOR_GREEN}✔${COLOR_DIM}${elapsed}${COLOR_RESET}"
+            [[ -n "$elapsed" ]] && done_display=" ${COLOR_STATE_DONE}✔${COLOR_DIM}${elapsed}${COLOR_RESET}"
         fi
 
         if [[ "$tagged" == "1" ]]; then
@@ -484,7 +491,7 @@ ccm_dashboard() {
     # Full rebuild (with git/port) on second iteration
     _build_project_list cached
     local needs_rebuild=2  # 2=fast, 1=full, 0=none
-    local initial_load=1   # 1=show "Loading...", cleared after first full render
+    local initial_load=1   # 1=show "Syncing...", cleared after first full render
 
     while true; do
 
@@ -527,7 +534,7 @@ ccm_dashboard() {
 
         local header
         if [[ $initial_load -eq 1 && $needs_rebuild -gt 0 ]]; then
-            header="  ${COLOR_DIM}Loading...${COLOR_RESET}"
+            header="  ${COLOR_CYAN}Syncing...${COLOR_RESET}"
         else
             initial_load=0
             local _current_session
@@ -1163,10 +1170,10 @@ _ccm_priority_color() {
         esac
     done
 
-    if [[ $has_permit -eq 1 ]]; then echo "yellow"
-    elif [[ $has_busy -eq 1 ]]; then echo "cyan"
-    elif [[ $has_done -eq 1 ]]; then echo "green"
-    else echo "#666666"
+    if [[ $has_permit -eq 1 ]]; then echo "$TMUX_COLOR_PERMIT"
+    elif [[ $has_busy -eq 1 ]]; then echo "$TMUX_COLOR_BUSY"
+    elif [[ $has_done -eq 1 ]]; then echo "$TMUX_COLOR_DONE"
+    else echo "$TMUX_COLOR_IDLE"
     fi
 }
 
@@ -1197,12 +1204,12 @@ _build_detail_entries() {
     for ((i=0; i<_SL_COUNT; i++)); do
         local color icon
         case "${_SL_STATES[$i]}" in
-            PERMIT) color="yellow"; icon="⚠" ;;
-            BUSY)   color="cyan";   icon="◉" ;;
-            DONE)   color="green";  icon="✔" ;;
-            IDLE)   color="#888888"; icon="●" ;;
-            SHELL)  color="#666666"; icon="■" ;;
-            *)      color="#666666"; icon="○" ;;
+            PERMIT) color="$TMUX_COLOR_PERMIT"; icon="⚠" ;;
+            BUSY)   color="$TMUX_COLOR_BUSY";   icon="◉" ;;
+            DONE)   color="$TMUX_COLOR_DONE";   icon="✔" ;;
+            IDLE)   color="$TMUX_COLOR_IDLE";   icon="●" ;;
+            SHELL)  color="$TMUX_COLOR_SHELL";  icon="■" ;;
+            *)      color="$TMUX_COLOR_DOWN";   icon="○" ;;
         esac
 
         if [[ "$with_extras" == "extras" ]]; then
@@ -1407,9 +1414,18 @@ print(s, end='')
             fi
         else
             # Calculate how many lines we need based on terminal width
+            # Estimate entry width from actual content (strip tmux color codes)
             local term_width
             term_width=$(tmux display-message -p '#{client_width}' 2>/dev/null || echo 120)
-            local entries_per_line=$(( (term_width - 10) / 35 ))
+            local avg_width=20
+            if [[ ${#_DETAIL_ENTRIES[@]} -gt 0 ]]; then
+                # Strip #[...] codes and measure visible characters
+                local sample
+                sample=$(printf '%s' "${_DETAIL_ENTRIES[0]}" | sed 's/#\[[^]]*\]//g')
+                avg_width=$(( ${#sample} + 3 ))  # +3 for separator "│" and padding
+                [[ $avg_width -lt 10 ]] && avg_width=10
+            fi
+            local entries_per_line=$(( (term_width - 5) / avg_width ))
             [[ $entries_per_line -lt 1 ]] && entries_per_line=1
             local num_lines=$(( (_SL_COUNT + entries_per_line - 1) / entries_per_line ))
             [[ $num_lines -lt 1 ]] && num_lines=1
@@ -1547,11 +1563,11 @@ _build_tree_data() {
             local state icon=""
             state=$(ccm_detect_window_state "$win_target")
             case "$state" in
-                PERMIT) icon="${COLOR_YELLOW}⚠${COLOR_RESET} " ;;
-                BUSY)   icon="${COLOR_CYAN}◉${COLOR_RESET} " ;;
-                DONE)   icon="${COLOR_GREEN}✔${COLOR_RESET} " ;;
-                IDLE)   icon="${COLOR_GREEN}●${COLOR_RESET} " ;;
-                SHELL)  icon="${COLOR_BLUE}■${COLOR_RESET} " ;;
+                PERMIT) icon="${COLOR_STATE_PERMIT}⚠${COLOR_RESET} " ;;
+                BUSY)   icon="${COLOR_STATE_BUSY}◉${COLOR_RESET} " ;;
+                DONE)   icon="${COLOR_STATE_DONE}✔${COLOR_RESET} " ;;
+                IDLE)   icon="${COLOR_STATE_IDLE}●${COLOR_RESET} " ;;
+                SHELL)  icon="${COLOR_STATE_SHELL}■${COLOR_RESET} " ;;
                 DOWN)   icon="${COLOR_DIM}○${COLOR_RESET} " ;;
             esac
 
@@ -1602,10 +1618,10 @@ _build_tree_data() {
                     local pane_state p_icon=""
                     pane_state=$(_detect_pane_state "$pane_pid" "$pane_id")
                     case "$pane_state" in
-                        PERMIT) p_icon="${COLOR_YELLOW}⚠${COLOR_RESET}" ;;
-                        BUSY)   p_icon="${COLOR_CYAN}◉${COLOR_RESET}" ;;
-                        IDLE)   p_icon="${COLOR_GREEN}●${COLOR_RESET}" ;;
-                        SHELL)  p_icon="${COLOR_BLUE}■${COLOR_RESET}" ;;
+                        PERMIT) p_icon="${COLOR_STATE_PERMIT}⚠${COLOR_RESET}" ;;
+                        BUSY)   p_icon="${COLOR_STATE_BUSY}◉${COLOR_RESET}" ;;
+                        IDLE)   p_icon="${COLOR_STATE_IDLE}●${COLOR_RESET}" ;;
+                        SHELL)  p_icon="${COLOR_STATE_SHELL}■${COLOR_RESET}" ;;
                     esac
 
                     local pane_dir="${pane_path/#$HOME/\~}"
@@ -1644,7 +1660,7 @@ ccm_tree_interactive() {
     # Show loading indicator immediately
     tput home 2>/dev/null
     tput ed 2>/dev/null
-    printf '\n  %s\n' "${COLOR_DIM}Loading...${COLOR_RESET}"
+    printf '\n  %s\n' "${COLOR_CYAN}Syncing...${COLOR_RESET}"
 
     # Current selection index into _TREE_SELECTABLE array
     local sel_pos=0

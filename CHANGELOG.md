@@ -18,8 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Dashboard sort now works on macOS default bash 3.2 (removed `local -n` nameref dependency)
 - False BUSY when background children (MCP servers, etc.) present but user is at input prompt
 - Safety net prompt detection range expanded from 4 to 8 non-empty lines to avoid false BUSY from Claude Code UI elements
+- False IDLE during text generation caused by `>` (ASCII) in output matching input prompt pattern
+- Deduplicate capture-pane calls: window-level captures now happen at most once per detection cycle
 
 ### Added
+- `ccm init` interactive setup wizard (hooks, auto-restore, status bar mode in one step)
 - First-time setup guide in README and user guide (authenticate Claude Code before using ccm)
 - `ccm_hooks_configured()` function to detect whether Claude Code hooks are installed
 - Hook status display in dashboard footer and `ccm status` output (Hooks: ON/OFF)
