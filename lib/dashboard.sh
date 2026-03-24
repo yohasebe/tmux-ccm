@@ -447,10 +447,10 @@ ccm_dashboard() {
     stty -echo 2>/dev/null
     trap 'tput cnorm 2>/dev/null; stty echo 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
 
-    # Instant first paint from cached tmux options (no ps/capture-pane)
-    # Full rebuild happens on the first timeout cycle (user can interact immediately)
+    # Instant first paint from cached tmux options + hook signals
+    # Full rebuild on the very next iteration (user can interact immediately)
     _build_project_list cached
-    local needs_rebuild=0
+    local needs_rebuild=1
 
     while true; do
 
