@@ -348,3 +348,49 @@ ccm_open() {
     # cd to directory, then start claude
     tmux send-keys "cd $(printf '%q' "$dir") && (claude --continue 2>/dev/null || claude)" Enter
 }
+
+# Control pane title display (pane-border-status)
+# Claude Code sets pane titles via terminal escape sequences to describe the current session.
+# This function toggles tmux's pane-border-status to show/hide those titles.
+ccm_pane_title() {
+    local action="${1:-toggle}"
+    local session
+    session=$(_ccm_session)
+    [[ -z "$session" ]] && ccm_die "Not inside a tmux session"
+
+    case "$action" in
+        on)
+            tmux set-option -t "$session" pane-border-status top 2>/dev/null
+            tmux set-option -t "$session" pane-border-format "#{pane_title}" 2>/dev/null
+            tmux set-option -g @ccm-pane-title on 2>/dev/null
+            tmux display-message "ccm: pane title ON" 2>/dev/null
+            ;;
+        off)
+            tmux set-option -t "$session" -u pane-border-status 2>/dev/null
+            tmux set-option -t "$session" -u pane-border-format 2>/dev/null
+            tmux set-option -g @ccm-pane-title off 2>/dev/null
+            tmux display-message "ccm: pane title OFF" 2>/dev/null
+            ;;
+        toggle)
+            local current
+            current=$(tmux show-option -t "$session" -qv pane-border-status 2>/dev/null)
+            if [[ "$current" == "top" ]]; then
+                ccm_pane_title off
+            else
+                ccm_pane_title on
+            fi
+            ;;
+        status)
+            local current
+            current=$(tmux show-option -t "$session" -qv pane-border-status 2>/dev/null)
+            if [[ "$current" == "top" ]]; then
+                echo "pane-title: on"
+            else
+                echo "pane-title: off"
+            fi
+            ;;
+        *)
+            ccm_die "Usage: ccm pane-title [on|off|toggle|status]"
+            ;;
+    esac
+}

@@ -57,6 +57,7 @@ Usage:
   ccm start [snapshot]              Start from a snapshot
   ccm stop [--all|name]             Stop project window(s)
   ccm menu                          Interactive menu (for keybinding)
+  ccm pane-title [on|off|toggle|status]  Control pane title display
   ccm setup-hooks                   Install Claude Code hooks for improved state detection
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm help                          Show this help
@@ -149,6 +150,9 @@ case "${1:-help}" in
     menu)
         ccm_check_deps
         ccm_menu
+        ;;
+    pane-title|pt)
+        ccm_pane_title "${2:-}"
         ;;
     setup-hooks)
         ccm_setup_hooks

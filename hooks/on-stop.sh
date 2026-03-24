@@ -31,13 +31,16 @@ fi
 SIGNAL_FILE="${HOOK_DIR}/${KEY}"
 NOW=$(date +%s)
 
-# Split-pane safety: if another pane wrote a newer BUSY signal, don't overwrite.
-# This prevents one pane's Stop from clearing another pane's active BUSY state.
+# Safety: if a BUSY signal was written at or after this Stop event's timestamp,
+# don't overwrite it.  This handles two cases:
+#   1. Split-pane: another pane wrote BUSY more recently
+#   2. Race condition: Stop hook execution was delayed and a new UserPromptSubmit
+#      already wrote BUSY before this hook finished
 if [[ -f "$SIGNAL_FILE" ]]; then
     EXISTING=$(cat "$SIGNAL_FILE" 2>/dev/null)
     EXISTING_TS="${EXISTING%% *}"
     EXISTING_STATE="${EXISTING##* }"
-    if [[ "$EXISTING_STATE" == "BUSY" && "$EXISTING_TS" -gt "$NOW" ]] 2>/dev/null; then
+    if [[ "$EXISTING_STATE" == "BUSY" && "$EXISTING_TS" -ge "$NOW" ]] 2>/dev/null; then
         exit 0
     fi
 fi

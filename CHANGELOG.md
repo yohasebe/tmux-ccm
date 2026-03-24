@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `ccm pane-title [on|off|toggle|status]` command to control pane border title display (shows Claude Code's session description)
 - Claude Code hooks integration for improved state detection (`ccm setup-hooks` / `ccm remove-hooks`)
   - `UserPromptSubmit` hook → BUSY signal (detects text generation without child processes)
   - `Stop` hook → DONE signal (reliable response completion detection)
@@ -20,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Legacy session-based project functions: `ccm_session_name()`, `ccm_project_name()`, `ccm_list_sessions()`, `ccm_session_exists()`, `CCM_SESSION_PREFIX`
 - Legacy cache aliases: `_refresh_ps_cache()`, `_ensure_ps_cache()` (replaced with direct calls)
 - Unused `STATUS_WORK` constant and corresponding dashboard case branch
+
+### Fixed
+- Fix false IDLE/DONE display when Claude is actually busy (multi-turn tool use with expired hook signal): add capture-pane safety net verifying input prompt visibility before returning IDLE
+- Fix false DONE display when hook=DONE but input prompt not visible: add capture-pane verification
+- Fix race condition in Stop hook where delayed execution could overwrite a newer BUSY signal (`-gt` → `-ge`)
 
 ### Changed
 - Dashboard initial display reads hook signal files for real-time accuracy (BUSY/DONE visible immediately)

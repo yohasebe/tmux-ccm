@@ -252,6 +252,9 @@ Do you want to allow this?
     mock_capture_pane "%0" "Waiting.
 
 > "
+    mock_capture_pane "test-session:0" "Waiting.
+
+> "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "IDLE" ]]
@@ -357,15 +360,34 @@ test-session:0	110	%1"
     [[ "$output" == "BUSY" ]]
 }
 
-@test "HOOK: raw=IDLE + hook=DONE → DONE (reliable)" {
+@test "HOOK: raw=IDLE + hook=DONE + input prompt visible → DONE" {
     mock_ps_cache "  100     1   100 bash
   200   100   100 claude"
     mock_panes_cache "test-session:0	100	%0"
     mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
     mock_hook_signal "/tmp/test-project" "$(date +%s) DONE"
+    mock_capture_pane "test-session:0" "Here is the result.
+
+> "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "DONE" ]]
+}
+
+@test "HOOK: raw=IDLE + hook=DONE + no input prompt → BUSY (safety net)" {
+    mock_ps_cache "  100     1   100 bash
+  200   100   100 claude"
+    mock_panes_cache "test-session:0	100	%0"
+    mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
+    mock_hook_signal "/tmp/test-project" "$(date +%s) DONE"
+    mock_capture_pane "test-session:0" "Explore(Explore
+  Search(patter
+  Read(lib/dete
+  +10 more tool
+Boogieing... (think"
+
+    run ccm_detect_window_state "test-session:0"
+    [[ "$output" == "BUSY" ]]
 }
 
 @test "HOOK: raw=PERMIT + hook=BUSY → PERMIT (process tree wins)" {
@@ -400,39 +422,78 @@ Esc to cancel"
     [[ "$output" == "PERMIT" ]]
 }
 
-@test "HOOK: expired BUSY signal → fallback to IDLE" {
+@test "HOOK: expired BUSY signal + input prompt → IDLE" {
     mock_ps_cache "  100     1   100 bash
   200   100   100 claude"
     mock_panes_cache "test-session:0	100	%0"
     mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
     local old_ts=$(( $(date +%s) - 301 ))
     mock_hook_signal "/tmp/test-project" "$old_ts BUSY"
+    mock_capture_pane "test-session:0" "Previous output.
+
+> "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "IDLE" ]]
 }
 
-@test "HOOK: expired DONE signal → IDLE" {
+@test "HOOK: expired BUSY signal + no input prompt → BUSY (safety net)" {
+    mock_ps_cache "  100     1   100 bash
+  200   100   100 claude"
+    mock_panes_cache "test-session:0	100	%0"
+    mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
+    local old_ts=$(( $(date +%s) - 301 ))
+    mock_hook_signal "/tmp/test-project" "$old_ts BUSY"
+    mock_capture_pane "test-session:0" "Agent(Investigate
+  Done (36 tool
+Architecting... (8s)"
+
+    run ccm_detect_window_state "test-session:0"
+    [[ "$output" == "BUSY" ]]
+}
+
+@test "HOOK: expired DONE signal + input prompt → IDLE" {
     mock_ps_cache "  100     1   100 bash
   200   100   100 claude"
     mock_panes_cache "test-session:0	100	%0"
     mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
     local old_ts=$(( $(date +%s) - 31 ))
     mock_hook_signal "/tmp/test-project" "$old_ts DONE"
+    mock_capture_pane "test-session:0" "Done.
+
+> "
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "IDLE" ]]
 }
 
-@test "HOOK: no hook file → fallback to existing behavior" {
+@test "HOOK: no hook file + input prompt → IDLE" {
     mock_ps_cache "  100     1   100 bash
   200   100   100 claude"
     mock_panes_cache "test-session:0	100	%0"
     mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
+    mock_capture_pane "test-session:0" "Output.
+
+> "
     # No mock_hook_signal → no hook file
 
     run ccm_detect_window_state "test-session:0"
     [[ "$output" == "IDLE" ]]
+}
+
+@test "HOOK: no hook file + no input prompt → BUSY (safety net)" {
+    mock_ps_cache "  100     1   100 bash
+  200   100   100 claude"
+    mock_panes_cache "test-session:0	100	%0"
+    mock_win_opts_cache "test-session:0	IDLE		myproject	/tmp/test-project"
+    mock_capture_pane "test-session:0" "Explore(Explore
+  Search(patterns
+  Read(files)
+  +10 more tools"
+    # No mock_hook_signal → no hook file
+
+    run ccm_detect_window_state "test-session:0"
+    [[ "$output" == "BUSY" ]]
 }
 
 @test "HOOK: raw=SHELL + hook=BUSY → SHELL (contradictory, ignore hook)" {

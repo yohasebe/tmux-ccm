@@ -30,6 +30,15 @@ tmux bind-key "$CCM_KEY_TREE" \
     run-shell "$_session_cmd" \\\; \
     display-popup -E -w 80% -h 60% -T " ccm Tree " "$CCM_BIN tree-interactive"
 
+# Pane title display: show Claude Code's session description in pane borders
+# Controlled by @ccm-pane-title: "on" or "off" (default)
+CCM_PANE_TITLE=$(tmux show-option -gqv @ccm-pane-title 2>/dev/null)
+CCM_PANE_TITLE="${CCM_PANE_TITLE:-off}"
+if [[ "$CCM_PANE_TITLE" == "on" ]]; then
+    tmux set-option pane-border-status top 2>/dev/null
+    tmux set-option pane-border-format "#{pane_title}" 2>/dev/null
+fi
+
 # Restore prefix + w to default (choose-tree)
 tmux bind-key w choose-tree -Zs
 

@@ -39,8 +39,9 @@
 #         → if PERMIT text found → PERMIT
 #         → otherwise (or already BUSY) → BUSY
 #         (capture-pane skipped when already BUSY to reduce overhead)
-#       - raw=IDLE + hook=DONE (age < CCM_DONE_TIMEOUT) → DONE
-#         (reliable DONE without capture-pane heuristics)
+#       - raw=IDLE + hook=DONE (age < CCM_DONE_TIMEOUT):
+#         → capture-pane: input prompt visible → DONE
+#         → input prompt NOT visible → BUSY (safety net for stale/overwritten hook)
 #       - raw=IDLE + no hook signal → fall back to transition-based DONE
 #       - raw=SHELL/DOWN → use as-is (ignore hook)
 #
@@ -51,6 +52,14 @@
 #     - DONE persists for CCM_DONE_TIMEOUT seconds (timestamp)
 #     - During DONE persistence: re-check for late PERMIT
 #     - Non-IDLE raw state clears DONE flag
+#
+#   Final safety net (after all hook/fallback paths):
+#     If raw=IDLE (Claude running, no children) and input prompt is NOT
+#     visible → BUSY (catches multi-turn tool use with expired hook signal,
+#     or any state where hooks didn't fire correctly)
+#     If PERMIT pattern visible → PERMIT
+#     Limitation: pure text generation where ❯ prompt remains visible
+#     cannot be caught here (relies on BUSY hook signal instead)
 #
 #   @ccm_last_done: persistent timestamp (never auto-cleared)
 #     for dashboard elapsed time display
@@ -238,7 +247,17 @@ ccm_detect_window_state() {
                 fi
 
                 # raw=IDLE + hook=DONE → reliable DONE detection
+                # Safety net: verify input prompt is visible. If not, Claude
+                # may be busy with a new task (missed/overwritten BUSY signal).
                 if [[ "$hook_state" == "DONE" && $hook_age -lt ${CCM_DONE_TIMEOUT:-30} ]]; then
+                    local done_captured done_bottom
+                    done_captured=$(tmux capture-pane -t "$win_target" -p -S -8 2>/dev/null)
+                    done_bottom=$(echo "$done_captured" | sed '/^[[:space:]]*$/d' | tail -4)
+                    if ! echo "$done_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
+                        # No input prompt → Claude is likely busy, not done
+                        echo "BUSY"
+                        return
+                    fi
                     tmux set-option -wt "$win_target" @ccm_done "$hook_ts" 2>/dev/null
                     tmux set-option -wt "$win_target" @ccm_last_done "$hook_ts" 2>/dev/null
                     if [[ "$prev_state" != "DONE" && -z "$done_flag" ]]; then
@@ -298,6 +317,26 @@ ccm_detect_window_state() {
         fi
     else
         tmux set-option -wt "$win_target" -u @ccm_done 2>/dev/null || true
+    fi
+
+    # --- Final safety net ---
+    # If raw=IDLE (Claude running but no children) and input prompt is NOT
+    # visible, Claude is likely busy (e.g., multi-turn tool use where the
+    # BUSY hook signal expired, or text generation without hooks).
+    if [[ "$raw_state" == "IDLE" ]]; then
+        local final_captured final_bottom
+        final_captured=$(tmux capture-pane -t "$win_target" -p -S -8 2>/dev/null)
+        final_bottom=$(echo "$final_captured" | sed '/^[[:space:]]*$/d' | tail -4)
+        if ! echo "$final_bottom" | grep -qE "$CCM_PATTERN_INPUT_PROMPT"; then
+            if echo "$final_bottom" | grep -qEi "$CCM_PATTERN_PERMIT"; then
+                tmux set-option -wt "$win_target" @ccm_prev_state "PERMIT" 2>/dev/null
+                [[ -n "$project_name" ]] && ccm_notify "PERMIT" "$project_name"
+                echo "PERMIT"
+                return
+            fi
+            echo "BUSY"
+            return
+        fi
     fi
 
     echo "$raw_state"
