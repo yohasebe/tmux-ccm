@@ -18,7 +18,7 @@ CCM_DONE_TIMEOUT=30
 # Auto-exit: exit idle Claude Code sessions after this many seconds
 # to free resources. Claude auto-restarts with --continue when the window is selected.
 # Set to 0 to disable. Configurable via @ccm-idle-timeout (in minutes).
-CCM_IDLE_EXIT_TIMEOUT=600  # 10 minutes default
+CCM_IDLE_EXIT_TIMEOUT=300  # 5 minutes default
 
 # Hook signal directory and timeout
 CCM_HOOK_DIR="${CCM_TMP_DIR}/hooks"

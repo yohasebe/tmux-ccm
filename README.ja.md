@@ -28,6 +28,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 
 ## 機能
 
+- **リソース管理** — アイドル状態のClaude Codeセッションを5分後に自動終了し、メモリとCPUを解放。ウィンドウに戻ると `--continue` で自動再起動（各Node.jsインスタンスは大量のリソースを消費します）
 - **ダッシュボード** — Claude Codeの状態（BUSY/IDLE/PERMIT/DONE）をリアルタイム表示するインタラクティブポップアップ
 - **ツリービュー** — セッション/ウィンドウ/ペインの階層表示とナビゲーション
 - **Git連携** — プロジェクトごとのブランチ名とdirty状態（`main*`）の表示
@@ -295,7 +296,7 @@ set -g @ccm-auto-restore "on"    # デフォルト: off
 一定時間IDLEのままのClaude Codeセッションは自動的に終了し、システムリソースを解放します。終了したウィンドウに切り替えると、Claude Codeが `--continue` で自動再起動し、会話を再開します。
 
 ```tmux
-set -g @ccm-idle-timeout "10"    # 分（デフォルト: 10、0で無効化）
+set -g @ccm-idle-timeout "5"     # 分（デフォルト: 5、0で無効化）
 ```
 
 ## 仕組み
