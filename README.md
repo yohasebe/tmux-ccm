@@ -290,6 +290,14 @@ set -g @ccm-auto-restore "on"    # default: off
 
 When enabled, ccm loads the `_autosave` snapshot via TPM on tmux startup (only if no ccm projects are already loaded).
 
+### Idle Auto-Exit
+
+Claude Code sessions that remain idle are automatically exited to free system resources. When you switch to an exited window, Claude Code restarts with `--continue` and resumes the conversation.
+
+```tmux
+set -g @ccm-idle-timeout "10"    # minutes (default: 10, 0 to disable)
+```
+
 ## How It Works
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`

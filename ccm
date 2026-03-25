@@ -41,6 +41,7 @@ Usage:
   ccm open <dir> [name]             Start claude in current pane for a project (split-pane use)
   ccm register <window> [name]      Register existing window as ccm project
   ccm unregister <name>             Unregister window from ccm (keep window alive)
+  ccm rename <name> <new_name>      Rename a project
   ccm remove <name>                 Remove a project window (kill window)
   ccm attach <name|window_index>    Switch to a project window
   ccm list                          List managed project windows
@@ -79,6 +80,9 @@ case "${1:-help}" in
         ;;
     unregister|unreg)
         ccm_unregister "${2:-}"
+        ;;
+    rename|mv)
+        ccm_rename "${2:-}" "${3:-}"
         ;;
     remove|rm)
         ccm_remove "${2:-}"

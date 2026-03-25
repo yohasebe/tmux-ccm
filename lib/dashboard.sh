@@ -555,7 +555,7 @@ ccm_dashboard() {
         buf+="${header}"$'\n'
         buf+="$(_render_list "$selected")"
         buf+=$'\n'
-        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register  [r]emove  [s]ave  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
+        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register  [n]ame  [r]emove  [s]ave  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
         buf+="${footer_info}"$'\n'
 
         tput home 2>/dev/null
@@ -629,6 +629,7 @@ ccm_dashboard() {
                     ;;
                 a|A)     _dashboard_add; needs_rebuild=1 ;;
                 g|G)     _dashboard_register "$selected"; needs_rebuild=1 ;;
+                n|N)     _dashboard_rename "$selected"; needs_rebuild=1 ;;
                 r|R)     _dashboard_remove; needs_rebuild=1 ;;
                 /)       _dashboard_search ;;
             esac
@@ -831,6 +832,62 @@ _dashboard_add() {
 }
 
 # Dashboard: remove a project interactively
+_dashboard_rename() {
+    local idx="$1"
+    [[ "$idx" -lt 1 || "$idx" -gt "$_SESSION_COUNT" ]] && return
+
+    local win_target="${_SESSION_NAMES[$((idx-1))]}"
+    local old_name="${_SESSION_PROJECTS[$((idx-1))]}"
+
+    # Only tagged windows can be renamed
+    local project_tag
+    project_tag=$(tmux show-option -wt "$win_target" -qv @ccm_project 2>/dev/null) || true
+    if [[ -z "$project_tag" ]]; then
+        echo "  ${COLOR_RED}Not a ccm project${COLOR_RESET}"
+        sleep 1
+        tput civis 2>/dev/null
+        return
+    fi
+
+    tput cnorm 2>/dev/null
+    echo ""
+    _read_line_cancelable "  New name for '${old_name}' (Esc=cancel): "
+    if [[ $? -ne 0 ]]; then
+        tput civis 2>/dev/null
+        return
+    fi
+
+    local new_name="$_INPUT_RESULT"
+    if [[ -z "$new_name" ]]; then
+        tput civis 2>/dev/null
+        return
+    fi
+
+    new_name=$(ccm_validate_name "$new_name")
+    if [[ -z "$new_name" ]]; then
+        echo "  ${COLOR_RED}Invalid name${COLOR_RESET}"
+        sleep 1
+        tput civis 2>/dev/null
+        return
+    fi
+
+    if ccm_project_exists "$new_name"; then
+        echo "  ${COLOR_RED}Name already in use: $new_name${COLOR_RESET}"
+        sleep 1
+        tput civis 2>/dev/null
+        return
+    fi
+
+    local session="${win_target%%:*}"
+    local win_idx="${win_target##*:}"
+    tmux set-option -wt "$win_target" @ccm_project "$new_name" 2>/dev/null
+    tmux rename-window -t "$win_target" "$new_name" 2>/dev/null
+    echo "  ${COLOR_GREEN}Renamed: $old_name → $new_name${COLOR_RESET}"
+    (ccm_snapshot_save "_autosave") &>/dev/null || true
+    sleep 1
+    tput civis 2>/dev/null
+}
+
 _dashboard_remove() {
     [[ $_SESSION_COUNT -eq 0 ]] && return
 
@@ -1309,6 +1366,69 @@ print(s, end='')
     # Always update window name icons
     ccm_update_window_names 2>/dev/null
 
+    # Periodic auto-save snapshot (every 5 minutes)
+    local autosave_marker="${CCM_TMP_DIR}/autosave-time"
+    local now
+    now=$(date +%s)
+    local last_save=0
+    [[ -f "$autosave_marker" ]] && last_save=$(cat "$autosave_marker" 2>/dev/null)
+    if [[ $(( now - last_save )) -ge 300 ]]; then
+        local windows
+        windows=$(ccm_list_windows 2>/dev/null)
+        if [[ -n "$windows" ]]; then
+            ccm_init_dirs
+            (ccm_snapshot_save "_autosave") &>/dev/null
+            echo "$now" > "$autosave_marker"
+        fi
+    fi
+
+    # Auto-exit idle Claude Code sessions to free resources
+    # Controlled by @ccm-idle-timeout (minutes, 0=disabled, default=10)
+    local idle_timeout
+    idle_timeout=$(tmux show-option -gqv @ccm-idle-timeout 2>/dev/null)
+    if [[ -n "$idle_timeout" ]]; then
+        idle_timeout=$(( idle_timeout * 60 ))
+    else
+        idle_timeout="$CCM_IDLE_EXIT_TIMEOUT"
+    fi
+    if [[ "$idle_timeout" -gt 0 ]]; then
+        local idle_windows
+        idle_windows=$(tmux list-windows -a \
+            -F '#{session_name}:#{window_index}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_done}	#{@ccm_last_done}' 2>/dev/null \
+            | awk -F'\t' '$2 != "" && $3 == "IDLE" {OFS="\t"; for(i=1;i<=5;i++) if($i=="") $i="-"; print}')
+        if [[ -n "$idle_windows" ]]; then
+            local current_session current_win
+            current_session=$(tmux display-message -p '#{session_name}' 2>/dev/null)
+            current_win=$(tmux display-message -p '#{window_index}' 2>/dev/null)
+            local current_target="${current_session}:${current_win}"
+
+            while IFS=$'\t' read -r win_target project prev_state done_flag last_done; do
+                [[ "$win_target" == "$current_target" ]] && continue
+                [[ "$done_flag" == "-" ]] && done_flag=""
+                [[ "$last_done" == "-" ]] && last_done=""
+
+                local idle_since=0
+                if [[ -n "$last_done" && "$last_done" != "0" ]]; then
+                    idle_since="$last_done"
+                elif [[ -n "$done_flag" && "$done_flag" != "0" ]]; then
+                    idle_since="$done_flag"
+                fi
+
+                if [[ "$idle_since" -eq 0 ]]; then
+                    tmux set-option -wt "$win_target" @ccm_last_done "$now" 2>/dev/null || true
+                    continue
+                fi
+
+                local idle_duration=$(( now - idle_since ))
+                if [[ $idle_duration -ge $idle_timeout ]]; then
+                    tmux send-keys -t "$win_target" "/exit" Enter 2>/dev/null
+                    tmux set-option -wt "$win_target" -u @ccm_prev_state 2>/dev/null || true
+                    tmux set-option -wt "$win_target" -u @ccm_done 2>/dev/null || true
+                fi
+            done <<< "$idle_windows"
+        fi
+    fi
+
     # Helper: clean up dedicated status lines only
     _cleanup_extra_lines() {
         tmux set -g status on 2>/dev/null
@@ -1488,23 +1608,6 @@ print(s, end='')
         if [[ "$new_status" != "$prev_status" ]]; then
             echo "$new_status" > "$cache_file"
             tmux set -g status-right "$new_status" 2>/dev/null
-        fi
-    fi
-
-    # Periodic auto-save snapshot (every 5 minutes)
-    local autosave_marker="${CCM_TMP_DIR}/autosave-time"
-    local now
-    now=$(date +%s)
-    local last_save=0
-    [[ -f "$autosave_marker" ]] && last_save=$(cat "$autosave_marker" 2>/dev/null)
-    if [[ $(( now - last_save )) -ge 300 ]]; then
-        # Only save if there are ccm projects
-        local windows
-        windows=$(ccm_list_windows 2>/dev/null)
-        if [[ -n "$windows" ]]; then
-            ccm_init_dirs
-            (ccm_snapshot_save "_autosave") &>/dev/null
-            echo "$now" > "$autosave_marker"
         fi
     fi
 }

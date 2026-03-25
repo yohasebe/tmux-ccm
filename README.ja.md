@@ -290,6 +290,14 @@ set -g @ccm-auto-restore "on"    # デフォルト: off
 
 有効にすると、tmux起動時にTPM経由で `_autosave` スナップショットを自動ロードします（既にccmプロジェクトがある場合はスキップ）。
 
+### アイドル自動終了
+
+一定時間IDLEのままのClaude Codeセッションは自動的に終了し、システムリソースを解放します。終了したウィンドウに切り替えると、Claude Codeが `--continue` で自動再起動し、会話を再開します。
+
+```tmux
+set -g @ccm-idle-timeout "10"    # 分（デフォルト: 10、0で無効化）
+```
+
 ## 仕組み
 
 - プロジェクトはtmuxウィンドウの `@ccm_project` / `@ccm_dir` タグで管理

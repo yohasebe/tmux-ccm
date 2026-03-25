@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Dashboard sorts projects by state priority (PERMIT > DONE > BUSY > IDLE > SHELL), then by most recent activity within each group
+- Idle auto-exit: Claude Code sessions exit after 10 minutes idle to free resources (`@ccm-idle-timeout`)
 - Unified Claude Code launch command to `claude --continue` (was `--resume` for new windows)
 - Add `claude` to dependency check (`ccm_check_deps`)
 

@@ -7,6 +7,7 @@ _ccm() {
         'open:Start claude in current pane'
         'register:Register existing window as ccm project'
         'unregister:Unregister window from ccm (keep window)'
+        'rename:Rename a project'
         'remove:Remove a project window (kill window)'
         'attach:Switch to a project window'
         'list:List managed project windows'
@@ -45,7 +46,7 @@ _ccm() {
         _describe 'ccm command' subcommands
     elif (( CURRENT == 3 )); then
         case "${words[2]}" in
-            attach|a|unregister|unreg|remove|rm|capture|cap|stop)
+            attach|a|unregister|unreg|remove|rm|rename|mv|capture|cap|stop)
                 _ccm_projects
                 ;;
             add|open)

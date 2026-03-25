@@ -109,6 +109,34 @@ ccm_unregister() {
     (ccm_snapshot_save "_autosave") &>/dev/null || true
 }
 
+# Rename a ccm project
+ccm_rename() {
+    local old_name="$1"
+    local new_name="$2"
+    [[ -z "$old_name" ]] && ccm_die "Usage: ccm rename <current_name> <new_name>"
+    [[ -z "$new_name" ]] && ccm_die "New name is required"
+
+    new_name=$(ccm_validate_name "$new_name") || ccm_die "Invalid project name"
+
+    local session idx
+    session=$(_ccm_session)
+    idx=$(ccm_find_window "$old_name")
+    [[ -z "$idx" ]] && ccm_die "Project not found: $old_name"
+
+    if ccm_project_exists "$new_name"; then
+        ccm_die "Project name already in use: $new_name"
+    fi
+
+    local win_target="${session}:${idx}"
+    tmux set-option -wt "$win_target" @ccm_project "$new_name" 2>/dev/null
+    tmux rename-window -t "$win_target" "$new_name" 2>/dev/null
+
+    ccm_info "Renamed: $old_name → $new_name"
+
+    # Trigger immediate autosave
+    (ccm_snapshot_save "_autosave") &>/dev/null || true
+}
+
 # Remove a ccm project window (kill window)
 ccm_remove() {
     local name="$1"
