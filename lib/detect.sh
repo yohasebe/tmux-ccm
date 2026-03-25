@@ -221,6 +221,14 @@ ccm_detect_window_state() {
     local raw_state
     raw_state=$(_detect_window_state "$win_target")
 
+    # SHELL/DOWN: no Claude running, skip all further checks
+    if [[ "$raw_state" == "SHELL" || "$raw_state" == "DOWN" ]]; then
+        tmux set-option -wt "$win_target" @ccm_prev_state "$raw_state" 2>/dev/null
+        tmux set-option -wt "$win_target" -u @ccm_done 2>/dev/null || true
+        echo "$raw_state"
+        return
+    fi
+
     # Single capture-pane for this window (reused by all subsequent checks)
     # Only captured when needed (raw_state == IDLE or has children)
     local _win_captured="" _win_bottom=""

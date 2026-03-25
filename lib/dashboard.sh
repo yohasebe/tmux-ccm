@@ -464,20 +464,22 @@ _do_attach() {
 # ─── Dashboard (modal popup) ───
 
 ccm_dashboard() {
-    local refresh_interval="${CCM_DASHBOARD_INTERVAL:-2}"
+    local refresh_interval="${CCM_DASHBOARD_INTERVAL:-4}"
     local selected=1
 
-    # Prevent concurrent dashboard instances (PID-based check)
+    # Prevent concurrent dashboard instances
+    # Kill any existing dashboard process before starting a new one
     local pidfile="${CCM_TMP_DIR}/dashboard.pid"
     mkdir -p "$CCM_TMP_DIR" 2>/dev/null
     if [[ -f "$pidfile" ]]; then
         local old_pid
         old_pid=$(cat "$pidfile" 2>/dev/null)
-        if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
-            echo "Dashboard already running (pid $old_pid)."
-            return
+        if [[ -n "$old_pid" && "$old_pid" != "$$" ]] && kill -0 "$old_pid" 2>/dev/null; then
+            kill "$old_pid" 2>/dev/null
+            sleep 0.2
+            # Force kill if still alive (popup processes may ignore SIGTERM)
+            kill -0 "$old_pid" 2>/dev/null && kill -9 "$old_pid" 2>/dev/null
         fi
-        # Stale PID file — process is dead
         rm -f "$pidfile"
     fi
     echo $$ > "$pidfile"
@@ -1296,6 +1298,16 @@ _build_detail_entries() {
 }
 
 ccm_inject_status() {
+    # Skip heavy detection if dashboard is running (it already detects state)
+    local _dash_pid_file="${CCM_TMP_DIR}/dashboard.pid"
+    if [[ -f "$_dash_pid_file" ]]; then
+        local _dash_pid
+        _dash_pid=$(cat "$_dash_pid_file" 2>/dev/null)
+        if [[ -n "$_dash_pid" ]] && kill -0 "$_dash_pid" 2>/dev/null; then
+            return
+        fi
+    fi
+
     # Prevent concurrent execution (PID + age-based check)
     local pidfile="${CCM_TMP_DIR}/inject.pid"
     mkdir -p "$CCM_TMP_DIR" 2>/dev/null
