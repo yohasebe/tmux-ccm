@@ -119,7 +119,7 @@ set -g @ccm-key-menu "C"
 set -g @ccm-key-tree "T"
 ```
 
-> **Important:** All `set -g @ccm-*` options must be placed **before** the TPM `run` line in `~/.tmux.conf`. TPM reads plugin options when it initializes, so settings placed after `run '~/.tmux/plugins/tpm/tpm'` will not take effect.
+> **Important:** All `set -g @ccm-*` options must be placed **before** the ccm plugin loads in `~/.tmux.conf` — that means before both the `source-file` line (manual install) and the TPM `run` line (TPM install). The plugin reads these options at load time, so settings placed after will not take effect.
 
 ### Desktop Notifications
 

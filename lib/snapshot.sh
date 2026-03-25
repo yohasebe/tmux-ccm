@@ -13,12 +13,11 @@ ccm_snapshot_save() {
 
     ccm_init_dirs
 
-    local session
-    session=$(_ccm_session)
-    [[ -z "$session" ]] && ccm_die "Not inside a tmux session"
-
+    # Scan ALL sessions for ccm-tagged windows (not just current session)
+    # This ensures save works from any context (dashboard popup, different session, etc.)
     local windows
-    windows=$(ccm_list_windows)
+    windows=$(tmux list-windows -a -F '#{window_index}	#{window_name}	#{@ccm_project}	#{@ccm_dir}' 2>/dev/null \
+        | awk -F'\t' '$3 != ""' || true)
 
     if [[ -z "$windows" ]]; then
         ccm_die "No active projects to save"

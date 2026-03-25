@@ -365,24 +365,32 @@ ccm_init() {
     fi
     echo ""
 
-    # Helper: write a setting to ~/.tmux.conf BEFORE TPM's "run" line
-    # TPM reads @plugin options at "run" time, so settings must come before it.
+    # Helper: write a setting to ~/.tmux.conf BEFORE ccm plugin loads
+    # Settings must come before both source-file (manual) and TPM run (TPM install).
     _ccm_save_tmux_conf() {
         local setting="$1"  # e.g., "set -g @ccm-auto-restore on"
         local key
         key=$(echo "$setting" | awk '{print $3}')  # e.g., "@ccm-auto-restore"
         # Remove any existing line with this key
         sed -i.bak "/${key}/d" ~/.tmux.conf 2>/dev/null || true
-        # Insert before TPM "run" line if it exists, otherwise append
-        if grep -q "^run.*tpm" ~/.tmux.conf 2>/dev/null; then
-            # macOS sed requires different syntax for insert
-            local tpm_line
-            tpm_line=$(grep -n "^run.*tpm" ~/.tmux.conf | head -1 | cut -d: -f1)
-            if [[ -n "$tpm_line" ]]; then
-                sed -i.bak "${tpm_line}i\\
+        # Find the earliest ccm plugin load line (source-file for ccm OR TPM run)
+        local insert_line=""
+        local ccm_source
+        ccm_source=$(grep -n 'source-file.*ccm' ~/.tmux.conf 2>/dev/null | head -1 | cut -d: -f1)
+        local tpm_run
+        tpm_run=$(grep -n '^run.*tpm' ~/.tmux.conf 2>/dev/null | head -1 | cut -d: -f1)
+        # Use the earliest of the two
+        if [[ -n "$ccm_source" && -n "$tpm_run" ]]; then
+            insert_line=$(( ccm_source < tpm_run ? ccm_source : tpm_run ))
+        elif [[ -n "$ccm_source" ]]; then
+            insert_line="$ccm_source"
+        elif [[ -n "$tpm_run" ]]; then
+            insert_line="$tpm_run"
+        fi
+        if [[ -n "$insert_line" ]]; then
+            sed -i.bak "${insert_line}i\\
 ${setting}
 " ~/.tmux.conf 2>/dev/null
-            fi
         else
             echo "$setting" >> ~/.tmux.conf
         fi

@@ -40,11 +40,9 @@ teardown() {
 # ============================================================
 
 @test "snapshot save: skips entries with empty project" {
-    # Mock ccm_list_windows to return a line with empty project
-    ccm_list_windows() {
-        printf '0\twindow0\tvalid-project\t/tmp/valid\n'
-        printf '1\twindow1\t\t/tmp/empty-project\n'
-    }
+    # Mock tmux list-windows -a output (format: index\tname\t@ccm_project\t@ccm_dir)
+    printf '0\twindow0\tvalid-project\t/tmp/valid\n1\twindow1\t\t/tmp/empty-project\n' \
+        > "${MOCK_STATE_DIR}/windows"
 
     ccm_snapshot_save "test-snap"
 
@@ -58,10 +56,8 @@ teardown() {
 }
 
 @test "snapshot save: skips entries with empty dir" {
-    ccm_list_windows() {
-        printf '0\twindow0\tproject-a\t/tmp/dir-a\n'
-        printf '1\twindow1\tproject-b\t\n'
-    }
+    printf '0\twindow0\tproject-a\t/tmp/dir-a\n1\twindow1\tproject-b\t\n' \
+        > "${MOCK_STATE_DIR}/windows"
 
     ccm_snapshot_save "test-snap"
 
