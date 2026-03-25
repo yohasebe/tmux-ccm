@@ -1385,8 +1385,9 @@ print(s, end='')
     local last_save=0
     [[ -f "$autosave_marker" ]] && last_save=$(cat "$autosave_marker" 2>/dev/null)
     if [[ $(( now - last_save )) -ge 300 ]]; then
+        # Check ALL sessions for ccm projects (consistent with ccm_snapshot_save)
         local windows
-        windows=$(ccm_list_windows 2>/dev/null)
+        windows=$(tmux list-windows -a -F '#{@ccm_project}' 2>/dev/null | awk '$1 != ""' | head -1)
         if [[ -n "$windows" ]]; then
             ccm_init_dirs
             (ccm_snapshot_save "_autosave") &>/dev/null
@@ -1395,7 +1396,7 @@ print(s, end='')
     fi
 
     # Auto-exit idle Claude Code sessions to free resources
-    # Controlled by @ccm-idle-timeout (minutes, 0=disabled, default=10)
+    # Controlled by @ccm-idle-timeout (minutes, 0=disabled, default=5)
     local idle_timeout
     idle_timeout=$(tmux show-option -gqv @ccm-idle-timeout 2>/dev/null)
     if [[ -n "$idle_timeout" ]]; then
@@ -1404,9 +1405,12 @@ print(s, end='')
         idle_timeout="$CCM_IDLE_EXIT_TIMEOUT"
     fi
     if [[ "$idle_timeout" -gt 0 ]]; then
+        # Include window_activity (tmux's last-activity timestamp for the window)
+        # This tracks ALL pane activity (output, key input) and is more reliable
+        # than @ccm_last_done for detecting user interaction.
         local idle_windows
         idle_windows=$(tmux list-windows -a \
-            -F '#{session_name}:#{window_index}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_done}	#{@ccm_last_done}' 2>/dev/null \
+            -F '#{session_name}:#{window_index}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_last_done}	#{window_activity}' 2>/dev/null \
             | awk -F'\t' '$2 != "" && $3 == "IDLE" {OFS="\t"; for(i=1;i<=5;i++) if($i=="") $i="-"; print}')
         if [[ -n "$idle_windows" ]]; then
             local current_session current_win
@@ -1414,16 +1418,21 @@ print(s, end='')
             current_win=$(tmux display-message -p '#{window_index}' 2>/dev/null)
             local current_target="${current_session}:${current_win}"
 
-            while IFS=$'\t' read -r win_target project prev_state done_flag last_done; do
+            while IFS=$'\t' read -r win_target project prev_state last_done win_activity; do
                 [[ "$win_target" == "$current_target" ]] && continue
-                [[ "$done_flag" == "-" ]] && done_flag=""
                 [[ "$last_done" == "-" ]] && last_done=""
+                [[ "$win_activity" == "-" ]] && win_activity=""
 
+                # Use the MOST RECENT of last_done and window_activity as idle start
+                # window_activity captures user typing, scrolling, any pane output
                 local idle_since=0
                 if [[ -n "$last_done" && "$last_done" != "0" ]]; then
                     idle_since="$last_done"
-                elif [[ -n "$done_flag" && "$done_flag" != "0" ]]; then
-                    idle_since="$done_flag"
+                fi
+                if [[ -n "$win_activity" && "$win_activity" != "0" ]]; then
+                    if [[ "$win_activity" -gt "$idle_since" ]]; then
+                        idle_since="$win_activity"
+                    fi
                 fi
 
                 if [[ "$idle_since" -eq 0 ]]; then
@@ -1433,6 +1442,9 @@ print(s, end='')
 
                 local idle_duration=$(( now - idle_since ))
                 if [[ $idle_duration -ge $idle_timeout ]]; then
+                    # Cancel any existing input (Ctrl+C), then send /exit
+                    tmux send-keys -t "$win_target" C-c 2>/dev/null
+                    sleep 0.1
                     tmux send-keys -t "$win_target" "/exit" Enter 2>/dev/null
                     tmux set-option -wt "$win_target" -u @ccm_prev_state 2>/dev/null || true
                     tmux set-option -wt "$win_target" -u @ccm_done 2>/dev/null || true

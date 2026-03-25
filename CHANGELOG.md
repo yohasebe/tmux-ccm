@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - False BUSY when background children (MCP servers, etc.) present but user is at input prompt
 - Safety net prompt detection range expanded from 4 to 8 non-empty lines to avoid false BUSY from Claude Code UI elements
 - False IDLE during text generation caused by `>` (ASCII) in output matching input prompt pattern
+- Idle auto-exit sending `/exit` into partially typed user input (now sends Ctrl+C first to clear)
+- Idle auto-exit timer based on `window_activity` (tmux's last-activity timestamp) instead of only `last_done`, preventing premature exit while user is composing input
+- Duplicate dashboard processes not killed (force kill with SIGKILL if SIGTERM ignored)
+- Autosave and auto-exit unreachable in status bar mode 1/2 (moved before mode-specific branches)
+- Autosave project check now scans all sessions (was current session only)
 - Deduplicate capture-pane calls: window-level captures now happen at most once per detection cycle
 
 ### Added
