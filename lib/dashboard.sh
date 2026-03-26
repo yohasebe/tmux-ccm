@@ -606,11 +606,71 @@ ccm_dashboard() {
         tput ed 2>/dev/null
         printf '%s' "$buf"
 
-        # Rebuild if pending (triggered by timeout below)
-        if [[ $needs_rebuild -gt 0 ]]; then
-            if [[ $needs_rebuild -eq 2 ]]; then
+        # Responsive key input loop with deferred rebuild
+        # Keys are polled every 0.1s for immediate response.
+        # Rebuild happens only after sustained idle (no keys for threshold period).
+        local _idle_ticks=0
+        local _idle_threshold=$(( refresh_interval * 10 ))  # e.g., 4s = 40 ticks
+        [[ $_first_idle -eq 1 ]] && _idle_threshold=10       # 1s for first refresh
+        local _got_key=0
+
+        while [[ $_idle_ticks -lt $_idle_threshold ]]; do
+            local _k=""
+            local _read_rc=0
+            read -rsn1 -t 0.1 _k 2>/dev/null || _read_rc=$?
+            if [[ $_read_rc -eq 0 ]]; then
+                _got_key=1
+                # Parse key
+                local _action=""
+                if [[ "$_k" == $'\033' ]]; then
+                    local _seq
+                    read -rsn2 -t 0.05 _seq 2>/dev/null || true
+                    case "$_seq" in
+                        '[A') _action="UP" ;;
+                        '[B') _action="DOWN" ;;
+                        *)    _action="ESC" ;;
+                    esac
+                elif [[ "$_k" == "" ]]; then _action="ENTER"
+                else _action="$_k"
+                fi
+
+                # Handle action
+                case "$_action" in
+                    UP|k)  selected=$((selected - 1)); break ;;
+                    DOWN|j) selected=$((selected + 1)); break ;;
+                    ENTER)
+                        if [[ $_SESSION_COUNT -gt 0 ]]; then
+                            _do_attach "$selected" && { _got_key=2; break; }
+                        fi
+                        ;;
+                    s|S)  _dashboard_save; break ;;
+                    ESC|q|Q) _got_key=2; break ;;
+                    p|P)
+                        if [[ $_SESSION_COUNT -gt 0 ]]; then
+                            _dashboard_preview "$selected"
+                            needs_rebuild=1
+                        fi
+                        break ;;
+                    a|A)     _dashboard_add; needs_rebuild=1; break ;;
+                    g|G)     _dashboard_register "$selected"; needs_rebuild=1; break ;;
+                    n|N)     _dashboard_rename "$selected"; needs_rebuild=1; break ;;
+                    r|R)     _dashboard_remove; needs_rebuild=1; break ;;
+                    /)       _dashboard_search; break ;;
+                esac
+            else
+                _idle_ticks=$((_idle_ticks + 1))
+            fi
+        done
+
+        # Exit loop if quit/attach
+        [[ $_got_key -eq 2 ]] && break
+
+        # If idle threshold reached (no keys), do rebuild
+        if [[ $_idle_ticks -ge $_idle_threshold && $needs_rebuild -eq 0 ]]; then
+            if [[ $_first_idle -eq 1 ]]; then
                 _build_project_list fast
-                needs_rebuild=1  # schedule full rebuild for next timeout
+                _first_idle=0
+                needs_rebuild=1  # schedule full rebuild for next idle
             else
                 _build_project_list
                 needs_rebuild=0
@@ -618,55 +678,16 @@ ccm_dashboard() {
             # Drain any keys typed during rebuild
             while read -rsn1 -t 0.01 _key 2>/dev/null; do
                 if [[ "$_key" == $'\033' ]]; then
-                    local _seq
-                    read -rsn2 -t 0.01 _seq 2>/dev/null || true
-                    case "$_seq" in
-                        '[A') selected=$((selected - 1)) ;;
-                        '[B') selected=$((selected + 1)) ;;
-                    esac
+                    local _seq; read -rsn2 -t 0.01 _seq 2>/dev/null || true
+                    case "$_seq" in '[A') selected=$((selected - 1)) ;; '[B') selected=$((selected + 1)) ;; esac
                 elif [[ "$_key" == "j" ]]; then selected=$((selected + 1))
                 elif [[ "$_key" == "k" ]]; then selected=$((selected - 1))
                 fi
             done
-            continue  # Re-render immediately with fresh data
-        fi
-
-        # Shorter timeout on first cycle for quicker initial refresh
-        local _wait="$refresh_interval"
-        [[ $_first_idle -eq 1 ]] && _wait=1
-
-        local key
-        if key=$(_read_key_ext "$_wait"); then
-            case "$key" in
-                UP|k)  selected=$((selected - 1)) ;;
-                DOWN|j) selected=$((selected + 1)) ;;
-                ENTER)
-                    if [[ $_SESSION_COUNT -gt 0 ]]; then
-                        _do_attach "$selected" && break
-                    fi
-                    ;;
-                s|S)  _dashboard_save ;;
-                ESC|q|Q) break ;;
-                p|P)
-                    if [[ $_SESSION_COUNT -gt 0 ]]; then
-                        _dashboard_preview "$selected"
-                        needs_rebuild=1
-                    fi
-                    ;;
-                a|A)     _dashboard_add; needs_rebuild=1 ;;
-                g|G)     _dashboard_register "$selected"; needs_rebuild=1 ;;
-                n|N)     _dashboard_rename "$selected"; needs_rebuild=1 ;;
-                r|R)     _dashboard_remove; needs_rebuild=1 ;;
-                /)       _dashboard_search ;;
-            esac
-        else
-            # Timeout (no key pressed) — trigger rebuild
-            if [[ $_first_idle -eq 1 ]]; then
-                needs_rebuild=2  # fast rebuild first
-                _first_idle=0
-            else
-                needs_rebuild=1  # full rebuild on subsequent timeouts
-            fi
+        elif [[ $needs_rebuild -gt 0 ]]; then
+            # Rebuild was requested by an action (add, remove, etc.)
+            _build_project_list
+            needs_rebuild=0
         fi
     done
 }
@@ -1327,13 +1348,15 @@ _build_detail_entries() {
 }
 
 ccm_inject_status() {
-    # Skip heavy detection if dashboard is running (it already detects state)
+    # Check if dashboard is running — if so, skip only the status bar rendering
+    # but still run window name updates, auto-save, and auto-exit
+    local _dashboard_active=0
     local _dash_pid_file="${CCM_TMP_DIR}/dashboard.pid"
     if [[ -f "$_dash_pid_file" ]]; then
         local _dash_pid
         _dash_pid=$(cat "$_dash_pid_file" 2>/dev/null)
         if [[ -n "$_dash_pid" ]] && kill -0 "$_dash_pid" 2>/dev/null; then
-            return
+            _dashboard_active=1
         fi
     fi
 
@@ -1481,6 +1504,10 @@ print(s, end='')
             done <<< "$idle_windows"
         fi
     fi
+
+    # If dashboard is active, skip status bar rendering (dashboard handles display)
+    # Window names, auto-save, and auto-exit above have already run.
+    [[ $_dashboard_active -eq 1 ]] && return
 
     # Helper: clean up dedicated status lines only
     _cleanup_extra_lines() {
