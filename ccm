@@ -27,7 +27,6 @@ source "${CCM_ROOT}/lib/session.sh"
 source "${CCM_ROOT}/lib/detect.sh"
 source "${CCM_ROOT}/lib/dashboard.sh"
 source "${CCM_ROOT}/lib/snapshot.sh"
-source "${CCM_ROOT}/lib/ui.sh"
 
 # Initialize runtime directories
 ccm_init_dirs
