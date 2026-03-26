@@ -476,8 +476,13 @@ _ccm_strip_hooks() {
                 .hooks.Stop[]? |
                 select(.hooks | any(.command | test("on-stop\\.sh")) | not)
             ] |
+            .hooks.PreToolUse = [
+                .hooks.PreToolUse[]? |
+                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
+            ] |
             if (.hooks.UserPromptSubmit | length) == 0 then del(.hooks.UserPromptSubmit) else . end |
             if (.hooks.Stop | length) == 0 then del(.hooks.Stop) else . end |
+            if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end |
             if (.hooks | length) == 0 then del(.hooks) else . end
         else . end
     '
@@ -501,6 +506,7 @@ ccm_hooks_configured() {
     [[ ! -f "$settings_file" ]] && return 1
     grep -q 'on-prompt-submit\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-stop\.sh' "$settings_file" 2>/dev/null || return 1
+    grep -q 'on-pre-tool-use\.sh' "$settings_file" 2>/dev/null || return 1
 }
 
 # Install Claude Code hooks for improved state detection
@@ -540,6 +546,7 @@ ccm_setup_hooks() {
 
     local prompt_hook="${hooks_dir}/on-prompt-submit.sh"
     local stop_hook="${hooks_dir}/on-stop.sh"
+    local pre_tool_hook="${hooks_dir}/on-pre-tool-use.sh"
     local timeout="${CCM_HOOK_CMD_TIMEOUT:-5000}"
 
     # Strip any existing ccm hooks first (handles path changes cleanly)
@@ -548,18 +555,21 @@ ccm_setup_hooks() {
     new_settings=$(echo "$existing" | _ccm_strip_hooks | jq \
         --arg prompt_cmd "$prompt_hook" \
         --arg stop_cmd "$stop_hook" \
+        --arg pre_tool_cmd "$pre_tool_hook" \
         --argjson timeout "$timeout" '
         .hooks //= {} |
         .hooks.UserPromptSubmit //= [] |
         .hooks.Stop //= [] |
+        .hooks.PreToolUse //= [] |
         .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $prompt_cmd, "timeout": $timeout}]}] |
-        .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}]
+        .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
+        .hooks.PreToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}]
     ') || ccm_die "Failed to update settings JSON"
 
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "Claude Code hooks installed successfully."
     echo "  Settings: ${settings_file}"
-    echo "  Hooks: UserPromptSubmit → BUSY, Stop → DONE"
+    echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, Stop → DONE"
     echo ""
     echo "  Restart Claude Code to activate the hooks."
     echo "  To remove: ccm remove-hooks"

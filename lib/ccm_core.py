@@ -475,7 +475,9 @@ def hooks_configured():
     try:
         with open(settings_file) as f:
             content = f.read()
-        return "on-prompt-submit.sh" in content and "on-stop.sh" in content
+        return ("on-prompt-submit.sh" in content
+                and "on-stop.sh" in content
+                and "on-pre-tool-use.sh" in content)
     except OSError:
         return False
 
