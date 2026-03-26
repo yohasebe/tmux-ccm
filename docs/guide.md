@@ -462,3 +462,18 @@ Yes. Run `claude` once in a regular terminal to complete the initial authenticat
 ### Can I use ccm across multiple tmux sessions?
 
 ccm manages projects as windows within a single tmux session. The dashboard and status bar show projects from all sessions, but `ccm add` creates windows in your current session. If you need separate project sets, use named snapshots (`ccm snapshot save work`, `ccm snapshot save personal`).
+
+### Can I view two projects side by side?
+
+ccm manages one project per tmux window, so tmux pane splitting is not recommended — running two Claude Code instances in the same window interferes with state detection and hook signals.
+
+**Recommended approach:** Open a separate terminal window (e.g., a new Ghostty window) **without tmux**, navigate to the project directory, and start Claude Code directly:
+
+```bash
+cd ~/code/other-project
+claude --continue
+```
+
+This gives you a fully independent Claude Code session alongside your ccm-managed projects. Both sessions can work on the same project directory without conflict.
+
+**Syncing back to ccm:** When you finish working in the separate window, the ccm-managed session will catch up automatically — idle auto-exit closes the stale session after 5 minutes, and switching to that window restarts Claude Code with `--continue`, loading the latest conversation. For immediate catch-up, type `/exit` in the ccm window and switch away then back.
