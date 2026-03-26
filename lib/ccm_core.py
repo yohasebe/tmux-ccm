@@ -573,11 +573,14 @@ def auto_exit_idle(projects):
 
         idle_duration = now - idle_since
         if idle_duration >= idle_timeout:
-            tmux_cmd("send-keys", "-t", win_target, "C-c")
+            # Cancel any partial input, then cleanly exit Claude Code
+            tmux_cmd("send-keys", "-t", win_target, "Escape")
             time.sleep(0.1)
             tmux_cmd("send-keys", "-t", win_target, "/exit", "Enter")
-            tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_prev_state")
-            tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_done")
+            time.sleep(0.5)
+            # Clear the pane so auto-restart shows a clean screen
+            tmux_cmd("send-keys", "-t", win_target, "clear", "Enter")
+            _set_win_state(win_target, "SHELL", unset_done=True)
 
 
 # ─── Autosave ───
