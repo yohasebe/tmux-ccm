@@ -55,6 +55,23 @@ def tmux_cmd(*args, timeout=5):
         return ""
 
 
+def tmux_batch(*commands):
+    """Run multiple tmux commands in a single subprocess call.
+    Each command is a tuple of args. Commands are joined with ';' separator.
+    """
+    if not commands:
+        return
+    args = ["tmux"]
+    for i, cmd in enumerate(commands):
+        if i > 0:
+            args.append(";")
+        args.extend(cmd)
+    try:
+        subprocess.run(args, capture_output=True, text=True, timeout=10)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+
 def ps_snapshot():
     """Single ps call for scan cycle."""
     try:
@@ -190,6 +207,18 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
     return best
 
 
+def _set_win_state(win_target, state, done=None, last_done=None, unset_done=False):
+    """Batch-write window state options in a single tmux call."""
+    cmds = [("set-option", "-wt", win_target, "@ccm_prev_state", state)]
+    if unset_done:
+        cmds.append(("set-option", "-wt", win_target, "-u", "@ccm_done"))
+    elif done is not None:
+        cmds.append(("set-option", "-wt", win_target, "@ccm_done", str(done)))
+    if last_done is not None:
+        cmds.append(("set-option", "-wt", win_target, "@ccm_last_done", str(last_done)))
+    tmux_batch(*cmds)
+
+
 def detect_window_state(win_target, project_dir, prev_state, done_flag, last_done_ts,
                         panes_cache, ps_lines, own_pgid):
     """Full detection pipeline. Returns (state, new_done_flag, new_last_done)."""
@@ -197,8 +226,7 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
     raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid)
 
     if raw in ("SHELL", "DOWN"):
-        tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", raw)
-        tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_done")
+        _set_win_state(win_target, raw, unset_done=True)
         return raw, "", last_done_ts
 
     # Hook-based enhancement
@@ -214,42 +242,38 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
                         bottom = capture_pane_bottom(win_target)
                         for line in bottom:
                             if PATTERN_PERMIT.search(line):
-                                tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "PERMIT")
+                                _set_win_state(win_target, "PERMIT")
                                 return "PERMIT", done_flag, last_done_ts
-                    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "BUSY")
+                    _set_win_state(win_target, "BUSY")
                     return "BUSY", done_flag, last_done_ts
 
                 if hook_state == "DONE" and hook_age < DONE_TIMEOUT:
                     bottom = capture_pane_bottom(win_target)
                     prompt_visible = any(PATTERN_INPUT_PROMPT.match(l) for l in bottom)
                     if not prompt_visible:
-                        tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "BUSY")
+                        _set_win_state(win_target, "BUSY")
                         return "BUSY", done_flag, last_done_ts
-                    tmux_cmd("set-option", "-wt", win_target, "@ccm_done", str(hook_ts))
-                    tmux_cmd("set-option", "-wt", win_target, "@ccm_last_done", str(hook_ts))
-                    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "DONE")
+                    _set_win_state(win_target, "DONE", done=hook_ts, last_done=hook_ts)
                     return "DONE", str(hook_ts), hook_ts
 
     # Fallback: transition-based DONE tracking
     if raw == "IDLE":
         if prev_state in ("BUSY", "PERMIT"):
-            tmux_cmd("set-option", "-wt", win_target, "@ccm_done", str(now))
-            tmux_cmd("set-option", "-wt", win_target, "@ccm_last_done", str(now))
-            tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "DONE")
+            _set_win_state(win_target, "DONE", done=now, last_done=now)
             return "DONE", str(now), now
 
         if done_flag:
             try:
                 done_age = now - int(done_flag)
                 if 0 <= done_age < DONE_TIMEOUT:
-                    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "DONE")
+                    _set_win_state(win_target, "DONE")
                     return "DONE", done_flag, last_done_ts
             except ValueError:
                 pass
-            tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_done")
+            _set_win_state(win_target, raw, unset_done=True)
 
     elif raw != "IDLE":
-        tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_done")
+        _set_win_state(win_target, raw, unset_done=True)
 
     # Safety net
     if raw == "IDLE":
@@ -258,12 +282,12 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
         if not prompt_visible:
             permit_visible = any(PATTERN_PERMIT.search(l) for l in bottom)
             if permit_visible:
-                tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "PERMIT")
+                _set_win_state(win_target, "PERMIT")
                 return "PERMIT", done_flag, last_done_ts
-            tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "BUSY")
+            _set_win_state(win_target, "BUSY")
             return "BUSY", done_flag, last_done_ts
 
-    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", raw)
+    _set_win_state(win_target, raw)
     return raw, done_flag, last_done_ts
 
 
