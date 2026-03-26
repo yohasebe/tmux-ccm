@@ -2,7 +2,7 @@
 # ccm - Claude Code state detection
 #
 # ══════════════════════════════════════════════════════════════
-# STATE DETECTION SPECIFICATION (authoritative reference)
+# STATE DETECTION SPECIFICATION (LEGACY — authoritative version is lib/ccm_core.py)
 # ══════════════════════════════════════════════════════════════
 #
 # Pane-level detection (_detect_pane_state):
