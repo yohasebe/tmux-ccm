@@ -125,7 +125,11 @@ case "${1:-help}" in
         ccm_statusline
         ;;
     inject-status)
-        ccm_inject_status || true
+        if command -v python3 &>/dev/null; then
+            python3 "$CCM_ROOT/lib/inject_status.py" || true
+        else
+            ccm_inject_status || true
+        fi
         ;;
     clear-done)
         # Clear DONE flag for the current window (ignore errors)
