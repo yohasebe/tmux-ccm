@@ -276,20 +276,17 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
     elif raw != "IDLE":
         _set_win_state(win_target, raw, unset_done=True)
 
-    # Safety net
+    # PERMIT check: always scan for permission prompts when raw=IDLE
+    # (PERMIT requires user action and must not be missed)
+    # Note: the old "safety net" (no prompt → BUSY) has been removed because
+    # it caused frequent false BUSY from ambiguous screen content. We now trust
+    # the process tree (raw state) + hook signals as the primary detection.
     if raw == "IDLE":
         bottom = capture_pane_bottom(win_target)
-        prompt_visible = any(PATTERN_INPUT_PROMPT.match(l) for l in bottom)
-        accept_edits = any(PATTERN_ACCEPT_EDITS.match(l) for l in bottom)
-
-        # Accept-edits (⏵⏵/❯❯) counts as a form of user prompt (idle, waiting for action)
-        if not prompt_visible and not accept_edits:
-            permit_visible = any(PATTERN_PERMIT.search(l) for l in bottom)
-            if permit_visible:
-                _set_win_state(win_target, "PERMIT")
-                return "PERMIT", done_flag, last_done_ts
-            _set_win_state(win_target, "BUSY")
-            return "BUSY", done_flag, last_done_ts
+        permit_visible = any(PATTERN_PERMIT.search(l) for l in bottom)
+        if permit_visible:
+            _set_win_state(win_target, "PERMIT")
+            return "PERMIT", done_flag, last_done_ts
 
     _set_win_state(win_target, raw)
     return raw, done_flag, last_done_ts

@@ -232,6 +232,34 @@ class TestDetectWindowStateHooks:
         )
         assert state == "IDLE"
 
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_no_prompt_no_hook_returns_idle_not_busy(self, mock_hook, mock_tmux):
+        """Safety net removed: no prompt, no hook → IDLE (trust process tree)."""
+        mock_hook.return_value = None  # No hook signal
+        mock_tmux.return_value = "Some tool output without prompt"
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
+        )
+        assert state == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_no_prompt_with_permit_text_returns_permit(self, mock_hook, mock_tmux):
+        """PERMIT detection still works without safety net BUSY."""
+        mock_hook.return_value = None
+        mock_tmux.return_value = "Do you want to allow this?\n  Yes  No"
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
+        )
+        assert state == "PERMIT"
+
 
 # ─── Formatting helpers ───
 
