@@ -239,12 +239,12 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
 
             if raw == "IDLE":
                 if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT:
-                    if prev_state != "BUSY":
-                        bottom = capture_pane_bottom(win_target)
-                        for line in bottom:
-                            if PATTERN_PERMIT.search(line):
-                                _set_win_state(win_target, "PERMIT")
-                                return "PERMIT", done_flag, last_done_ts
+                    # Always check for PERMIT — user action is needed
+                    bottom = capture_pane_bottom(win_target)
+                    for line in bottom:
+                        if PATTERN_PERMIT.search(line):
+                            _set_win_state(win_target, "PERMIT")
+                            return "PERMIT", done_flag, last_done_ts
                     _set_win_state(win_target, "BUSY")
                     return "BUSY", done_flag, last_done_ts
 
