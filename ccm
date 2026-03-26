@@ -93,7 +93,7 @@ case "${1:-help}" in
         ccm_list
         ;;
     status|st)
-        ccm_status
+        python3 "$CCM_ROOT/lib/ccm_core.py" status
         ;;
     tree)
         ccm_tree

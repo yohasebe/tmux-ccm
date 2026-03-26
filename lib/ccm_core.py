@@ -611,3 +611,61 @@ def periodic_autosave():
             f.write(str(now))
     except (subprocess.TimeoutExpired, OSError):
         pass
+
+
+# ─── CLI output helpers ───
+
+# ANSI color codes for terminal output
+_C_RESET = "\033[0m"
+_C_BOLD = "\033[1m"
+_C_DIM = "\033[2m"
+_C_STATE = {
+    "PERMIT": "\033[1;33m",      # bold yellow
+    "BUSY": "\033[38;5;209m",    # salmon
+    "DONE": "\033[0;32m",        # green
+    "IDLE": "\033[0;34m",        # blue
+    "SHELL": "\033[38;5;245m",   # gray
+    "DOWN": "\033[2m",           # dim
+}
+
+
+def print_status():
+    """Print status of all ccm projects (for `ccm status` CLI command)."""
+    projects = build_project_list(fast=False)
+
+    if not projects:
+        print("No active projects.")
+        return
+
+    # Hooks status
+    if hooks_configured():
+        print(f"{_C_DIM}Hooks: ON{_C_RESET}")
+    else:
+        print(f"{_C_DIM}Hooks: OFF (run 'ccm setup-hooks' for improved detection){_C_RESET}")
+    print()
+
+    # Header
+    print(f"{_C_BOLD}{'STATUS':<12} {'PROJECT':<20} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{_C_RESET}")
+    print(f"{'------':<12} {'-------':<20} {'------':<16} {'-----':<12} {'---------'}")
+
+    for p in projects:
+        color = _C_STATE.get(p.state, _C_DIM)
+        icon = STATE_ICONS.get(p.state, "?")
+        status = f"{color}{icon} {p.state}{_C_RESET}"
+        branch = p.branch or "-"
+        ports = p.ports or "-"
+        d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
+        # Status field with ANSI codes is wider than visible, compensate
+        print(f"{status:<22} {p.name:<20} {branch:<16} {ports:<12} {d}")
+
+
+# ─── CLI entry point ───
+
+if __name__ == "__main__":
+    import sys
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "status":
+        print_status()
+    else:
+        print(f"Unknown command: {cmd}", file=sys.stderr)
+        sys.exit(1)
