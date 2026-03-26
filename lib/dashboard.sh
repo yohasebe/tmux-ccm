@@ -79,16 +79,36 @@ _format_elapsed() {
 # Max timestamp for sort inversion (year 2286, well beyond practical use)
 _CCM_TS_MAX=9999999999
 
-# Shorten directory path based on available width
+# Shorten directory path to fit available width
+# Args: dir [prefix_visible_len]
+# prefix_visible_len = visible character count before the dir in the line
 _format_dir() {
     local dir="$1"
+    local prefix_len="${2:-0}"
     local cols
     cols=$(tput cols 2>/dev/null || echo 80)
-    if [[ $cols -lt 50 ]]; then
-        # Narrow: show only the last directory name
-        basename "$dir"
-    else
+    local avail=$(( cols - prefix_len - 4 ))  # 4 = indent + margin
+
+    if [[ $avail -lt 10 ]]; then
+        # Extremely narrow: hide path entirely
+        echo ""
+    elif [[ ${#dir} -le $avail ]]; then
+        # Fits: show full path
         echo "$dir"
+    else
+        # Truncate: show ~/…/last-two-components
+        local base
+        base=$(basename "$dir")
+        local parent
+        parent=$(basename "$(dirname "$dir")")
+        local short="…/${parent}/${base}"
+        if [[ ${#short} -le $avail ]]; then
+            echo "$short"
+        elif [[ ${#base} -le $avail ]]; then
+            echo "$base"
+        else
+            echo ""
+        fi
     fi
 }
 
@@ -197,7 +217,6 @@ _build_project_list_cached() {
         local win_target="${_tmp_targets[$i]}"
         local win_idx="${win_target##*:}"
         local display_dir="${dir/#$HOME/~}"
-        display_dir=$(_format_dir "$display_dir")
         local status_icon
         status_icon=$(_state_icon "$state")
 
@@ -222,6 +241,13 @@ _build_project_list_cached() {
             elapsed=$(_format_elapsed "$last_done")
             [[ -n "$elapsed" ]] && done_display=" ${COLOR_STATE_DONE}✔ ${COLOR_DIM}${elapsed}${COLOR_RESET}"
         fi
+
+        # Estimate visible prefix length (before dir): #N + STATE + project + branch + port + done
+        local _prefix_len=$(( 3 + 8 + 2 + ${#project} ))  # "#N ● STATE  project"
+        [[ -n "$branch" ]] && _prefix_len=$(( _prefix_len + ${#branch} + 3 ))  # " (branch)"
+        [[ -n "$ports" ]] && _prefix_len=$(( _prefix_len + ${#ports} + 4 ))    # " [:port]"
+        [[ -n "$done_display" ]] && _prefix_len=$(( _prefix_len + ${#elapsed} + 4 ))  # " ✔ Nm"
+        display_dir=$(_format_dir "$display_dir" "$_prefix_len")
 
         _SESSION_LINES+=("${COLOR_DIM}#${win_idx}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET} ${branch_display}${port_display}${done_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
         _SESSION_NAMES+=("$win_target")
@@ -368,7 +394,6 @@ _build_project_list() {
         local win_idx="${win_target##*:}"
 
         local display_dir="${dir/#$HOME/~}"
-        display_dir=$(_format_dir "$display_dir")
         local status_icon
         status_icon=$(_state_icon "$state")
         local branch="" ports=""
@@ -384,11 +409,18 @@ _build_project_list() {
         local last_done
         last_done=$(tmux show-option -wt "$win_target" -qv @ccm_last_done 2>/dev/null) || true
         local done_display=""
+        local elapsed=""
         if [[ -n "$last_done" && "$last_done" != "0" ]]; then
-            local elapsed
             elapsed=$(_format_elapsed "$last_done")
             [[ -n "$elapsed" ]] && done_display=" ${COLOR_STATE_DONE}✔ ${COLOR_DIM}${elapsed}${COLOR_RESET}"
         fi
+
+        # Estimate visible prefix length and truncate dir to fit
+        local _prefix_len=$(( 3 + 8 + 2 + ${#project} ))
+        [[ -n "$branch" ]] && _prefix_len=$(( _prefix_len + ${#branch} + 3 ))
+        [[ -n "$ports" ]] && _prefix_len=$(( _prefix_len + ${#ports} + 4 ))
+        [[ -n "$elapsed" ]] && _prefix_len=$(( _prefix_len + ${#elapsed} + 4 ))
+        display_dir=$(_format_dir "$display_dir" "$_prefix_len")
 
         if [[ "$tagged" == "1" ]]; then
             _SESSION_LINES+=("${COLOR_DIM}#${win_idx}${COLOR_RESET} ${status_icon}  ${COLOR_BOLD}${project}${COLOR_RESET} ${branch_display}${port_display}${done_display} ${COLOR_DIM}${display_dir}${COLOR_RESET}")
@@ -489,11 +521,11 @@ ccm_dashboard() {
     trap 'tput cnorm 2>/dev/null; stty echo 2>/dev/null; rm -f "$pidfile"' EXIT INT TERM HUP
 
     # Instant first paint from cached tmux options + hook signals
-    # Fast rebuild (state detection, no git/port) on first iteration
-    # Full rebuild (with git/port) on second iteration
+    # Rebuild is deferred until user stops pressing keys (timeout)
     _build_project_list cached
-    local needs_rebuild=2  # 2=fast, 1=full, 0=none
+    local needs_rebuild=0  # 0=none, 1=full, 2=fast
     local initial_load=1   # 1=show "Syncing...", cleared after first full render
+    local _first_idle=1    # 1=first timeout triggers fast rebuild
 
     while true; do
 
@@ -557,45 +589,33 @@ ccm_dashboard() {
         buf+="${header}"$'\n'
         buf+="$(_render_list "$selected")"
         buf+=$'\n'
-        buf+="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register  [n]ame  [r]emove  [s]ave  [/] search  [q/Esc] quit${COLOR_RESET}"$'\n'
+        local _cols
+        _cols=$(tput cols 2>/dev/null || echo 80)
+        local _help
+        if [[ $_cols -ge 100 ]]; then
+            _help="  ${COLOR_DIM}[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [g] register  [n]ame  [r]emove  [s]ave  [/] search  [q] quit${COLOR_RESET}"
+        elif [[ $_cols -ge 60 ]]; then
+            _help="  ${COLOR_DIM}[↑↓] select [Enter] attach [p]review [a]dd [n]ame [r]emove [s]ave [q] quit${COLOR_RESET}"
+        else
+            _help="  ${COLOR_DIM}[↑↓] sel [⏎] go [a]dd [r]m [s]ave [q] quit${COLOR_RESET}"
+        fi
+        buf+="${_help}"$'\n'
         buf+="${footer_info}"$'\n'
 
         tput home 2>/dev/null
         tput ed 2>/dev/null
         printf '%s' "$buf"
 
-        # Rebuild after rendering
-        # 2 = fast rebuild (state detection only, no git/port — quick upgrade from cached)
-        # 1 = full rebuild (includes git branch + port detection)
+        # Rebuild if pending (triggered by timeout below)
         if [[ $needs_rebuild -gt 0 ]]; then
-            # Prioritize user input: if keys are buffered, handle them first
-            # and defer the rebuild. This keeps the dashboard responsive
-            # immediately after opening (cached data is good enough for navigation).
-            local _pending_key=""
-            if read -rsn1 -t 0 _pending_key 2>/dev/null && [[ -n "$_pending_key" ]]; then
-                if [[ "$_pending_key" == $'\033' ]]; then
-                    local _seq
-                    read -rsn2 -t 0.05 _seq 2>/dev/null || true
-                    case "$_seq" in
-                        '[A') selected=$((selected - 1)) ;;
-                        '[B') selected=$((selected + 1)) ;;
-                    esac
-                elif [[ "$_pending_key" == "j" ]]; then selected=$((selected + 1))
-                elif [[ "$_pending_key" == "k" ]]; then selected=$((selected - 1))
-                elif [[ "$_pending_key" == "q" || "$_pending_key" == "Q" ]]; then break
-                elif [[ "$_pending_key" == $'\033' ]]; then break
-                fi
-                continue  # Re-render with updated selection, rebuild on next cycle
-            fi
-
             if [[ $needs_rebuild -eq 2 ]]; then
                 _build_project_list fast
-                needs_rebuild=1
+                needs_rebuild=1  # schedule full rebuild for next timeout
             else
                 _build_project_list
                 needs_rebuild=0
             fi
-            # Process any keys typed during rebuild
+            # Drain any keys typed during rebuild
             while read -rsn1 -t 0.01 _key 2>/dev/null; do
                 if [[ "$_key" == $'\033' ]]; then
                     local _seq
@@ -611,8 +631,12 @@ ccm_dashboard() {
             continue  # Re-render immediately with fresh data
         fi
 
+        # Shorter timeout on first cycle for quicker initial refresh
+        local _wait="$refresh_interval"
+        [[ $_first_idle -eq 1 ]] && _wait=1
+
         local key
-        if key=$(_read_key_ext "$refresh_interval"); then
+        if key=$(_read_key_ext "$_wait"); then
             case "$key" in
                 UP|k)  selected=$((selected - 1)) ;;
                 DOWN|j) selected=$((selected + 1)) ;;
@@ -636,8 +660,13 @@ ccm_dashboard() {
                 /)       _dashboard_search ;;
             esac
         else
-            # Timeout — trigger rebuild on next iteration
-            needs_rebuild=1
+            # Timeout (no key pressed) — trigger rebuild
+            if [[ $_first_idle -eq 1 ]]; then
+                needs_rebuild=2  # fast rebuild first
+                _first_idle=0
+            else
+                needs_rebuild=1  # full rebuild on subsequent timeouts
+            fi
         fi
     done
 }
