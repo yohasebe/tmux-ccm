@@ -300,7 +300,7 @@ ccm_info() {
 # Check dependencies
 ccm_check_deps() {
     local missing=()
-    for cmd in tmux jq fzf claude; do
+    for cmd in tmux python3 jq fzf claude; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -337,7 +337,7 @@ ccm_init() {
     # Step 1: Dependency check
     echo "  ${COLOR_BOLD}[1/4] Checking dependencies${COLOR_RESET}"
     local all_ok=1
-    for cmd in tmux jq fzf claude; do
+    for cmd in tmux python3 jq fzf claude; do
         if command -v "$cmd" &>/dev/null; then
             echo "    ${COLOR_GREEN}✔${COLOR_RESET} $cmd"
         else

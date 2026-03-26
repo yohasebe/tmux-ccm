@@ -8,9 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
-- **Dashboard rewritten in Python (curses)** for dramatically improved key responsiveness
-  - Background thread for state refresh (UI never blocks)
-  - Integrated tree view (`t`) and menu (`m`) modes within the same process
+- **Core logic rewritten in Python** — state detection, status bar, dashboard all use `lib/ccm_core.py` as single source of truth (no more duplicate bash/Python logic)
+  - `lib/ccm_core.py`: shared detection, project list, auto-exit, autosave
+  - `lib/dashboard.py`: curses TUI with background thread (UI never blocks)
+  - `lib/inject_status.py`: Python replacement for bash inject-status
+  - Python 3.9+ is now a hard requirement (bash fallback removed)
+  - Integrated tree view (`t`) and menu (`m`) modes within dashboard
   - Scrolling support for large project lists
 - Tree and menu keybindings (`prefix + T`, `prefix + C`) now opt-in to avoid plugin conflicts
 - Dashboard sorts projects by state priority (PERMIT > DONE > BUSY > IDLE > SHELL), then by most recent activity within each group

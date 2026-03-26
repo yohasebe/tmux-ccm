@@ -100,11 +100,7 @@ case "${1:-help}" in
         ccm_tree
         ;;
     tree-interactive|ti)
-        if command -v python3 &>/dev/null; then
-            python3 "$CCM_ROOT/lib/dashboard.py" --mode tree
-        else
-            ccm_tree_interactive
-        fi
+        python3 "$CCM_ROOT/lib/dashboard.py" --mode tree
         ;;
     ports)
         ccm_ports
@@ -115,21 +111,13 @@ case "${1:-help}" in
         ;;
     dashboard|dash|d)
         ccm_check_deps
-        if command -v python3 &>/dev/null; then
-            python3 "$CCM_ROOT/lib/dashboard.py"
-        else
-            ccm_dashboard
-        fi
+        python3 "$CCM_ROOT/lib/dashboard.py"
         ;;
     statusline|sl)
         ccm_statusline
         ;;
     inject-status)
-        if command -v python3 &>/dev/null; then
-            python3 "$CCM_ROOT/lib/inject_status.py" || true
-        else
-            ccm_inject_status || true
-        fi
+        python3 "$CCM_ROOT/lib/inject_status.py" || true
         ;;
     clear-done)
         # Clear DONE flag for the current window (ignore errors)
@@ -166,11 +154,7 @@ case "${1:-help}" in
         ;;
     menu)
         ccm_check_deps
-        if command -v python3 &>/dev/null; then
-            python3 "$CCM_ROOT/lib/dashboard.py" --mode menu
-        else
-            ccm_menu
-        fi
+        python3 "$CCM_ROOT/lib/dashboard.py" --mode menu
         ;;
     pane-title|pt)
         ccm_pane_title "${2:-}"
