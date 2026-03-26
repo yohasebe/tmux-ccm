@@ -45,8 +45,9 @@ CCM_PATTERN_PERMIT='(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc t
 # The > character appears frequently in Claude's output (Markdown blockquotes,
 # shell output, UI decorations) and causes false IDLE detection.
 CCM_PATTERN_INPUT_PROMPT='^❯[[:space:]]'
-# Pattern to detect accept-edits mode (❯❯), which is NOT an idle prompt
-CCM_PATTERN_ACCEPT_EDITS='^❯❯'
+# Pattern to detect accept-edits mode (❯❯ or ⏵⏵), which is NOT an idle prompt
+# Claude Code may use either character, with optional leading spaces
+CCM_PATTERN_ACCEPT_EDITS='[[:space:]]*[❯⏵]{2}'
 # Commands to start Claude Code
 CCM_CLAUDE_CMD="claude --continue 2>/dev/null || claude"
 

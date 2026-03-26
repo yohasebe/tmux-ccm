@@ -119,6 +119,15 @@ class TestDetectPaneState:
         mock_tmux.return_value = "Running tests...\n❯❯ accept edits on"
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
+    @patch("ccm_core.tmux_cmd")
+    def test_busy_with_children_and_new_accept_edits_prompt(self, mock_tmux):
+        """Accept-edits prompt (⏵⏵) with leading spaces should NOT be treated as idle."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
+        )
+        mock_tmux.return_value = "Running tests...\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
 
 # ─── detect_window_raw ───
 
@@ -194,6 +203,21 @@ class TestDetectWindowStateHooks:
             "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
         )
         assert state == "SHELL"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_accept_edits_with_prompt_returns_busy(self, mock_hook, mock_tmux):
+        """Safety net: ❯ visible but ⏵⏵ accept-edits also visible → BUSY."""
+        mock_hook.return_value = None  # No hook signal (expired)
+        # Capture-pane shows both prompt and accept-edits
+        mock_tmux.return_value = "Some output\n❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)"
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
+        )
+        assert state == "BUSY"
 
 
 # ─── Formatting helpers ───

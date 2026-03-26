@@ -31,7 +31,8 @@ PATTERN_PERMIT = re.compile(
     re.IGNORECASE,
 )
 PATTERN_INPUT_PROMPT = re.compile(r"^❯\s")
-PATTERN_ACCEPT_EDITS = re.compile(r"^❯❯")
+# Accept-edits prompt: ❯❯ or ⏵⏵ (Claude Code may use either, with optional leading spaces)
+PATTERN_ACCEPT_EDITS = re.compile(r"^\s*[❯⏵]{2}")
 
 CLAUDE_PROCESS_NAME = "claude"
 CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
@@ -279,6 +280,13 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
     if raw == "IDLE":
         bottom = capture_pane_bottom(win_target)
         prompt_visible = any(PATTERN_INPUT_PROMPT.match(l) for l in bottom)
+        accept_edits = any(PATTERN_ACCEPT_EDITS.match(l) for l in bottom)
+
+        # Accept-edits mode overrides prompt visibility (Claude may still be working)
+        if accept_edits:
+            _set_win_state(win_target, "BUSY")
+            return "BUSY", done_flag, last_done_ts
+
         if not prompt_visible:
             permit_visible = any(PATTERN_PERMIT.search(l) for l in bottom)
             if permit_visible:
