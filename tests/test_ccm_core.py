@@ -206,10 +206,9 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_accept_edits_with_prompt_returns_busy(self, mock_hook, mock_tmux):
-        """Safety net: ❯ visible but ⏵⏵ accept-edits also visible → BUSY."""
+    def test_accept_edits_without_children_returns_idle(self, mock_hook, mock_tmux):
+        """Safety net: ⏵⏵ visible, no children → IDLE (waiting for user action)."""
         mock_hook.return_value = None  # No hook signal (expired)
-        # Capture-pane shows both prompt and accept-edits
         mock_tmux.return_value = "Some output\n❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
@@ -217,7 +216,7 @@ class TestDetectWindowStateHooks:
         state, _, _ = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
         )
-        assert state == "BUSY"
+        assert state == "IDLE"
 
 
 # ─── Formatting helpers ───

@@ -282,12 +282,8 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
         prompt_visible = any(PATTERN_INPUT_PROMPT.match(l) for l in bottom)
         accept_edits = any(PATTERN_ACCEPT_EDITS.match(l) for l in bottom)
 
-        # Accept-edits mode overrides prompt visibility (Claude may still be working)
-        if accept_edits:
-            _set_win_state(win_target, "BUSY")
-            return "BUSY", done_flag, last_done_ts
-
-        if not prompt_visible:
+        # Accept-edits (⏵⏵/❯❯) counts as a form of user prompt (idle, waiting for action)
+        if not prompt_visible and not accept_edits:
             permit_visible = any(PATTERN_PERMIT.search(l) for l in bottom)
             if permit_visible:
                 _set_win_state(win_target, "PERMIT")
