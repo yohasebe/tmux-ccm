@@ -81,7 +81,9 @@ ccm_snapshot_load() {
         local proj_name proj_dir auto_start
         proj_name=$(jq -r ".projects[$i].name" "$file")
         proj_dir=$(jq -r ".projects[$i].dir" "$file")
-        auto_start=$(jq -r ".projects[$i].auto_start_claude // true" "$file")
+        # Don't auto-start Claude on restore — saves resources.
+        # Claude auto-starts when user switches to the window (ccm_auto_start_claude).
+        auto_start="false"
 
         # Skip null/empty entries
         [[ -z "$proj_name" || "$proj_name" == "null" ]] && continue
