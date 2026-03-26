@@ -1,0 +1,1295 @@
+#!/usr/bin/env python3
+"""ccm Dashboard — Python curses implementation for responsive TUI."""
+
+import curses
+import hashlib
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+# ─── Constants ───
+
+CCM_ROOT = os.environ.get(
+    "CCM_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+CCM_TMP_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"ccm-{os.getuid()}")
+CCM_HOOK_DIR = os.path.join(CCM_TMP_DIR, "hooks")
+CCM_SNAPSHOT_DIR = os.path.join(
+    os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
+    "ccm",
+    "snapshots",
+)
+CCM_GIT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "git-cache")
+CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
+
+DONE_TIMEOUT = 30
+HOOK_TIMEOUT = 300
+REFRESH_INTERVAL = 3
+
+PATTERN_PERMIT = re.compile(
+    r"(Do you want|Allow|yes.*no|y/n|approve|Would you like|Esc to cancel)",
+    re.IGNORECASE,
+)
+PATTERN_INPUT_PROMPT = re.compile(r"^❯\s")
+PATTERN_ACCEPT_EDITS = re.compile(r"^❯❯")
+
+CLAUDE_PROCESS_NAME = "claude"
+CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
+
+STATE_PRIORITY = {"PERMIT": 0, "DONE": 1, "BUSY": 2, "IDLE": 3, "SHELL": 4, "DOWN": 5}
+STATE_ICONS = {
+    "PERMIT": "⚠", "BUSY": "◉", "DONE": "✔", "IDLE": "●", "SHELL": "■", "DOWN": "○",
+}
+
+# Color pair IDs
+C_PERMIT = 1
+C_BUSY = 2
+C_DONE = 3
+C_IDLE = 4
+C_SHELL = 5
+C_DIM = 6
+C_CYAN = 7
+C_YELLOW = 8
+C_SYNCING = 9
+
+STATE_COLOR_PAIR = {
+    "PERMIT": C_PERMIT, "BUSY": C_BUSY, "DONE": C_DONE,
+    "IDLE": C_IDLE, "SHELL": C_SHELL, "DOWN": C_SHELL,
+}
+
+
+# ─── Subprocess helpers ───
+
+def tmux_cmd(*args, timeout=5):
+    """Run tmux command, return stdout."""
+    try:
+        r = subprocess.run(
+            ["tmux"] + list(args), capture_output=True, text=True, timeout=timeout
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+
+def ps_snapshot():
+    """Single ps call for scan cycle."""
+    try:
+        r = subprocess.run(
+            ["ps", "-eo", "pid,ppid,pgid,comm"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return r.stdout if r.returncode == 0 else ""
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+
+def md5_hash(s):
+    return hashlib.md5(s.encode()).hexdigest()
+
+
+# ─── Session detection ───
+
+def get_session():
+    popup_file = os.path.join(CCM_TMP_DIR, "popup-session")
+    try:
+        if os.path.exists(popup_file):
+            age = time.time() - os.path.getmtime(popup_file)
+            if age < 60:
+                with open(popup_file) as f:
+                    return f.read().strip()
+    except OSError:
+        pass
+    session = tmux_cmd("display-message", "-p", "#{session_name}")
+    if session:
+        return session
+    out = tmux_cmd("list-clients", "-F", "#{session_name}")
+    return out.split("\n")[0] if out else ""
+
+
+def touch_popup_session():
+    path = os.path.join(CCM_TMP_DIR, "popup-session")
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+# ─── Hook signal ───
+
+def read_hook_signal(project_dir):
+    """Read hook signal file. Returns (timestamp, state) or None."""
+    expanded = os.path.expanduser(project_dir.replace("~", os.path.expanduser("~")))
+    try:
+        expanded = os.path.realpath(expanded)
+    except OSError:
+        pass
+    cache_key = md5_hash(expanded)
+    hook_file = os.path.join(CCM_HOOK_DIR, cache_key)
+    try:
+        with open(hook_file) as f:
+            content = f.read().strip()
+        parts = content.split(" ", 1)
+        if len(parts) == 2:
+            return int(parts[0]), parts[1]
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+# ─── State detection ───
+
+def find_claude_pid(parent_pid, ps_lines):
+    for line in ps_lines:
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] == str(parent_pid) and parts[3] == CLAUDE_PROCESS_NAME:
+            return parts[0]
+    return None
+
+
+def has_children(pid, ps_lines, own_pgid):
+    for line in ps_lines:
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] == str(pid):
+            if parts[2] == str(own_pgid):
+                continue
+            if parts[3] == "caffeinate":
+                continue
+            return True
+    return False
+
+
+def capture_pane_bottom(pane_target, lines=8):
+    """Capture bottom non-empty lines of a pane."""
+    raw = tmux_cmd("capture-pane", "-t", pane_target, "-p", "-S", "-10")
+    if not raw:
+        return []
+    non_empty = [l for l in raw.split("\n") if l.strip()]
+    return non_empty[-lines:]
+
+
+def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid):
+    claude_pid = find_claude_pid(pane_pid, ps_lines)
+    if not claude_pid:
+        return "SHELL"
+
+    if has_children(claude_pid, ps_lines, own_pgid):
+        bottom = capture_pane_bottom(pane_target)
+        for line in bottom:
+            if PATTERN_PERMIT.search(line):
+                return "PERMIT"
+        for line in bottom:
+            if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
+                return "IDLE"
+        return "BUSY"
+
+    return "IDLE"
+
+
+def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
+    panes = [
+        (pid, pane_id)
+        for wt, pid, pane_id in panes_cache
+        if wt == win_target
+    ]
+    if not panes:
+        return "DOWN"
+
+    best = "SHELL"
+    for pid, pane_id in panes:
+        state = detect_pane_state(pid, pane_id, ps_lines, own_pgid)
+        if state == "PERMIT":
+            return "PERMIT"
+        elif state == "BUSY":
+            best = "BUSY"
+        elif state == "IDLE" and best != "BUSY":
+            best = "IDLE"
+    return best
+
+
+def detect_window_state(win_target, project_dir, prev_state, done_flag, last_done_ts,
+                        panes_cache, ps_lines, own_pgid):
+    """Full detection pipeline. Returns (state, new_done_flag, new_last_done)."""
+    now = int(time.time())
+    raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid)
+
+    if raw in ("SHELL", "DOWN"):
+        tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", raw)
+        tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_done")
+        return raw, "", last_done_ts
+
+    # Hook-based enhancement
+    if project_dir:
+        hook = read_hook_signal(project_dir)
+        if hook:
+            hook_ts, hook_state = hook
+            hook_age = now - hook_ts
+
+            if raw == "IDLE":
+                if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT:
+                    # Check for PERMIT on transition
+                    if prev_state != "BUSY":
+                        bottom = capture_pane_bottom(win_target)
+                        for line in bottom:
+                            if PATTERN_PERMIT.search(line):
+                                tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "PERMIT")
+                                return "PERMIT", done_flag, last_done_ts
+                    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "BUSY")
+                    return "BUSY", done_flag, last_done_ts
+
+                if hook_state == "DONE" and hook_age < DONE_TIMEOUT:
+                    bottom = capture_pane_bottom(win_target)
+                    prompt_visible = any(PATTERN_INPUT_PROMPT.match(l) for l in bottom)
+                    if not prompt_visible:
+                        tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "BUSY")
+                        return "BUSY", done_flag, last_done_ts
+                    tmux_cmd("set-option", "-wt", win_target, "@ccm_done", str(hook_ts))
+                    tmux_cmd("set-option", "-wt", win_target, "@ccm_last_done", str(hook_ts))
+                    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "DONE")
+                    return "DONE", str(hook_ts), hook_ts
+
+    # Fallback: transition-based DONE tracking
+    if raw == "IDLE":
+        if prev_state in ("BUSY", "PERMIT"):
+            tmux_cmd("set-option", "-wt", win_target, "@ccm_done", str(now))
+            tmux_cmd("set-option", "-wt", win_target, "@ccm_last_done", str(now))
+            tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "DONE")
+            return "DONE", str(now), now
+
+        if done_flag:
+            try:
+                done_age = now - int(done_flag)
+                if 0 <= done_age < DONE_TIMEOUT:
+                    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "DONE")
+                    return "DONE", done_flag, last_done_ts
+            except ValueError:
+                pass
+            tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_done")
+
+    elif raw != "IDLE":
+        tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_done")
+
+    # Safety net
+    if raw == "IDLE":
+        bottom = capture_pane_bottom(win_target)
+        prompt_visible = any(PATTERN_INPUT_PROMPT.match(l) for l in bottom)
+        if not prompt_visible:
+            permit_visible = any(PATTERN_PERMIT.search(l) for l in bottom)
+            if permit_visible:
+                tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "PERMIT")
+                return "PERMIT", done_flag, last_done_ts
+            tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", "BUSY")
+            return "BUSY", done_flag, last_done_ts
+
+    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", raw)
+    return raw, done_flag, last_done_ts
+
+
+# ─── Project data ───
+
+class Project:
+    __slots__ = (
+        "win_target", "win_idx", "name", "dir", "state",
+        "branch", "ports", "last_done_ts", "sort_key", "tagged",
+    )
+
+    def __init__(self, win_target, win_idx, name, directory, state,
+                 branch="", ports="", last_done_ts=0, tagged=True):
+        self.win_target = win_target
+        self.win_idx = win_idx
+        self.name = name
+        self.dir = directory
+        self.state = state
+        self.branch = branch
+        self.ports = ports
+        self.last_done_ts = last_done_ts
+        self.tagged = tagged
+        self.sort_key = (STATE_PRIORITY.get(state, 5), -(last_done_ts or 0))
+
+
+def read_cache_file(cache_dir, directory):
+    expanded = os.path.expanduser(directory.replace("~", os.path.expanduser("~")))
+    try:
+        expanded = os.path.realpath(expanded)
+    except OSError:
+        pass
+    key = md5_hash(expanded)
+    path = os.path.join(cache_dir, key)
+    try:
+        if os.path.exists(path):
+            age = time.time() - os.path.getmtime(path)
+            if age < 30:
+                with open(path) as f:
+                    return f.read().strip()
+    except OSError:
+        pass
+    return ""
+
+
+def build_project_list(fast=False):
+    """Build project list from tmux. If fast, skip git/port refresh."""
+    raw = tmux_cmd(
+        "list-windows", "-a", "-F",
+        "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
+        "#{@ccm_prev_state}\t#{@ccm_done}\t#{@ccm_last_done}\t#{window_activity}"
+    )
+    if not raw:
+        return []
+
+    # Batch caches
+    ps_lines = ps_snapshot().strip().split("\n") if not fast else []
+    panes_cache = []
+    if not fast:
+        panes_raw = tmux_cmd("list-panes", "-a", "-F",
+                             "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}")
+        for line in panes_raw.split("\n"):
+            parts = line.split("\t")
+            if len(parts) == 3:
+                panes_cache.append((parts[0], parts[1], parts[2]))
+
+    own_pgid = str(os.getpgrp())
+    seen_dirs = set()
+    projects = []
+
+    for line in raw.split("\n"):
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        win_target, project, proj_dir = parts[0], parts[1], parts[2]
+        prev_state, done_flag, last_done_str, win_activity_str = (
+            parts[3], parts[4], parts[5], parts[6]
+        )
+
+        if not project:
+            continue
+
+        # Deduplicate by resolved directory
+        try:
+            resolved = os.path.realpath(
+                os.path.expanduser(proj_dir.replace("~", os.path.expanduser("~")))
+            )
+        except OSError:
+            resolved = proj_dir
+        if resolved in seen_dirs:
+            continue
+        seen_dirs.add(resolved)
+
+        win_idx = win_target.split(":")[-1]
+
+        # Parse timestamps
+        last_done_ts = 0
+        if last_done_str and last_done_str != "0":
+            try:
+                last_done_ts = int(last_done_str)
+            except ValueError:
+                pass
+
+        win_activity = 0
+        if win_activity_str:
+            try:
+                win_activity = int(win_activity_str)
+            except ValueError:
+                pass
+
+        # Determine state
+        if fast:
+            # Use cached prev_state + hook signals (no ps/capture-pane)
+            state = prev_state if prev_state else "IDLE"
+            if state == "IDLE" and done_flag:
+                try:
+                    done_age = int(time.time()) - int(done_flag)
+                    if 0 <= done_age < DONE_TIMEOUT:
+                        state = "DONE"
+                except ValueError:
+                    pass
+            # Check hook signals
+            if proj_dir:
+                hook = read_hook_signal(proj_dir)
+                if hook:
+                    hook_ts, hook_state = hook
+                    hook_age = int(time.time()) - hook_ts
+                    if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT and state != "PERMIT":
+                        state = "BUSY"
+                    elif hook_state == "DONE" and hook_age < DONE_TIMEOUT and state == "IDLE":
+                        state = "DONE"
+        else:
+            # Full detection
+            state, done_flag, last_done_ts_new = detect_window_state(
+                win_target, proj_dir, prev_state, done_flag, last_done_ts,
+                panes_cache, ps_lines, own_pgid
+            )
+            if last_done_ts_new:
+                last_done_ts = last_done_ts_new if isinstance(last_done_ts_new, int) else last_done_ts
+
+        # Use most recent of last_done and window_activity for sort
+        sort_ts = max(last_done_ts, win_activity) if win_activity else last_done_ts
+
+        # Read git/port from cache
+        branch = read_cache_file(CCM_GIT_CACHE_DIR, proj_dir) if proj_dir else ""
+        ports = read_cache_file(CCM_PORT_CACHE_DIR, proj_dir) if proj_dir else ""
+
+        projects.append(Project(
+            win_target=win_target, win_idx=win_idx, name=project,
+            directory=proj_dir, state=state, branch=branch, ports=ports,
+            last_done_ts=sort_ts, tagged=True,
+        ))
+
+    projects.sort(key=lambda p: p.sort_key)
+    return projects
+
+
+# ─── Formatting helpers ───
+
+def format_elapsed(ts):
+    if not ts or ts == 0:
+        return ""
+    elapsed = int(time.time()) - ts
+    if elapsed < 0:
+        return ""
+    if elapsed < 60:
+        return f"{elapsed}s"
+    if elapsed < 3600:
+        return f"{elapsed // 60}m"
+    if elapsed < 86400:
+        return f"{elapsed // 3600}h"
+    return f"{elapsed // 86400}d"
+
+
+def format_dir(directory, prefix_len, cols):
+    d = directory.replace(os.path.expanduser("~"), "~")
+    avail = cols - prefix_len - 4
+    if avail < 10:
+        return ""
+    if len(d) <= avail:
+        return d
+    base = os.path.basename(d)
+    parent = os.path.basename(os.path.dirname(d))
+    short = f"…/{parent}/{base}"
+    if len(short) <= avail:
+        return short
+    if len(base) <= avail:
+        return base
+    return ""
+
+
+def hooks_configured():
+    settings_file = os.path.expanduser("~/.claude/settings.json")
+    try:
+        with open(settings_file) as f:
+            content = f.read()
+        return "on-prompt-submit.sh" in content and "on-stop.sh" in content
+    except OSError:
+        return False
+
+
+# ─── Dashboard ───
+
+class Dashboard:
+    def __init__(self, initial_mode="dashboard"):
+        self.projects = []
+        self.lock = threading.Lock()
+        self.selected = 0
+        self.running = True
+        self.data_dirty = False
+        self.initial_load = True
+        self.hooks_status = "Hooks: ON" if hooks_configured() else "Hooks: OFF"
+        self.mode = initial_mode  # "dashboard", "tree", "menu"
+        # Tree mode state
+        self.tree_lines = []     # (indent, text, attr, win_target_or_none)
+        self.tree_selected = 0
+        self.tree_selectable = []  # indices into tree_lines that are selectable
+        # Menu mode state
+        self.menu_items = [
+            ("Add project", "add"),
+            ("Save snapshot", "save"),
+            ("Load snapshot", "load"),
+            ("Dashboard", "dashboard"),
+            ("Tree view", "tree"),
+            ("Quit", "quit"),
+        ]
+        self.menu_selected = 0
+
+    def run(self, stdscr):
+        # Curses setup
+        curses.curs_set(0)
+        curses.use_default_colors()
+        stdscr.keypad(True)
+        stdscr.timeout(50)  # 50ms getch timeout → ~20Hz key polling
+
+        # Set ESCDELAY for faster Escape handling
+        try:
+            curses.set_escdelay(25)
+        except AttributeError:
+            pass
+
+        # Init colors
+        self._init_colors()
+
+        # Instant first paint from cached state
+        self.projects = build_project_list(fast=True)
+        if self.mode == "tree":
+            self._build_tree()
+        self._render_current(stdscr)
+
+        # Start background refresh
+        bg = threading.Thread(target=self._refresh_loop, daemon=True)
+        bg.start()
+
+        # Main event loop
+        while self.running:
+            touch_popup_session()
+
+            key = stdscr.getch()
+            if key == -1:
+                if self.data_dirty:
+                    with self.lock:
+                        self.data_dirty = False
+                    self._render_current(stdscr)
+                continue
+
+            if key == curses.KEY_RESIZE:
+                self._render_current(stdscr)
+                continue
+
+            action = self._dispatch_key(key, stdscr)
+            if action in ("quit", "attached"):
+                break
+            self._render_current(stdscr)
+
+    def _render_current(self, stdscr):
+        if self.mode == "dashboard":
+            self.render(stdscr)
+        elif self.mode == "tree":
+            self._render_tree(stdscr)
+        elif self.mode == "menu":
+            self._render_menu(stdscr)
+
+    def _dispatch_key(self, key, stdscr):
+        if self.mode == "dashboard":
+            return self._handle_key(key, stdscr)
+        elif self.mode == "tree":
+            return self._handle_tree_key(key, stdscr)
+        elif self.mode == "menu":
+            return self._handle_menu_key(key, stdscr)
+        return ""
+
+    def _init_colors(self):
+        if curses.COLORS >= 256:
+            # Salmon for BUSY (matches Claude Code's "Choreographing..." text)
+            curses.init_pair(C_PERMIT, curses.COLOR_YELLOW, -1)
+            curses.init_pair(C_BUSY, 209, -1)    # salmon
+            curses.init_pair(C_DONE, curses.COLOR_GREEN, -1)
+            curses.init_pair(C_IDLE, 68, -1)      # blue
+            curses.init_pair(C_SHELL, 245, -1)    # gray
+            curses.init_pair(C_DIM, 242, -1)      # dim gray
+            curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
+            curses.init_pair(C_YELLOW, curses.COLOR_YELLOW, -1)
+            curses.init_pair(C_SYNCING, curses.COLOR_CYAN, -1)
+        else:
+            curses.init_pair(C_PERMIT, curses.COLOR_YELLOW, -1)
+            curses.init_pair(C_BUSY, curses.COLOR_RED, -1)
+            curses.init_pair(C_DONE, curses.COLOR_GREEN, -1)
+            curses.init_pair(C_IDLE, curses.COLOR_BLUE, -1)
+            curses.init_pair(C_SHELL, curses.COLOR_WHITE, -1)
+            curses.init_pair(C_DIM, curses.COLOR_WHITE, -1)
+            curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
+            curses.init_pair(C_YELLOW, curses.COLOR_YELLOW, -1)
+            curses.init_pair(C_SYNCING, curses.COLOR_CYAN, -1)
+
+    def render(self, stdscr):
+        try:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            row = 0
+
+            # Header
+            if self.initial_load:
+                self._addstr(stdscr, row, 2, "Syncing...", curses.color_pair(C_SYNCING))
+            else:
+                session = get_session()
+                if session and not session.isdigit():
+                    header = f"{session} — {len(self.projects)} project(s)"
+                else:
+                    header = f"{len(self.projects)} project(s)"
+                self._addstr(stdscr, row, 2, header, curses.color_pair(C_DIM))
+            row += 1
+
+            # Project list
+            with self.lock:
+                projects = list(self.projects)
+
+            if not projects:
+                self._addstr(stdscr, row + 1, 4, "No active projects.", curses.color_pair(C_DIM))
+                row += 3
+            else:
+                # Scrolling: ensure selected project is visible
+                visible_lines = height - 4  # header + help + footer
+                scroll_offset = getattr(self, '_scroll_offset', 0)
+                if self.selected >= scroll_offset + visible_lines:
+                    scroll_offset = self.selected - visible_lines + 1
+                if self.selected < scroll_offset:
+                    scroll_offset = self.selected
+                if scroll_offset < 0:
+                    scroll_offset = 0
+                self._scroll_offset = scroll_offset
+
+                for i, p in enumerate(projects):
+                    if i < scroll_offset:
+                        continue
+                    if row >= height - 3:
+                        break
+
+                    is_selected = i == self.selected
+                    prefix = "  ▶ " if is_selected else "    "
+
+                    col = 0
+                    attr_bold = curses.A_BOLD if is_selected else 0
+
+                    # Prefix + window index
+                    self._addstr(stdscr, row + 1, col, prefix, curses.color_pair(C_DIM))
+                    col += len(prefix)
+                    self._addstr(stdscr, row + 1, col, f"#{p.win_idx} ", curses.color_pair(C_DIM))
+                    col += len(f"#{p.win_idx} ")
+
+                    # State icon
+                    state_cp = curses.color_pair(STATE_COLOR_PAIR.get(p.state, C_SHELL))
+                    icon = STATE_ICONS.get(p.state, "?")
+                    state_text = f"{icon} {p.state}"
+                    self._addstr(stdscr, row + 1, col, state_text, state_cp)
+                    col += len(state_text)
+
+                    # Project name
+                    self._addstr(stdscr, row + 1, col, "  ", 0)
+                    col += 2
+                    name_attr = curses.A_BOLD if p.tagged else curses.color_pair(C_DIM)
+                    self._addstr(stdscr, row + 1, col, p.name, name_attr)
+                    col += len(p.name)
+
+                    # Branch
+                    if p.branch:
+                        branch_str = f" ({p.branch})"
+                        self._addstr(stdscr, row + 1, col, " (", curses.color_pair(C_DIM))
+                        self._addstr(stdscr, row + 1, col + 2, p.branch, curses.color_pair(C_CYAN))
+                        self._addstr(stdscr, row + 1, col + 2 + len(p.branch), ")", curses.color_pair(C_DIM))
+                        col += len(branch_str)
+
+                    # Ports
+                    if p.ports:
+                        port_str = f" [:{p.ports}]"
+                        self._addstr(stdscr, row + 1, col, f" [:", curses.color_pair(C_DIM))
+                        self._addstr(stdscr, row + 1, col + 3, p.ports, curses.color_pair(C_YELLOW))
+                        self._addstr(stdscr, row + 1, col + 3 + len(p.ports), "]", curses.color_pair(C_DIM))
+                        col += len(port_str)
+
+                    # Elapsed time
+                    elapsed = format_elapsed(p.last_done_ts)
+                    if elapsed:
+                        self._addstr(stdscr, row + 1, col, " ✔ ", curses.color_pair(C_DONE))
+                        col += 3
+                        self._addstr(stdscr, row + 1, col, elapsed, curses.color_pair(C_DIM))
+                        col += len(elapsed)
+
+                    # Directory (truncated to fit)
+                    if p.dir:
+                        dir_str = format_dir(p.dir, col + 1, width)
+                        if dir_str:
+                            self._addstr(stdscr, row + 1, col, " ", 0)
+                            col += 1
+                            self._addstr(stdscr, row + 1, col, dir_str, curses.color_pair(C_DIM))
+
+                    row += 1
+
+            # Help line
+            help_row = height - 3
+            if help_row > row + 1:
+                if width >= 100:
+                    help_text = "[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [n]ame  [r]emove  [s]ave  [t]ree  [m]enu  [q] quit"
+                elif width >= 60:
+                    help_text = "[↑↓] select [Enter] attach [a]dd [n]ame [r]emove [s]ave [t]ree [m]enu [q] quit"
+                else:
+                    help_text = "[↑↓] sel [⏎] go [a]dd [r]m [s]ave [q] quit"
+                self._addstr(stdscr, help_row, 2, help_text, curses.color_pair(C_DIM))
+
+            # Footer
+            footer_row = height - 2
+            if footer_row > row + 1:
+                footer_parts = []
+                # Last saved time
+                autosave = os.path.join(CCM_SNAPSHOT_DIR, "_autosave.json")
+                try:
+                    if os.path.exists(autosave):
+                        mtime = os.path.getmtime(autosave)
+                        save_time = time.strftime("%H:%M:%S", time.localtime(mtime))
+                        footer_parts.append(f"Last saved: {save_time}")
+                except OSError:
+                    pass
+                footer_parts.append(self.hooks_status)
+                footer = "  ".join(footer_parts)
+                self._addstr(stdscr, footer_row, 2, footer, curses.color_pair(C_DIM))
+
+            stdscr.refresh()
+        except curses.error:
+            pass
+
+    def _addstr(self, stdscr, y, x, text, attr=0):
+        """Safe addstr that doesn't crash on boundary."""
+        try:
+            height, width = stdscr.getmaxyx()
+            if y < 0 or y >= height or x >= width:
+                return
+            max_len = width - x - 1
+            if max_len <= 0:
+                return
+            stdscr.addnstr(y, x, text, max_len, attr)
+        except curses.error:
+            pass
+
+    def _handle_key(self, key, stdscr):
+        n = len(self.projects)
+
+        if key in (curses.KEY_UP, ord("k")):
+            if n > 0:
+                self.selected = (self.selected - 1) % n
+        elif key in (curses.KEY_DOWN, ord("j")):
+            if n > 0:
+                self.selected = (self.selected + 1) % n
+        elif key in (curses.KEY_ENTER, 10, 13):
+            if n > 0:
+                return self._do_attach(stdscr)
+        elif key in (ord("q"), ord("Q"), 27):
+            return "quit"
+        elif key in (ord("s"), ord("S")):
+            self._do_save(stdscr)
+        elif key in (ord("p"), ord("P")):
+            if n > 0:
+                self._do_preview(stdscr)
+        elif key in (ord("a"), ord("A")):
+            self._do_add(stdscr)
+        elif key in (ord("n"), ord("N")):
+            if n > 0:
+                self._do_rename(stdscr)
+        elif key in (ord("r"), ord("R")):
+            if n > 0:
+                self._do_remove(stdscr)
+        elif key in (ord("g"), ord("G")):
+            self._do_register(stdscr)
+        elif key == ord("/"):
+            self._do_search(stdscr)
+        elif key in (ord("t"), ord("T")):
+            self.mode = "tree"
+            self._build_tree()
+        elif key in (ord("m"), ord("M")):
+            self.mode = "menu"
+            self.menu_selected = 0
+
+        return ""
+
+    def _do_attach(self, stdscr):
+        p = self.projects[self.selected]
+        # Auto-start if SHELL
+        if p.state == "SHELL":
+            tmux_cmd("send-keys", "-t", p.win_target, CLAUDE_CMD, "Enter")
+        # Clear DONE
+        tmux_cmd("set-option", "-wt", p.win_target, "-u", "@ccm_done")
+        tmux_cmd("set-option", "-wt", p.win_target, "-u", "@ccm_prev_state")
+        # Cross-session switch
+        session = get_session()
+        target_session = p.win_target.split(":")[0]
+        if target_session != session:
+            tmux_cmd("switch-client", "-t", target_session)
+        tmux_cmd("select-window", "-t", p.win_target)
+        return "attached"
+
+    def _do_save(self, stdscr):
+        name = self._prompt(stdscr, "Snapshot name [_autosave]: ")
+        if name is None:
+            return
+        if not name:
+            name = "_autosave"
+        ccm_bin = os.path.join(CCM_ROOT, "ccm")
+        result = subprocess.run([ccm_bin, "snapshot", "save", name],
+                                capture_output=True, text=True, timeout=10)
+        msg = "Saved!" if result.returncode == 0 else "Save failed"
+        self._show_message(stdscr, msg, 1)
+
+    def _do_preview(self, stdscr):
+        p = self.projects[self.selected]
+        captured = tmux_cmd("capture-pane", "-t", p.win_target, "-p", "-S", "-30")
+        if not captured:
+            return
+        stdscr.erase()
+        lines = captured.split("\n")
+        height, width = stdscr.getmaxyx()
+        self._addstr(stdscr, 0, 0, f"=== {p.name} (press any key, 'c' to copy) ===",
+                     curses.A_BOLD)
+        for i, line in enumerate(lines[:height - 2]):
+            self._addstr(stdscr, i + 1, 0, line, 0)
+        stdscr.refresh()
+        stdscr.timeout(-1)
+        key = stdscr.getch()
+        stdscr.timeout(50)
+        if key in (ord("c"), ord("C")):
+            try:
+                for cmd in (["pbcopy"], ["clip.exe"], ["xclip", "-selection", "clipboard"], ["xsel", "-b"]):
+                    try:
+                        subprocess.run(cmd, input=captured.encode(), timeout=3)
+                        break
+                    except FileNotFoundError:
+                        continue
+            except Exception:
+                pass
+
+    def _do_add(self, stdscr):
+        directory = self._prompt(stdscr, "Directory: ")
+        if not directory:
+            return
+        directory = os.path.expanduser(directory)
+        if not os.path.isdir(directory):
+            self._show_message(stdscr, "Directory not found", 1)
+            return
+        name = self._prompt(stdscr, f"Name [{os.path.basename(directory)}]: ")
+        if name is None:
+            return
+        if not name:
+            name = os.path.basename(directory)
+        ccm_bin = os.path.join(CCM_ROOT, "ccm")
+        subprocess.run([ccm_bin, "add", directory, name],
+                       capture_output=True, timeout=10)
+        time.sleep(0.5)
+        self._trigger_rebuild()
+
+    def _do_rename(self, stdscr):
+        p = self.projects[self.selected]
+        new_name = self._prompt(stdscr, f"New name for '{p.name}': ")
+        if not new_name:
+            return
+        tmux_cmd("set-option", "-wt", p.win_target, "@ccm_project", new_name)
+        tmux_cmd("rename-window", "-t", p.win_target, new_name)
+        self._show_message(stdscr, f"Renamed: {p.name} → {new_name}", 1)
+        self._trigger_rebuild()
+
+    def _do_remove(self, stdscr):
+        p = self.projects[self.selected]
+        choice = self._prompt(stdscr, f"Remove '{p.name}'? [u]nregister / [d]elete / Esc: ")
+        if not choice:
+            return
+        ccm_bin = os.path.join(CCM_ROOT, "ccm")
+        if choice.lower() == "u":
+            subprocess.run([ccm_bin, "unregister", p.name], capture_output=True, timeout=10)
+        elif choice.lower() == "d":
+            subprocess.run([ccm_bin, "remove", p.name], capture_output=True, timeout=10)
+        else:
+            return
+        time.sleep(0.3)
+        self._trigger_rebuild()
+
+    def _do_register(self, stdscr):
+        # List untagged windows
+        raw = tmux_cmd("list-windows", "-a", "-F",
+                       "#{session_name}:#{window_index}\t#{window_name}\t#{@ccm_project}")
+        if not raw:
+            return
+        untagged = []
+        for line in raw.split("\n"):
+            parts = line.split("\t")
+            if len(parts) >= 3 and not parts[2]:
+                untagged.append((parts[0], parts[1]))
+        if not untagged:
+            self._show_message(stdscr, "No untagged windows", 1)
+            return
+        # Show list and ask for selection
+        msg = "Untagged: " + ", ".join(f"{wt}({n})" for wt, n in untagged[:5])
+        win = self._prompt(stdscr, f"{msg}\nWindow name/index: ")
+        if not win:
+            return
+        name = self._prompt(stdscr, f"Project name [{win}]: ")
+        if name is None:
+            return
+        if not name:
+            name = win
+        ccm_bin = os.path.join(CCM_ROOT, "ccm")
+        subprocess.run([ccm_bin, "register", win, name], capture_output=True, timeout=10)
+        time.sleep(0.3)
+        self._trigger_rebuild()
+
+    def _do_search(self, stdscr):
+        query = self._prompt(stdscr, "Search: ")
+        if not query:
+            return
+        query_lower = query.lower()
+        for i, p in enumerate(self.projects):
+            if query_lower in p.name.lower():
+                self.selected = i
+                break
+
+    def _trigger_rebuild(self):
+        """Force a rebuild in the background thread."""
+        projects = build_project_list(fast=True)
+        with self.lock:
+            self.projects = projects
+            self.data_dirty = True
+
+    def _prompt(self, stdscr, prompt_text):
+        """Show prompt, return input string. Returns None on Escape."""
+        curses.curs_set(1)
+        curses.echo()
+        height, width = stdscr.getmaxyx()
+        row = height - 1
+        stdscr.move(row, 0)
+        stdscr.clrtoeol()
+        self._addstr(stdscr, row, 0, f"  {prompt_text}", curses.color_pair(C_DIM))
+        stdscr.refresh()
+
+        # Read input character by character
+        curses.noecho()
+        buf = ""
+        col = 2 + len(prompt_text)
+        stdscr.timeout(-1)  # Block for input
+
+        while True:
+            ch = stdscr.getch()
+            if ch == 27:  # Escape
+                curses.curs_set(0)
+                stdscr.timeout(50)
+                return None
+            elif ch in (curses.KEY_ENTER, 10, 13):
+                curses.curs_set(0)
+                stdscr.timeout(50)
+                return buf
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                if buf:
+                    buf = buf[:-1]
+                    col -= 1
+                    stdscr.move(row, col)
+                    stdscr.addch(" ")
+                    stdscr.move(row, col)
+            elif 32 <= ch <= 126:
+                buf += chr(ch)
+                try:
+                    stdscr.addch(row, col, ch)
+                except curses.error:
+                    pass
+                col += 1
+
+        stdscr.timeout(50)
+        curses.curs_set(0)
+        return buf
+
+    def _show_message(self, stdscr, msg, duration=1):
+        height, _ = stdscr.getmaxyx()
+        self._addstr(stdscr, height - 1, 2, msg, curses.color_pair(C_DONE) | curses.A_BOLD)
+        stdscr.refresh()
+        time.sleep(duration)
+
+    def _refresh_loop(self):
+        """Background thread: periodic state refresh."""
+        # First refresh: fast (no git/port)
+        time.sleep(0.3)
+        try:
+            projects = build_project_list(fast=False)
+            with self.lock:
+                self.projects = projects
+                self.initial_load = False
+                self.data_dirty = True
+        except Exception:
+            self.initial_load = False
+
+        # Subsequent refreshes
+        while self.running:
+            time.sleep(REFRESH_INTERVAL)
+            if not self.running:
+                break
+            try:
+                projects = build_project_list(fast=False)
+                with self.lock:
+                    self.projects = projects
+                    self.data_dirty = True
+            except Exception:
+                pass
+
+    # ─── Tree mode ───
+
+    def _build_tree(self):
+        """Build hierarchical tree data from ALL tmux sessions/windows/panes."""
+        self.tree_lines = []
+        self.tree_selectable = []
+        self.tree_selected = 0
+
+        sessions_raw = tmux_cmd("list-sessions", "-F", "#{session_name}")
+        if not sessions_raw:
+            return
+        sessions = sorted(sessions_raw.split("\n"))
+        current_session = get_session()
+        current_win_idx = tmux_cmd("display-message", "-p", "#{window_index}")
+
+        # Build project state lookup
+        project_states = {}
+        with self.lock:
+            for p in self.projects:
+                project_states[p.win_target] = p
+
+        for si, sess in enumerate(sessions):
+            is_last_session = si == len(sessions) - 1
+            s_prefix = "└── " if is_last_session else "├── "
+            s_cont = "    " if is_last_session else "│   "
+
+            marker = " ◀" if sess == current_session else ""
+            self.tree_lines.append((0, f"{s_prefix}{sess}{marker}", curses.A_BOLD, None))
+
+            windows_raw = tmux_cmd(
+                "list-windows", "-t", sess, "-F",
+                "#{window_index}\t#{window_name}\t#{@ccm_project}\t#{@ccm_dir}"
+            )
+            if not windows_raw:
+                continue
+            windows = windows_raw.split("\n")
+
+            for wi, wline in enumerate(windows):
+                parts = wline.split("\t")
+                if len(parts) < 2:
+                    continue
+                # Pad missing fields (non-ccm windows have empty @ccm_project/@ccm_dir)
+                while len(parts) < 4:
+                    parts.append("")
+                win_idx, win_name, project, wdir = parts[0], parts[1], parts[2], parts[3]
+                win_target = f"{sess}:{win_idx}"
+                is_last_win = wi == len(windows) - 1
+                w_prefix = f"{s_cont}└── " if is_last_win else f"{s_cont}├── "
+
+                # State and display for ccm projects
+                proj = project_states.get(win_target)
+                if proj:
+                    icon = STATE_ICONS.get(proj.state, "?")
+                    color_pair = STATE_COLOR_PAIR.get(proj.state, C_SHELL)
+                    name_display = proj.name
+                    branch = proj.branch
+                    ports = proj.ports
+                else:
+                    icon = ""
+                    color_pair = C_DIM
+                    name_display = win_name
+                    branch = ""
+                    ports = ""
+
+                line_text = f"{w_prefix}"
+                if icon:
+                    line_text += f"{icon} "
+                line_text += name_display
+
+                if branch:
+                    line_text += f" ({branch})"
+                if ports:
+                    line_text += f" [:{ports}]"
+
+                # Directory
+                display_dir = ""
+                if wdir:
+                    display_dir = wdir.replace(os.path.expanduser("~"), "~")
+                elif not project:
+                    # Non-ccm window: show pane current path
+                    pane_path = tmux_cmd("display-message", "-t", win_target, "-p", "#{pane_current_path}")
+                    if pane_path:
+                        display_dir = pane_path.replace(os.path.expanduser("~"), "~")
+                if display_dir:
+                    line_text += f" {display_dir}"
+
+                # Current window marker
+                if sess == current_session and win_idx == current_win_idx:
+                    line_text += " ◀"
+
+                sel_idx = len(self.tree_lines)
+                self.tree_selectable.append(sel_idx)
+                self.tree_lines.append((1, line_text, curses.color_pair(color_pair), win_target))
+
+                # Multi-pane: show panes if window has more than one
+                panes_raw = tmux_cmd(
+                    "list-panes", "-t", win_target, "-F",
+                    "#{pane_id}\t#{pane_current_path}\t#{pane_width}x#{pane_height}"
+                )
+                if panes_raw:
+                    panes = panes_raw.strip().split("\n")
+                    if len(panes) > 1:
+                        w_cont = f"{s_cont}    " if is_last_win else f"{s_cont}│   "
+                        for pi, pline in enumerate(panes):
+                            pparts = pline.split("\t")
+                            if len(pparts) < 3:
+                                continue
+                            pane_id, pane_path, pane_size = pparts
+                            is_last_pane = pi == len(panes) - 1
+                            p_prefix = f"{w_cont}└── " if is_last_pane else f"{w_cont}├── "
+                            pane_dir = pane_path.replace(os.path.expanduser("~"), "~")
+                            pane_text = f"{p_prefix}{pane_id} ({pane_size}) {pane_dir}"
+                            self.tree_lines.append((2, pane_text, curses.color_pair(C_DIM), None))
+
+    def _render_tree(self, stdscr):
+        try:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+
+            self._addstr(stdscr, 0, 2, "Tree View  (d=dashboard, q=quit)", curses.color_pair(C_DIM))
+
+            # Build set of selected line indices for fast lookup
+            sel_line_set = set()
+            sel_line_idx = -1
+            if self.tree_selectable and 0 <= self.tree_selected < len(self.tree_selectable):
+                sel_line_idx = self.tree_selectable[self.tree_selected]
+                sel_line_set.add(sel_line_idx)
+
+            # Scrolling: ensure selected line is visible
+            visible_lines = height - 2  # header + footer margin
+            scroll_offset = 0
+            if sel_line_idx >= 0:
+                if sel_line_idx >= scroll_offset + visible_lines:
+                    scroll_offset = sel_line_idx - visible_lines + 1
+                if sel_line_idx < scroll_offset:
+                    scroll_offset = sel_line_idx
+
+            for i, (indent, text, attr, wt) in enumerate(self.tree_lines):
+                row = i - scroll_offset + 1
+                if row < 1:
+                    continue
+                if row >= height - 1:
+                    break
+                is_sel = i in sel_line_set
+                prefix = "▶ " if is_sel else "  "
+                self._addstr(stdscr, row, 0, prefix, curses.A_BOLD if is_sel else 0)
+                self._addstr(stdscr, row, 2, text, attr | (curses.A_BOLD if is_sel else 0))
+
+            stdscr.refresh()
+        except curses.error:
+            pass
+
+    def _handle_tree_key(self, key, stdscr):
+        n = len(self.tree_selectable)
+
+        if key in (curses.KEY_UP, ord("k")):
+            if n > 0:
+                self.tree_selected = (self.tree_selected - 1) % n
+        elif key in (curses.KEY_DOWN, ord("j")):
+            if n > 0:
+                self.tree_selected = (self.tree_selected + 1) % n
+        elif key in (curses.KEY_ENTER, 10, 13):
+            if n > 0:
+                idx = self.tree_selectable[self.tree_selected]
+                _, _, _, wt = self.tree_lines[idx]
+                if wt:
+                    target_session = wt.split(":")[0]
+                    session = get_session()
+                    if target_session != session:
+                        tmux_cmd("switch-client", "-t", target_session)
+                    tmux_cmd("select-window", "-t", wt)
+                    return "attached"
+        elif key in (ord("d"), ord("D")):
+            self.mode = "dashboard"
+        elif key in (ord("q"), ord("Q"), 27):
+            return "quit"
+
+        return ""
+
+    # ─── Menu mode ───
+
+    def _render_menu(self, stdscr):
+        try:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+
+            self._addstr(stdscr, 0, 2, "Menu  (d=dashboard, q=quit)", curses.color_pair(C_DIM))
+
+            for i, (label, action) in enumerate(self.menu_items):
+                row = i + 2
+                if row >= height - 1:
+                    break
+                is_sel = i == self.menu_selected
+                prefix = "  ▶ " if is_sel else "    "
+                attr = curses.A_BOLD if is_sel else 0
+                self._addstr(stdscr, row, 0, f"{prefix}{label}", attr)
+
+            stdscr.refresh()
+        except curses.error:
+            pass
+
+    def _handle_menu_key(self, key, stdscr):
+        n = len(self.menu_items)
+
+        if key in (curses.KEY_UP, ord("k")):
+            self.menu_selected = (self.menu_selected - 1) % n
+        elif key in (curses.KEY_DOWN, ord("j")):
+            self.menu_selected = (self.menu_selected + 1) % n
+        elif key in (curses.KEY_ENTER, 10, 13):
+            _, action = self.menu_items[self.menu_selected]
+            if action == "add":
+                self._do_add(stdscr)
+            elif action == "save":
+                self._do_save(stdscr)
+            elif action == "load":
+                name = self._prompt(stdscr, "Snapshot name: ")
+                if name:
+                    ccm_bin = os.path.join(CCM_ROOT, "ccm")
+                    subprocess.run([ccm_bin, "snapshot", "load", name],
+                                   capture_output=True, timeout=30)
+                    self._trigger_rebuild()
+            elif action == "dashboard":
+                self.mode = "dashboard"
+            elif action == "tree":
+                self.mode = "tree"
+                self._build_tree()
+            elif action == "quit":
+                return "quit"
+        elif key in (ord("d"), ord("D")):
+            self.mode = "dashboard"
+        elif key in (ord("q"), ord("Q"), 27):
+            return "quit"
+
+        return ""
+
+
+# ─── PID file management ───
+
+def acquire_pidfile():
+    pidfile = os.path.join(CCM_TMP_DIR, "dashboard.pid")
+    os.makedirs(CCM_TMP_DIR, exist_ok=True)
+    # Kill existing
+    if os.path.exists(pidfile):
+        try:
+            old_pid = int(open(pidfile).read().strip())
+            if old_pid != os.getpid():
+                os.kill(old_pid, signal.SIGTERM)
+                time.sleep(0.2)
+                try:
+                    os.kill(old_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        except (ProcessLookupError, ValueError, PermissionError, OSError):
+            pass
+    with open(pidfile, "w") as f:
+        f.write(str(os.getpid()))
+    return pidfile
+
+
+def main():
+    # Parse --mode argument
+    mode = "dashboard"
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--mode" and i < len(sys.argv):
+            mode = sys.argv[i + 1]
+            break
+        elif arg.startswith("--mode="):
+            mode = arg.split("=", 1)[1]
+            break
+
+    pidfile = acquire_pidfile()
+    try:
+        dashboard = Dashboard(initial_mode=mode)
+        curses.wrapper(dashboard.run)
+    finally:
+        try:
+            os.unlink(pidfile)
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    main()

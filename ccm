@@ -100,7 +100,11 @@ case "${1:-help}" in
         ccm_tree
         ;;
     tree-interactive|ti)
-        ccm_tree_interactive
+        if command -v python3 &>/dev/null; then
+            python3 "$CCM_ROOT/lib/dashboard.py" --mode tree
+        else
+            ccm_tree_interactive
+        fi
         ;;
     ports)
         ccm_ports
@@ -111,7 +115,11 @@ case "${1:-help}" in
         ;;
     dashboard|dash|d)
         ccm_check_deps
-        ccm_dashboard
+        if command -v python3 &>/dev/null; then
+            python3 "$CCM_ROOT/lib/dashboard.py"
+        else
+            ccm_dashboard
+        fi
         ;;
     statusline|sl)
         ccm_statusline
@@ -154,7 +162,11 @@ case "${1:-help}" in
         ;;
     menu)
         ccm_check_deps
-        ccm_menu
+        if command -v python3 &>/dev/null; then
+            python3 "$CCM_ROOT/lib/dashboard.py" --mode menu
+        else
+            ccm_menu
+        fi
         ;;
     pane-title|pt)
         ccm_pane_title "${2:-}"

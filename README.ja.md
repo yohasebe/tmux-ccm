@@ -41,6 +41,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 ## 動作要件
 
 - tmux 3.2+（popup対応）
+- Python 3.9+（macOSおよび主要なLinuxディストリビューションに標準搭載）
 - [TPM](https://github.com/tmux-plugins/tpm)（プラグインインストール用。手動インストールも可）
 - jq
 - fzf
@@ -106,18 +107,17 @@ ccm init
 
 ### キーバインド
 
-| キー | 動作 |
-|------|------|
-| `prefix + Tab` | ダッシュボードをトグル |
-| `prefix + T` | ツリービューをトグル |
-| `prefix + C` | ccmメニューを開く |
+| キー | 動作 | デフォルト |
+|------|------|-----------|
+| `prefix + Tab` | ダッシュボードをトグル | 有効 |
+| `prefix + T` | ツリービューをトグル | 無効（オプトイン） |
+| `prefix + C` | ccmメニューを開く | 無効（オプトイン） |
 
-`~/.tmux.conf` でカスタマイズ可能：
+他のプラグインとの競合を避けるため、ダッシュボードのみデフォルトで有効です。ツリービューとメニューを有効にするには `~/.tmux.conf` に追加してください：
 
 ```tmux
-set -g @ccm-key-dashboard "Tab"
-set -g @ccm-key-menu "C"
-set -g @ccm-key-tree "T"
+set -g @ccm-key-menu "C"        # 任意: prefix + C でメニュー
+set -g @ccm-key-tree "T"        # 任意: prefix + T でツリービュー
 ```
 
 > **重要:** すべての `set -g @ccm-*` オプションは、ccmプラグインが読み込まれるよりも**前に** `~/.tmux.conf` で設定する必要があります。`source-file` 行（手動インストール）およびTPMの `run` 行（TPMインストール）よりも前に配置してください。プラグインは読み込み時にこれらのオプションを参照するため、後に配置された設定は反映されません。

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **Dashboard rewritten in Python (curses)** for dramatically improved key responsiveness
+  - Background thread for state refresh (UI never blocks)
+  - Integrated tree view (`t`) and menu (`m`) modes within the same process
+  - Scrolling support for large project lists
+- Tree and menu keybindings (`prefix + T`, `prefix + C`) now opt-in to avoid plugin conflicts
 - Dashboard sorts projects by state priority (PERMIT > DONE > BUSY > IDLE > SHELL), then by most recent activity within each group
 - Idle auto-exit: Claude Code sessions exit after 5 minutes idle to free resources (`@ccm-idle-timeout`)
 - Unified Claude Code launch command to `claude --continue` (was `--resume` for new windows)

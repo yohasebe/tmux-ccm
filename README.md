@@ -41,6 +41,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 ## Requirements
 
 - tmux 3.2+ (popup support required)
+- Python 3.9+ (standard on macOS and most Linux distributions)
 - [TPM](https://github.com/tmux-plugins/tpm) (for plugin installation; or use manual install)
 - jq
 - fzf
@@ -106,18 +107,17 @@ This guides you through hooks installation, auto-restore, and status bar configu
 
 ### Keybindings
 
-| Key | Action |
-|-----|--------|
-| `prefix + Tab` | Toggle dashboard popup |
-| `prefix + T` | Toggle tree view popup |
-| `prefix + C` | Open ccm menu |
+| Key | Action | Default |
+|-----|--------|---------|
+| `prefix + Tab` | Toggle dashboard popup | Enabled |
+| `prefix + T` | Toggle tree view popup | Disabled (opt-in) |
+| `prefix + C` | Open ccm menu | Disabled (opt-in) |
 
-Customize keys in `~/.tmux.conf`:
+Only the dashboard keybinding is enabled by default to avoid conflicts with other plugins. To enable tree view and menu keybindings, add to `~/.tmux.conf`:
 
 ```tmux
-set -g @ccm-key-dashboard "Tab"
-set -g @ccm-key-menu "C"
-set -g @ccm-key-tree "T"
+set -g @ccm-key-menu "C"        # optional: enable prefix + C for menu
+set -g @ccm-key-tree "T"        # optional: enable prefix + T for tree view
 ```
 
 > **Important:** All `set -g @ccm-*` options must be placed **before** the ccm plugin loads in `~/.tmux.conf` — that means before both the `source-file` line (manual install) and the TPM `run` line (TPM install). The plugin reads these options at load time, so settings placed after will not take effect.

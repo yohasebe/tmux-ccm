@@ -11,24 +11,28 @@ CCM_KEY_MENU=$(tmux show-option -gqv @ccm-key-menu 2>/dev/null)
 CCM_KEY_TREE=$(tmux show-option -gqv @ccm-key-tree 2>/dev/null)
 
 CCM_KEY_DASHBOARD="${CCM_KEY_DASHBOARD:-Tab}"
-CCM_KEY_MENU="${CCM_KEY_MENU:-C}"
-CCM_KEY_TREE="${CCM_KEY_TREE:-T}"
 
 # Temp dir setup command (used in run-shell for session detection)
 _session_cmd='mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"'
 
-# Keybindings
+# Keybindings — only dashboard is bound by default (Tab rarely conflicts)
+# Menu and tree are opt-in via @ccm-key-menu / @ccm-key-tree to avoid
+# conflicts with other plugins (e.g., tmux-sessionist binds C).
 tmux bind-key "$CCM_KEY_DASHBOARD" \
     run-shell "$_session_cmd" \\\; \
     display-popup -E -w 80% -h 60% -T " ccm Dashboard " "$CCM_BIN dashboard"
 
-tmux bind-key "$CCM_KEY_MENU" \
-    run-shell "$_session_cmd" \\\; \
-    display-popup -E -w 80% -h 60% -T " ccm Menu " "$CCM_BIN menu"
+if [[ -n "$CCM_KEY_MENU" ]]; then
+    tmux bind-key "$CCM_KEY_MENU" \
+        run-shell "$_session_cmd" \\\; \
+        display-popup -E -w 80% -h 60% -T " ccm Menu " "$CCM_BIN menu"
+fi
 
-tmux bind-key "$CCM_KEY_TREE" \
-    run-shell "$_session_cmd" \\\; \
-    display-popup -E -w 80% -h 60% -T " ccm Tree " "$CCM_BIN tree-interactive"
+if [[ -n "$CCM_KEY_TREE" ]]; then
+    tmux bind-key "$CCM_KEY_TREE" \
+        run-shell "$_session_cmd" \\\; \
+        display-popup -E -w 80% -h 60% -T " ccm Tree " "$CCM_BIN tree-interactive"
+fi
 
 # Pane title display: show Claude Code's session description in pane borders
 # Controlled by @ccm-pane-title: "on" or "off" (default)
