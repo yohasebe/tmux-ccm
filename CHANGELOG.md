@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Snapshot restore no longer auto-starts Claude Code (SHELL state, starts on window switch)
 
 ### Fixed
+- Restore desktop notifications for PERMIT/DONE state transitions (lost during Python rewrite)
+- Restore Tab path completion in dashboard add-project prompt (lost during Python rewrite)
+- Tree mode now auto-starts Claude Code when attaching to SHELL-state windows
 - Snapshot load only restoring the first project due to `set -e` catching false condition in autosave guard
 - Restore mouse click on status bar ccm icon to open dashboard (mode 0)
 - Dashboard sort now works on macOS default bash 3.2 (removed `local -n` nameref dependency)
