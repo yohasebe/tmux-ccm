@@ -396,7 +396,7 @@ class Dashboard:
                 pass
 
     def _do_add(self, stdscr):
-        directory = self._prompt(stdscr, "Directory: ")
+        directory = self._prompt(stdscr, "Directory: ", path_completion=True)
         if not directory:
             return
         directory = os.path.expanduser(directory)
@@ -485,22 +485,28 @@ class Dashboard:
             self.projects = projects
             self.data_dirty = True
 
-    def _prompt(self, stdscr, prompt_text):
-        """Show prompt, return input string. Returns None on Escape."""
+    def _prompt(self, stdscr, prompt_text, path_completion=False):
+        """Show prompt, return input string. Returns None on Escape.
+        If path_completion=True, Tab key completes file/directory paths.
+        """
         curses.curs_set(1)
-        curses.echo()
         height, width = stdscr.getmaxyx()
         row = height - 1
-        stdscr.move(row, 0)
-        stdscr.clrtoeol()
-        self._addstr(stdscr, row, 0, f"  {prompt_text}", curses.color_pair(C_DIM))
-        stdscr.refresh()
-
-        # Read input character by character
-        curses.noecho()
-        buf = ""
-        col = 2 + len(prompt_text)
+        prompt_col = 2 + len(prompt_text)
         stdscr.timeout(-1)  # Block for input
+
+        buf = ""
+        col = prompt_col
+
+        def _redraw():
+            stdscr.move(row, 0)
+            stdscr.clrtoeol()
+            self._addstr(stdscr, row, 0, f"  {prompt_text}", curses.color_pair(C_DIM))
+            self._addstr(stdscr, row, prompt_col, buf, 0)
+            stdscr.move(row, prompt_col + len(buf))
+
+        _redraw()
+        stdscr.refresh()
 
         while True:
             ch = stdscr.getch()
@@ -515,21 +521,76 @@ class Dashboard:
             elif ch in (curses.KEY_BACKSPACE, 127, 8):
                 if buf:
                     buf = buf[:-1]
-                    col -= 1
-                    stdscr.move(row, col)
-                    stdscr.addch(" ")
-                    stdscr.move(row, col)
+                    _redraw()
+                    stdscr.refresh()
+            elif ch == 9 and path_completion:  # Tab
+                buf = self._complete_path(buf, stdscr, row, prompt_col)
+                _redraw()
+                stdscr.refresh()
             elif 32 <= ch <= 126:
                 buf += chr(ch)
-                try:
-                    stdscr.addch(row, col, ch)
-                except curses.error:
-                    pass
-                col += 1
+                _redraw()
+                stdscr.refresh()
 
         stdscr.timeout(50)
         curses.curs_set(0)
         return buf
+
+    def _complete_path(self, text, stdscr, row, prompt_col):
+        """Complete file/directory path from text. Returns completed text."""
+        expanded = os.path.expanduser(text)
+
+        if os.path.isdir(expanded) and not expanded.endswith("/"):
+            return text + "/"
+
+        parent = os.path.dirname(expanded) or "."
+        prefix = os.path.basename(expanded)
+
+        try:
+            entries = os.listdir(parent)
+        except OSError:
+            return text
+
+        # Filter matching entries
+        matches = sorted([e for e in entries if e.startswith(prefix)])
+        if not matches:
+            return text
+
+        if len(matches) == 1:
+            completed = os.path.join(os.path.dirname(text), matches[0])
+            # Re-add ~ prefix if original had it
+            if text.startswith("~"):
+                completed = "~/" + os.path.relpath(
+                    os.path.join(parent, matches[0]),
+                    os.path.expanduser("~")
+                )
+            if os.path.isdir(os.path.expanduser(completed)):
+                completed += "/"
+            return completed
+
+        # Multiple matches: find common prefix
+        common = os.path.commonprefix(matches)
+        if len(common) > len(prefix):
+            completed = os.path.join(os.path.dirname(text), common)
+            if text.startswith("~"):
+                completed = "~/" + os.path.relpath(
+                    os.path.join(parent, common),
+                    os.path.expanduser("~")
+                )
+            return completed
+
+        # Show candidates on the line above
+        height, width = stdscr.getmaxyx()
+        display_row = row - 1
+        if display_row >= 0:
+            candidates = "  ".join(matches[:10])
+            if len(matches) > 10:
+                candidates += f"  (+{len(matches) - 10} more)"
+            stdscr.move(display_row, 0)
+            stdscr.clrtoeol()
+            self._addstr(stdscr, display_row, 2, candidates, curses.color_pair(C_DIM))
+
+        return text
 
     def _show_message(self, stdscr, msg, duration=1):
         height, _ = stdscr.getmaxyx()
