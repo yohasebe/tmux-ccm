@@ -811,7 +811,7 @@ class Dashboard:
         """Build menu items dynamically with current setting values."""
         # Status bar mode
         mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "0"
-        mode_labels = {"0": "Icon only", "1": "Window list", "2": "Dedicated line"}
+        mode_labels = {"0": "Minimal", "1": "Window list", "2": "Dedicated line"}
         mode_label = mode_labels.get(mode, mode)
 
         # Auto-restore
@@ -897,7 +897,7 @@ class Dashboard:
                                    capture_output=True, timeout=30)
                     self._trigger_rebuild()
             elif action == "status_mode":
-                val = self._prompt(stdscr, "Status bar mode [0]=Icon  [1]=Window list  [2]=Dedicated line: ")
+                val = self._prompt(stdscr, "Status bar mode [0]=Minimal  [1]=Window list  [2]=Dedicated line: ")
                 if val in ("0", "1", "2"):
                     tmux_cmd("set", "-g", "@ccm-status-line", val)
                     self._build_menu()
