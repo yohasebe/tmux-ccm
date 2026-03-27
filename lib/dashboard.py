@@ -790,6 +790,12 @@ class Dashboard:
                 idx = self.tree_selectable[self.tree_selected]
                 _, _, _, wt = self.tree_lines[idx]
                 if wt:
+                    # Auto-start Claude for ccm SHELL windows
+                    with self.lock:
+                        for p in self.projects:
+                            if p.win_target == wt and p.state == "SHELL":
+                                tmux_cmd("send-keys", "-t", wt, CLAUDE_CMD, "Enter")
+                                break
                     target_session = wt.split(":")[0]
                     session = get_session()
                     if target_session != session:

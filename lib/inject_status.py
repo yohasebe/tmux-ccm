@@ -14,7 +14,7 @@ from ccm_core import (
     CCM_ROOT, CCM_TMP_DIR, CCM_SNAPSHOT_DIR,
     STATE_ICONS, STATE_PRIORITY,
     tmux_cmd, build_project_list, update_window_names,
-    auto_exit_idle, periodic_autosave,
+    auto_exit_idle, periodic_autosave, notify,
 )
 
 # tmux status bar color map
@@ -174,6 +174,12 @@ def _inject_status_impl():
 
     # Always update window name icons
     update_window_names(projects)
+
+    # Desktop notifications on state transitions
+    for p in projects:
+        prev = tmux_cmd("show-option", "-wqv", "-t", p.win_target, "@ccm_prev_state")
+        if p.state != prev and p.state in ("PERMIT", "DONE"):
+            notify(p.state, p.name)
 
     # Periodic autosave
     periodic_autosave()

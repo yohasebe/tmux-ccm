@@ -488,6 +488,54 @@ def hooks_configured():
         return False
 
 
+# ─── Desktop notifications ───
+
+def notify(state, project):
+    """Send desktop notification for state changes.
+    Controlled by @ccm-notify tmux option: off, permit, done, permit,done, all.
+    """
+    setting = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "off"
+    if setting == "off":
+        return
+
+    state_lower = state.lower()
+    if setting != "all" and state_lower not in setting:
+        return
+
+    sound_setting = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "on"
+
+    messages = {
+        "PERMIT": (f"ccm ⚠ {project}",
+                   "Action required — switch to this project and respond to the permission prompt",
+                   "Basso" if sound_setting == "on" else ""),
+        "DONE":   (f"ccm ✔ {project}",
+                   "Claude has finished responding — review the output when ready",
+                   ""),
+        "BUSY":   (f"ccm ◉ {project}",
+                   "Claude is now processing your request",
+                   ""),
+        "IDLE":   (f"ccm {project}",
+                   "Waiting for your input",
+                   ""),
+    }
+
+    if state not in messages:
+        return
+
+    title, body, sound = messages[state]
+    try:
+        sound_opt = f' sound name "{sound}"' if sound else ""
+        cmd = f'display notification "{body}" with title "{title}"{sound_opt}'
+        subprocess.Popen(["osascript", "-e", cmd],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except FileNotFoundError:
+        try:
+            subprocess.Popen(["notify-send", title, body],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            pass
+
+
 # ─── Window name update ───
 
 def update_window_names(projects):
