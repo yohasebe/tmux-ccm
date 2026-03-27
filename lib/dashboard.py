@@ -55,14 +55,7 @@ class Dashboard:
         self.tree_selected = 0
         self.tree_selectable = []  # indices into tree_lines that are selectable
         # Menu mode state
-        self.menu_items = [
-            ("Add project", "add"),
-            ("Save snapshot", "save"),
-            ("Load snapshot", "load"),
-            ("Dashboard", "dashboard"),
-            ("Tree view", "tree"),
-            ("Quit", "quit"),
-        ]
+        self.menu_items = []  # Built dynamically by _build_menu()
         self.menu_selected = 0
 
     def run(self, stdscr):
@@ -85,6 +78,8 @@ class Dashboard:
         self.projects = build_project_list(fast=True)
         if self.mode == "tree":
             self._build_tree()
+        elif self.mode == "menu":
+            self._build_menu()
         self._render_current(stdscr)
 
         # Start background refresh
@@ -336,6 +331,7 @@ class Dashboard:
             self._build_tree()
         elif key in (ord("m"), ord("M")):
             self.mode = "menu"
+            self._build_menu()
             self.menu_selected = 0
 
         return ""
@@ -811,6 +807,37 @@ class Dashboard:
 
     # ─── Menu mode ───
 
+    def _build_menu(self):
+        """Build menu items dynamically with current setting values."""
+        # Status bar mode
+        mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "0"
+        mode_labels = {"0": "Icon only", "1": "Window list", "2": "Dedicated line"}
+        mode_label = mode_labels.get(mode, mode)
+
+        # Auto-restore
+        auto_restore = tmux_cmd("show-option", "-gqv", "@ccm-auto-restore") or "off"
+
+        # Idle timeout
+        idle_str = tmux_cmd("show-option", "-gqv", "@ccm-idle-timeout")
+        if idle_str:
+            idle_label = f"{idle_str} min"
+        else:
+            idle_label = f"{IDLE_EXIT_TIMEOUT // 60} min (default)"
+
+        self.menu_items = [
+            ("Add project", "add"),
+            ("Save snapshot", "save"),
+            ("Load snapshot", "load"),
+            ("", ""),  # separator
+            (f"Status bar mode: {mode_label}", "status_mode"),
+            (f"Auto-restore: {auto_restore}", "auto_restore"),
+            (f"Idle timeout: {idle_label}", "idle_timeout"),
+            ("", ""),  # separator
+            ("Dashboard", "dashboard"),
+            ("Tree view", "tree"),
+            ("Quit", "quit"),
+        ]
+
     def _render_menu(self, stdscr):
         try:
             stdscr.erase()
@@ -818,30 +845,48 @@ class Dashboard:
 
             self._addstr(stdscr, 0, 2, "Menu  (d=dashboard, q=quit)", curses.color_pair(C_DIM))
 
+            row = 2
             for i, (label, action) in enumerate(self.menu_items):
-                row = i + 2
                 if row >= height - 1:
                     break
+                if action == "":
+                    # Separator
+                    row += 1
+                    continue
                 is_sel = i == self.menu_selected
                 prefix = "  ▶ " if is_sel else "    "
                 attr = curses.A_BOLD if is_sel else 0
                 self._addstr(stdscr, row, 0, f"{prefix}{label}", attr)
+                row += 1
 
             stdscr.refresh()
         except curses.error:
             pass
 
     def _handle_menu_key(self, key, stdscr):
-        n = len(self.menu_items)
+        # Skip separators when navigating
+        selectable = [i for i, (_, a) in enumerate(self.menu_items) if a != ""]
+        n = len(selectable)
+        if n == 0:
+            return ""
+
+        def _cur_sel_idx():
+            try:
+                return selectable.index(self.menu_selected)
+            except ValueError:
+                return 0
 
         if key in (curses.KEY_UP, ord("k")):
-            self.menu_selected = (self.menu_selected - 1) % n
+            idx = (_cur_sel_idx() - 1) % n
+            self.menu_selected = selectable[idx]
         elif key in (curses.KEY_DOWN, ord("j")):
-            self.menu_selected = (self.menu_selected + 1) % n
+            idx = (_cur_sel_idx() + 1) % n
+            self.menu_selected = selectable[idx]
         elif key in (curses.KEY_ENTER, 10, 13):
             _, action = self.menu_items[self.menu_selected]
             if action == "add":
                 self._do_add(stdscr)
+                self._build_menu()
             elif action == "save":
                 self._do_save(stdscr)
             elif action == "load":
@@ -851,6 +896,28 @@ class Dashboard:
                     subprocess.run([ccm_bin, "snapshot", "load", name],
                                    capture_output=True, timeout=30)
                     self._trigger_rebuild()
+            elif action == "status_mode":
+                self._cycle_setting(
+                    "@ccm-status-line",
+                    [("0", "Icon only"), ("1", "Window list"), ("2", "Dedicated line")],
+                    stdscr,
+                )
+            elif action == "auto_restore":
+                self._cycle_setting(
+                    "@ccm-auto-restore",
+                    [("on", "on"), ("off", "off")],
+                    stdscr,
+                )
+            elif action == "idle_timeout":
+                val = self._prompt(stdscr, "Idle timeout (minutes, 0=disabled): ")
+                if val is not None:
+                    try:
+                        minutes = int(val)
+                        if minutes >= 0:
+                            tmux_cmd("set", "-g", "@ccm-idle-timeout", str(minutes))
+                            self._build_menu()
+                    except ValueError:
+                        self._show_message(stdscr, "Invalid number", 1)
             elif action == "dashboard":
                 self.mode = "dashboard"
             elif action == "tree":
@@ -864,6 +931,20 @@ class Dashboard:
             return "quit"
 
         return ""
+
+    def _cycle_setting(self, option, values, stdscr):
+        """Cycle a tmux option through a list of (value, label) pairs."""
+        current = tmux_cmd("show-option", "-gqv", option) or values[0][0]
+        current_idx = 0
+        for i, (val, _) in enumerate(values):
+            if val == current:
+                current_idx = i
+                break
+        next_idx = (current_idx + 1) % len(values)
+        next_val, next_label = values[next_idx]
+        tmux_cmd("set", "-g", option, next_val)
+        self._build_menu()
+        self._show_message(stdscr, f"Set to: {next_label}", 0.5)
 
 
 # ─── PID file management ───
