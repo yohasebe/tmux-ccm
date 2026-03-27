@@ -897,17 +897,16 @@ class Dashboard:
                                    capture_output=True, timeout=30)
                     self._trigger_rebuild()
             elif action == "status_mode":
-                self._cycle_setting(
-                    "@ccm-status-line",
-                    [("0", "Icon only"), ("1", "Window list"), ("2", "Dedicated line")],
-                    stdscr,
-                )
+                val = self._prompt(stdscr, "Status bar mode [0]=Icon  [1]=Window list  [2]=Dedicated line: ")
+                if val in ("0", "1", "2"):
+                    tmux_cmd("set", "-g", "@ccm-status-line", val)
+                    self._build_menu()
             elif action == "auto_restore":
-                self._cycle_setting(
-                    "@ccm-auto-restore",
-                    [("on", "on"), ("off", "off")],
-                    stdscr,
-                )
+                current = tmux_cmd("show-option", "-gqv", "@ccm-auto-restore") or "off"
+                new_val = "off" if current == "on" else "on"
+                tmux_cmd("set", "-g", "@ccm-auto-restore", new_val)
+                self._build_menu()
+                self._show_message(stdscr, f"Auto-restore: {new_val}", 0.5)
             elif action == "idle_timeout":
                 val = self._prompt(stdscr, "Idle timeout (minutes, 0=disabled): ")
                 if val is not None:
@@ -932,19 +931,7 @@ class Dashboard:
 
         return ""
 
-    def _cycle_setting(self, option, values, stdscr):
-        """Cycle a tmux option through a list of (value, label) pairs."""
-        current = tmux_cmd("show-option", "-gqv", option) or values[0][0]
-        current_idx = 0
-        for i, (val, _) in enumerate(values):
-            if val == current:
-                current_idx = i
-                break
-        next_idx = (current_idx + 1) % len(values)
-        next_val, next_label = values[next_idx]
-        tmux_cmd("set", "-g", option, next_val)
-        self._build_menu()
-        self._show_message(stdscr, f"Set to: {next_label}", 0.5)
+
 
 
 # ─── PID file management ───
