@@ -176,10 +176,30 @@ def _inject_status_impl():
     update_window_names(projects)
 
     # Desktop notifications on state transitions
-    for p in projects:
-        prev = tmux_cmd("show-option", "-wqv", "-t", p.win_target, "@ccm_prev_state")
-        if p.state != prev and p.state in ("PERMIT", "DONE"):
-            notify(p.state, p.name)
+    # Read previous states BEFORE build_project_list overwrites them
+    # (build_project_list already ran above, so we use a cache file approach)
+    notify_cache = os.path.join(CCM_TMP_DIR, "notify-cache")
+    prev_states = {}
+    try:
+        if os.path.exists(notify_cache):
+            with open(notify_cache) as f:
+                for line in f:
+                    parts = line.strip().split("\t", 1)
+                    if len(parts) == 2:
+                        prev_states[parts[0]] = parts[1]
+    except OSError:
+        pass
+
+    # Write current states and check for transitions
+    try:
+        with open(notify_cache, "w") as f:
+            for p in projects:
+                f.write(f"{p.win_target}\t{p.state}\n")
+                prev = prev_states.get(p.win_target, "")
+                if p.state != prev and p.state in ("PERMIT", "DONE"):
+                    notify(p.state, p.name)
+    except OSError:
+        pass
 
     # Periodic autosave
     periodic_autosave()

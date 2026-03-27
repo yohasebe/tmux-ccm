@@ -19,7 +19,7 @@ from ccm_core import (
     read_cache_file, build_project_list, format_elapsed, format_dir, hooks_configured,
 )
 
-REFRESH_INTERVAL = 3
+REFRESH_INTERVAL = 2
 
 # Color pair IDs (curses-specific, stay in dashboard.py)
 C_PERMIT = 1
