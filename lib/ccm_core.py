@@ -238,8 +238,13 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
             hook_age = now - hook_ts
 
             if raw == "IDLE":
+                # PERMIT signal from Notification hook (most reliable)
+                if hook_state == "PERMIT" and hook_age < HOOK_TIMEOUT:
+                    _set_win_state(win_target, "PERMIT")
+                    return "PERMIT", done_flag, last_done_ts
+
                 if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT:
-                    # Always check for PERMIT — user action is needed
+                    # Check for PERMIT via capture-pane (fallback for older hook configs)
                     bottom = capture_pane_bottom(win_target)
                     for line in bottom:
                         if PATTERN_PERMIT.search(line):
@@ -477,7 +482,8 @@ def hooks_configured():
             content = f.read()
         return ("on-prompt-submit.sh" in content
                 and "on-stop.sh" in content
-                and "on-pre-tool-use.sh" in content)
+                and "on-pre-tool-use.sh" in content
+                and "on-notification.sh" in content)
     except OSError:
         return False
 
