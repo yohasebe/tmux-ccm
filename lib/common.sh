@@ -480,6 +480,10 @@ _ccm_strip_hooks() {
                 .hooks.PreToolUse[]? |
                 select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
             ] |
+            .hooks.SubagentStart = [
+                .hooks.SubagentStart[]? |
+                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
+            ] |
             .hooks.Notification = [
                 .hooks.Notification[]? |
                 select(.hooks | any(.command | test("on-notification\\.sh")) | not)
@@ -487,6 +491,7 @@ _ccm_strip_hooks() {
             if (.hooks.UserPromptSubmit | length) == 0 then del(.hooks.UserPromptSubmit) else . end |
             if (.hooks.Stop | length) == 0 then del(.hooks.Stop) else . end |
             if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end |
+            if (.hooks.SubagentStart | length) == 0 then del(.hooks.SubagentStart) else . end |
             if (.hooks.Notification | length) == 0 then del(.hooks.Notification) else . end |
             if (.hooks | length) == 0 then del(.hooks) else . end
         else . end
@@ -569,10 +574,12 @@ ccm_setup_hooks() {
         .hooks.UserPromptSubmit //= [] |
         .hooks.Stop //= [] |
         .hooks.PreToolUse //= [] |
+        .hooks.SubagentStart //= [] |
         .hooks.Notification //= [] |
         .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $prompt_cmd, "timeout": $timeout}]}] |
         .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
         .hooks.PreToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
+        .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.Notification += [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
                                 {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]}]
     ') || ccm_die "Failed to update settings JSON"
