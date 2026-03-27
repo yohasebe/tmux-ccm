@@ -13,7 +13,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ccm_core import (
     CCM_ROOT, CCM_TMP_DIR, CCM_SNAPSHOT_DIR, CCM_GIT_CACHE_DIR, CCM_PORT_CACHE_DIR,
-    DONE_TIMEOUT, HOOK_TIMEOUT,
+    DONE_TIMEOUT, HOOK_TIMEOUT, IDLE_EXIT_TIMEOUT,
     STATE_PRIORITY, STATE_ICONS, CLAUDE_CMD,
     tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
     read_cache_file, build_project_list, format_elapsed, format_dir, hooks_configured,
