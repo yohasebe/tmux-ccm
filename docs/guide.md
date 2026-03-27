@@ -143,14 +143,17 @@ Install hooks for the best detection accuracy:
 ccm setup-hooks
 ```
 
-This adds two hooks to `~/.claude/settings.json`:
+This adds hooks to `~/.claude/settings.json`:
 
 | Hook | Signal | Detects |
 |------|--------|---------|
 | `UserPromptSubmit` | BUSY | Prompt submitted → Claude is processing (including text generation) |
+| `PreToolUse` | BUSY | Tool execution starting (solves multi-turn detection gap) |
+| `SubagentStart` | BUSY | Subagent spawned (Agent tool) |
 | `Stop` | DONE | Claude finished responding |
+| `Notification` | PERMIT / DONE | Permission prompt shown / idle notification |
 
-Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE: 30s).
+Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE/PERMIT: 30s).
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
@@ -161,9 +164,9 @@ To remove: `ccm remove-hooks`
 | State | Method | Details |
 |-------|--------|---------|
 | **SHELL** | Process check | No `claude` process found among window's child processes |
-| **BUSY** | Hook signal / Process tree | Hook: UserPromptSubmit fired. Fallback: `claude` has child processes (tools) |
+| **BUSY** | Hook / Process tree | Hooks: UserPromptSubmit, PreToolUse, SubagentStart. Fallback: `claude` has child processes |
 | **IDLE** | Process tree | `claude` process exists but has no children, no fresh hook signal |
-| **PERMIT** | Screen capture | Last 8 lines contain permission keywords ("Do you want", "Allow", etc.) |
+| **PERMIT** | Hook / Screen capture | Hook: Notification (permission_prompt). Fallback: screen text contains permission keywords |
 | **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |
 
 ### Detection without hooks

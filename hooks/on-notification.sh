@@ -40,7 +40,8 @@ case "$NOTIFY_TYPE" in
         printf '%s PERMIT' "$NOW" > "${HOOK_DIR}/${KEY}"
         ;;
     idle_prompt)
-        # Only write DONE if not already BUSY (avoid overwriting active work signal)
+        # Write DONE (may also be written by on-stop.sh — harmless, same effect)
+        # Only write if not already BUSY (avoid overwriting active work signal)
         SIGNAL_FILE="${HOOK_DIR}/${KEY}"
         if [[ -f "$SIGNAL_FILE" ]]; then
             EXISTING=$(cat "$SIGNAL_FILE" 2>/dev/null)

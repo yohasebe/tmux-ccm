@@ -143,14 +143,17 @@ ccmはClaude Codeフック（推奨）とプロセスツリー検査を組み合
 ccm setup-hooks
 ```
 
-`~/.claude/settings.json` に2つのフックが追加されます：
+`~/.claude/settings.json` にフックが追加されます：
 
 | フック | 信号 | 検出内容 |
 |--------|------|----------|
 | `UserPromptSubmit` | BUSY | プロンプト送信 → Claude処理中（テキスト生成含む） |
+| `PreToolUse` | BUSY | ツール実行開始（マルチターンの検出ギャップを解消） |
+| `SubagentStart` | BUSY | サブエージェント起動（Agentツール） |
 | `Stop` | DONE | Claude応答完了 |
+| `Notification` | PERMIT / DONE | 許可プロンプト表示 / アイドル通知 |
 
-フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE: 30秒）。
+フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE/PERMIT: 30秒）。
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
@@ -161,9 +164,9 @@ ccm setup-hooks
 | 状態 | 検出方法 | 詳細 |
 |------|----------|------|
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
-| **BUSY** | フック信号 / プロセスツリー | フック: UserPromptSubmit発火。フォールバック: `claude` が子プロセスを持つ（ツール実行中） |
+| **BUSY** | フック / プロセスツリー | フック: UserPromptSubmit, PreToolUse, SubagentStart。フォールバック: `claude` が子プロセスを持つ |
 | **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし、新鮮なフック信号なし |
-| **PERMIT** | 画面キャプチャ | 末尾8行に許可キーワード（"Do you want", "Allow" 等）を検出 |
+| **PERMIT** | フック / 画面キャプチャ | フック: Notification（permission_prompt）。フォールバック: 画面に許可キーワードを検出 |
 | **DONE** | フック信号 / 状態遷移 | フック: Stop発火。フォールバック: BUSY/PERMIT → IDLE遷移を検出 |
 
 ### フックなしでの検出

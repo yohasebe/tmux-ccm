@@ -258,10 +258,13 @@ ccm setup-hooks
 ```
 
 This adds hooks to `~/.claude/settings.json` that signal state changes:
-- **UserPromptSubmit** → Marks BUSY when you submit a prompt (detects text generation)
-- **Stop** → Marks DONE when Claude finishes responding
+- **UserPromptSubmit** → BUSY when you submit a prompt (detects text generation)
+- **PreToolUse** → BUSY when a tool starts executing (solves multi-turn detection gap)
+- **SubagentStart** → BUSY when a subagent is spawned
+- **Stop** → DONE when Claude finishes responding
+- **Notification** → PERMIT when permission is needed, DONE on idle notification
 
-Without hooks, ccm uses process tree inspection which cannot detect text generation (appears as IDLE). Hooks are optional — ccm works without them but with reduced detection accuracy.
+Without hooks, ccm uses process tree inspection which cannot detect text generation or permission prompts reliably. Hooks are optional — ccm works without them but with reduced detection accuracy.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
