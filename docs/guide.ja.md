@@ -166,7 +166,7 @@ ccm setup-hooks
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
 | **BUSY** | フック / プロセスツリー | フック: UserPromptSubmit, PreToolUse, SubagentStart。フォールバック: `claude` が子プロセスを持つ |
 | **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし、新鮮なフック信号なし |
-| **PERMIT** | フック / 画面キャプチャ | フック: Notification（permission_prompt）。フォールバック: 画面に許可キーワードを検出 |
+| **PERMIT** | フックのみ | Notificationフック（permission_prompt）。`ccm setup-hooks` が必要 |
 | **DONE** | フック信号 / 状態遷移 | フック: Stop発火。フォールバック: BUSY/PERMIT → IDLE遷移を検出 |
 
 ### フックなしでの検出

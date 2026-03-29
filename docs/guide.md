@@ -166,7 +166,7 @@ To remove: `ccm remove-hooks`
 | **SHELL** | Process check | No `claude` process found among window's child processes |
 | **BUSY** | Hook / Process tree | Hooks: UserPromptSubmit, PreToolUse, SubagentStart. Fallback: `claude` has child processes |
 | **IDLE** | Process tree | `claude` process exists but has no children, no fresh hook signal |
-| **PERMIT** | Hook / Screen capture | Hook: Notification (permission_prompt). Fallback: screen text contains permission keywords |
+| **PERMIT** | Hook only | Notification hook (permission_prompt). Requires `ccm setup-hooks` |
 | **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |
 
 ### Detection without hooks
