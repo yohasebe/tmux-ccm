@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Autosave and auto-exit unreachable in status bar mode 1/2 (moved before mode-specific branches)
 - Autosave project check now scans all sessions (was current session only)
 - Deduplicate capture-pane calls: window-level captures now happen at most once per detection cycle
+- False PERMIT from capture-pane matching "approve" in tip text — PERMIT now hook-only
+- Status bar notifications not detecting state transitions (notify-cache file fix)
+- PERMIT→BUSY transition not detected when prev_state was BUSY
 
 ### Added
 - `ccm init` interactive setup wizard (hooks, auto-restore, status bar mode in one step)

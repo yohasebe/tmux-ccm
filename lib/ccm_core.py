@@ -477,6 +477,41 @@ def hooks_configured():
         return False
 
 
+def save_tmux_conf_setting(setting):
+    """Persist a tmux setting to ~/.tmux.conf (before ccm/TPM load lines).
+    setting: e.g., 'set -g @ccm-auto-restore on'
+    """
+    conf = os.path.expanduser("~/.tmux.conf")
+    parts = setting.split()
+    if len(parts) < 3:
+        return
+    key = parts[2]  # e.g., "@ccm-auto-restore"
+
+    try:
+        lines = []
+        if os.path.exists(conf):
+            with open(conf) as f:
+                lines = f.readlines()
+
+        # Remove existing lines with this key
+        lines = [l for l in lines if key not in l]
+
+        # Find earliest ccm/TPM load line
+        insert_at = len(lines)
+        for i, l in enumerate(lines):
+            if "source-file" in l and "ccm" in l:
+                insert_at = min(insert_at, i)
+            if l.strip().startswith("run") and "tpm" in l.lower():
+                insert_at = min(insert_at, i)
+
+        lines.insert(insert_at, setting + "\n")
+
+        with open(conf, "w") as f:
+            f.writelines(lines)
+    except OSError:
+        pass
+
+
 # ─── Desktop notifications ───
 
 def notify(state, project):

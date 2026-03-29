@@ -61,6 +61,11 @@ ccm_add() {
 
     ccm_info "Added project: $name ($dir)"
 
+    # Warn if hooks not installed (PERMIT detection requires hooks)
+    if ! ccm_hooks_configured; then
+        ccm_warn "Hooks not installed. Run 'ccm setup-hooks' for accurate state detection."
+    fi
+
     # Trigger immediate autosave so the new project is captured
     # Skip during snapshot load to avoid overwriting the source snapshot
     if [[ -z "${_CCM_LOADING_SNAPSHOT:-}" ]]; then

@@ -16,7 +16,8 @@ from ccm_core import (
     DONE_TIMEOUT, HOOK_TIMEOUT, IDLE_EXIT_TIMEOUT,
     STATE_PRIORITY, STATE_ICONS, CLAUDE_CMD,
     tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
-    read_cache_file, build_project_list, format_elapsed, format_dir, hooks_configured,
+    read_cache_file, build_project_list, format_elapsed, format_dir,
+    hooks_configured, save_tmux_conf_setting,
 )
 
 REFRESH_INTERVAL = 2
@@ -900,11 +901,13 @@ class Dashboard:
                 val = self._prompt(stdscr, "Status bar mode [0]=Minimal  [1]=Window list  [2]=Dedicated line: ")
                 if val in ("0", "1", "2"):
                     tmux_cmd("set", "-g", "@ccm-status-line", val)
+                    save_tmux_conf_setting(f"set -g @ccm-status-line {val}")
                     self._build_menu()
             elif action == "auto_restore":
                 current = tmux_cmd("show-option", "-gqv", "@ccm-auto-restore") or "off"
                 new_val = "off" if current == "on" else "on"
                 tmux_cmd("set", "-g", "@ccm-auto-restore", new_val)
+                save_tmux_conf_setting(f"set -g @ccm-auto-restore {new_val}")
                 self._build_menu()
                 self._show_message(stdscr, f"Auto-restore: {new_val}", 0.5)
             elif action == "idle_timeout":
@@ -914,6 +917,7 @@ class Dashboard:
                         minutes = int(val)
                         if minutes >= 0:
                             tmux_cmd("set", "-g", "@ccm-idle-timeout", str(minutes))
+                            save_tmux_conf_setting(f"set -g @ccm-idle-timeout {minutes}")
                             self._build_menu()
                     except ValueError:
                         self._show_message(stdscr, "Invalid number", 1)
