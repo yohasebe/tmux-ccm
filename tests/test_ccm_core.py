@@ -178,8 +178,8 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_busy_to_permit_transition(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=BUSY + PERMIT text + prev_state=BUSY → PERMIT (capture-pane fallback)."""
+    def test_hook_busy_stays_busy_even_with_permit_text(self, mock_hook, mock_tmux):
+        """raw=IDLE + hook=BUSY → BUSY (PERMIT now detected by Notification hook, not capture-pane)."""
         mock_hook.return_value = (int(time.time()), "BUSY")
         mock_tmux.return_value = "Do you want to proceed?\n  1. Yes\n  2. No"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
@@ -188,7 +188,7 @@ class TestDetectWindowStateHooks:
         state, _, _ = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "BUSY", "", 0, panes, ps, "99999"
         )
-        assert state == "PERMIT"
+        assert state == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")

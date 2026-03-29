@@ -27,7 +27,7 @@ HOOK_TIMEOUT = 300
 IDLE_EXIT_TIMEOUT = 300  # 5 minutes default
 
 PATTERN_PERMIT = re.compile(
-    r"(Do you want|Allow|yes.*no|y/n|approve|Would you like|Esc to cancel)",
+    r"(Do you want to|Allow .+ to|yes.*no|y/n|Would you like|Esc to cancel)",
     re.IGNORECASE,
 )
 PATTERN_INPUT_PROMPT = re.compile(r"^❯\s")
@@ -244,12 +244,9 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
                     return "PERMIT", done_flag, last_done_ts
 
                 if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT:
-                    # Check for PERMIT via capture-pane (fallback for older hook configs)
-                    bottom = capture_pane_bottom(win_target)
-                    for line in bottom:
-                        if PATTERN_PERMIT.search(line):
-                            _set_win_state(win_target, "PERMIT")
-                            return "PERMIT", done_flag, last_done_ts
+                    # PERMIT is now detected by Notification hook (writes PERMIT signal)
+                    # No capture-pane fallback needed — avoids false positives from
+                    # Claude Code UI text (e.g., "pre-approve" in tips)
                     _set_win_state(win_target, "BUSY")
                     return "BUSY", done_flag, last_done_ts
 
