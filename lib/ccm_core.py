@@ -26,10 +26,7 @@ DONE_TIMEOUT = 30
 HOOK_TIMEOUT = 300
 IDLE_EXIT_TIMEOUT = 300  # 5 minutes default
 
-PATTERN_PERMIT = re.compile(
-    r"(Do you want to|Allow .+ to|yes.*no|y/n|Would you like|Esc to cancel)",
-    re.IGNORECASE,
-)
+# PERMIT is detected by Notification(permission_prompt) hook — no text pattern needed
 PATTERN_INPUT_PROMPT = re.compile(r"^❯\s")
 # Accept-edits prompt: ❯❯ or ⏵⏵ (Claude Code may use either, with optional leading spaces)
 PATTERN_ACCEPT_EDITS = re.compile(r"^\s*[❯⏵]{2}")
@@ -175,10 +172,9 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid):
         return "SHELL"
 
     if has_children(claude_pid, ps_lines, own_pgid):
+        # PERMIT is detected by Notification hook (not capture-pane text matching)
+        # Check if input prompt visible → background workers, not tool execution
         bottom = capture_pane_bottom(pane_target)
-        for line in bottom:
-            if PATTERN_PERMIT.search(line):
-                return "PERMIT"
         for line in bottom:
             if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
                 return "IDLE"
@@ -283,12 +279,8 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
     # Note: the old "safety net" (no prompt → BUSY) has been removed because
     # it caused frequent false BUSY from ambiguous screen content. We now trust
     # the process tree (raw state) + hook signals as the primary detection.
-    if raw == "IDLE":
-        bottom = capture_pane_bottom(win_target)
-        permit_visible = any(PATTERN_PERMIT.search(l) for l in bottom)
-        if permit_visible:
-            _set_win_state(win_target, "PERMIT")
-            return "PERMIT", done_flag, last_done_ts
+    # PERMIT is detected exclusively by Notification(permission_prompt) hook.
+    # No capture-pane text matching — avoids false positives from UI text.
 
     _set_win_state(win_target, raw)
     return raw, done_flag, last_done_ts

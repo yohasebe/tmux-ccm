@@ -37,7 +37,8 @@ CCM_POPUP_HEIGHT="60%"
 # These are the ONLY place where Claude Code output text is matched.
 # Process name used to find claude in the process tree.
 CCM_CLAUDE_PROCESS_NAME="claude"
-# Screen text pattern for permission prompts (grep -Ei compatible)
+# LEGACY: Screen text pattern for permission prompts (grep -Ei compatible)
+# Python version (ccm_core.py) uses Notification hook instead of text matching
 CCM_PATTERN_PERMIT='(Do you want|Allow|yes.*no|y\/n|approve|Would you like|Esc to cancel)'
 # Claude Code input prompt pattern (visible when IDLE, absent during PERMIT)
 # Note: Claude Code uses ❯ (U+276F) followed by non-breaking space (U+00A0)

@@ -94,12 +94,13 @@ class TestDetectPaneState:
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
-    def test_permit_with_children_and_permit_text(self, mock_tmux):
+    def test_busy_with_children_permit_text_ignored(self, mock_tmux):
+        """PERMIT is detected by hook, not capture-pane. Children + any text = BUSY."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
         )
         mock_tmux.return_value = "Do you want to allow this?\n  Yes    No"
-        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
     def test_idle_with_children_and_input_prompt(self, mock_tmux):
@@ -136,15 +137,15 @@ class TestDetectWindowRaw:
         assert ccm_core.detect_window_raw("0:1", [], [], "99999") == "DOWN"
 
     @patch("ccm_core.tmux_cmd")
-    def test_permit_takes_priority(self, mock_tmux):
+    def test_busy_takes_priority_over_idle(self, mock_tmux):
+        """PERMIT is hook-only; pane with children = BUSY, takes priority over IDLE."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node"),
             (101, 1, 101, "bash"), (201, 101, 101, "claude"),
         )
-        # First pane: PERMIT, second pane: IDLE
-        mock_tmux.return_value = "Do you want to allow?\n  Yes  No"
+        mock_tmux.return_value = "Processing..."
         panes = [("0:1", "100", "%0"), ("0:1", "101", "%1")]
-        assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "PERMIT"
+        assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
 
 
 # ─── detect_window_state with hooks ───
@@ -261,8 +262,8 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_no_prompt_with_permit_text_returns_permit(self, mock_hook, mock_tmux):
-        """PERMIT detection still works without safety net BUSY."""
+    def test_no_hook_no_capture_permit(self, mock_hook, mock_tmux):
+        """Without hook signal, PERMIT text on screen does NOT trigger PERMIT (hook-only detection)."""
         mock_hook.return_value = None
         mock_tmux.return_value = "Do you want to allow this?\n  Yes  No"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
@@ -271,7 +272,7 @@ class TestDetectWindowStateHooks:
         state, _, _ = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
         )
-        assert state == "PERMIT"
+        assert state == "IDLE"
 
 
 # ─── Formatting helpers ───
