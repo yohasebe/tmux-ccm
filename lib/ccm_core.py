@@ -26,13 +26,33 @@ DONE_TIMEOUT = 30
 HOOK_TIMEOUT = 300
 IDLE_EXIT_TIMEOUT = 300  # 5 minutes default
 
-# PERMIT is detected by Notification(permission_prompt) hook — no text pattern needed
-PATTERN_INPUT_PROMPT = re.compile(r"^❯\s")
-# Accept-edits prompt: ❯❯ or ⏵⏵ (Claude Code may use either, with optional leading spaces)
-PATTERN_ACCEPT_EDITS = re.compile(r"^\s*[❯⏵]{2}")
+# ─── Claude Code UI patterns (update when Claude Code UI changes) ───
+# These are the ONLY place where Claude Code's terminal output is matched.
+# If detection breaks after a Claude Code update, check these first.
+# See: https://github.com/anthropics/claude-code
 
+# Input prompt characters (single character followed by space = idle prompt)
+_PROMPT_CHARS = "❯"
+# Accept-edits prompt characters (doubled = accept-edits mode)
+_ACCEPT_CHARS = "❯⏵"
+PATTERN_INPUT_PROMPT = re.compile(rf"^[{_PROMPT_CHARS}]\s")
+PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
+
+# Claude Code process name in `ps` output
 CLAUDE_PROCESS_NAME = "claude"
+# Processes that are always children of Claude Code and should be ignored
+# when checking for meaningful child processes (tool execution).
+IGNORED_CHILDREN = {"caffeinate"}
+
 CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
+
+# Hook script filenames (single source of truth for hooks_configured checks)
+HOOK_SCRIPTS = [
+    "on-prompt-submit.sh",
+    "on-stop.sh",
+    "on-pre-tool-use.sh",
+    "on-notification.sh",
+]
 
 STATE_PRIORITY = {"PERMIT": 0, "DONE": 1, "BUSY": 2, "IDLE": 3, "SHELL": 4, "DOWN": 5}
 STATE_ICONS = {
@@ -114,21 +134,40 @@ def touch_popup_session():
 
 
 # ─── Hook signal ───
+# Signal file format: "<unix_timestamp> <STATE> [extra_fields...]"
+# - Fields are space-separated; first two are required
+# - STATE: one of BUSY, DONE, PERMIT
+# - Extra fields are reserved for future use and ignored by current code
+# Written by: hooks/on-prompt-submit.sh, hooks/on-pre-tool-use.sh,
+#             hooks/on-stop.sh, hooks/on-notification.sh
 
-def read_hook_signal(project_dir):
-    """Read hook signal file. Returns (timestamp, state) or None."""
+VALID_HOOK_STATES = {"BUSY", "DONE", "PERMIT"}
+
+
+def _resolve_project_dir(project_dir):
+    """Expand and resolve a project directory path."""
     expanded = os.path.expanduser(project_dir.replace("~", os.path.expanduser("~")))
     try:
         expanded = os.path.realpath(expanded)
     except OSError:
         pass
-    cache_key = md5_hash(expanded)
-    hook_file = os.path.join(CCM_HOOK_DIR, cache_key)
+    return expanded
+
+
+def _hook_signal_path(project_dir):
+    """Get the hook signal file path for a project directory."""
+    expanded = _resolve_project_dir(project_dir)
+    return os.path.join(CCM_HOOK_DIR, md5_hash(expanded))
+
+
+def read_hook_signal(project_dir):
+    """Read hook signal file. Returns (timestamp, state) or None."""
+    hook_file = _hook_signal_path(project_dir)
     try:
         with open(hook_file) as f:
             content = f.read().strip()
-        parts = content.split(" ", 1)
-        if len(parts) == 2:
+        parts = content.split()
+        if len(parts) >= 2 and parts[1] in VALID_HOOK_STATES:
             return int(parts[0]), parts[1]
     except (OSError, ValueError):
         pass
@@ -151,7 +190,7 @@ def has_children(pid, ps_lines, own_pgid):
         if len(parts) >= 4 and parts[1] == str(pid):
             if parts[2] == str(own_pgid):
                 continue
-            if parts[3] == "caffeinate":
+            if parts[3] in IGNORED_CHILDREN:
                 continue
             return True
     return False
@@ -247,11 +286,8 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
                     return "BUSY", done_flag, last_done_ts
 
                 if hook_state == "DONE" and hook_age < DONE_TIMEOUT:
-                    bottom = capture_pane_bottom(win_target)
-                    prompt_visible = any(PATTERN_INPUT_PROMPT.match(l) for l in bottom)
-                    if not prompt_visible:
-                        _set_win_state(win_target, "BUSY")
-                        return "BUSY", done_flag, last_done_ts
+                    # Trust the DONE hook signal — no capture-pane verification needed.
+                    # The Notification(idle_prompt) also writes DONE, providing redundancy.
                     _set_win_state(win_target, "DONE", done=hook_ts, last_done=hook_ts)
                     return "DONE", str(hook_ts), hook_ts
 
@@ -469,10 +505,7 @@ def hooks_configured():
     try:
         with open(settings_file) as f:
             content = f.read()
-        return ("on-prompt-submit.sh" in content
-                and "on-stop.sh" in content
-                and "on-pre-tool-use.sh" in content
-                and "on-notification.sh" in content)
+        return all(script in content for script in HOOK_SCRIPTS)
     except OSError:
         return False
 

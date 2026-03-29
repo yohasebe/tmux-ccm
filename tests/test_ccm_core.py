@@ -207,17 +207,17 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_idle_plus_hook_done_no_prompt_returns_busy(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=DONE + no prompt → BUSY (safety net)."""
+    def test_idle_plus_hook_done_trusted(self, mock_hook, mock_tmux):
+        """raw=IDLE + hook=DONE → DONE (trust hook, no capture-pane verification)."""
         mock_hook.return_value = (int(time.time()), "DONE")
-        mock_tmux.return_value = "Thinking..."
+        mock_tmux.return_value = ""  # capture-pane not called
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
 
         state, _, _ = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
         )
-        assert state == "BUSY"
+        assert state == "DONE"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
