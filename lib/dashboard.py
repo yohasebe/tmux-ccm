@@ -118,8 +118,10 @@ class Dashboard:
         if self.mode == "dashboard":
             self.render(stdscr)
         elif self.mode == "tree":
+            self._render_max_col = 0  # Full width for tree/menu
             self._render_tree(stdscr)
         elif self.mode == "menu":
+            self._render_max_col = 0
             self._render_menu(stdscr)
 
     def _dispatch_key(self, key, stdscr):
@@ -170,20 +172,20 @@ class Dashboard:
 
     def _render_preview(self, stdscr, start_col, start_row, panel_width, panel_height):
         """Render preview panel at the specified position."""
+        height, width = stdscr.getmaxyx()
         # Draw vertical separator
         for r in range(start_row, start_row + panel_height):
-            self._addstr(stdscr, r, start_col, "│", curses.color_pair(C_DIM))
+            self._addstr(stdscr, r, start_col, "│", curses.color_pair(C_DIM), max_col=width)
 
         # Preview content
         lines = self.preview_cache.split("\n") if self.preview_cache else []
-        # Show tail of content (most recent)
         visible = lines[-(panel_height):]
         content_col = start_col + 2
         for i, line in enumerate(visible):
             r = start_row + i
             if r >= start_row + panel_height:
                 break
-            self._addstr(stdscr, r, content_col, line, curses.color_pair(C_DIM))
+            self._addstr(stdscr, r, content_col, line, curses.color_pair(C_DIM), max_col=width)
 
     def render(self, stdscr):
         try:
@@ -201,6 +203,9 @@ class Dashboard:
                     preview_col = list_width
                 elif self.preview_position == "bottom":
                     pass  # Bottom mode: handled after list rendering
+
+            # Store list width for _addstr clipping in list area
+            self._render_max_col = list_width if preview_width > 0 else 0
 
             row = 0
 
@@ -293,7 +298,7 @@ class Dashboard:
 
                     # Directory (truncated to fit)
                     if p.dir:
-                        dir_str = format_dir(p.dir, col + 1, width)
+                        dir_str = format_dir(p.dir, col + 1, list_width if preview_width > 0 else width)
                         if dir_str:
                             self._addstr(stdscr, row + 1, col, " ", 0)
                             col += 1
@@ -338,16 +343,19 @@ class Dashboard:
         except curses.error:
             pass
 
-    def _addstr(self, stdscr, y, x, text, attr=0):
-        """Safe addstr that doesn't crash on boundary."""
+    def _addstr(self, stdscr, y, x, text, attr=0, max_col=0):
+        """Safe addstr that doesn't crash on boundary.
+        max_col: if >0, clip text to this column. Falls back to _render_max_col
+        for automatic clipping in split-pane layout."""
         try:
             height, width = stdscr.getmaxyx()
             if y < 0 or y >= height or x >= width:
                 return
-            max_len = width - x - 1
-            if max_len <= 0:
+            effective_max = max_col or getattr(self, '_render_max_col', 0) or width
+            limit = effective_max - x - 1
+            if limit <= 0:
                 return
-            stdscr.addnstr(y, x, text, max_len, attr)
+            stdscr.addnstr(y, x, text, limit, attr)
         except curses.error:
             pass
 
