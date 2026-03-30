@@ -350,19 +350,40 @@ class Dashboard:
         except curses.error:
             pass
 
+    @staticmethod
+    def _display_width(text):
+        """Calculate display width accounting for wide (CJK) characters."""
+        import unicodedata
+        w = 0
+        for c in text:
+            w += 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+        return w
+
+    @staticmethod
+    def _truncate_to_width(text, max_width):
+        """Truncate text to fit within max_width display columns."""
+        import unicodedata
+        w = 0
+        for i, c in enumerate(text):
+            cw = 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+            if w + cw > max_width:
+                return text[:i]
+            w += cw
+        return text
+
     def _addstr(self, stdscr, y, x, text, attr=0, max_col=0):
-        """Safe addstr that doesn't crash on boundary.
-        max_col: if >0, clip text to this column. Falls back to _render_max_col
-        for automatic clipping in split-pane layout."""
+        """Safe addstr that handles wide characters and boundary clipping.
+        max_col: if >0, clip text to this column. Falls back to _render_max_col."""
         try:
             height, width = stdscr.getmaxyx()
             if y < 0 or y >= height or x >= width:
                 return
             effective_max = max_col or getattr(self, '_render_max_col', 0) or width
-            limit = effective_max - x - 1
-            if limit <= 0:
+            avail = effective_max - x - 1
+            if avail <= 0:
                 return
-            stdscr.addnstr(y, x, text, limit, attr)
+            clipped = self._truncate_to_width(text, avail)
+            stdscr.addstr(y, x, clipped, attr)
         except curses.error:
             pass
 
