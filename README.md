@@ -304,6 +304,17 @@ Claude Code sessions that remain idle are automatically exited to free system re
 set -g @ccm-idle-timeout "5"     # minutes (default: 5, 0 to disable)
 ```
 
+### Dashboard Preview Panel
+
+Show a live preview of the selected project's terminal content alongside the project list:
+
+```tmux
+set -g @ccm-preview "on"              # default: off
+set -g @ccm-preview-position "right"  # or "bottom"
+```
+
+The preview updates when you move the cursor and refreshes automatically. ANSI colors (256-color and RGB) are rendered. Requires terminal width ≥ 80 columns. Can also be toggled from the dashboard menu (`m`).
+
 ## How It Works
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`

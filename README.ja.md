@@ -304,6 +304,17 @@ set -g @ccm-auto-restore "on"    # デフォルト: off
 set -g @ccm-idle-timeout "5"     # 分（デフォルト: 5、0で無効化）
 ```
 
+### ダッシュボードプレビューパネル
+
+選択中のプロジェクトのターミナル内容をプロジェクトリストの横にライブ表示します：
+
+```tmux
+set -g @ccm-preview "on"              # デフォルト: off
+set -g @ccm-preview-position "right"  # または "bottom"
+```
+
+カーソル移動で即座に更新され、自動リフレッシュもされます。ANSIカラー（256色、RGB）に対応。端末幅80列以上が必要です。ダッシュボードメニュー（`m`）からもトグル可能。
+
 ## 仕組み
 
 - プロジェクトはtmuxウィンドウの `@ccm_project` / `@ccm_dir` タグで管理

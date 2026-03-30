@@ -14,7 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `lib/inject_status.py`: Python replacement for bash inject-status
   - Python 3.9+ is now a hard requirement (bash fallback removed)
   - Integrated tree view (`t`) and menu (`m`) modes within dashboard
+  - Preview panel: live pane content alongside project list (`@ccm-preview on`)
+  - ANSI color rendering in preview (256-color and RGB support)
+  - Aligned column layout for project list
   - Scrolling support for large project lists
+  - CJK wide character display width handling
+- Hook scripts now update tmux window state instantly via `hooks/lib.sh` (no polling delay)
+- `PermissionRequest` hook for earlier PERMIT detection (fires before permission dialog)
 - Tree and menu keybindings (`prefix + T`, `prefix + C`) now opt-in to avoid plugin conflicts
 - Dashboard sorts projects by state priority (PERMIT > DONE > BUSY > IDLE > SHELL), then by most recent activity within each group
 - Idle auto-exit: Claude Code sessions exit after 5 minutes idle to free resources (`@ccm-idle-timeout`)
