@@ -3,11 +3,13 @@
 
 import curses
 import os
+import re
 import signal
 import subprocess
 import sys
 import threading
 import time
+import unicodedata
 
 # Add lib dir to path for ccm_core import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -60,6 +62,7 @@ class Dashboard:
         self.preview_enabled = preview_setting == "on"
         self.preview_position = tmux_cmd("show-option", "-gqv", "@ccm-preview-position") or "right"
         self.preview_cache = ""
+        self._preview_lines = []
         self._last_preview_target = ""
         # Menu mode state
         self.menu_items = []  # Built dynamically by _build_menu()
@@ -162,16 +165,54 @@ class Dashboard:
             projects = list(self.projects)
         if not projects or self.selected >= len(projects):
             self.preview_cache = ""
+            self._preview_lines = []
             return
         p = projects[self.selected]
-        if p.win_target == self._last_preview_target and self.preview_cache:
+        if p.win_target == self._last_preview_target and self._preview_lines:
             return  # Already cached for this target
         self._last_preview_target = p.win_target
-        raw = tmux_cmd("capture-pane", "-t", p.win_target, "-p", "-S", "-50")
+        # Capture with -e for ANSI escape sequences (color support)
+        raw = tmux_cmd("capture-pane", "-e", "-t", p.win_target, "-p", "-S", "-50")
         self.preview_cache = raw if raw else "(no content)"
+        self._preview_lines = self.preview_cache.split("\n") if self.preview_cache else []
+
+    # ANSI SGR to curses attribute mapping
+    _ANSI_RE = re.compile(r'\x1b\[([0-9;]*)m')
+
+    @staticmethod
+    def _ansi_to_curses_attr(codes):
+        """Convert ANSI SGR codes to curses attribute + color pair."""
+        attr = 0
+        fg = -1
+        for code in codes:
+            if code == 0:
+                attr = 0; fg = -1
+            elif code == 1:
+                attr |= curses.A_BOLD
+            elif code == 2:
+                attr |= curses.A_DIM
+            elif code == 4:
+                attr |= curses.A_UNDERLINE
+            elif code == 7:
+                attr |= curses.A_REVERSE
+            elif 30 <= code <= 37:
+                fg = code - 30
+            elif code == 39:
+                fg = -1
+            elif code == 38:
+                pass  # Extended color (handled by next codes in sequence)
+        # Map to a curses color pair (use pair 50+ to avoid collision)
+        if fg >= 0:
+            pair_id = 50 + fg
+            try:
+                curses.init_pair(pair_id, fg, -1)
+                attr |= curses.color_pair(pair_id)
+            except (curses.error, ValueError):
+                pass
+        return attr
 
     def _render_preview(self, stdscr, start_col, start_row, panel_width, panel_height):
-        """Render preview panel at the specified position."""
+        """Render preview panel with ANSI color support."""
         # Draw vertical separator
         for r in range(start_row, start_row + panel_height):
             try:
@@ -179,20 +220,42 @@ class Dashboard:
             except curses.error:
                 pass
 
-        # Preview content — clip each line to panel display width (CJK-aware)
-        lines = self.preview_cache.split("\n") if self.preview_cache else []
+        lines = getattr(self, '_preview_lines', [])
         visible = lines[-(panel_height):]
         content_col = start_col + 2
-        max_display_width = panel_width - 3  # separator + padding
+        max_w = panel_width - 3
+
         for i, line in enumerate(visible):
             r = start_row + i
             if r >= start_row + panel_height:
                 break
-            clipped = self._truncate_to_width(line, max_display_width)
-            try:
-                stdscr.addstr(r, content_col, clipped, curses.color_pair(C_DIM))
-            except curses.error:
-                pass
+
+            # Parse ANSI escape sequences and render with colors
+            col = content_col
+            display_used = 0
+            cur_attr = 0
+            pos = 0
+
+            while pos < len(line) and display_used < max_w:
+                m = self._ANSI_RE.match(line, pos)
+                if m:
+                    # Parse SGR codes
+                    code_str = m.group(1)
+                    codes = [int(c) for c in code_str.split(";") if c] if code_str else [0]
+                    cur_attr = self._ansi_to_curses_attr(codes)
+                    pos = m.end()
+                else:
+                    ch = line[pos]
+                    ch_w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+                    if display_used + ch_w > max_w:
+                        break
+                    try:
+                        stdscr.addstr(r, col, ch, cur_attr)
+                    except curses.error:
+                        pass
+                    col += ch_w
+                    display_used += ch_w
+                    pos += 1
 
     def render(self, stdscr):
         try:
@@ -247,6 +310,17 @@ class Dashboard:
                     scroll_offset = 0
                 self._scroll_offset = scroll_offset
 
+                # Calculate column widths for alignment
+                max_idx_w = max((len(p.win_idx) for p in projects), default=1) + 1  # "#N"
+                max_state_w = 8  # "● PERMIT" = 8
+                max_name_w = max((len(p.name) for p in projects), default=5)
+
+                # Fixed column positions
+                COL_IDX = 4       # after "  ▶ "
+                COL_STATE = COL_IDX + max_idx_w + 1
+                COL_NAME = COL_STATE + max_state_w + 1
+                COL_REST = COL_NAME + max_name_w + 1
+
                 for i, p in enumerate(projects):
                     if i < scroll_offset:
                         continue
@@ -254,62 +328,49 @@ class Dashboard:
                         break
 
                     is_selected = i == self.selected
+                    y = row + 1
+
+                    # Prefix
                     prefix = "  ▶ " if is_selected else "    "
+                    self._addstr(stdscr, y, 0, prefix, curses.color_pair(C_DIM))
 
-                    col = 0
-                    attr_bold = curses.A_BOLD if is_selected else 0
+                    # Window index (right-aligned in column)
+                    idx_str = f"#{p.win_idx}"
+                    self._addstr(stdscr, y, COL_IDX, idx_str, curses.color_pair(C_DIM))
 
-                    # Prefix + window index
-                    self._addstr(stdscr, row + 1, col, prefix, curses.color_pair(C_DIM))
-                    col += len(prefix)
-                    self._addstr(stdscr, row + 1, col, f"#{p.win_idx} ", curses.color_pair(C_DIM))
-                    col += len(f"#{p.win_idx} ")
-
-                    # State icon
+                    # State
                     state_cp = curses.color_pair(STATE_COLOR_PAIR.get(p.state, C_SHELL))
                     icon = STATE_ICONS.get(p.state, "?")
-                    state_text = f"{icon} {p.state}"
-                    self._addstr(stdscr, row + 1, col, state_text, state_cp)
-                    col += len(state_text)
+                    self._addstr(stdscr, y, COL_STATE, f"{icon} {p.state:<6}", state_cp)
 
                     # Project name
-                    self._addstr(stdscr, row + 1, col, "  ", 0)
-                    col += 2
                     name_attr = curses.A_BOLD if p.tagged else curses.color_pair(C_DIM)
-                    self._addstr(stdscr, row + 1, col, p.name, name_attr)
-                    col += len(p.name)
+                    self._addstr(stdscr, y, COL_NAME, p.name, name_attr)
+
+                    # Remaining info after name column
+                    col = COL_REST
 
                     # Branch
                     if p.branch:
-                        branch_str = f" ({p.branch})"
-                        self._addstr(stdscr, row + 1, col, " (", curses.color_pair(C_DIM))
-                        self._addstr(stdscr, row + 1, col + 2, p.branch, curses.color_pair(C_CYAN))
-                        self._addstr(stdscr, row + 1, col + 2 + len(p.branch), ")", curses.color_pair(C_DIM))
-                        col += len(branch_str)
-
-                    # Ports
-                    if p.ports:
-                        port_str = f" [:{p.ports}]"
-                        self._addstr(stdscr, row + 1, col, f" [:", curses.color_pair(C_DIM))
-                        self._addstr(stdscr, row + 1, col + 3, p.ports, curses.color_pair(C_YELLOW))
-                        self._addstr(stdscr, row + 1, col + 3 + len(p.ports), "]", curses.color_pair(C_DIM))
-                        col += len(port_str)
+                        self._addstr(stdscr, y, col, "(", curses.color_pair(C_DIM))
+                        self._addstr(stdscr, y, col + 1, p.branch, curses.color_pair(C_CYAN))
+                        self._addstr(stdscr, y, col + 1 + len(p.branch), ")", curses.color_pair(C_DIM))
+                        col += len(p.branch) + 3
 
                     # Elapsed time
                     elapsed = format_elapsed(p.last_done_ts)
                     if elapsed:
-                        self._addstr(stdscr, row + 1, col, " ✔ ", curses.color_pair(C_DONE))
-                        col += 3
-                        self._addstr(stdscr, row + 1, col, elapsed, curses.color_pair(C_DIM))
-                        col += len(elapsed)
+                        self._addstr(stdscr, y, col, "✔ ", curses.color_pair(C_DONE))
+                        col += 2
+                        self._addstr(stdscr, y, col, elapsed, curses.color_pair(C_DIM))
+                        col += len(elapsed) + 1
 
                     # Directory (truncated to fit)
                     if p.dir:
-                        dir_str = format_dir(p.dir, col + 1, list_width if preview_width > 0 else width)
+                        effective_w = list_width if preview_width > 0 else width
+                        dir_str = format_dir(p.dir, col, effective_w)
                         if dir_str:
-                            self._addstr(stdscr, row + 1, col, " ", 0)
-                            col += 1
-                            self._addstr(stdscr, row + 1, col, dir_str, curses.color_pair(C_DIM))
+                            self._addstr(stdscr, y, col, dir_str, curses.color_pair(C_DIM))
 
                     row += 1
 
@@ -353,7 +414,6 @@ class Dashboard:
     @staticmethod
     def _display_width(text):
         """Calculate display width accounting for wide (CJK) characters."""
-        import unicodedata
         w = 0
         for c in text:
             w += 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
@@ -362,7 +422,6 @@ class Dashboard:
     @staticmethod
     def _truncate_to_width(text, max_width):
         """Truncate text to fit within max_width display columns."""
-        import unicodedata
         w = 0
         for i, c in enumerate(text):
             cw = 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
