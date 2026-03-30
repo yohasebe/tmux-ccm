@@ -172,20 +172,27 @@ class Dashboard:
 
     def _render_preview(self, stdscr, start_col, start_row, panel_width, panel_height):
         """Render preview panel at the specified position."""
-        height, width = stdscr.getmaxyx()
         # Draw vertical separator
         for r in range(start_row, start_row + panel_height):
-            self._addstr(stdscr, r, start_col, "│", curses.color_pair(C_DIM), max_col=width)
+            try:
+                stdscr.addch(r, start_col, "│", curses.color_pair(C_DIM))
+            except curses.error:
+                pass
 
-        # Preview content
+        # Preview content — clip each line to panel width
         lines = self.preview_cache.split("\n") if self.preview_cache else []
         visible = lines[-(panel_height):]
         content_col = start_col + 2
+        max_chars = panel_width - 3  # separator + padding
         for i, line in enumerate(visible):
             r = start_row + i
             if r >= start_row + panel_height:
                 break
-            self._addstr(stdscr, r, content_col, line, curses.color_pair(C_DIM), max_col=width)
+            clipped = line[:max_chars] if len(line) > max_chars else line
+            try:
+                stdscr.addnstr(r, content_col, clipped, max_chars, curses.color_pair(C_DIM))
+            except curses.error:
+                pass
 
     def render(self, stdscr):
         try:
