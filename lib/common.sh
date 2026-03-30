@@ -477,6 +477,10 @@ _ccm_strip_hooks() {
                 .hooks.Stop[]? |
                 select(.hooks | any(.command | test("on-stop\\.sh")) | not)
             ] |
+            .hooks.StopFailure = [
+                .hooks.StopFailure[]? |
+                select(.hooks | any(.command | test("on-stop\\.sh")) | not)
+            ] |
             .hooks.PreToolUse = [
                 .hooks.PreToolUse[]? |
                 select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
@@ -491,6 +495,7 @@ _ccm_strip_hooks() {
             ] |
             if (.hooks.UserPromptSubmit | length) == 0 then del(.hooks.UserPromptSubmit) else . end |
             if (.hooks.Stop | length) == 0 then del(.hooks.Stop) else . end |
+            if (.hooks.StopFailure | length) == 0 then del(.hooks.StopFailure) else . end |
             if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end |
             if (.hooks.SubagentStart | length) == 0 then del(.hooks.SubagentStart) else . end |
             if (.hooks.Notification | length) == 0 then del(.hooks.Notification) else . end |
@@ -574,11 +579,13 @@ ccm_setup_hooks() {
         .hooks //= {} |
         .hooks.UserPromptSubmit //= [] |
         .hooks.Stop //= [] |
+        .hooks.StopFailure //= [] |
         .hooks.PreToolUse //= [] |
         .hooks.SubagentStart //= [] |
         .hooks.Notification //= [] |
         .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $prompt_cmd, "timeout": $timeout}]}] |
         .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
+        .hooks.StopFailure += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
         .hooks.PreToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.Notification += [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
@@ -588,7 +595,8 @@ ccm_setup_hooks() {
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "Claude Code hooks installed successfully."
     echo "  Settings: ${settings_file}"
-    echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, Stop → DONE, Notification → PERMIT/IDLE"
+    echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, SubagentStart → BUSY"
+    echo "         Stop/StopFailure → DONE, Notification → PERMIT/IDLE"
     echo ""
     echo "  Restart Claude Code to activate the hooks."
     echo "  To remove: ccm remove-hooks"
