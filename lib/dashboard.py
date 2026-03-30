@@ -455,7 +455,7 @@ class Dashboard:
 
                     row += 1
 
-            # Help line
+            # Help line — keys highlighted
             help_row = list_height - 3
             if help_row > row + 1:
                 if width >= 100:
@@ -464,7 +464,7 @@ class Dashboard:
                     help_text = "[↑↓] select [Enter] attach [a]dd [n]ame [r]emove e[x]it all [s]ave [m]enu [q] quit"
                 else:
                     help_text = "[↑↓] sel [⏎] go [a]dd [r]m [s]ave [q] quit"
-                self._addstr(stdscr, help_row, 2, help_text, curses.color_pair(C_DIM))
+                self._render_help_line(stdscr, help_row, 2, help_text)
 
             # Footer
             footer_row = list_height - 2
@@ -513,6 +513,30 @@ class Dashboard:
                 return text[:i]
             w += cw
         return text
+
+    def _render_help_line(self, stdscr, y, x, text):
+        """Render help text with [key] portions highlighted."""
+        col = x
+        in_bracket = False
+        dim = curses.color_pair(C_DIM)
+        bright = curses.color_pair(C_CYAN) | curses.A_BOLD
+        effective_max = getattr(self, '_render_max_col', 0)
+
+        for ch in text:
+            if effective_max and col >= effective_max - 1:
+                break
+            if ch == '[':
+                in_bracket = True
+                self._addstr(stdscr, y, col, ch, dim)
+                col += 1
+            elif ch == ']':
+                in_bracket = False
+                self._addstr(stdscr, y, col, ch, dim)
+                col += 1
+            else:
+                attr = bright if in_bracket else dim
+                self._addstr(stdscr, y, col, ch, attr)
+                col += 1
 
     def _addstr(self, stdscr, y, x, text, attr=0, max_col=0):
         """Safe addstr that handles wide characters and boundary clipping.
