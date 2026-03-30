@@ -20,11 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Idle auto-exit: Claude Code sessions exit after 5 minutes idle to free resources (`@ccm-idle-timeout`)
 - Unified Claude Code launch command to `claude --continue` (was `--resume` for new windows)
 - Add `claude` to dependency check (`ccm_check_deps`)
-- **Expanded hook coverage** — 5 Claude Code hooks for comprehensive state detection:
+- **Expanded hook coverage** — 7 Claude Code hooks for comprehensive state detection:
   - `UserPromptSubmit` → BUSY (user prompt)
   - `PreToolUse` → BUSY (tool execution start, solves multi-turn gap)
   - `SubagentStart` → BUSY (subagent spawned)
   - `Stop` → DONE (response complete)
+  - `StopFailure` → DONE (API error: rate limit, auth failure, etc.)
   - `Notification` → PERMIT (permission_prompt) / DONE (idle_prompt)
 - Safety net "no prompt → BUSY" heuristic removed; trust process tree + hooks
 - Snapshot restore no longer auto-starts Claude Code (SHELL state, starts on window switch)
