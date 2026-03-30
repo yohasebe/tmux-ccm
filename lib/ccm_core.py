@@ -276,6 +276,15 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
             if raw == "IDLE":
                 # PERMIT signal from Notification hook (most reliable)
                 if hook_state == "PERMIT" and hook_age < HOOK_TIMEOUT:
+                    # Check if user has responded since PERMIT was set
+                    # (window_activity > hook timestamp = user pressed a key)
+                    win_act = tmux_cmd("display-message", "-t", win_target, "-p", "#{window_activity}")
+                    try:
+                        if win_act and int(win_act) > hook_ts:
+                            _set_win_state(win_target, "BUSY")
+                            return "BUSY", done_flag, last_done_ts
+                    except ValueError:
+                        pass
                     _set_win_state(win_target, "PERMIT")
                     return "PERMIT", done_flag, last_done_ts
 

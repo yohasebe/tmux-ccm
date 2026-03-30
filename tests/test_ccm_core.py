@@ -167,8 +167,11 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
     def test_hook_permit_signal(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=PERMIT → PERMIT (via Notification hook, no capture-pane needed)."""
-        mock_hook.return_value = (int(time.time()), "PERMIT")
+        """raw=IDLE + hook=PERMIT + no user activity → PERMIT."""
+        hook_ts = int(time.time())
+        mock_hook.return_value = (hook_ts, "PERMIT")
+        # window_activity is older than hook timestamp (no user response yet)
+        mock_tmux.return_value = str(hook_ts - 5)
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
 
@@ -176,6 +179,22 @@ class TestDetectWindowStateHooks:
             "0:1", "/tmp/project", "BUSY", "", 0, panes, ps, "99999"
         )
         assert state == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_permit_to_busy_on_user_response(self, mock_hook, mock_tmux):
+        """raw=IDLE + hook=PERMIT + user activity after PERMIT → BUSY."""
+        hook_ts = int(time.time()) - 3
+        mock_hook.return_value = (hook_ts, "PERMIT")
+        # window_activity is newer than hook timestamp (user responded)
+        mock_tmux.return_value = str(hook_ts + 2)
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "PERMIT", "", 0, panes, ps, "99999"
+        )
+        assert state == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
