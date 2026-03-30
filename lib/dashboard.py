@@ -288,6 +288,49 @@ class Dashboard:
                     display_used += ch_w
                     pos += 1
 
+    def _render_preview_bottom(self, stdscr, start_row, panel_width, panel_height):
+        """Render preview panel at the bottom with horizontal separator."""
+        # Draw horizontal separator
+        sep_str = "─" * (panel_width - 1)
+        try:
+            stdscr.addstr(start_row, 0, sep_str, curses.color_pair(C_DIM))
+        except curses.error:
+            pass
+
+        lines = getattr(self, '_preview_lines', [])
+        visible = lines[-(panel_height - 1):]  # -1 for separator
+        max_w = panel_width - 2
+
+        for i, line in enumerate(visible):
+            r = start_row + 1 + i
+            if r >= start_row + panel_height:
+                break
+
+            col = 1
+            display_used = 0
+            cur_attr = 0
+            pos = 0
+
+            while pos < len(line) and display_used < max_w:
+                m = self._ANSI_RE.match(line, pos)
+                if m:
+                    code_str = m.group(1)
+                    codes = [int(c) for c in code_str.split(";") if c] if code_str else [0]
+                    cur_attr = self._ansi_to_curses_attr(codes)
+                    pos = m.end()
+                else:
+                    ch = line[pos]
+                    ch_w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+                    if display_used + ch_w > max_w:
+                        break
+                    try:
+                        stdscr.addstr(r, col, ch, cur_attr)
+                    except curses.error:
+                        pass
+                    col += ch_w
+                    display_used += ch_w
+                    pos += 1
+
     def render(self, stdscr):
         try:
             stdscr.erase()
@@ -296,14 +339,21 @@ class Dashboard:
             # Preview panel layout
             preview_width = 0
             preview_col = 0
+            preview_height = 0
+            preview_row = 0
             list_width = width
-            if self.preview_enabled and self.mode == "dashboard" and width >= 80:
-                if self.preview_position == "right":
+            list_height = height
+            if self.preview_enabled and self.mode == "dashboard":
+                if self.preview_position == "right" and width >= 80:
                     preview_width = min(width // 2, width - 40)
-                    list_width = width - preview_width - 1  # -1 for separator
+                    list_width = width - preview_width - 1
                     preview_col = list_width
-                elif self.preview_position == "bottom":
-                    pass  # Bottom mode: handled after list rendering
+                    preview_height = height - 1
+                elif self.preview_position == "bottom" and height >= 20:
+                    preview_height = min(height // 2, height - 10)
+                    list_height = height - preview_height - 1
+                    preview_row = list_height
+                    preview_width = width
 
             # Store list width for _addstr clipping in list area
             self._render_max_col = list_width if preview_width > 0 else 0
@@ -331,7 +381,7 @@ class Dashboard:
                 row += 3
             else:
                 # Scrolling: ensure selected project is visible
-                visible_lines = height - 4  # header + help + footer
+                visible_lines = list_height - 4  # header + help + footer
                 scroll_offset = getattr(self, '_scroll_offset', 0)
                 if self.selected >= scroll_offset + visible_lines:
                     scroll_offset = self.selected - visible_lines + 1
@@ -355,7 +405,7 @@ class Dashboard:
                 for i, p in enumerate(projects):
                     if i < scroll_offset:
                         continue
-                    if row >= height - 3:
+                    if row >= list_height - 3:
                         break
 
                     is_selected = i == self.selected
@@ -406,7 +456,7 @@ class Dashboard:
                     row += 1
 
             # Help line
-            help_row = height - 3
+            help_row = list_height - 3
             if help_row > row + 1:
                 if width >= 100:
                     help_text = "[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [n]ame  [r]emove  [s]ave  [t]ree  [m]enu  [q] quit"
@@ -417,7 +467,7 @@ class Dashboard:
                 self._addstr(stdscr, help_row, 2, help_text, curses.color_pair(C_DIM))
 
             # Footer
-            footer_row = height - 2
+            footer_row = list_height - 2
             if footer_row > row + 1:
                 footer_parts = []
                 # Last saved time
@@ -433,10 +483,13 @@ class Dashboard:
                 footer = "  ".join(footer_parts)
                 self._addstr(stdscr, footer_row, 2, footer, curses.color_pair(C_DIM))
 
-            # Preview panel (right side)
-            if preview_width > 0 and self.preview_position == "right":
+            # Preview panel
+            if preview_height > 0:
                 self._update_preview()
-                self._render_preview(stdscr, preview_col, 0, preview_width, height - 1)
+                if self.preview_position == "right":
+                    self._render_preview(stdscr, preview_col, 0, preview_width, preview_height)
+                elif self.preview_position == "bottom":
+                    self._render_preview_bottom(stdscr, preview_row, width, preview_height)
 
             stdscr.refresh()
         except curses.error:
