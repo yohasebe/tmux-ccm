@@ -179,36 +179,67 @@ class Dashboard:
     # ANSI SGR to curses attribute mapping
     _ANSI_RE = re.compile(r'\x1b\[([0-9;]*)m')
 
-    @staticmethod
-    def _ansi_to_curses_attr(codes):
-        """Convert ANSI SGR codes to curses attribute + color pair."""
+    # Cache for dynamically allocated curses color pairs
+    _color_pair_cache = {}
+    _next_pair_id = 50
+
+    @classmethod
+    def _get_color_pair(cls, fg):
+        """Get or create a curses color pair for a foreground color."""
+        if fg < 0:
+            return 0
+        if fg in cls._color_pair_cache:
+            return curses.color_pair(cls._color_pair_cache[fg])
+        pair_id = cls._next_pair_id
+        cls._next_pair_id += 1
+        try:
+            curses.init_pair(pair_id, fg, -1)
+            cls._color_pair_cache[fg] = pair_id
+            return curses.color_pair(pair_id)
+        except (curses.error, ValueError):
+            return 0
+
+    @classmethod
+    def _ansi_to_curses_attr(cls, codes):
+        """Convert ANSI SGR code list to curses attribute.
+        Handles: basic colors (30-37), 256-color (38;5;N), bold, dim, etc.
+        """
         attr = 0
         fg = -1
-        for code in codes:
-            if code == 0:
+        i = 0
+        while i < len(codes):
+            c = codes[i]
+            if c == 0:
                 attr = 0; fg = -1
-            elif code == 1:
+            elif c == 1:
                 attr |= curses.A_BOLD
-            elif code == 2:
+            elif c == 2:
                 attr |= curses.A_DIM
-            elif code == 4:
+            elif c == 4:
                 attr |= curses.A_UNDERLINE
-            elif code == 7:
+            elif c == 7:
                 attr |= curses.A_REVERSE
-            elif 30 <= code <= 37:
-                fg = code - 30
-            elif code == 39:
+            elif 30 <= c <= 37:
+                fg = c - 30
+            elif c == 39:
                 fg = -1
-            elif code == 38:
-                pass  # Extended color (handled by next codes in sequence)
-        # Map to a curses color pair (use pair 50+ to avoid collision)
+            elif c == 38:
+                # Extended foreground: 38;5;N (256-color) or 38;2;R;G;B (RGB)
+                if i + 1 < len(codes) and codes[i + 1] == 5:
+                    if i + 2 < len(codes):
+                        fg = codes[i + 2]  # 256-color index
+                        i += 2
+                elif i + 1 < len(codes) and codes[i + 1] == 2:
+                    if i + 4 < len(codes):
+                        # RGB: find nearest 256-color
+                        r, g, b = codes[i + 2], codes[i + 3], codes[i + 4]
+                        fg = 16 + (round(r / 255 * 5) * 36 + round(g / 255 * 5) * 6 + round(b / 255 * 5))
+                        i += 4
+            elif 90 <= c <= 97:
+                fg = c - 90 + 8  # Bright colors
+            i += 1
         if fg >= 0:
-            pair_id = 50 + fg
-            try:
-                curses.init_pair(pair_id, fg, -1)
-                attr |= curses.color_pair(pair_id)
-            except (curses.error, ValueError):
-                pass
+            attr |= cls._get_color_pair(fg)
         return attr
 
     def _render_preview(self, stdscr, start_col, start_row, panel_width, panel_height):
