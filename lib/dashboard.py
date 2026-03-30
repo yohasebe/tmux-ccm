@@ -55,6 +55,12 @@ class Dashboard:
         self.tree_lines = []     # (indent, text, attr, win_target_or_none)
         self.tree_selected = 0
         self.tree_selectable = []  # indices into tree_lines that are selectable
+        # Preview panel state
+        preview_setting = tmux_cmd("show-option", "-gqv", "@ccm-preview") or "off"
+        self.preview_enabled = preview_setting == "on"
+        self.preview_position = tmux_cmd("show-option", "-gqv", "@ccm-preview-position") or "right"
+        self.preview_cache = ""
+        self._last_preview_target = ""
         # Menu mode state
         self.menu_items = []  # Built dynamically by _build_menu()
         self.menu_selected = 0
@@ -148,10 +154,54 @@ class Dashboard:
             curses.init_pair(C_YELLOW, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_SYNCING, curses.COLOR_CYAN, -1)
 
+    def _update_preview(self):
+        """Fetch preview content for the selected project."""
+        with self.lock:
+            projects = list(self.projects)
+        if not projects or self.selected >= len(projects):
+            self.preview_cache = ""
+            return
+        p = projects[self.selected]
+        if p.win_target == self._last_preview_target and self.preview_cache:
+            return  # Already cached for this target
+        self._last_preview_target = p.win_target
+        raw = tmux_cmd("capture-pane", "-t", p.win_target, "-p", "-S", "-50")
+        self.preview_cache = raw if raw else "(no content)"
+
+    def _render_preview(self, stdscr, start_col, start_row, panel_width, panel_height):
+        """Render preview panel at the specified position."""
+        # Draw vertical separator
+        for r in range(start_row, start_row + panel_height):
+            self._addstr(stdscr, r, start_col, "│", curses.color_pair(C_DIM))
+
+        # Preview content
+        lines = self.preview_cache.split("\n") if self.preview_cache else []
+        # Show tail of content (most recent)
+        visible = lines[-(panel_height):]
+        content_col = start_col + 2
+        for i, line in enumerate(visible):
+            r = start_row + i
+            if r >= start_row + panel_height:
+                break
+            self._addstr(stdscr, r, content_col, line, curses.color_pair(C_DIM))
+
     def render(self, stdscr):
         try:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
+
+            # Preview panel layout
+            preview_width = 0
+            preview_col = 0
+            list_width = width
+            if self.preview_enabled and self.mode == "dashboard" and width >= 80:
+                if self.preview_position == "right":
+                    preview_width = min(width // 2, width - 40)
+                    list_width = width - preview_width - 1  # -1 for separator
+                    preview_col = list_width
+                elif self.preview_position == "bottom":
+                    pass  # Bottom mode: handled after list rendering
+
             row = 0
 
             # Header
@@ -279,6 +329,11 @@ class Dashboard:
                 footer = "  ".join(footer_parts)
                 self._addstr(stdscr, footer_row, 2, footer, curses.color_pair(C_DIM))
 
+            # Preview panel (right side)
+            if preview_width > 0 and self.preview_position == "right":
+                self._update_preview()
+                self._render_preview(stdscr, preview_col, 0, preview_width, height - 1)
+
             stdscr.refresh()
         except curses.error:
             pass
@@ -302,9 +357,11 @@ class Dashboard:
         if key in (curses.KEY_UP, ord("k")):
             if n > 0:
                 self.selected = (self.selected - 1) % n
+                self._last_preview_target = ""  # Force preview refresh
         elif key in (curses.KEY_DOWN, ord("j")):
             if n > 0:
                 self.selected = (self.selected + 1) % n
+                self._last_preview_target = ""  # Force preview refresh
         elif key in (curses.KEY_ENTER, 10, 13):
             if n > 0:
                 return self._do_attach(stdscr)
@@ -618,6 +675,9 @@ class Dashboard:
                 with self.lock:
                     self.projects = projects
                     self.data_dirty = True
+                # Refresh preview content if enabled
+                if self.preview_enabled and self.mode == "dashboard":
+                    self._last_preview_target = ""  # Force refresh
             except Exception:
                 pass
 
@@ -825,6 +885,11 @@ class Dashboard:
         else:
             idle_label = f"{IDLE_EXIT_TIMEOUT // 60} min (default)"
 
+        # Preview
+        preview_on = "on" if self.preview_enabled else "off"
+        pos_labels = {"right": "Right", "bottom": "Bottom"}
+        preview_pos_label = pos_labels.get(self.preview_position, self.preview_position)
+
         self.menu_items = [
             ("Add project", "add"),
             ("Save snapshot", "save"),
@@ -833,6 +898,8 @@ class Dashboard:
             (f"Status bar mode: {mode_label}", "status_mode"),
             (f"Auto-restore: {auto_restore}", "auto_restore"),
             (f"Idle timeout: {idle_label}", "idle_timeout"),
+            (f"Preview panel: {preview_on}", "preview_toggle"),
+            (f"Preview position: {preview_pos_label}", "preview_position"),
             ("", ""),  # separator
             ("Dashboard", "dashboard"),
             ("Tree view", "tree"),
@@ -921,6 +988,18 @@ class Dashboard:
                             self._build_menu()
                     except ValueError:
                         self._show_message(stdscr, "Invalid number", 1)
+            elif action == "preview_toggle":
+                self.preview_enabled = not self.preview_enabled
+                val = "on" if self.preview_enabled else "off"
+                tmux_cmd("set", "-g", "@ccm-preview", val)
+                save_tmux_conf_setting(f"set -g @ccm-preview {val}")
+                self._build_menu()
+            elif action == "preview_position":
+                new_pos = "bottom" if self.preview_position == "right" else "right"
+                self.preview_position = new_pos
+                tmux_cmd("set", "-g", "@ccm-preview-position", new_pos)
+                save_tmux_conf_setting(f"set -g @ccm-preview-position {new_pos}")
+                self._build_menu()
             elif action == "dashboard":
                 self.mode = "dashboard"
             elif action == "tree":
