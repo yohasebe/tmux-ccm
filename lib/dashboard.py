@@ -459,9 +459,9 @@ class Dashboard:
             help_row = list_height - 3
             if help_row > row + 1:
                 if width >= 100:
-                    help_text = "[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [n]ame  [r]emove  [s]ave  [t]ree  [m]enu  [q] quit"
+                    help_text = "[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [n]ame  [r]emove  e[x]it all  [s]ave  [t]ree  [m]enu  [q] quit"
                 elif width >= 60:
-                    help_text = "[↑↓] select [Enter] attach [a]dd [n]ame [r]emove [s]ave [t]ree [m]enu [q] quit"
+                    help_text = "[↑↓] select [Enter] attach [a]dd [n]ame [r]emove e[x]it all [s]ave [m]enu [q] quit"
                 else:
                     help_text = "[↑↓] sel [⏎] go [a]dd [r]m [s]ave [q] quit"
                 self._addstr(stdscr, help_row, 2, help_text, curses.color_pair(C_DIM))
@@ -561,6 +561,8 @@ class Dashboard:
                 self._do_remove(stdscr)
         elif key in (ord("g"), ord("G")):
             self._do_register(stdscr)
+        elif key in (ord("x"), ord("X")):
+            self._do_exit_all(stdscr)
         elif key == ord("/"):
             self._do_search(stdscr)
         elif key in (ord("t"), ord("T")):
@@ -670,6 +672,56 @@ class Dashboard:
         else:
             return
         time.sleep(0.3)
+        self._trigger_rebuild()
+
+    def _do_exit_all(self, stdscr):
+        """Exit all idle Claude Code sessions, optionally including BUSY/PERMIT."""
+        with self.lock:
+            projects = list(self.projects)
+
+        if not projects:
+            return
+
+        idle_targets = [p for p in projects if p.state in ("IDLE", "DONE")]
+        active_targets = [p for p in projects if p.state in ("BUSY", "PERMIT")]
+        # SHELL projects already exited, skip
+
+        total_exit = len(idle_targets)
+        skip_count = len(active_targets)
+
+        if total_exit == 0 and skip_count == 0:
+            self._show_message(stdscr, "No active Claude Code sessions", 1)
+            return
+
+        # Build prompt
+        if skip_count > 0:
+            prompt = f"Exit {total_exit} idle sessions? ({skip_count} BUSY/PERMIT skipped) [y/n/a(all)]: "
+        else:
+            prompt = f"Exit all {total_exit} sessions? [Y/n]: "
+
+        choice = self._prompt(stdscr, prompt)
+        if choice is None:
+            return
+
+        choice = choice.lower().strip()
+        if choice in ("", "y", "yes"):
+            targets = idle_targets
+        elif choice in ("a", "all"):
+            targets = idle_targets + active_targets
+        else:
+            return
+
+        exited = 0
+        for p in targets:
+            if p.state == "SHELL":
+                continue
+            tmux_cmd("send-keys", "-t", p.win_target, "Escape")
+            time.sleep(0.05)
+            tmux_cmd("send-keys", "-t", p.win_target, "/exit", "Enter")
+            exited += 1
+
+        self._show_message(stdscr, f"Exited {exited} session(s)", 1)
+        time.sleep(0.5)
         self._trigger_rebuild()
 
     def _do_register(self, stdscr):
