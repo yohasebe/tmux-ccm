@@ -489,6 +489,10 @@ _ccm_strip_hooks() {
                 .hooks.SubagentStart[]? |
                 select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
             ] |
+            .hooks.PermissionRequest = [
+                .hooks.PermissionRequest[]? |
+                select(.hooks | any(.command | test("on-permission-request\\.sh")) | not)
+            ] |
             .hooks.Notification = [
                 .hooks.Notification[]? |
                 select(.hooks | any(.command | test("on-notification\\.sh")) | not)
@@ -498,6 +502,7 @@ _ccm_strip_hooks() {
             if (.hooks.StopFailure | length) == 0 then del(.hooks.StopFailure) else . end |
             if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end |
             if (.hooks.SubagentStart | length) == 0 then del(.hooks.SubagentStart) else . end |
+            if (.hooks.PermissionRequest | length) == 0 then del(.hooks.PermissionRequest) else . end |
             if (.hooks.Notification | length) == 0 then del(.hooks.Notification) else . end |
             if (.hooks | length) == 0 then del(.hooks) else . end
         else . end
@@ -565,6 +570,7 @@ ccm_setup_hooks() {
     local stop_hook="${hooks_dir}/on-stop.sh"
     local pre_tool_hook="${hooks_dir}/on-pre-tool-use.sh"
     local notify_hook="${hooks_dir}/on-notification.sh"
+    local perm_hook="${hooks_dir}/on-permission-request.sh"
     local timeout="${CCM_HOOK_CMD_TIMEOUT:-5000}"
 
     # Strip any existing ccm hooks first (handles path changes cleanly)
@@ -575,6 +581,7 @@ ccm_setup_hooks() {
         --arg stop_cmd "$stop_hook" \
         --arg pre_tool_cmd "$pre_tool_hook" \
         --arg notify_cmd "$notify_hook" \
+        --arg perm_cmd "$perm_hook" \
         --argjson timeout "$timeout" '
         .hooks //= {} |
         .hooks.UserPromptSubmit //= [] |
@@ -582,12 +589,14 @@ ccm_setup_hooks() {
         .hooks.StopFailure //= [] |
         .hooks.PreToolUse //= [] |
         .hooks.SubagentStart //= [] |
+        .hooks.PermissionRequest //= [] |
         .hooks.Notification //= [] |
         .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $prompt_cmd, "timeout": $timeout}]}] |
         .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
         .hooks.StopFailure += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
         .hooks.PreToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
+        .hooks.PermissionRequest += [{"hooks": [{"type": "command", "command": $perm_cmd, "timeout": $timeout}]}] |
         .hooks.Notification += [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
                                 {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]}]
     ') || ccm_die "Failed to update settings JSON"

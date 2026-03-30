@@ -52,6 +52,7 @@ HOOK_SCRIPTS = [
     "on-stop.sh",
     "on-pre-tool-use.sh",
     "on-notification.sh",
+    "on-permission-request.sh",
 ]
 
 STATE_PRIORITY = {"PERMIT": 0, "DONE": 1, "BUSY": 2, "IDLE": 3, "SHELL": 4, "DOWN": 5}
