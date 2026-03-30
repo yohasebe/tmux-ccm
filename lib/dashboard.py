@@ -179,18 +179,18 @@ class Dashboard:
             except curses.error:
                 pass
 
-        # Preview content — clip each line to panel width
+        # Preview content — clip each line to panel display width (CJK-aware)
         lines = self.preview_cache.split("\n") if self.preview_cache else []
         visible = lines[-(panel_height):]
         content_col = start_col + 2
-        max_chars = panel_width - 3  # separator + padding
+        max_display_width = panel_width - 3  # separator + padding
         for i, line in enumerate(visible):
             r = start_row + i
             if r >= start_row + panel_height:
                 break
-            clipped = line[:max_chars] if len(line) > max_chars else line
+            clipped = self._truncate_to_width(line, max_display_width)
             try:
-                stdscr.addnstr(r, content_col, clipped, max_chars, curses.color_pair(C_DIM))
+                stdscr.addstr(r, content_col, clipped, curses.color_pair(C_DIM))
             except curses.error:
                 pass
 
