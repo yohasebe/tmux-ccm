@@ -381,7 +381,7 @@ class Dashboard:
                 row += 3
             else:
                 # Scrolling: ensure selected project is visible
-                visible_lines = list_height - 4  # header + help + footer
+                visible_lines = list_height - 5  # header + help (up to 2 lines) + footer
                 scroll_offset = getattr(self, '_scroll_offset', 0)
                 if self.selected >= scroll_offset + visible_lines:
                     scroll_offset = self.selected - visible_lines + 1
@@ -455,19 +455,34 @@ class Dashboard:
 
                     row += 1
 
-            # Help line — keys highlighted
-            help_row = list_height - 3
-            if help_row > row + 1:
-                if width >= 100:
-                    help_text = "[↑↓/jk] select  [Enter] attach  [p]review  [a]dd  [n]ame  [r]emove  e[x]it all  [s]ave  [t]ree  [m]enu  [q] quit"
-                elif width >= 60:
-                    help_text = "[↑↓] select [Enter] attach [a]dd [n]ame [r]emove e[x]it all [s]ave [m]enu [q] quit"
+            # Help line — keys highlighted, wraps to 2 lines if needed
+            avail_w = (list_width if preview_width > 0 else width) - 4  # padding
+            help_items = [
+                "[↑↓/jk] select", "[Enter] attach", "[p]review", "[a]dd",
+                "[n]ame", "[r]emove", "e[x]it all", "[s]ave", "[t]ree", "[m]enu", "[q] quit",
+            ]
+            # Split into lines that fit within avail_w
+            help_lines = []
+            current_line = ""
+            for item in help_items:
+                test = f"{current_line}  {item}" if current_line else item
+                if len(test) > avail_w and current_line:
+                    help_lines.append(current_line)
+                    current_line = item
                 else:
-                    help_text = "[↑↓] sel [⏎] go [a]dd [r]m [s]ave [q] quit"
-                self._render_help_line(stdscr, help_row, 2, help_text)
+                    current_line = test
+            if current_line:
+                help_lines.append(current_line)
+
+            num_help_lines = len(help_lines)
+            help_start_row = list_height - 1 - num_help_lines  # before footer
+            for hi, hline in enumerate(help_lines):
+                hr = help_start_row + hi
+                if hr > row + 1:
+                    self._render_help_line(stdscr, hr, 2, hline)
 
             # Footer
-            footer_row = list_height - 2
+            footer_row = list_height - 1
             if footer_row > row + 1:
                 footer_parts = []
                 # Last saved time
