@@ -772,6 +772,101 @@ def print_status():
         print(f"{status:<22} {p.name:<20} {branch:<16} {ports:<12} {d}")
 
 
+def print_ports():
+    """Print listening ports per project (for `ccm ports` CLI command)."""
+    projects = build_project_list(fast=True)
+    if not projects:
+        print("No active projects.")
+        return
+
+    print(f"{_C_BOLD}{'PROJECT':<20} {'PORTS':<16} {'DIRECTORY'}{_C_RESET}")
+    print(f"{'-------':<20} {'-----':<16} {'---------'}")
+
+    for p in projects:
+        ports = p.ports or "-"
+        d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
+        print(f"{p.name:<20} {ports:<16} {d}")
+
+
+def print_tree():
+    """Print hierarchical tree of all sessions/windows/panes (for `ccm tree`)."""
+    sessions_raw = tmux_cmd("list-sessions", "-F", "#{session_name}")
+    if not sessions_raw:
+        print("No tmux sessions.")
+        return
+
+    sessions = sorted(sessions_raw.split("\n"))
+    current_session = get_session()
+
+    # Build project state lookup
+    projects = build_project_list(fast=True)
+    project_map = {p.win_target: p for p in projects}
+
+    for si, sess in enumerate(sessions):
+        is_last_s = si == len(sessions) - 1
+        s_pre = "└── " if is_last_s else "├── "
+        s_cont = "    " if is_last_s else "│   "
+        marker = " ◀" if sess == current_session else ""
+        print(f"{s_pre}{_C_BOLD}{sess}{_C_RESET}{marker}")
+
+        windows_raw = tmux_cmd("list-windows", "-t", sess, "-F",
+                               "#{window_index}\t#{window_name}\t#{@ccm_project}\t#{@ccm_dir}")
+        if not windows_raw:
+            continue
+        windows = windows_raw.split("\n")
+
+        for wi, wline in enumerate(windows):
+            parts = wline.split("\t")
+            while len(parts) < 4:
+                parts.append("")
+            win_idx, win_name, project, wdir = parts[:4]
+            win_target = f"{sess}:{win_idx}"
+            is_last_w = wi == len(windows) - 1
+            w_pre = f"{s_cont}└── " if is_last_w else f"{s_cont}├── "
+
+            proj = project_map.get(win_target)
+            if proj:
+                color = _C_STATE.get(proj.state, _C_DIM)
+                icon = STATE_ICONS.get(proj.state, "?")
+                name = proj.name
+                extra = ""
+                if proj.branch:
+                    extra += f" ({proj.branch})"
+                if proj.ports:
+                    extra += f" [:{proj.ports}]"
+            else:
+                color = _C_DIM
+                icon = ""
+                name = win_name
+                extra = ""
+
+            d = ""
+            if wdir:
+                d = f" {wdir.replace(os.path.expanduser('~'), '~')}"
+            elif not project:
+                pane_path = tmux_cmd("display-message", "-t", win_target, "-p", "#{pane_current_path}")
+                if pane_path:
+                    d = f" {pane_path.replace(os.path.expanduser('~'), '~')}"
+
+            icon_str = f"{color}{icon}{_C_RESET} " if icon else ""
+            print(f"{w_pre}{icon_str}{name}{extra}{_C_DIM}{d}{_C_RESET}")
+
+
+def print_statusline():
+    """Print one-line status for tmux status bar (for `ccm statusline`)."""
+    projects = build_project_list(fast=True)
+    active = [p for p in projects if p.state in ("BUSY", "PERMIT", "DONE")]
+    if not active:
+        return
+
+    parts = []
+    for p in active:
+        icon = STATE_ICONS.get(p.state, "?")
+        parts.append(f"{p.name}:{icon}")
+
+    print(f"| {' '.join(parts)} |")
+
+
 # ─── CLI entry point ───
 
 if __name__ == "__main__":
@@ -779,6 +874,12 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "status":
         print_status()
+    elif cmd == "ports":
+        print_ports()
+    elif cmd == "tree":
+        print_tree()
+    elif cmd == "statusline":
+        print_statusline()
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

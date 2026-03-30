@@ -24,8 +24,6 @@ esac
 # Source library modules
 source "${CCM_ROOT}/lib/common.sh"
 source "${CCM_ROOT}/lib/session.sh"
-source "${CCM_ROOT}/lib/detect.sh"
-source "${CCM_ROOT}/lib/dashboard.sh"
 source "${CCM_ROOT}/lib/snapshot.sh"
 
 # Initialize runtime directories
@@ -96,13 +94,13 @@ case "${1:-help}" in
         python3 "$CCM_ROOT/lib/ccm_core.py" status
         ;;
     tree)
-        ccm_tree
+        python3 "$CCM_ROOT/lib/ccm_core.py" tree
         ;;
     tree-interactive|ti)
         python3 "$CCM_ROOT/lib/dashboard.py" --mode tree
         ;;
     ports)
-        ccm_ports
+        python3 "$CCM_ROOT/lib/ccm_core.py" ports
         ;;
     capture|cap)
         shift
@@ -113,7 +111,7 @@ case "${1:-help}" in
         python3 "$CCM_ROOT/lib/dashboard.py"
         ;;
     statusline|sl)
-        ccm_statusline
+        python3 "$CCM_ROOT/lib/ccm_core.py" statusline
         ;;
     inject-status)
         python3 "$CCM_ROOT/lib/inject_status.py" || true

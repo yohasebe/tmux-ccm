@@ -8,7 +8,6 @@ setup() {
     setup_mocks
 
     source "${CCM_ROOT}/lib/common.sh"
-    source "${CCM_ROOT}/lib/detect.sh"
     source "${CCM_ROOT}/lib/session.sh"
     source "${CCM_ROOT}/lib/snapshot.sh"
 
