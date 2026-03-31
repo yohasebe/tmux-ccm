@@ -707,12 +707,24 @@ def auto_exit_idle(projects):
             # Clear the pane so auto-restart shows a clean screen
             tmux_cmd("send-keys", "-t", win_target, "clear", "Enter")
             _set_win_state(win_target, "SHELL", unset_done=True)
+            # Force autosave after auto-exit to preserve project in snapshot
+            _force_autosave()
 
 
 # ─── Autosave ───
 
+def _force_autosave():
+    """Force an immediate autosave regardless of timer."""
+    ccm_bin = os.path.join(CCM_ROOT, "ccm")
+    try:
+        subprocess.run([ccm_bin, "snapshot", "save", "_autosave"],
+                       capture_output=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
 def periodic_autosave():
-    """Save autosave snapshot if 5 minutes have passed."""
+    """Save autosave snapshot if 2 minutes have passed."""
     marker = os.path.join(CCM_TMP_DIR, "autosave-time")
     now = int(time.time())
     last_save = 0
@@ -723,7 +735,7 @@ def periodic_autosave():
     except (OSError, ValueError):
         pass
 
-    if now - last_save < 300:
+    if now - last_save < 120:
         return
 
     # Check if any ccm projects exist
