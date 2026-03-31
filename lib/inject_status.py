@@ -232,7 +232,7 @@ def _inject_status_impl():
     refresh = f"#({ccm_bin} inject-status 2>/dev/null)"
 
     if mode == "1":
-        # Mode 1: ccm-style window list in status-right
+        # Mode 1: ccm-style window list in status-right (fit as many as possible)
         _cleanup_extra_lines()
         all_projects = scan_active_windows(projects, include_all=True)
 
@@ -246,11 +246,29 @@ def _inject_status_impl():
         if not entries:
             new_status = f"#[fg=#666666]≡#[default] {original}{refresh}"
         else:
+            # Calculate available width for ccm entries
+            term_width = 120
+            try:
+                term_width = int(tmux_cmd("display-message", "-p", "#{client_width}") or "120")
+            except ValueError:
+                pass
+            orig_visible = len(re.sub(r'#\[[^\]]*\]', '', original))
+            avail = term_width - orig_visible - 10  # margin for separators + refresh
+
+            # Add entries by priority (already sorted) until width is exhausted
             detail = ""
+            shown = 0
             for i, entry in enumerate(entries):
-                if i > 0:
+                stripped = re.sub(r'#\[[^\]]*\]', '', entry)
+                entry_width = len(stripped) + 3  # separator + spaces
+                if shown > 0 and (avail - entry_width) < 0:
+                    break
+                if shown > 0:
                     detail += " #[fg=#666666]│#[fg=#9E9E9E]"
                 detail += f" {entry}"
+                avail -= entry_width
+                shown += 1
+
             new_status = f"#[fg=#9E9E9E,bg=#3a3a3a]{detail} #[fg=#666666]│#[default]{original}{refresh}"
 
         if new_status != prev_status:
