@@ -54,6 +54,13 @@ tmux bind-key -n MouseDown1Status \
 # ccm's capture-pane handles both normal and alternate screen modes
 tmux set-environment -g CLAUDE_CODE_NO_FLICKER 1
 
+# Ensure status-interval is not too aggressive (inject-status runs each cycle)
+# Minimum 3 seconds to avoid excessive CPU usage from Python process spawning
+_current_interval=$(tmux show-option -gv status-interval 2>/dev/null || echo 5)
+if [[ "$_current_interval" -lt 3 ]] 2>/dev/null; then
+    tmux set -g status-interval 3
+fi
+
 # Restore prefix + w to default (choose-tree)
 tmux bind-key w choose-tree -Zs
 
