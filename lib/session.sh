@@ -157,6 +157,9 @@ ccm_remove() {
 
     tmux kill-window -t "${session}:${idx}"
     ccm_info "Removed project: $name"
+
+    # Trigger immediate autosave
+    (ccm_snapshot_save "_autosave") &>/dev/null || true
 }
 
 # List all ccm-managed project windows
