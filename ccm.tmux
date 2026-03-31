@@ -50,6 +50,10 @@ tmux bind-key -n MouseDown1Status \
     "run-shell '$_session_cmd' ; display-popup -E -w 80% -h 60% -T ' ccm Dashboard ' '$CCM_BIN dashboard'" \
     "switch-client -t ="
 
+# Reduce Claude Code UI flicker in tmux (alt-screen rendering)
+# ccm's capture-pane handles both normal and alternate screen modes
+tmux set-environment -g CLAUDE_CODE_NO_FLICKER 1
+
 # Restore prefix + w to default (choose-tree)
 tmux bind-key w choose-tree -Zs
 
