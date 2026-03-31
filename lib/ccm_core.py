@@ -198,8 +198,14 @@ def has_children(pid, ps_lines, own_pgid):
 
 
 def capture_pane_bottom(pane_target, lines=8):
-    """Capture bottom non-empty lines of a pane."""
+    """Capture bottom non-empty lines of a pane.
+    Handles alternate screen mode (CLAUDE_CODE_NO_FLICKER=1) by trying
+    normal capture first, then falling back to alternate screen capture.
+    """
     raw = tmux_cmd("capture-pane", "-t", pane_target, "-p", "-S", "-10")
+    if not raw or not raw.strip():
+        # Try alternate screen (used when CLAUDE_CODE_NO_FLICKER=1)
+        raw = tmux_cmd("capture-pane", "-a", "-t", pane_target, "-p", "-S", "-10")
     if not raw:
         return []
     non_empty = [l for l in raw.split("\n") if l.strip()]

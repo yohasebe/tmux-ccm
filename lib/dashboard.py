@@ -172,7 +172,10 @@ class Dashboard:
             return  # Already cached for this target
         self._last_preview_target = p.win_target
         # Capture with -e for ANSI escape sequences (color support)
+        # Try normal screen first, then alternate screen (CLAUDE_CODE_NO_FLICKER=1)
         raw = tmux_cmd("capture-pane", "-e", "-t", p.win_target, "-p", "-S", "-50")
+        if not raw or not raw.strip():
+            raw = tmux_cmd("capture-pane", "-e", "-a", "-t", p.win_target, "-p", "-S", "-50")
         self.preview_cache = raw if raw else "(no content)"
         self._preview_lines = self.preview_cache.split("\n") if self.preview_cache else []
 
@@ -645,6 +648,8 @@ class Dashboard:
     def _do_preview(self, stdscr):
         p = self.projects[self.selected]
         captured = tmux_cmd("capture-pane", "-t", p.win_target, "-p", "-S", "-30")
+        if not captured or not captured.strip():
+            captured = tmux_cmd("capture-pane", "-a", "-t", p.win_target, "-p", "-S", "-30")
         if not captured:
             return
         stdscr.erase()
