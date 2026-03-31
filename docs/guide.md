@@ -480,3 +480,22 @@ claude --continue
 This gives you a fully independent Claude Code session alongside your ccm-managed projects. Both sessions can work on the same project directory without conflict.
 
 **Syncing back to ccm:** When you finish working in the separate window, the ccm-managed session will catch up automatically — idle auto-exit closes the stale session after 5 minutes, and switching to that window restarts Claude Code with `--continue`, loading the latest conversation. For immediate catch-up, type `/exit` in the ccm window and switch away then back.
+
+### How should I stop Claude Code in a project?
+
+Use `/exit` in the Claude Code prompt. This exits Claude Code but **keeps the tmux window and project registration**. The project shows as SHELL state and auto-restarts when you switch to it.
+
+Do **not** close the tmux window directly (e.g., `prefix + &` or `exit` in the shell). This removes the window and its ccm registration, and the project will be missing from the next autosave.
+
+In most cases, you don't need to manually stop Claude Code at all — idle auto-exit handles it automatically after 5 minutes.
+
+### What is the difference between `_autosave` and named snapshots?
+
+| | `_autosave` | Named snapshots |
+|---|---|---|
+| **Created by** | Automatically every 2 minutes | Manually via dashboard `s` key |
+| **Content** | Always mirrors the current project list | Frozen at the time of save |
+| **Overwritten** | Yes, every 2 minutes | Never (unique date-based name) |
+| **Used by auto-restore** | Yes | No (must load manually with `ccm start <name>`) |
+
+**Tip:** If you're about to shut down and want to ensure all projects are preserved, save a named snapshot from the dashboard (`s` key). This creates a checkpoint like `save-20260331-1230` that won't be overwritten. You can restore it later with `ccm start save-20260331-1230`.
