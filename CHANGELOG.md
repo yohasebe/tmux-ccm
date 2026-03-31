@@ -20,7 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Scrolling support for large project lists
   - CJK wide character display width handling
 - Hook scripts now update tmux window state instantly via `hooks/lib.sh` (no polling delay)
+- PERMIT→BUSY transition detected instantly via `window_activity` timestamp comparison
 - `PermissionRequest` hook for earlier PERMIT detection (fires before permission dialog)
+- `CLAUDE_CODE_NO_FLICKER=1` enabled by default for reduced UI flicker in tmux
+- `capture-pane` supports alternate screen mode (fallback to `-a` flag when empty)
+- Guard against excessive CPU: enforce `status-interval >= 3` seconds
 - Tree and menu keybindings (`prefix + T`, `prefix + C`) now opt-in to avoid plugin conflicts
 - Dashboard sorts projects by state priority (PERMIT > DONE > BUSY > IDLE > SHELL), then by most recent activity within each group
 - Idle auto-exit: Claude Code sessions exit after 5 minutes idle to free resources (`@ccm-idle-timeout`)

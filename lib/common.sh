@@ -529,6 +529,7 @@ ccm_hooks_configured() {
     grep -q 'on-stop\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-pre-tool-use\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-notification\.sh' "$settings_file" 2>/dev/null || return 1
+    grep -q 'on-permission-request\.sh' "$settings_file" 2>/dev/null || return 1
 }
 
 # Install Claude Code hooks for improved state detection
