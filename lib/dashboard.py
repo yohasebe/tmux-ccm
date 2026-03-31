@@ -634,16 +634,27 @@ class Dashboard:
         return "attached"
 
     def _do_save(self, stdscr):
-        name = self._prompt(stdscr, "Snapshot name [_autosave]: ")
+        default_name = time.strftime("save-%Y%m%d-%H%M")
+        name = self._prompt(stdscr, f"Snapshot name [{default_name}]: ")
         if name is None:
             return
         if not name:
-            name = "_autosave"
+            name = default_name
         ccm_bin = os.path.join(CCM_ROOT, "ccm")
         result = subprocess.run([ccm_bin, "snapshot", "save", name],
                                 capture_output=True, text=True, timeout=10)
-        msg = "Saved!" if result.returncode == 0 else "Save failed"
-        self._show_message(stdscr, msg, 1)
+        if result.returncode == 0:
+            # Show how many projects were saved
+            try:
+                import json
+                with open(os.path.join(CCM_SNAPSHOT_DIR, f"{name}.json")) as f:
+                    count = len(json.load(f).get("projects", []))
+                msg = f"Saved: {name} ({count} projects)"
+            except Exception:
+                msg = f"Saved: {name}"
+        else:
+            msg = f"Save failed: {result.stderr.strip()[:50]}"
+        self._show_message(stdscr, msg, 1.5)
 
     def _do_preview(self, stdscr):
         p = self.projects[self.selected]

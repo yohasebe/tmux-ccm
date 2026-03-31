@@ -714,7 +714,7 @@ def auto_exit_idle(projects):
 # ─── Autosave ───
 
 def _force_autosave():
-    """Force an immediate autosave regardless of timer."""
+    """Force an immediate autosave."""
     ccm_bin = os.path.join(CCM_ROOT, "ccm")
     try:
         subprocess.run([ccm_bin, "snapshot", "save", "_autosave"],
