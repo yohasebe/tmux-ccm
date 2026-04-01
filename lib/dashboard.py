@@ -970,6 +970,16 @@ class Dashboard:
         self._msg_text = msg
         self._msg_expires = time.monotonic() + duration
 
+    @staticmethod
+    def _preview_sound(sound_name):
+        """Play a macOS notification sound for preview."""
+        try:
+            subprocess.Popen(
+                ["osascript", "-e", f'display notification "Sound preview" with title "ccm" sound name "{sound_name}"'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            pass
+
     def _refresh_loop(self):
         """Background thread: periodic state refresh."""
         # First refresh: fast (no git/port)
@@ -1368,7 +1378,12 @@ class Dashboard:
                 tmux_cmd("set", "-g", "@ccm-notify-sound", new_val)
                 save_tmux_conf_setting(f"set -g @ccm-notify-sound {new_val}")
                 self._build_menu()
-                self._show_message(stdscr, f"Sound: {new_val}", 0.5)
+                if new_val == "on":
+                    sound_name = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass"
+                    self._preview_sound(sound_name)
+                    self._show_message(stdscr, f"Sound: on ({sound_name})", 0.5)
+                else:
+                    self._show_message(stdscr, "Sound: off", 0.5)
             elif action == "sound_name":
                 sounds = ["Glass", "Tink", "Pop", "Purr", "Ping", "Bottle", "Morse", "Basso"]
                 current = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass"
@@ -1380,6 +1395,7 @@ class Dashboard:
                 tmux_cmd("set", "-g", "@ccm-notify-sound-name", new_val)
                 save_tmux_conf_setting(f"set -g @ccm-notify-sound-name {new_val}")
                 self._build_menu()
+                self._preview_sound(new_val)
                 self._show_message(stdscr, f"Sound: {new_val}", 0.5)
             elif action == "auto_start":
                 current = tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
