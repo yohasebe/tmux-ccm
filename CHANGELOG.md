@@ -12,10 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `ccm setup-hooks` now installs 6 hook types (was 5): added `SessionEnd → SHELL`
 - **Instant PERMIT notification** — desktop notification fires immediately from hook (~100ms) instead of waiting for next polling cycle (up to 3s)
 - **Instant PERMIT status-right update** — mode 0 icon updates immediately from hook, bypassing `status-interval` cache delay
+- PERMIT notifications now include tool name and context (e.g., "Permission required: Bash: rm -rf ..." or "Edit: ~/src/main.rs")
+- Mode 1/2 status bar highlights the active (current) window with white bold text
 - Auto-install/update hooks on plugin load (`ccm.tmux`) — TPM updates automatically register new hook types
 - Dashboard shows "Hooks: OFF" banner when hooks are not installed, with colored status indicator (yellow=OFF, cyan=ON)
 
+### Fixed
+- Mode 2 status line: fix double-counted separator width causing unnecessary extra lines
+
 ### Changed
+- Default `@ccm-notify` changed from `off` to `permit,done` — new users get PERMIT and DONE notifications out of the box
 - **Session management and snapshots migrated to Python** — `lib/session.sh` and `lib/snapshot.sh` eliminated, all logic consolidated in `lib/ccm_core.py`
   - `jq` dependency removed for snapshot operations (Python `json` module)
   - `ccm` bash dispatcher now routes all subcommands to `python3 ccm_core.py`
