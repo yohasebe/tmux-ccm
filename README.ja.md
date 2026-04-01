@@ -304,7 +304,7 @@ set -g @ccm-auto-restore "on"    # デフォルト: off
 一定時間IDLEのままのClaude Codeセッションは自動的に終了し、システムリソースを解放します。終了したウィンドウに切り替えると、Claude Codeが `--continue` で自動再起動し、会話を再開します。
 
 ```tmux
-set -g @ccm-idle-timeout "5"     # 分（デフォルト: 5、0で無効化）
+set -g @ccm-idle-timeout "10"    # 分（デフォルト: 10、0で無効化）
 ```
 
 ### ダッシュボードプレビューパネル

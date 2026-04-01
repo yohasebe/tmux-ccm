@@ -28,7 +28,7 @@ CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 
 DONE_TIMEOUT = int(os.environ.get("CCM_DONE_TIMEOUT", "30"))
 HOOK_TIMEOUT = int(os.environ.get("CCM_HOOK_TIMEOUT", "300"))
-IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "300"))  # 5 minutes default
+IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 
 # ─── Claude Code UI patterns (update when Claude Code UI changes) ───

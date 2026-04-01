@@ -304,7 +304,7 @@ When enabled, ccm loads the `_autosave` snapshot via TPM on tmux startup (only i
 Claude Code sessions that remain idle are automatically exited to free system resources. When you switch to an exited window, Claude Code restarts with `--continue` and resumes the conversation.
 
 ```tmux
-set -g @ccm-idle-timeout "5"     # minutes (default: 5, 0 to disable)
+set -g @ccm-idle-timeout "10"    # minutes (default: 10, 0 to disable)
 ```
 
 ### Dashboard Preview Panel
