@@ -289,19 +289,21 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
     if project_dir:
         hook = read_hook_signal(project_dir)
 
-        # SessionEnd hook: trust SHELL signal when process tree shows IDLE
-        # (SessionEnd fires as Claude exits; process may linger briefly)
-        if hook and hook[1] == "SHELL" and raw == "IDLE":
-            _set_win_state(win_target, "SHELL", unset_done=True)
-            return "SHELL", "", last_done_ts
+        # Note: SHELL hook signal (from SessionEnd) is NOT used here.
+        # Process tree is authoritative for SHELL detection (raw == "SHELL" above).
+        # Trusting SHELL signal when raw=IDLE causes false SHELL after Claude restarts
+        # (stale signal persists until next UserPromptSubmit overwrites it).
 
-        if hook:
+        if hook and hook[1] != "SHELL":
             hook_ts, hook_state, _hook_detail = hook
             hook_age = now - hook_ts
 
             if raw == "IDLE":
-                # PERMIT signal from Notification hook (most reliable)
-                if hook_state == "PERMIT" and hook_age < HOOK_TIMEOUT:
+                # PERMIT signal from PermissionRequest/Notification hook.
+                # No timeout — permission prompts can persist indefinitely.
+                # Only cleared when user responds (window_activity > hook_ts)
+                # or a newer BUSY/DONE signal overwrites it.
+                if hook_state == "PERMIT":
                     # Check if user has responded since PERMIT was set
                     # (window_activity > hook timestamp = user pressed a key)
                     win_act = tmux_cmd("display-message", "-t", win_target, "-p", "#{window_activity}")

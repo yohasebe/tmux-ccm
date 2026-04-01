@@ -281,8 +281,8 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_session_end_hook_returns_shell(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=SHELL (SessionEnd) → SHELL."""
+    def test_session_end_hook_ignored_when_idle(self, mock_hook, mock_tmux):
+        """raw=IDLE + hook=SHELL → IDLE (process tree authoritative; stale SHELL signal ignored)."""
         mock_hook.return_value = (int(time.time()), "SHELL", "")
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
@@ -290,7 +290,7 @@ class TestDetectWindowStateHooks:
         state, _, _ = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
         )
-        assert state == "SHELL"
+        assert state == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
