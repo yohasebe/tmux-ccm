@@ -3,12 +3,17 @@
 
 # Write signal to hook file AND directly update tmux window option
 # for instant status bar reflection (no polling delay).
-# Args: $1=HOOK_DIR, $2=KEY (md5), $3=STATE (BUSY/DONE/PERMIT/SHELL), $4=CWD
+# Args: $1=HOOK_DIR, $2=KEY (md5), $3=STATE (BUSY/DONE/PERMIT/SHELL), $4=CWD, $5=DETAIL (optional)
 ccm_write_signal() {
-    local hook_dir="$1" key="$2" state="$3" cwd="$4"
+    local hook_dir="$1" key="$2" state="$3" cwd="$4" detail="${5:-}"
 
     # Write signal file (for dashboard/inject-status polling)
-    printf '%s %s' "$(date +%s)" "$state" > "${hook_dir}/${key}"
+    # Format: "<timestamp> <state>" or "<timestamp> <state> <detail>"
+    if [[ -n "$detail" ]]; then
+        printf '%s %s %s' "$(date +%s)" "$state" "$detail" > "${hook_dir}/${key}"
+    else
+        printf '%s %s' "$(date +%s)" "$state" > "${hook_dir}/${key}"
+    fi
 
     # Direct tmux update for instant status bar reflection
     # Find the window whose @ccm_dir matches this cwd
@@ -35,7 +40,7 @@ ccm_write_signal() {
         # (eliminates up to 3s polling delay for the most critical state)
         if [[ "$state" == "PERMIT" && -n "$project" ]]; then
             _ccm_instant_permit_icon "$win_target" "$project" &
-            _ccm_instant_notify "$project" &
+            _ccm_instant_notify "$project" "$detail" &
         fi
     fi
 }
@@ -60,12 +65,12 @@ _ccm_instant_permit_icon() {
 # Send desktop notification immediately for PERMIT state.
 # Writes a marker so inject-status can skip the duplicate notification.
 _ccm_instant_notify() {
-    local project="$1"
+    local project="$1" detail="${2:-}"
 
     # Check notification setting
     local notify_setting
     notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null)
-    notify_setting="${notify_setting:-off}"
+    notify_setting="${notify_setting:-permit,done}"
     [[ "$notify_setting" == "off" ]] && return
 
     # Check if PERMIT notifications are enabled
@@ -84,7 +89,12 @@ _ccm_instant_notify() {
     sound_setting="${sound_setting:-on}"
 
     local title="ccm ⚠ ${project}"
-    local body="Action required — switch to this project and respond to the permission prompt"
+    local body
+    if [[ -n "$detail" ]]; then
+        body="Permission required: ${detail}"
+    else
+        body="Action required — respond to the permission prompt"
+    fi
 
     # Escape for AppleScript
     title="${title//\\/\\\\}" ; title="${title//\"/\\\"}"

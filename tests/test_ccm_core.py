@@ -155,7 +155,7 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.read_hook_signal")
     def test_idle_plus_hook_busy_returns_busy(self, mock_hook, mock_tmux):
         """raw=IDLE + hook=BUSY → BUSY (text generation)."""
-        mock_hook.return_value = (int(time.time()), "BUSY")
+        mock_hook.return_value = (int(time.time()), "BUSY", "")
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
 
@@ -169,7 +169,7 @@ class TestDetectWindowStateHooks:
     def test_hook_permit_signal(self, mock_hook, mock_tmux):
         """raw=IDLE + hook=PERMIT + no user activity → PERMIT."""
         hook_ts = int(time.time())
-        mock_hook.return_value = (hook_ts, "PERMIT")
+        mock_hook.return_value = (hook_ts, "PERMIT", "")
         # window_activity is older than hook timestamp (no user response yet)
         mock_tmux.return_value = str(hook_ts - 5)
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
@@ -185,7 +185,7 @@ class TestDetectWindowStateHooks:
     def test_permit_to_busy_on_user_response(self, mock_hook, mock_tmux):
         """raw=IDLE + hook=PERMIT + user activity after PERMIT → BUSY."""
         hook_ts = int(time.time()) - 3
-        mock_hook.return_value = (hook_ts, "PERMIT")
+        mock_hook.return_value = (hook_ts, "PERMIT", "")
         # window_activity is newer than hook timestamp (user responded)
         mock_tmux.return_value = str(hook_ts + 2)
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
@@ -200,7 +200,7 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.read_hook_signal")
     def test_hook_busy_stays_busy_even_with_permit_text(self, mock_hook, mock_tmux):
         """raw=IDLE + hook=BUSY → BUSY (PERMIT now detected by Notification hook, not capture-pane)."""
-        mock_hook.return_value = (int(time.time()), "BUSY")
+        mock_hook.return_value = (int(time.time()), "BUSY", "")
         mock_tmux.return_value = "Do you want to proceed?\n  1. Yes\n  2. No"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
@@ -214,7 +214,7 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.read_hook_signal")
     def test_idle_plus_hook_done_with_prompt_returns_done(self, mock_hook, mock_tmux):
         """raw=IDLE + hook=DONE + prompt visible → DONE."""
-        mock_hook.return_value = (int(time.time()), "DONE")
+        mock_hook.return_value = (int(time.time()), "DONE", "")
         mock_tmux.return_value = "Result\n❯ "
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
@@ -228,7 +228,7 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.read_hook_signal")
     def test_idle_plus_hook_done_trusted(self, mock_hook, mock_tmux):
         """raw=IDLE + hook=DONE → DONE (trust hook, no capture-pane verification)."""
-        mock_hook.return_value = (int(time.time()), "DONE")
+        mock_hook.return_value = (int(time.time()), "DONE", "")
         mock_tmux.return_value = ""  # capture-pane not called
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
@@ -242,7 +242,7 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.read_hook_signal")
     def test_shell_ignores_hooks(self, mock_hook, mock_tmux):
         """raw=SHELL → SHELL regardless of hook signals."""
-        mock_hook.return_value = (int(time.time()), "BUSY")
+        mock_hook.return_value = (int(time.time()), "BUSY", "")
         ps = make_ps_lines((100, 1, 100, "bash"))  # No claude
         panes = [("0:1", "100", "%0")]
 
@@ -283,7 +283,7 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.read_hook_signal")
     def test_session_end_hook_returns_shell(self, mock_hook, mock_tmux):
         """raw=IDLE + hook=SHELL (SessionEnd) → SHELL."""
-        mock_hook.return_value = (int(time.time()), "SHELL")
+        mock_hook.return_value = (int(time.time()), "SHELL", "")
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
 
@@ -296,7 +296,7 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.read_hook_signal")
     def test_session_end_hook_with_shell_raw(self, mock_hook, mock_tmux):
         """raw=SHELL + hook=SHELL → SHELL (consistent)."""
-        mock_hook.return_value = (int(time.time()), "SHELL")
+        mock_hook.return_value = (int(time.time()), "SHELL", "")
         ps = make_ps_lines((100, 1, 100, "bash"))  # no claude process
         panes = [("0:1", "100", "%0")]
 
@@ -309,7 +309,7 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.read_hook_signal")
     def test_session_end_hook_ignored_when_busy(self, mock_hook, mock_tmux):
         """raw=BUSY + hook=SHELL should not happen in practice, but raw=BUSY takes priority."""
-        mock_hook.return_value = (int(time.time()), "SHELL")
+        mock_hook.return_value = (int(time.time()), "SHELL", "")
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 100, "node"))
         panes = [("0:1", "100", "%0")]
 

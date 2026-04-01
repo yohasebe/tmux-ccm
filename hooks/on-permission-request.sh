@@ -14,6 +14,25 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || \
 CWD=$(printf '%s' "$INPUT" | grep -o '"cwd" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
 [[ -z "$CWD" ]] && exit 0
 
+# Extract tool name for detailed notification (e.g., "Bash", "Edit", "Write")
+TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || \
+TOOL_NAME=$(printf '%s' "$INPUT" | grep -o '"tool_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+
+# Extract brief detail from tool_input (file path or command snippet)
+TOOL_DETAIL=""
+if [[ -n "$TOOL_NAME" ]]; then
+    case "$TOOL_NAME" in
+        Bash|bash)
+            TOOL_DETAIL=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null | head -c 60)
+            ;;
+        Edit|Write|Read)
+            TOOL_DETAIL=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+            # Shorten home directory
+            TOOL_DETAIL="${TOOL_DETAIL/#$HOME/\~}"
+            ;;
+    esac
+fi
+
 if command -v realpath &>/dev/null && [[ -e "$CWD" ]]; then
     CWD=$(realpath "$CWD" 2>/dev/null) || true
 fi
@@ -26,4 +45,14 @@ else
     exit 0
 fi
 
-ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
+# Build detail string: "Bash: rm -rf ..." or "Edit: ~/src/main.rs"
+DETAIL=""
+if [[ -n "$TOOL_NAME" ]]; then
+    if [[ -n "$TOOL_DETAIL" ]]; then
+        DETAIL="${TOOL_NAME}: ${TOOL_DETAIL}"
+    else
+        DETAIL="${TOOL_NAME}"
+    fi
+fi
+
+ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD" "$DETAIL"

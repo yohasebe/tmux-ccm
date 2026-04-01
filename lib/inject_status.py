@@ -15,7 +15,7 @@ from ccm_core import (
     CCM_ROOT, CCM_TMP_DIR, CCM_SNAPSHOT_DIR,
     STATE_ICONS, STATE_PRIORITY,
     tmux_cmd, tmux_batch, build_project_list, update_window_names,
-    auto_exit_idle, periodic_autosave, notify,
+    auto_exit_idle, periodic_autosave, notify, read_hook_signal,
 )
 
 # tmux status bar color map
@@ -116,22 +116,38 @@ def priority_icon(projects):
     return "≡"
 
 
-def build_detail_entries(projects, with_extras=False):
-    """Build status bar entries for mode 1/2."""
+def build_detail_entries(projects, with_extras=False, current_win_idx=""):
+    """Build status bar entries for mode 1/2.
+    current_win_idx: highlight the active window entry.
+    """
     entries = []
     for p in projects:
         color = TMUX_COLORS.get(p.state, TMUX_COLORS["SHELL"])
         icon = STATE_ICONS.get(p.state, "○")
+        is_current = (p.win_idx == current_win_idx)
 
         if with_extras:
-            entry = f"#[fg=#666666]{p.win_idx}:#[fg=#9E9E9E]{p.name}"
+            # Mode 2: idx:name (branch) [:port]:icon
+            if is_current:
+                entry = f"#[fg=#ffffff,bold]{p.win_idx}:#[fg=#ffffff,bold]{p.name}"
+            else:
+                entry = f"#[fg=#666666]{p.win_idx}:#[fg=#9E9E9E]{p.name}"
             if p.branch:
-                entry += f" #[fg=#666666](#[fg=cyan]{p.branch}#[fg=#666666])#[fg=#9E9E9E]"
+                if is_current:
+                    entry += f" #[fg=#888888](#[fg=cyan,bold]{p.branch}#[fg=#888888])#[fg=#ffffff,bold]"
+                else:
+                    entry += f" #[fg=#666666](#[fg=cyan]{p.branch}#[fg=#666666])#[fg=#9E9E9E]"
             if p.ports:
                 entry += f"#[fg=#666666][:{p.ports}]#[fg=#9E9E9E]"
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
+            if is_current:
+                entry += "#[nobold]"
         else:
-            entry = f"{p.name}:#[fg={color}]{icon}#[fg=#9E9E9E]"
+            # Mode 1: name:icon
+            if is_current:
+                entry = f"#[fg=#ffffff,bold]{p.name}:#[fg={color},bold]{icon}#[nobold]#[fg=#9E9E9E]"
+            else:
+                entry = f"{p.name}:#[fg={color}]{icon}#[fg=#9E9E9E]"
 
         entries.append(entry)
     return entries
@@ -224,7 +240,13 @@ def _inject_status_impl():
                     # Skip PERMIT notification if hook already sent one within 5 seconds
                     if p.state == "PERMIT" and (now - hook_permit_ts) < 5:
                         continue
-                    notify(p.state, p.name)
+                    # Read detail from hook signal for PERMIT notifications
+                    detail = ""
+                    if p.state == "PERMIT" and p.dir:
+                        hook = read_hook_signal(p.dir)
+                        if hook and hook[1] == "PERMIT":
+                            detail = hook[2]
+                    notify(p.state, p.name, detail)
         os.replace(tmp, notify_cache)
     except OSError:
         pass
@@ -259,6 +281,9 @@ def _inject_status_impl():
     ccm_bin = os.path.join(CCM_ROOT, "ccm")
     refresh = f"#({ccm_bin} inject-status 2>/dev/null)"
 
+    # Current window index for highlighting active project in mode 1/2
+    current_win_idx = tmux_cmd("display-message", "-p", "#{window_index}")
+
     if mode == "1":
         # Mode 1: ccm-style window list in status-right (fit as many as possible)
         _cleanup_extra_lines()
@@ -271,7 +296,7 @@ def _inject_status_impl():
             ("set", "-g", "window-status-current-format", ""),
         )
 
-        entries = build_detail_entries(all_projects)
+        entries = build_detail_entries(all_projects, current_win_idx=current_win_idx)
 
         if not entries:
             new_status = f"#[fg=#666666]≡#[default] {original}{refresh}"
@@ -324,7 +349,7 @@ def _inject_status_impl():
         )
 
         all_projects = scan_active_windows(projects, include_all=True)
-        entries = build_detail_entries(all_projects, with_extras=True)
+        entries = build_detail_entries(all_projects, with_extras=True, current_win_idx=current_win_idx)
 
         if not entries:
             fmt = "#[align=right]#[fg=#666666,bg=#3a3a3a] ≡ ccm: no projects  "

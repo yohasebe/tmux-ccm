@@ -136,11 +136,11 @@ set -g @ccm-notify "permit,done"     # notify on PERMIT and DONE
 
 | Value | Behavior |
 |-------|----------|
-| `off` (default) | No notifications |
+| `permit,done` (default) | Notify on permission prompt and response completion |
 | `permit` | Notify when permission is needed |
 | `done` | Notify when response completes |
-| `permit,done` | Both |
 | `all` | All state changes |
+| `off` | No notifications |
 
 Disable notification sound:
 

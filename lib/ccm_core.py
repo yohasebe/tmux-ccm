@@ -168,14 +168,17 @@ def _hook_signal_path(project_dir):
 
 
 def read_hook_signal(project_dir):
-    """Read hook signal file. Returns (timestamp, state) or None."""
+    """Read hook signal file. Returns (timestamp, state, detail) or None.
+    Detail is optional extra info (e.g., tool name for PERMIT).
+    """
     hook_file = _hook_signal_path(project_dir)
     try:
         with open(hook_file) as f:
             content = f.read().strip()
-        parts = content.split()
+        parts = content.split(None, 2)  # split into at most 3 parts
         if len(parts) >= 2 and parts[1] in VALID_HOOK_STATES:
-            return int(parts[0]), parts[1]
+            detail = parts[2] if len(parts) >= 3 else ""
+            return int(parts[0]), parts[1], detail
     except (OSError, ValueError):
         pass
     return None
@@ -293,7 +296,7 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
             return "SHELL", "", last_done_ts
 
         if hook:
-            hook_ts, hook_state = hook
+            hook_ts, hook_state, _hook_detail = hook
             hook_age = now - hook_ts
 
             if raw == "IDLE":
@@ -468,7 +471,7 @@ def build_project_list(fast=False):
             if proj_dir:
                 hook = read_hook_signal(proj_dir)
                 if hook:
-                    hook_ts, hook_state = hook
+                    hook_ts, hook_state, _hook_detail = hook
                     hook_age = int(time.time()) - hook_ts
                     if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT and state != "PERMIT":
                         state = "BUSY"
@@ -578,11 +581,12 @@ def save_tmux_conf_setting(setting):
 
 # ─── Desktop notifications ───
 
-def notify(state, project):
+def notify(state, project, detail=""):
     """Send desktop notification for state changes.
     Controlled by @ccm-notify tmux option: off, permit, done, permit,done, all.
+    detail: optional context (e.g., "Bash: rm -rf ..." for PERMIT).
     """
-    setting = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "off"
+    setting = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,done"
     if setting == "off":
         return
 
@@ -592,9 +596,11 @@ def notify(state, project):
 
     sound_setting = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "on"
 
+    permit_body = f"Permission required: {detail}" if detail else \
+                  "Action required — respond to the permission prompt"
     messages = {
         "PERMIT": (f"ccm ⚠ {project}",
-                   "Action required — switch to this project and respond to the permission prompt",
+                   permit_body,
                    "Basso" if sound_setting == "on" else ""),
         "DONE":   (f"ccm ✔ {project}",
                    "Claude has finished responding — review the output when ready",
