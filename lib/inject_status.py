@@ -343,8 +343,8 @@ def _inject_status_impl():
             total_visible_width = 0
             for e in entries:
                 stripped = re.sub(r'#\[[^\]]*\]', '', e)
-                total_visible_width += len(stripped) + 3  # +3 for separator "│" + spaces
-            # Add separators between entries
+                total_visible_width += len(stripped) + 1  # +1 for leading space
+            # Add separators between entries (" │ " = 3 chars)
             total_visible_width += (len(entries) - 1) * 3 if len(entries) > 1 else 0
             entries_per_line = max(1, len(entries) * term_width // max(total_visible_width, 1))
             num_lines = max(1, (len(entries) + entries_per_line - 1) // entries_per_line)
