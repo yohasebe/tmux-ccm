@@ -318,6 +318,10 @@ set -g @ccm-preview-position "right"  # or "bottom"
 
 The preview updates when you move the cursor and refreshes automatically. ANSI colors (256-color and RGB) are rendered. Requires terminal width ≥ 80 columns. Can also be toggled from the dashboard menu (`m`).
 
+### Anti-Flicker
+
+ccm automatically sets `CLAUDE_CODE_NO_FLICKER=1` to reduce UI flicker when running Claude Code inside tmux. No user configuration needed.
+
 ## How It Works
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`

@@ -318,6 +318,10 @@ set -g @ccm-preview-position "right"  # または "bottom"
 
 カーソル移動で即座に更新され、自動リフレッシュもされます。ANSIカラー（256色、RGB）に対応。端末幅80列以上が必要です。ダッシュボードメニュー（`m`）からもトグル可能。
 
+### アンチフリッカー
+
+ccmはtmux内でのClaude CodeのUIフリッカーを軽減するため、`CLAUDE_CODE_NO_FLICKER=1` を自動設定します。ユーザー側の設定は不要です。
+
 ## 仕組み
 
 - プロジェクトはtmuxウィンドウの `@ccm_project` / `@ccm_dir` タグで管理
