@@ -597,16 +597,17 @@ def notify(state, project, detail=""):
         return
 
     sound_setting = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
+    sound_name = (tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass") if sound_setting == "on" else ""
 
     permit_body = f"Permission required: {detail}" if detail else \
                   "Action required — respond to the permission prompt"
     messages = {
         "PERMIT": (f"ccm ⚠ {project}",
                    permit_body,
-                   (tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass") if sound_setting == "on" else ""),
+                   sound_name),
         "DONE":   (f"ccm ✔ {project}",
                    "Claude has finished responding — review the output when ready",
-                   ""),
+                   sound_name),
         "BUSY":   (f"ccm ◉ {project}",
                    "Claude is now processing your request",
                    ""),
