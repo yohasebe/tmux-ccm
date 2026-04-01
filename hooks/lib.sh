@@ -86,7 +86,7 @@ _ccm_instant_notify() {
     # Sound setting
     local sound_setting
     sound_setting=$(tmux show-option -gqv @ccm-notify-sound 2>/dev/null)
-    sound_setting="${sound_setting:-on}"
+    sound_setting="${sound_setting:-off}"
 
     local title="ccm ⚠ ${project}"
     local body
@@ -103,7 +103,7 @@ _ccm_instant_notify() {
     if command -v osascript &>/dev/null; then
         local sound_opt=""
         if [[ "$sound_setting" == "on" ]]; then
-            sound_opt=' sound name "Basso"'
+            sound_opt=' sound name "Glass"'
         fi
         osascript -e "display notification \"${body}\" with title \"${title}\"${sound_opt}" 2>/dev/null &
     elif command -v notify-send &>/dev/null; then

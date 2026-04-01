@@ -145,7 +145,7 @@ set -g @ccm-notify "permit,done"     # PERMITとDONEで通知
 通知音を無効化：
 
 ```tmux
-set -g @ccm-notify-sound "off"    # デフォルト: on
+set -g @ccm-notify-sound "on"     # デフォルト: off（macOSでは「Glass」サウンドを再生）
 ```
 
 ### ステータスバー

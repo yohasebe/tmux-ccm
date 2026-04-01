@@ -596,14 +596,14 @@ def notify(state, project, detail=""):
     if setting != "all" and state_lower not in setting:
         return
 
-    sound_setting = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "on"
+    sound_setting = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
 
     permit_body = f"Permission required: {detail}" if detail else \
                   "Action required — respond to the permission prompt"
     messages = {
         "PERMIT": (f"ccm ⚠ {project}",
                    permit_body,
-                   "Basso" if sound_setting == "on" else ""),
+                   "Glass" if sound_setting == "on" else ""),
         "DONE":   (f"ccm ✔ {project}",
                    "Claude has finished responding — review the output when ready",
                    ""),

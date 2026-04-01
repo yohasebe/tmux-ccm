@@ -145,7 +145,7 @@ set -g @ccm-notify "permit,done"     # notify on PERMIT and DONE
 Disable notification sound:
 
 ```tmux
-set -g @ccm-notify-sound "off"    # default: on
+set -g @ccm-notify-sound "on"     # default: off (plays "Glass" sound on macOS)
 ```
 
 ### Status Bar
