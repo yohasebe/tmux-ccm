@@ -972,10 +972,11 @@ class Dashboard:
 
     @staticmethod
     def _preview_sound(sound_name):
-        """Play a macOS notification sound for preview."""
+        """Play a macOS system sound directly for instant preview."""
+        sound_file = f"/System/Library/Sounds/{sound_name}.aiff"
         try:
             subprocess.Popen(
-                ["osascript", "-e", f'display notification "Sound preview" with title "ccm" sound name "{sound_name}"'],
+                ["afplay", sound_file],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             pass
