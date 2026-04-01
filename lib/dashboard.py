@@ -1218,6 +1218,14 @@ class Dashboard:
         pos_labels = {"right": "Right", "bottom": "Bottom"}
         preview_pos_label = pos_labels.get(self.preview_position, self.preview_position)
 
+        # Notifications
+        notify = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,done"
+        notify_sound = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
+        sound_name = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass"
+
+        # Auto-start
+        auto_start = tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
+
         self.menu_items = [
             ("Add project", "add"),
             ("Save snapshot", "save"),
@@ -1228,6 +1236,11 @@ class Dashboard:
             (f"Idle timeout: {idle_label}", "idle_timeout"),
             (f"Preview panel: {preview_on}", "preview_toggle"),
             (f"Preview position: {preview_pos_label}", "preview_position"),
+            ("", ""),  # separator
+            (f"Notifications: {notify}", "notify"),
+            (f"Notification sound: {notify_sound}", "notify_sound"),
+            (f"Sound name: {sound_name}", "sound_name"),
+            (f"Auto-start Claude: {auto_start}", "auto_start"),
             ("", ""),  # separator
             ("Dashboard", "dashboard"),
             ("Tree view", "tree"),
@@ -1337,6 +1350,44 @@ class Dashboard:
                 tmux_cmd("set", "-g", "@ccm-preview-position", new_pos)
                 save_tmux_conf_setting(f"set -g @ccm-preview-position {new_pos}")
                 self._build_menu()
+            elif action == "notify":
+                options = ["off", "permit", "done", "permit,done", "all"]
+                current = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,done"
+                try:
+                    idx = options.index(current)
+                except ValueError:
+                    idx = 3
+                new_val = options[(idx + 1) % len(options)]
+                tmux_cmd("set", "-g", "@ccm-notify", new_val)
+                save_tmux_conf_setting(f'set -g @ccm-notify "{new_val}"')
+                self._build_menu()
+                self._show_message(stdscr, f"Notifications: {new_val}", 0.5)
+            elif action == "notify_sound":
+                current = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
+                new_val = "off" if current == "on" else "on"
+                tmux_cmd("set", "-g", "@ccm-notify-sound", new_val)
+                save_tmux_conf_setting(f"set -g @ccm-notify-sound {new_val}")
+                self._build_menu()
+                self._show_message(stdscr, f"Sound: {new_val}", 0.5)
+            elif action == "sound_name":
+                sounds = ["Glass", "Tink", "Pop", "Purr", "Ping", "Bottle", "Morse", "Basso"]
+                current = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass"
+                try:
+                    idx = sounds.index(current)
+                except ValueError:
+                    idx = 0
+                new_val = sounds[(idx + 1) % len(sounds)]
+                tmux_cmd("set", "-g", "@ccm-notify-sound-name", new_val)
+                save_tmux_conf_setting(f"set -g @ccm-notify-sound-name {new_val}")
+                self._build_menu()
+                self._show_message(stdscr, f"Sound: {new_val}", 0.5)
+            elif action == "auto_start":
+                current = tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
+                new_val = "off" if current == "on" else "on"
+                tmux_cmd("set", "-g", "@ccm-auto-start", new_val)
+                save_tmux_conf_setting(f"set -g @ccm-auto-start {new_val}")
+                self._build_menu()
+                self._show_message(stdscr, f"Auto-start Claude: {new_val}", 0.5)
             elif action == "dashboard":
                 self.mode = "dashboard"
             elif action == "tree":

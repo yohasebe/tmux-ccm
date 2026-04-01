@@ -53,7 +53,6 @@ Usage:
   ccm start [snapshot]              Start from a snapshot
   ccm stop [--all|name]             Stop project window(s)
   ccm menu                          Interactive menu (for keybinding)
-  ccm pane-title [on|off|toggle|status]  Control pane title display
   ccm init                          Interactive setup wizard
   ccm setup-hooks                   Install Claude Code hooks for improved state detection
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
@@ -143,9 +142,6 @@ case "${1:-help}" in
     menu)
         ccm_check_deps
         python3 "$CCM_ROOT/lib/dashboard.py" --mode menu
-        ;;
-    pane-title|pt)
-        python3 "$CCM_ROOT/lib/ccm_core.py" pane-title "${2:-}"
         ;;
     init)
         ccm_init

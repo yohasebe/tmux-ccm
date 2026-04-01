@@ -603,7 +603,7 @@ def notify(state, project, detail=""):
     messages = {
         "PERMIT": (f"ccm ⚠ {project}",
                    permit_body,
-                   "Glass" if sound_setting == "on" else ""),
+                   (tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass") if sound_setting == "on" else ""),
         "DONE":   (f"ccm ✔ {project}",
                    "Claude has finished responding — review the output when ready",
                    ""),
@@ -1619,38 +1619,6 @@ def cmd_stop(target):
         ccm_die("Usage: ccm stop [--all|<name>]")
 
 
-def cmd_pane_title(action="toggle"):
-    """Control pane title display."""
-    if not action:
-        action = "toggle"
-
-    session = get_session()
-    if not session:
-        ccm_die("Not inside a tmux session")
-
-    if action == "on":
-        tmux_batch(
-            ("set-option", "-t", session, "pane-border-status", "top"),
-            ("set-option", "-t", session, "pane-border-format", "#{pane_title}"),
-            ("set-option", "-g", "@ccm-pane-title", "on"),
-        )
-        tmux_cmd("display-message", "ccm: pane title ON")
-    elif action == "off":
-        tmux_batch(
-            ("set-option", "-t", session, "-u", "pane-border-status"),
-            ("set-option", "-t", session, "-u", "pane-border-format"),
-            ("set-option", "-g", "@ccm-pane-title", "off"),
-        )
-        tmux_cmd("display-message", "ccm: pane title OFF")
-    elif action == "toggle":
-        current = tmux_cmd("show-option", "-t", session, "-qv", "pane-border-status")
-        cmd_pane_title("off" if current == "top" else "on")
-    elif action == "status":
-        current = tmux_cmd("show-option", "-t", session, "-qv", "pane-border-status")
-        print(f"pane-title: {'on' if current == 'top' else 'off'}")
-    else:
-        ccm_die("Usage: ccm pane-title [on|off|toggle|status]")
-
 
 def cmd_clear_done():
     """Clear DONE flag for the current window."""
@@ -1694,8 +1662,6 @@ if __name__ == "__main__":
         cmd_capture(args)
     elif cmd == "stop":
         cmd_stop(args[0] if args else "")
-    elif cmd == "pane-title":
-        cmd_pane_title(args[0] if args else "")
     elif cmd == "snapshot-save":
         cmd_snapshot_save(args[0] if args else "")
     elif cmd == "snapshot-load":

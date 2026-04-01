@@ -22,7 +22,6 @@ _ccm() {
         'start:Start from a snapshot'
         'stop:Stop project window(s)'
         'menu:Interactive menu'
-        'pane-title:Control pane title display'
         'init:Interactive setup wizard'
         'setup-hooks:Install Claude Code hooks for improved state detection'
         'remove-hooks:Remove ccm hooks from Claude Code settings'
@@ -57,11 +56,6 @@ _ccm() {
                 local -a windows
                 windows=(${(f)"$(tmux list-windows -F '#{window_name}' 2>/dev/null)"})
                 compadd -a windows
-                ;;
-            pane-title|pt)
-                local -a pt_actions
-                pt_actions=('on' 'off' 'toggle' 'status')
-                compadd -a pt_actions
                 ;;
             snapshot|snap)
                 local -a snap_cmds
