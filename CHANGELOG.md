@@ -16,12 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mode 1/2 status bar highlights the active (current) window with white bold text
 - Auto-install/update hooks on plugin load (`ccm.tmux`) — TPM updates automatically register new hook types
 - Dashboard shows "Hooks: OFF" banner when hooks are not installed, with colored status indicator (yellow=OFF, cyan=ON)
+- Dashboard menu: Notifications, Notification sound, Sound name, Auto-start Claude (all auto-persisted to tmux.conf)
+- Sound preview on name change / sound enable (macOS, uses `afplay` for instant playback)
+- `@ccm-notify-sound-name` option for custom notification sound (default: Glass, 8 choices)
 
 ### Fixed
 - Mode 2 status line: fix double-counted separator width causing unnecessary extra lines
+- PERMIT state now persists indefinitely until user responds (was expiring after 5 minutes)
+- Fix false SHELL state from stale SessionEnd hook signal after Claude restarts with `--continue`
+- Fix notification sound not playing for DONE notifications (sound now applied to both PERMIT and DONE)
 
 ### Changed
 - Default `@ccm-notify` changed from `off` to `permit,done` — new users get PERMIT and DONE notifications out of the box
+- Default `@ccm-notify-sound` changed to `off` (was `on`); notification sound: Basso → Glass
+- Default idle auto-exit timeout changed from 5 to 10 minutes
+- Notification sound settings (sound on/off, sound name) are macOS-only (hidden on Linux)
+- Removed `ccm pane-title` command and `@ccm-pane-title` option (minimal value in single-pane windows)
 - **Session management and snapshots migrated to Python** — `lib/session.sh` and `lib/snapshot.sh` eliminated, all logic consolidated in `lib/ccm_core.py`
   - `jq` dependency removed for snapshot operations (Python `json` module)
   - `ccm` bash dispatcher now routes all subcommands to `python3 ccm_core.py`
