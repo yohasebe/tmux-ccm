@@ -152,6 +152,7 @@ This adds hooks to `~/.claude/settings.json`:
 | `SubagentStart` | BUSY | Subagent spawned (Agent tool) |
 | `Stop` | DONE | Claude finished responding |
 | `Notification` | PERMIT / DONE | Permission prompt shown / idle notification |
+| `SessionEnd` | SHELL | Claude Code session ended (/exit, Ctrl+D, etc.) |
 
 Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE/PERMIT: 30s).
 

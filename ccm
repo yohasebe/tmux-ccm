@@ -15,16 +15,14 @@ _ccm_resolve() {
 }
 CCM_ROOT="$(_ccm_resolve "$0")"
 
-# Background commands (inject-status, clear-done) must not fail on errors
+# Background commands must not fail on errors
 case "${1:-}" in
     inject-status|clear-done|dashboard|dash|d|tree-interactive|ti|init) set +e ;;
     *) set -euo pipefail ;;
 esac
 
-# Source library modules
+# Source common library (init, hooks, deps, output helpers)
 source "${CCM_ROOT}/lib/common.sh"
-source "${CCM_ROOT}/lib/session.sh"
-source "${CCM_ROOT}/lib/snapshot.sh"
 
 # Initialize runtime directories
 ccm_init_dirs
@@ -64,31 +62,33 @@ USAGE
 }
 
 # Main command dispatch
+# Session/snapshot commands are handled by Python (lib/ccm_core.py).
+# Only init, hooks, and deps remain in bash.
 case "${1:-help}" in
     add)
         ccm_check_deps
-        ccm_add "${2:-}" "${3:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" add "${2:-}" "${3:-}"
         ;;
     open)
-        ccm_open "${2:-}" "${3:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" open "${2:-}" "${3:-}"
         ;;
     register|reg)
-        ccm_register "${2:-}" "${3:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" register "${2:-}" "${3:-}"
         ;;
     unregister|unreg)
-        ccm_unregister "${2:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" unregister "${2:-}"
         ;;
     rename|mv)
-        ccm_rename "${2:-}" "${3:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" rename "${2:-}" "${3:-}"
         ;;
     remove|rm)
-        ccm_remove "${2:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" remove "${2:-}"
         ;;
     attach|a)
-        ccm_attach "${2:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" attach "${2:-}"
         ;;
     list|ls)
-        ccm_list
+        python3 "$CCM_ROOT/lib/ccm_core.py" list
         ;;
     status|st)
         python3 "$CCM_ROOT/lib/ccm_core.py" status
@@ -104,7 +104,7 @@ case "${1:-help}" in
         ;;
     capture|cap)
         shift
-        ccm_capture "$@"
+        python3 "$CCM_ROOT/lib/ccm_core.py" capture "$@"
         ;;
     dashboard|dash|d)
         ccm_check_deps
@@ -117,44 +117,35 @@ case "${1:-help}" in
         python3 "$CCM_ROOT/lib/inject_status.py" || true
         ;;
     clear-done)
-        # Clear DONE flag for the current window (ignore errors)
-        (
-            if [[ -n "${TMUX:-}" ]]; then
-                local_session=$(tmux display-message -p '#{session_name}' 2>/dev/null)
-                local_win=$(tmux display-message -p '#{window_index}' 2>/dev/null)
-                if [[ -n "$local_session" && -n "$local_win" ]]; then
-                    ccm_clear_done "${local_session}:${local_win}"
-                fi
-            fi
-        ) || true
+        python3 "$CCM_ROOT/lib/ccm_core.py" clear-done || true
         ;;
     snapshot|snap)
         ccm_check_deps
         case "${2:-}" in
-            save)  ccm_snapshot_save "${3:-}" ;;
-            load)  ccm_snapshot_load "${3:-}" ;;
-            list)  ccm_snapshot_list ;;
-            delete|del) ccm_snapshot_delete "${3:-}" ;;
+            save)  python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-save "${3:-}" ;;
+            load)  python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-load "${3:-}" ;;
+            list)  python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-list ;;
+            delete|del) python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-delete "${3:-}" ;;
             *)     ccm_die "Usage: ccm snapshot save|load|list|delete [name]" ;;
         esac
         ;;
     start)
         ccm_check_deps
         if [[ -n "${2:-}" ]]; then
-            ccm_snapshot_load "$2"
+            python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-load "$2"
         else
             ccm_die "Usage: ccm start <snapshot>"
         fi
         ;;
     stop)
-        ccm_stop "${2:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" stop "${2:-}"
         ;;
     menu)
         ccm_check_deps
         python3 "$CCM_ROOT/lib/dashboard.py" --mode menu
         ;;
     pane-title|pt)
-        ccm_pane_title "${2:-}"
+        python3 "$CCM_ROOT/lib/ccm_core.py" pane-title "${2:-}"
         ;;
     init)
         ccm_init

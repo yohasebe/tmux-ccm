@@ -74,11 +74,13 @@ teardown() {
 @test "setup-hooks: hook commands point to correct scripts" {
     run ccm_setup_hooks
     [[ "$status" -eq 0 ]]
-    local prompt_cmd stop_cmd
+    local prompt_cmd stop_cmd session_end_cmd
     prompt_cmd=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "${MOCK_DIR}/.claude/settings.json")
     stop_cmd=$(jq -r '.hooks.Stop[0].hooks[0].command' "${MOCK_DIR}/.claude/settings.json")
+    session_end_cmd=$(jq -r '.hooks.SessionEnd[0].hooks[0].command' "${MOCK_DIR}/.claude/settings.json")
     [[ "$prompt_cmd" == *"/hooks/on-prompt-submit.sh" ]]
     [[ "$stop_cmd" == *"/hooks/on-stop.sh" ]]
+    [[ "$session_end_cmd" == *"/hooks/on-session-end.sh" ]]
 }
 
 @test "setup-hooks: timeout uses CCM_HOOK_CMD_TIMEOUT" {

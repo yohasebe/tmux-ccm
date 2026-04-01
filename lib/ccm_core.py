@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """ccm core — shared constants, helpers, state detection, and project list building."""
 
+import glob as _glob_mod
 import hashlib
+import json
 import os
 import re
+import shlex
 import subprocess
+import sys
 import time
 
 # ─── Constants ───
@@ -22,9 +26,10 @@ CCM_SNAPSHOT_DIR = os.path.join(
 CCM_GIT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "git-cache")
 CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 
-DONE_TIMEOUT = 30
-HOOK_TIMEOUT = 300
-IDLE_EXIT_TIMEOUT = 300  # 5 minutes default
+DONE_TIMEOUT = int(os.environ.get("CCM_DONE_TIMEOUT", "30"))
+HOOK_TIMEOUT = int(os.environ.get("CCM_HOOK_TIMEOUT", "300"))
+IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "300"))  # 5 minutes default
+CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 
 # ─── Claude Code UI patterns (update when Claude Code UI changes) ───
 # These are the ONLY place where Claude Code's terminal output is matched.
@@ -53,6 +58,7 @@ HOOK_SCRIPTS = [
     "on-pre-tool-use.sh",
     "on-notification.sh",
     "on-permission-request.sh",
+    "on-session-end.sh",
 ]
 
 STATE_PRIORITY = {"PERMIT": 0, "DONE": 1, "BUSY": 2, "IDLE": 3, "SHELL": 4, "DOWN": 5}
@@ -142,12 +148,12 @@ def touch_popup_session():
 # Written by: hooks/on-prompt-submit.sh, hooks/on-pre-tool-use.sh,
 #             hooks/on-stop.sh, hooks/on-notification.sh
 
-VALID_HOOK_STATES = {"BUSY", "DONE", "PERMIT"}
+VALID_HOOK_STATES = {"BUSY", "DONE", "PERMIT", "SHELL"}
 
 
 def _resolve_project_dir(project_dir):
     """Expand and resolve a project directory path."""
-    expanded = os.path.expanduser(project_dir.replace("~", os.path.expanduser("~")))
+    expanded = os.path.expanduser(project_dir)
     try:
         expanded = os.path.realpath(expanded)
     except OSError:
@@ -268,13 +274,24 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
     now = int(time.time())
     raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid)
 
-    if raw in ("SHELL", "DOWN"):
+    if raw == "DOWN":
         _set_win_state(win_target, raw, unset_done=True)
         return raw, "", last_done_ts
 
-    # Hook-based enhancement
+    if raw == "SHELL":
+        _set_win_state(win_target, raw, unset_done=True)
+        return raw, "", last_done_ts
+
+    # Hook-based enhancement (single read_hook_signal call per cycle)
     if project_dir:
         hook = read_hook_signal(project_dir)
+
+        # SessionEnd hook: trust SHELL signal when process tree shows IDLE
+        # (SessionEnd fires as Claude exits; process may linger briefly)
+        if hook and hook[1] == "SHELL" and raw == "IDLE":
+            _set_win_state(win_target, "SHELL", unset_done=True)
+            return "SHELL", "", last_done_ts
+
         if hook:
             hook_ts, hook_state = hook
             hook_age = now - hook_ts
@@ -361,7 +378,7 @@ class Project:
 
 
 def read_cache_file(cache_dir, directory):
-    expanded = os.path.expanduser(directory.replace("~", os.path.expanduser("~")))
+    expanded = os.path.expanduser(directory)
     try:
         expanded = os.path.realpath(expanded)
     except OSError:
@@ -371,7 +388,7 @@ def read_cache_file(cache_dir, directory):
     try:
         if os.path.exists(path):
             age = time.time() - os.path.getmtime(path)
-            if age < 30:
+            if age < CACHE_TTL:
                 with open(path) as f:
                     return f.read().strip()
     except OSError:
@@ -416,9 +433,7 @@ def build_project_list(fast=False):
             continue
 
         try:
-            resolved = os.path.realpath(
-                os.path.expanduser(proj_dir.replace("~", os.path.expanduser("~")))
-            )
+            resolved = os.path.realpath(os.path.expanduser(proj_dir))
         except OSError:
             resolved = proj_dir
         if resolved in seen_dirs:
@@ -597,8 +612,14 @@ def notify(state, project):
 
     title, body, sound = messages[state]
     try:
-        sound_opt = f' sound name "{sound}"' if sound else ""
-        cmd = f'display notification "{body}" with title "{title}"{sound_opt}'
+        # Escape double quotes and backslashes for AppleScript string literals
+        esc_title = title.replace("\\", "\\\\").replace('"', '\\"')
+        esc_body = body.replace("\\", "\\\\").replace('"', '\\"')
+        sound_opt = ""
+        if sound:
+            esc_sound = sound.replace("\\", "\\\\").replace('"', '\\"')
+            sound_opt = f' sound name "{esc_sound}"'
+        cmd = f'display notification "{esc_body}" with title "{esc_title}"{sound_opt}'
         subprocess.Popen(["osascript", "-e", cmd],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except FileNotFoundError:
@@ -715,11 +736,9 @@ def auto_exit_idle(projects):
 
 def _force_autosave():
     """Force an immediate autosave."""
-    ccm_bin = os.path.join(CCM_ROOT, "ccm")
     try:
-        subprocess.run([ccm_bin, "snapshot", "save", "_autosave"],
-                       capture_output=True, timeout=10)
-    except (subprocess.TimeoutExpired, OSError):
+        cmd_snapshot_save("_autosave", quiet=True)
+    except Exception:
         pass
 
 
@@ -744,13 +763,11 @@ def periodic_autosave():
     if not has_projects:
         return
 
-    ccm_bin = os.path.join(CCM_ROOT, "ccm")
     try:
-        subprocess.run([ccm_bin, "snapshot", "save", "_autosave"],
-                       capture_output=True, timeout=10)
+        cmd_snapshot_save("_autosave", quiet=True)
         with open(marker, "w") as f:
             f.write(str(now))
-    except (subprocess.TimeoutExpired, OSError):
+    except Exception:
         pass
 
 
@@ -895,11 +912,752 @@ def print_statusline():
     print(f"| {' '.join(parts)} |")
 
 
+# ─── CLI helpers ───
+
+_C_RED = "\033[0;31m"
+_C_GREEN = "\033[0;32m"
+_C_YELLOW = "\033[1;33m"
+
+
+def ccm_die(msg):
+    """Print error message and exit."""
+    print(f"{_C_RED}Error: {msg}{_C_RESET}", file=sys.stderr)
+    sys.exit(1)
+
+
+def ccm_warn(msg):
+    """Print warning message."""
+    print(f"{_C_YELLOW}Warning: {msg}{_C_RESET}", file=sys.stderr)
+
+
+def ccm_info(msg):
+    """Print info message."""
+    print(f"{_C_GREEN}{msg}{_C_RESET}")
+
+
+def validate_name(name):
+    """Sanitize project name. Returns cleaned name or empty string."""
+    if not name:
+        return ""
+    # Strip whitespace
+    name = name.strip()
+    # Replace whitespace with hyphens
+    name = re.sub(r'\s+', '-', name)
+    # Remove shell-dangerous characters
+    name = re.sub(r"['\"`$\\;&|<>()]", '', name)
+    # Collapse and strip hyphens
+    name = re.sub(r'-+', '-', name).strip('-')
+    return name
+
+
+def find_window(session, name):
+    """Find window index by project name. Returns index string or None."""
+    raw = tmux_cmd("list-windows", "-t", session, "-F",
+                   "#{window_index}\t#{@ccm_project}")
+    if not raw:
+        return None
+    for line in raw.split("\n"):
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1] == name:
+            return parts[0]
+    return None
+
+
+def project_exists(session, name):
+    """Check if project name already exists in session."""
+    return find_window(session, name) is not None
+
+
+def list_windows_raw(session):
+    """List ccm-managed windows. Returns list of (idx, name, project, dir)."""
+    raw = tmux_cmd("list-windows", "-t", session, "-F",
+                   "#{window_index}\t#{window_name}\t#{@ccm_project}\t#{@ccm_dir}")
+    if not raw:
+        return []
+    result = []
+    for line in raw.split("\n"):
+        parts = line.split("\t")
+        while len(parts) < 4:
+            parts.append("")
+        if parts[2]:  # has @ccm_project tag
+            result.append(tuple(parts[:4]))
+    return result
+
+
+def clipboard_copy(text):
+    """Copy text to system clipboard. Returns True on success."""
+    for cmd in [["pbcopy"], ["clip.exe"], ["xclip", "-selection", "clipboard"], ["xsel", "-b"]]:
+        try:
+            subprocess.run(cmd, input=text, text=True, timeout=5,
+                           capture_output=True, check=True)
+            return True
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            continue
+    return False
+
+
+def auto_start_claude(win_target):
+    """Auto-start Claude Code if @ccm-auto-start is on."""
+    setting = tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
+    if setting != "on":
+        return
+    tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
+
+
+def clear_done(win_target):
+    """Clear DONE hook signal for a window."""
+    proj_dir = tmux_cmd("show-option", "-wqv", "-t", win_target, "@ccm_dir")
+    if not proj_dir:
+        return
+    resolved = _resolve_project_dir(proj_dir)
+    hook_file = os.path.join(CCM_HOOK_DIR, md5_hash(resolved))
+    try:
+        if os.path.exists(hook_file):
+            with open(hook_file) as f:
+                if "DONE" in f.read():
+                    os.unlink(hook_file)
+    except OSError:
+        pass
+    tmux_cmd("set-option", "-wq", "-t", win_target, "@ccm_prev_state", "")
+
+
+def init_dirs():
+    """Create runtime directories."""
+    for d in [CCM_SNAPSHOT_DIR, CCM_TMP_DIR, CCM_HOOK_DIR,
+              CCM_GIT_CACHE_DIR, CCM_PORT_CACHE_DIR,
+              os.path.join(os.path.expanduser("~/.local/share/ccm"), "state")]:
+        os.makedirs(d, exist_ok=True)
+
+
+def fzf_select(items, prompt="Select: "):
+    """Run fzf for interactive selection. Returns selected item or None."""
+    try:
+        r = subprocess.run(["fzf", "--prompt", prompt, "--height=10"],
+                           input="\n".join(items), capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+    except FileNotFoundError:
+        ccm_die("fzf not found (install with: brew install fzf)")
+
+
+# ─── Snapshot commands ───
+
+
+def _sanitize_snapshot_name(name):
+    """Sanitize snapshot name to prevent path traversal."""
+    # Strip path components — only keep the basename
+    name = os.path.basename(name)
+    # Remove any remaining dots that could cause issues (e.g., ".." left over)
+    name = name.strip(".")
+    if not name:
+        ccm_die("Invalid snapshot name")
+    return name
+
+
+def cmd_snapshot_save(name="", quiet=False):
+    """Save current projects as a snapshot."""
+    if not name:
+        try:
+            name = input("Snapshot name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+    if not name:
+        ccm_die("Snapshot name is required")
+    name = _sanitize_snapshot_name(name)
+
+    init_dirs()
+
+    # Scan ALL sessions for ccm-tagged windows
+    raw = tmux_cmd("list-windows", "-a", "-F",
+                   "#{window_index}\t#{window_name}\t#{@ccm_project}\t#{@ccm_dir}")
+    if not raw:
+        if not quiet:
+            ccm_die("No active projects to save")
+        return
+
+    projects_list = []
+    for line in raw.split("\n"):
+        parts = line.split("\t")
+        while len(parts) < 4:
+            parts.append("")
+        project, proj_dir = parts[2], parts[3]
+        if not project or not proj_dir:
+            continue
+        # Replace $HOME with ~ for portability
+        proj_dir = proj_dir.replace(os.path.expanduser("~"), "~")
+        projects_list.append({
+            "name": project,
+            "dir": proj_dir,
+            "auto_start_claude": True,
+        })
+
+    if not projects_list:
+        if not quiet:
+            ccm_die("No active projects to save")
+        return
+
+    snapshot = {
+        "version": 1,
+        "name": name,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "projects": projects_list,
+    }
+
+    file_path = os.path.join(CCM_SNAPSHOT_DIR, f"{name}.json")
+    tmp_path = file_path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(snapshot, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, file_path)
+
+    if not quiet:
+        ccm_info(f"Snapshot saved: {name} ({file_path})")
+
+
+def cmd_snapshot_load(name=""):
+    """Load and restore a snapshot."""
+    init_dirs()
+    if not name:
+        files = sorted(_glob_mod.glob(os.path.join(CCM_SNAPSHOT_DIR, "*.json")))
+        if not files:
+            ccm_die("No snapshots found")
+        items = [os.path.splitext(os.path.basename(f))[0] for f in files]
+        name = fzf_select(items, "Select snapshot: ")
+        if not name:
+            return
+
+    name = _sanitize_snapshot_name(name)
+    file_path = os.path.join(CCM_SNAPSHOT_DIR, f"{name}.json")
+    if not os.path.exists(file_path):
+        ccm_die(f"Snapshot not found: {name}")
+
+    with open(file_path) as f:
+        data = json.load(f)
+
+    snap_projects = data.get("projects", [])
+    print(f"Loading snapshot: {name} ({len(snap_projects)} projects)")
+
+    session = get_session()
+    if not session:
+        ccm_die("Not inside a tmux session")
+
+    for proj in snap_projects:
+        proj_name = proj.get("name", "")
+        proj_dir = proj.get("dir", "")
+        if not proj_name or proj_name == "null":
+            continue
+        if not proj_dir or proj_dir == "null":
+            continue
+
+        proj_dir = os.path.expanduser(proj_dir)
+        try:
+            proj_dir = os.path.realpath(proj_dir)
+        except OSError:
+            pass
+
+        if project_exists(session, proj_name):
+            ccm_warn(f"Project window already exists, skipping: {proj_name}")
+            continue
+        if not os.path.isdir(proj_dir):
+            ccm_warn(f"Directory not found, skipping: {proj_name} ({proj_dir})")
+            continue
+
+        # Don't auto-start Claude on restore — saves resources
+        cmd_add(proj_dir, proj_name, start_claude=False, _loading=True)
+
+    # Save autosave after all projects loaded
+    try:
+        cmd_snapshot_save("_autosave", quiet=True)
+    except Exception:
+        ccm_warn("Failed to save autosave snapshot after load")
+
+    ccm_info(f"Snapshot loaded: {name}")
+
+
+def cmd_snapshot_list():
+    """List available snapshots."""
+    init_dirs()
+    files = sorted(_glob_mod.glob(os.path.join(CCM_SNAPSHOT_DIR, "*.json")))
+    if not files:
+        print("No snapshots.")
+        return
+
+    print(f"{_C_BOLD}{'NAME':<20} {'CREATED':<24} {'PROJECTS'}{_C_RESET}")
+    print(f"{'----':<20} {'-------':<24} {'--------'}")
+
+    for fp in files:
+        try:
+            with open(fp) as f:
+                data = json.load(f)
+            name = data.get("name", os.path.splitext(os.path.basename(fp))[0])
+            created = data.get("created", "-")
+            count = len(data.get("projects", []))
+            print(f"{name:<20} {created:<24} {count}")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+
+def cmd_snapshot_delete(name=""):
+    """Delete a snapshot."""
+    init_dirs()
+    if not name:
+        files = sorted(_glob_mod.glob(os.path.join(CCM_SNAPSHOT_DIR, "*.json")))
+        if not files:
+            ccm_die("No snapshots found")
+        items = [os.path.splitext(os.path.basename(f))[0] for f in files]
+        name = fzf_select(items, "Delete snapshot: ")
+        if not name:
+            return
+
+    name = _sanitize_snapshot_name(name)
+    file_path = os.path.join(CCM_SNAPSHOT_DIR, f"{name}.json")
+    if not os.path.exists(file_path):
+        ccm_die(f"Snapshot not found: {name}")
+
+    os.unlink(file_path)
+    ccm_info(f"Snapshot deleted: {name}")
+
+
+# ─── Session commands ───
+
+
+def _autosave_trigger():
+    """Trigger autosave in background (non-blocking)."""
+    try:
+        cmd_snapshot_save("_autosave", quiet=True)
+    except Exception:
+        pass
+
+
+def cmd_add(directory, name="", start_claude=True, _loading=False):
+    """Add a new ccm project window."""
+    if not directory:
+        ccm_die("Directory is required")
+
+    directory = os.path.expanduser(directory)
+    try:
+        directory = os.path.realpath(directory)
+    except OSError:
+        pass
+
+    if not os.path.isdir(directory):
+        ccm_die(f"Directory does not exist: {directory}")
+
+    if not name:
+        name = os.path.basename(directory)
+    name = validate_name(name)
+    if not name:
+        ccm_die("Invalid project name")
+
+    session = get_session()
+    if not session:
+        ccm_die("Not inside a tmux session")
+
+    if project_exists(session, name):
+        ccm_die(f"Project window already exists: {name}")
+
+    # Check for duplicate directory
+    for _idx, _wn, _proj, existing_dir in list_windows_raw(session):
+        try:
+            real_existing = os.path.realpath(os.path.expanduser(existing_dir))
+        except OSError:
+            real_existing = existing_dir
+        if directory == real_existing:
+            ccm_die(f"Directory already registered as project '{_proj}': {existing_dir}")
+
+    # Create new window
+    win_idx = tmux_cmd("new-window", "-P", "-F", "#{window_index}",
+                       "-t", f"{session}:", "-n", name, "-c", directory)
+    if not win_idx:
+        ccm_die("Failed to create window")
+
+    win_target = f"{session}:{win_idx}"
+
+    # Tag the window with ccm metadata
+    orig_name = tmux_cmd("display-message", "-t", win_target, "-p", "#{window_name}") or name
+    tmux_batch(
+        ("set-option", "-wt", win_target, "@ccm_orig_name", orig_name),
+        ("set-option", "-wt", win_target, "@ccm_project", name),
+        ("set-option", "-wt", win_target, "@ccm_dir", directory),
+        ("set-option", "-wt", win_target, "automatic-rename", "off"),
+    )
+
+    if start_claude:
+        tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
+
+    ccm_info(f"Added project: {name} ({directory})")
+
+    if not hooks_configured():
+        ccm_warn("Hooks not installed. Run 'ccm setup-hooks' for accurate state detection.")
+
+    if not _loading:
+        _autosave_trigger()
+
+
+def cmd_open(directory, name=""):
+    """Start Claude in the current pane (for split-pane use)."""
+    if not directory:
+        ccm_die("Directory is required")
+
+    directory = os.path.expanduser(directory)
+    try:
+        directory = os.path.realpath(directory)
+    except OSError:
+        pass
+
+    if not os.path.isdir(directory):
+        ccm_die(f"Directory does not exist: {directory}")
+
+    if not name:
+        name = os.path.basename(directory)
+
+    # shlex.quote for safety
+    tmux_cmd("send-keys",
+             f"cd {shlex.quote(directory)} && (claude --continue 2>/dev/null || claude)",
+             "Enter")
+
+
+def cmd_register(source_target, new_name=""):
+    """Register an existing tmux window as a ccm project."""
+    if not source_target:
+        ccm_die("Usage: ccm register <window_name|window_index> [name]")
+
+    session = get_session()
+    if not session:
+        ccm_die("Not inside a tmux session")
+
+    # Find window by index or name
+    if source_target.isdigit():
+        win_idx = source_target
+        win_name = tmux_cmd("display-message", "-t", f"{session}:{win_idx}",
+                            "-p", "#{window_name}")
+        if not win_name:
+            ccm_die(f"Window not found at index: {source_target}")
+    else:
+        raw = tmux_cmd("list-windows", "-t", session, "-F",
+                       "#{window_index}\t#{window_name}")
+        win_idx = None
+        win_name = source_target
+        if raw:
+            for line in raw.split("\n"):
+                parts = line.split("\t")
+                if len(parts) >= 2 and parts[1] == source_target:
+                    win_idx = parts[0]
+                    break
+        if win_idx is None:
+            ccm_die(f"Window not found: {source_target}")
+
+    win_target = f"{session}:{win_idx}"
+
+    # Check if already tagged
+    existing = tmux_cmd("show-option", "-wt", win_target, "-qv", "@ccm_project")
+    if existing:
+        ccm_die(f"Already a ccm project: {existing}")
+
+    name = new_name or win_name
+    name = validate_name(name)
+    if not name:
+        ccm_die("Invalid project name")
+
+    if project_exists(session, name):
+        ccm_die(f"Project name already in use: {name}")
+
+    # Get directory from pane
+    pane_dir = tmux_cmd("display-message", "-t", win_target, "-p", "#{pane_current_path}")
+
+    tmux_batch(
+        ("set-option", "-wt", win_target, "@ccm_orig_name", win_name),
+        ("set-option", "-wt", win_target, "@ccm_project", name),
+        ("set-option", "-wt", win_target, "@ccm_dir", pane_dir or ""),
+        ("set-option", "-wt", win_target, "automatic-rename", "off"),
+        ("rename-window", "-t", win_target, name),
+    )
+
+    ccm_info(f"Registered: {win_name} → {name}")
+    _autosave_trigger()
+
+
+def cmd_unregister(name):
+    """Unregister window from ccm (keep window alive)."""
+    if not name:
+        ccm_die("Project name is required")
+
+    session = get_session()
+    idx = find_window(session, name)
+    if idx is None:
+        ccm_die(f"Project window not found: {name}")
+
+    win_target = f"{session}:{idx}"
+
+    # Restore original name
+    orig_name = tmux_cmd("show-option", "-wt", win_target, "-qv", "@ccm_orig_name")
+    if orig_name:
+        tmux_cmd("rename-window", "-t", win_target, orig_name)
+
+    # Remove all ccm tags
+    tags = ["automatic-rename", "@ccm_project", "@ccm_dir", "@ccm_orig_name",
+            "@ccm_prev_state", "@ccm_done", "@ccm_last_done",
+            "@ccm_state_icon", "@ccm_state_color"]
+    cmds = [("set-option", "-wt", win_target, "-u", tag) for tag in tags]
+    tmux_batch(*cmds)
+
+    ccm_info(f"Unregistered: {name} (window kept)")
+    _autosave_trigger()
+
+
+def cmd_rename(old_name, new_name):
+    """Rename a ccm project."""
+    if not old_name:
+        ccm_die("Usage: ccm rename <current_name> <new_name>")
+    if not new_name:
+        ccm_die("New name is required")
+
+    new_name = validate_name(new_name)
+    if not new_name:
+        ccm_die("Invalid project name")
+
+    session = get_session()
+    idx = find_window(session, old_name)
+    if idx is None:
+        ccm_die(f"Project not found: {old_name}")
+
+    if project_exists(session, new_name):
+        ccm_die(f"Project name already in use: {new_name}")
+
+    win_target = f"{session}:{idx}"
+    tmux_batch(
+        ("set-option", "-wt", win_target, "@ccm_project", new_name),
+        ("rename-window", "-t", win_target, new_name),
+    )
+
+    ccm_info(f"Renamed: {old_name} → {new_name}")
+    _autosave_trigger()
+
+
+def cmd_remove(name):
+    """Remove a ccm project window (kill window)."""
+    if not name:
+        ccm_die("Project name is required")
+
+    session = get_session()
+    idx = find_window(session, name)
+    if idx is None:
+        ccm_die(f"Project window not found: {name}")
+
+    tmux_cmd("kill-window", "-t", f"{session}:{idx}")
+    ccm_info(f"Removed project: {name}")
+    _autosave_trigger()
+
+
+def cmd_list():
+    """List all ccm-managed project windows."""
+    session = get_session()
+    if not session:
+        print("No active projects.")
+        return
+
+    windows = list_windows_raw(session)
+    if not windows:
+        print("No active projects.")
+        return
+
+    print(f"{_C_BOLD}{'PROJECT':<20} {'DIRECTORY'}{_C_RESET}")
+    print(f"{'-------':<20} {'---------'}")
+
+    for _idx, _wn, project, proj_dir in windows:
+        print(f"{project:<20} {proj_dir}")
+
+
+def cmd_attach(target):
+    """Switch to a ccm project window."""
+    if not target:
+        ccm_die("Project name or number is required")
+
+    session = get_session()
+    if not session:
+        ccm_die("Not inside a tmux session")
+
+    idx = None
+    if target.isdigit():
+        # By window index
+        windows = list_windows_raw(session)
+        for w_idx, _, _, _ in windows:
+            if w_idx == target:
+                idx = w_idx
+                break
+        if idx is None:
+            ccm_die(f"No ccm project at window index: {target}")
+    else:
+        idx = find_window(session, target)
+        if idx is None:
+            # Try by window name
+            raw = tmux_cmd("list-windows", "-t", session, "-F",
+                           "#{window_index}\t#{window_name}")
+            if raw:
+                for line in raw.split("\n"):
+                    parts = line.split("\t")
+                    if len(parts) >= 2 and parts[1] == target:
+                        idx = parts[0]
+                        break
+            if idx is None:
+                ccm_die(f"Project not found: {target}")
+
+    # Check if already on this window
+    current_idx = tmux_cmd("display-message", "-t", session, "-p", "#{window_index}")
+    if current_idx == idx:
+        ccm_info("Already in this window")
+        return
+
+    win_target = f"{session}:{idx}"
+
+    # Auto-start Claude if SHELL state
+    pane_pid = tmux_cmd("list-panes", "-t", win_target, "-F", "#{pane_pid}")
+    if pane_pid:
+        pane_pid = pane_pid.split("\n")[0]
+        # Check if claude is running as child
+        try:
+            ps_out = subprocess.run(["ps", "-eo", "ppid,comm"],
+                                    capture_output=True, text=True, timeout=5)
+            has_claude = False
+            for line in ps_out.stdout.strip().split("\n"):
+                fields = line.split()
+                if len(fields) >= 2 and fields[0] == pane_pid and fields[1] == "claude":
+                    has_claude = True
+                    break
+        except (subprocess.TimeoutExpired, OSError):
+            has_claude = True  # Assume running on error
+
+        if not has_claude:
+            auto_start_claude(win_target)
+
+    clear_done(win_target)
+    tmux_cmd("select-window", "-t", f"{session}:{idx}")
+
+
+def cmd_capture(args):
+    """Capture visible content of a project window."""
+    copy_mode = False
+    target = ""
+    for arg in args:
+        if arg in ("--copy", "-c"):
+            copy_mode = True
+        else:
+            target = arg
+
+    if not target:
+        ccm_die("Usage: ccm capture [--copy] <name|#id>")
+
+    session = get_session()
+
+    # Resolve target to window index
+    if target.startswith("#"):
+        num = target[1:]
+    elif target.isdigit():
+        num = target
+    else:
+        num = None
+
+    if num is not None:
+        windows = list_windows_raw(session)
+        idx = None
+        proj_name = None
+        for w_idx, _, proj, _ in windows:
+            if w_idx == num:
+                idx = w_idx
+                proj_name = proj
+                break
+        if idx is None:
+            ccm_die(f"No ccm project at window index: {num}")
+    else:
+        proj_name = target
+        idx = find_window(session, target)
+        if idx is None:
+            ccm_die(f"Project not found: {target}")
+
+    output = tmux_cmd("capture-pane", "-t", f"{session}:{idx}", "-p", "-S", "-50")
+
+    if copy_mode:
+        if clipboard_copy(output):
+            ccm_info(f"Captured {proj_name} → clipboard")
+        else:
+            ccm_warn("No clipboard tool available (install pbcopy, xclip, or xsel)")
+    else:
+        print(f"=== ccm capture: {proj_name} ===")
+        print(output)
+        print("=== end ===")
+
+
+def cmd_stop(target):
+    """Stop project window(s)."""
+    if target == "--all":
+        session = get_session()
+        windows = list_windows_raw(session)
+        if not windows:
+            print("No active projects.")
+            return
+
+        # Auto-save before stopping
+        init_dirs()
+        try:
+            cmd_snapshot_save("_autosave", quiet=True)
+            ccm_info("Auto-saved snapshot: _autosave")
+        except Exception:
+            pass
+
+        for w_idx, _, project, _ in windows:
+            tmux_cmd("kill-window", "-t", f"{session}:{w_idx}")
+            ccm_info(f"Stopped: {project}")
+    elif target:
+        cmd_remove(target)
+    else:
+        ccm_die("Usage: ccm stop [--all|<name>]")
+
+
+def cmd_pane_title(action="toggle"):
+    """Control pane title display."""
+    if not action:
+        action = "toggle"
+
+    session = get_session()
+    if not session:
+        ccm_die("Not inside a tmux session")
+
+    if action == "on":
+        tmux_batch(
+            ("set-option", "-t", session, "pane-border-status", "top"),
+            ("set-option", "-t", session, "pane-border-format", "#{pane_title}"),
+            ("set-option", "-g", "@ccm-pane-title", "on"),
+        )
+        tmux_cmd("display-message", "ccm: pane title ON")
+    elif action == "off":
+        tmux_batch(
+            ("set-option", "-t", session, "-u", "pane-border-status"),
+            ("set-option", "-t", session, "-u", "pane-border-format"),
+            ("set-option", "-g", "@ccm-pane-title", "off"),
+        )
+        tmux_cmd("display-message", "ccm: pane title OFF")
+    elif action == "toggle":
+        current = tmux_cmd("show-option", "-t", session, "-qv", "pane-border-status")
+        cmd_pane_title("off" if current == "top" else "on")
+    elif action == "status":
+        current = tmux_cmd("show-option", "-t", session, "-qv", "pane-border-status")
+        print(f"pane-title: {'on' if current == 'top' else 'off'}")
+    else:
+        ccm_die("Usage: ccm pane-title [on|off|toggle|status]")
+
+
+def cmd_clear_done():
+    """Clear DONE flag for the current window."""
+    session_name = tmux_cmd("display-message", "-p", "#{session_name}")
+    win_idx = tmux_cmd("display-message", "-p", "#{window_index}")
+    if session_name and win_idx:
+        clear_done(f"{session_name}:{win_idx}")
+
+
 # ─── CLI entry point ───
 
 if __name__ == "__main__":
-    import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    args = sys.argv[2:]
+
     if cmd == "status":
         print_status()
     elif cmd == "ports":
@@ -908,6 +1666,38 @@ if __name__ == "__main__":
         print_tree()
     elif cmd == "statusline":
         print_statusline()
+    elif cmd == "add":
+        cmd_add(args[0] if args else "", args[1] if len(args) > 1 else "")
+    elif cmd == "open":
+        cmd_open(args[0] if args else "", args[1] if len(args) > 1 else "")
+    elif cmd == "register":
+        cmd_register(args[0] if args else "", args[1] if len(args) > 1 else "")
+    elif cmd == "unregister":
+        cmd_unregister(args[0] if args else "")
+    elif cmd == "rename":
+        cmd_rename(args[0] if args else "", args[1] if len(args) > 1 else "")
+    elif cmd == "remove":
+        cmd_remove(args[0] if args else "")
+    elif cmd == "attach":
+        cmd_attach(args[0] if args else "")
+    elif cmd == "list":
+        cmd_list()
+    elif cmd == "capture":
+        cmd_capture(args)
+    elif cmd == "stop":
+        cmd_stop(args[0] if args else "")
+    elif cmd == "pane-title":
+        cmd_pane_title(args[0] if args else "")
+    elif cmd == "snapshot-save":
+        cmd_snapshot_save(args[0] if args else "")
+    elif cmd == "snapshot-load":
+        cmd_snapshot_load(args[0] if args else "")
+    elif cmd == "snapshot-list":
+        cmd_snapshot_list()
+    elif cmd == "snapshot-delete":
+        cmd_snapshot_delete(args[0] if args else "")
+    elif cmd == "clear-done":
+        cmd_clear_done()
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

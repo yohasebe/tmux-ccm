@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `SessionEnd` hook for instant SHELL state detection when Claude Code session ends (`/exit`, Ctrl+D, etc.) — eliminates up to 2s polling delay for session exit detection
+- `ccm setup-hooks` now installs 6 hook types (was 5): added `SessionEnd → SHELL`
+- **Instant PERMIT notification** — desktop notification fires immediately from hook (~100ms) instead of waiting for next polling cycle (up to 3s)
+- **Instant PERMIT status-right update** — mode 0 icon updates immediately from hook, bypassing `status-interval` cache delay
+- Auto-install/update hooks on plugin load (`ccm.tmux`) — TPM updates automatically register new hook types
+- Dashboard shows "Hooks: OFF" banner when hooks are not installed, with colored status indicator (yellow=OFF, cyan=ON)
+
 ### Changed
+- **Session management and snapshots migrated to Python** — `lib/session.sh` and `lib/snapshot.sh` eliminated, all logic consolidated in `lib/ccm_core.py`
+  - `jq` dependency removed for snapshot operations (Python `json` module)
+  - `ccm` bash dispatcher now routes all subcommands to `python3 ccm_core.py`
+  - `lib/common.sh` reduced to bash-only essentials: init wizard, hook setup/removal, dependency checks, output formatting
+  - Autosave (`_force_autosave`, `periodic_autosave`) calls Python directly instead of subprocess
+  - 17 new pytest tests for `validate_name`, `find_window`, `list_windows_raw`, `cmd_snapshot_save`
+  - `test_snapshot.bats` replaced by pytest equivalents
 - **Core logic rewritten in Python** — state detection, status bar, dashboard all use `lib/ccm_core.py` as single source of truth (no more duplicate bash/Python logic)
   - `lib/ccm_core.py`: shared detection, project list, auto-exit, autosave
   - `lib/dashboard.py`: curses TUI with background thread (UI never blocks)
@@ -40,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Safety net "no prompt → BUSY" heuristic removed; trust process tree + hooks
 - Snapshot restore no longer auto-starts Claude Code (SHELL state, starts on window switch)
 
+### Security
+- Escape project names in AppleScript notification commands to prevent injection via double quotes (Python and bash)
+- Replace `echo -e` with `printf '%s'` in common.sh to prevent escape sequence injection from user input
+
 ### Fixed
 - Restore desktop notifications for PERMIT/DONE state transitions (lost during Python rewrite)
 - Restore Tab path completion in dashboard add-project prompt (lost during Python rewrite)
@@ -59,6 +78,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - False PERMIT from capture-pane matching "approve" in tip text — PERMIT now hook-only
 - Status bar notifications not detecting state transitions (notify-cache file fix)
 - PERMIT→BUSY transition not detected when prev_state was BUSY
+- inject-status PID file race condition replaced with `fcntl.flock` file locking
+- Cache file writes (status-cache, notify-cache, snapshots) use atomic temp+rename pattern
+- Dashboard `_show_message()` no longer blocks UI with `time.sleep()` (non-blocking overlay)
+- Dashboard operation callbacks (add/remove/register) no longer block 0.3-0.5s after completion
+- Dashboard refresh loop exits within 0.2s instead of up to 2s delay
+- ANSI parser no longer crashes on malformed SGR codes with non-numeric values
+- Redundant double tilde expansion in `_resolve_project_dir()` and `read_cache_file()` simplified
+- Dashboard shows "Terminal too small" instead of crashing on very small terminals (<40x10)
+
+### Changed
+- inject-status batches multiple `tmux set` calls into single `tmux_batch()` subprocess (~50% fewer subprocess calls per cycle)
+- Timeout constants (`DONE_TIMEOUT`, `HOOK_TIMEOUT`, `IDLE_EXIT_TIMEOUT`, `CACHE_TTL`) overridable via environment variables (`CCM_DONE_TIMEOUT`, etc.)
 
 ### Added
 - `ccm init` interactive setup wizard (hooks, auto-restore, status bar mode in one step)
@@ -79,6 +110,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Legacy session-based project functions: `ccm_session_name()`, `ccm_project_name()`, `ccm_list_sessions()`, `ccm_session_exists()`, `CCM_SESSION_PREFIX`
 - Legacy cache aliases: `_refresh_ps_cache()`, `_ensure_ps_cache()` (replaced with direct calls)
 - Unused `STATUS_WORK` constant and corresponding dashboard case branch
+- Dead bash code in common.sh: `_ccm_notify()`, `ccm_notify()`, `CCM_PATTERN_*`, `CCM_CLAUDE_PROCESS_NAME`, `COLOR_STATE_*`, `TMUX_COLOR_*`, `STATUS_*`, `CCM_DASHBOARD_INTERVAL`, `CCM_POPUP_WIDTH/HEIGHT`, unused timeout constants
+- `lib/session.sh` — all session management functions migrated to Python
+- `lib/snapshot.sh` — all snapshot functions migrated to Python
+- Bash helpers migrated to Python: `ccm_current_session`, `_ccm_session`, `ccm_list_windows`, `ccm_find_window`, `ccm_project_exists`, `ccm_validate_name`, `ccm_expand_path`, `ccm_auto_start_claude`, `ccm_detect_window_state`, `ccm_clear_done`, `ccm_clipboard_copy`, `ccm_detect_ports`, `ccm_git_branch`, `_ccm_read_hook_signal`, `_ccm_md5`, `ccm_window_name`, `ccm_project_name_from_window`, `ccm_project_dir`
+- `tests/test_snapshot.bats` — replaced by pytest tests in `test_ccm_core.py`
 
 ### Fixed
 - Fix false IDLE/DONE display when Claude is actually busy (multi-turn tool use with expired hook signal): add capture-pane safety net verifying input prompt visibility before returning IDLE
@@ -89,7 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Dashboard initial display reads hook signal files for real-time accuracy (BUSY/DONE visible immediately)
 - `ccm_update_window_names()` rewritten: single batch tmux call, hook signal integration, rename only on actual change (reduces flickering)
 - `ccm setup-hooks` now strips old ccm hooks before adding (idempotent; handles path changes on reinstall)
-- Hook scripts use `grep`/`sed` fallback when `jq` is unavailable
+- `ccm setup-hooks` and `ccm remove-hooks` require `jq` for JSON manipulation of Claude Code settings
 - `settings.json` writes use atomic temp-file + `mv` to prevent corruption
 - Hook BUSY capture-pane PERMIT check only runs on state transitions (reduces overhead)
 - Split-pane safety: `on-stop.sh` preserves newer BUSY signals from other panes

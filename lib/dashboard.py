@@ -20,6 +20,8 @@ from ccm_core import (
     tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
     read_cache_file, build_project_list, format_elapsed, format_dir,
     hooks_configured, save_tmux_conf_setting,
+    cmd_add, cmd_remove, cmd_unregister, cmd_register,
+    cmd_snapshot_save, cmd_snapshot_load,
 )
 
 REFRESH_INTERVAL = 2
@@ -51,7 +53,8 @@ class Dashboard:
         self.running = True
         self.data_dirty = False
         self.initial_load = True
-        self.hooks_status = "Hooks: ON" if hooks_configured() else "Hooks: OFF"
+        self.hooks_on = hooks_configured()
+        self.hooks_status = "Hooks: ON" if self.hooks_on else "Hooks: OFF"
         self.mode = initial_mode  # "dashboard", "tree", "menu"
         # Tree mode state
         self.tree_lines = []     # (indent, text, attr, win_target_or_none)
@@ -67,6 +70,9 @@ class Dashboard:
         # Menu mode state
         self.menu_items = []  # Built dynamically by _build_menu()
         self.menu_selected = 0
+        # Non-blocking message display
+        self._msg_text = ""
+        self._msg_expires = 0.0
 
     def run(self, stdscr):
         # Curses setup
@@ -275,7 +281,7 @@ class Dashboard:
                 if m:
                     # Parse SGR codes
                     code_str = m.group(1)
-                    codes = [int(c) for c in code_str.split(";") if c] if code_str else [0]
+                    codes = [int(c) for c in code_str.split(";") if c.isdigit()] if code_str else [0]
                     cur_attr = self._ansi_to_curses_attr(codes)
                     pos = m.end()
                 else:
@@ -318,7 +324,7 @@ class Dashboard:
                 m = self._ANSI_RE.match(line, pos)
                 if m:
                     code_str = m.group(1)
-                    codes = [int(c) for c in code_str.split(";") if c] if code_str else [0]
+                    codes = [int(c) for c in code_str.split(";") if c.isdigit()] if code_str else [0]
                     cur_attr = self._ansi_to_curses_attr(codes)
                     pos = m.end()
                 else:
@@ -334,10 +340,22 @@ class Dashboard:
                     display_used += ch_w
                     pos += 1
 
+    MIN_HEIGHT = 10
+    MIN_WIDTH = 40
+
     def render(self, stdscr):
         try:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
+
+            if height < self.MIN_HEIGHT or width < self.MIN_WIDTH:
+                msg = f"Terminal too small ({width}x{height})"
+                try:
+                    stdscr.addstr(0, 0, msg[:width - 1])
+                except curses.error:
+                    pass
+                stdscr.refresh()
+                return
 
             # Preview panel layout
             preview_width = 0
@@ -374,6 +392,12 @@ class Dashboard:
                     header = f"{len(self.projects)} project(s)"
                 self._addstr(stdscr, row, 2, header, curses.color_pair(C_DIM))
             row += 1
+
+            # Hooks: OFF banner (shown once above project list)
+            if not self.hooks_on:
+                banner = "⚠ Hooks not installed — run 'ccm setup-hooks' for accurate state detection"
+                self._addstr(stdscr, row, 2, banner, curses.color_pair(C_YELLOW))
+                row += 1
 
             # Project list
             with self.lock:
@@ -497,9 +521,12 @@ class Dashboard:
                         footer_parts.append(f"Last saved: {save_time}")
                 except OSError:
                     pass
-                footer_parts.append(self.hooks_status)
-                footer = "  ".join(footer_parts)
-                self._addstr(stdscr, footer_row, 2, footer, curses.color_pair(C_DIM))
+                # Render footer: last saved + hooks status (hooks status colored separately)
+                footer_text = "  ".join(footer_parts)
+                self._addstr(stdscr, footer_row, 2, footer_text, curses.color_pair(C_DIM))
+                hooks_col = 2 + len(footer_text) + 2 if footer_parts else 2
+                hooks_color = curses.color_pair(C_CYAN) if self.hooks_on else curses.color_pair(C_YELLOW)
+                self._addstr(stdscr, footer_row, hooks_col, self.hooks_status, hooks_color)
 
             # Preview panel
             if preview_height > 0:
@@ -508,6 +535,13 @@ class Dashboard:
                     self._render_preview(stdscr, preview_col, 0, preview_width, preview_height)
                 elif self.preview_position == "bottom":
                     self._render_preview_bottom(stdscr, preview_row, width, preview_height)
+
+            # Non-blocking message overlay
+            if self._msg_text and time.monotonic() < self._msg_expires:
+                self._addstr(stdscr, height - 1, 2, self._msg_text,
+                             curses.color_pair(C_DONE) | curses.A_BOLD)
+            elif self._msg_text:
+                self._msg_text = ""
 
             stdscr.refresh()
         except curses.error:
@@ -640,11 +674,8 @@ class Dashboard:
             return
         if not name:
             name = default_name
-        ccm_bin = os.path.join(CCM_ROOT, "ccm")
-        result = subprocess.run([ccm_bin, "snapshot", "save", name],
-                                capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            # Show how many projects were saved
+        try:
+            cmd_snapshot_save(name, quiet=True)
             try:
                 import json
                 with open(os.path.join(CCM_SNAPSHOT_DIR, f"{name}.json")) as f:
@@ -652,8 +683,10 @@ class Dashboard:
                 msg = f"Saved: {name} ({count} projects)"
             except Exception:
                 msg = f"Saved: {name}"
-        else:
-            msg = f"Save failed: {result.stderr.strip()[:50]}"
+        except SystemExit:
+            msg = "Save failed: no active projects"
+        except Exception as e:
+            msg = f"Save failed: {str(e)[:50]}"
         self._show_message(stdscr, msg, 1.5)
 
     def _do_preview(self, stdscr):
@@ -698,10 +731,10 @@ class Dashboard:
             return
         if not name:
             name = os.path.basename(directory)
-        ccm_bin = os.path.join(CCM_ROOT, "ccm")
-        subprocess.run([ccm_bin, "add", directory, name],
-                       capture_output=True, timeout=10)
-        time.sleep(0.5)
+        try:
+            cmd_add(directory, name)
+        except SystemExit:
+            pass
         self._trigger_rebuild()
 
     def _do_rename(self, stdscr):
@@ -719,14 +752,15 @@ class Dashboard:
         choice = self._prompt(stdscr, f"Remove '{p.name}'? [u]nregister / [d]elete / Esc: ")
         if not choice:
             return
-        ccm_bin = os.path.join(CCM_ROOT, "ccm")
-        if choice.lower() == "u":
-            subprocess.run([ccm_bin, "unregister", p.name], capture_output=True, timeout=10)
-        elif choice.lower() == "d":
-            subprocess.run([ccm_bin, "remove", p.name], capture_output=True, timeout=10)
-        else:
-            return
-        time.sleep(0.3)
+        try:
+            if choice.lower() == "u":
+                cmd_unregister(p.name)
+            elif choice.lower() == "d":
+                cmd_remove(p.name)
+            else:
+                return
+        except SystemExit:
+            pass
         self._trigger_rebuild()
 
     def _do_exit_all(self, stdscr):
@@ -776,7 +810,6 @@ class Dashboard:
             exited += 1
 
         self._show_message(stdscr, f"Exited {exited} session(s)", 1)
-        time.sleep(0.5)
         self._trigger_rebuild()
 
     def _do_register(self, stdscr):
@@ -803,9 +836,10 @@ class Dashboard:
             return
         if not name:
             name = win
-        ccm_bin = os.path.join(CCM_ROOT, "ccm")
-        subprocess.run([ccm_bin, "register", win, name], capture_output=True, timeout=10)
-        time.sleep(0.3)
+        try:
+            cmd_register(win, name)
+        except SystemExit:
+            pass
         self._trigger_rebuild()
 
     def _do_search(self, stdscr):
@@ -933,10 +967,8 @@ class Dashboard:
         return text
 
     def _show_message(self, stdscr, msg, duration=1):
-        height, _ = stdscr.getmaxyx()
-        self._addstr(stdscr, height - 1, 2, msg, curses.color_pair(C_DONE) | curses.A_BOLD)
-        stdscr.refresh()
-        time.sleep(duration)
+        self._msg_text = msg
+        self._msg_expires = time.monotonic() + duration
 
     def _refresh_loop(self):
         """Background thread: periodic state refresh."""
@@ -953,9 +985,11 @@ class Dashboard:
 
         # Subsequent refreshes
         while self.running:
-            time.sleep(REFRESH_INTERVAL)
-            if not self.running:
-                break
+            # Check running before and after sleep to minimize exit delay
+            for _ in range(int(REFRESH_INTERVAL / 0.2)):
+                if not self.running:
+                    return
+                time.sleep(0.2)
             try:
                 projects = build_project_list(fast=False)
                 with self.lock:
@@ -1086,6 +1120,14 @@ class Dashboard:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
 
+            if height < self.MIN_HEIGHT or width < self.MIN_WIDTH:
+                try:
+                    stdscr.addstr(0, 0, f"Terminal too small ({width}x{height})"[:width - 1])
+                except curses.error:
+                    pass
+                stdscr.refresh()
+                return
+
             self._addstr(stdscr, 0, 2, "Tree View  (d=dashboard, q=quit)", curses.color_pair(C_DIM))
 
             # Build set of selected line indices for fast lookup
@@ -1197,6 +1239,14 @@ class Dashboard:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
 
+            if height < self.MIN_HEIGHT or width < self.MIN_WIDTH:
+                try:
+                    stdscr.addstr(0, 0, f"Terminal too small ({width}x{height})"[:width - 1])
+                except curses.error:
+                    pass
+                stdscr.refresh()
+                return
+
             self._addstr(stdscr, 0, 2, "Menu  (d=dashboard, q=quit)", curses.color_pair(C_DIM))
 
             row = 2
@@ -1246,9 +1296,10 @@ class Dashboard:
             elif action == "load":
                 name = self._prompt(stdscr, "Snapshot name: ")
                 if name:
-                    ccm_bin = os.path.join(CCM_ROOT, "ccm")
-                    subprocess.run([ccm_bin, "snapshot", "load", name],
-                                   capture_output=True, timeout=30)
+                    try:
+                        cmd_snapshot_load(name)
+                    except SystemExit:
+                        pass
                     self._trigger_rebuild()
             elif action == "status_mode":
                 val = self._prompt(stdscr, "Status bar mode [0]=Minimal  [1]=Window list  [2]=Dedicated line: ")

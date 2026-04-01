@@ -103,6 +103,8 @@ ccm init
 
 This guides you through hooks installation, auto-restore, and status bar configuration in one step.
 
+> **Note:** Hooks are automatically installed on plugin load (via TPM) and kept up to date on plugin updates. If you prefer manual control, use `ccm setup-hooks` and `ccm remove-hooks`.
+
 ## Usage
 
 ### Keybindings
@@ -263,6 +265,7 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **SubagentStart** → BUSY when a subagent is spawned
 - **Stop** → DONE when Claude finishes responding
 - **Notification** → PERMIT when permission is needed, DONE on idle notification
+- **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 
 Without hooks, ccm uses process tree inspection which cannot detect text generation or permission prompts reliably. Hooks are optional — ccm works without them but with reduced detection accuracy.
 
