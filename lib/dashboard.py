@@ -1237,6 +1237,9 @@ class Dashboard:
         # Auto-start
         auto_start = tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
 
+        import platform
+        is_macos = platform.system() == "Darwin"
+
         self.menu_items = [
             ("Add project", "add"),
             ("Save snapshot", "save"),
@@ -1249,8 +1252,13 @@ class Dashboard:
             (f"Preview position: {preview_pos_label}", "preview_position"),
             ("", ""),  # separator
             (f"Notifications: {notify}", "notify"),
-            (f"Notification sound: {notify_sound}", "notify_sound"),
-            (f"Sound name: {sound_name}", "sound_name"),
+        ]
+        if is_macos:
+            self.menu_items += [
+                (f"Notification sound: {notify_sound}", "notify_sound"),
+                (f"Sound name: {sound_name}", "sound_name"),
+            ]
+        self.menu_items += [
             (f"Auto-start Claude: {auto_start}", "auto_start"),
             ("", ""),  # separator
             ("Dashboard", "dashboard"),

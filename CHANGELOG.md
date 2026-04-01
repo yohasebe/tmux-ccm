@@ -103,7 +103,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `ccm_hooks_configured()` function to detect whether Claude Code hooks are installed
 - Hook status display in dashboard footer and `ccm status` output (Hooks: ON/OFF)
 - `ccm setup-hooks` now detects already-installed hooks and skips re-installation
-- `ccm pane-title [on|off|toggle|status]` command to control pane border title display (shows Claude Code's session description)
 - Claude Code hooks integration for improved state detection (`ccm setup-hooks` / `ccm remove-hooks`)
   - `UserPromptSubmit` hook → BUSY signal (detects text generation without child processes)
   - `Stop` hook → DONE signal (reliable response completion detection)
