@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - `SessionEnd` hook for instant SHELL state detection when Claude Code session ends (`/exit`, Ctrl+D, etc.) — eliminates up to 2s polling delay for session exit detection
-- `ccm setup-hooks` now installs 6 hook types (was 5): added `SessionEnd → SHELL`
+- `PermissionDenied` hook for auto mode support — when auto mode classifier denies an action, ccm shows PERMIT state with "Denied: <tool>" detail and sends notification
+- `ccm setup-hooks` now installs 8 hook events (was 5): added `SessionEnd → SHELL`, `PermissionDenied → PERMIT`
 - **Instant PERMIT notification** — desktop notification fires immediately from hook (~100ms) instead of waiting for next polling cycle (up to 3s)
 - **Instant PERMIT status-right update** — mode 0 icon updates immediately from hook, bypassing `status-interval` cache delay
 - PERMIT notifications now include tool name and context (e.g., "Permission required: Bash: rm -rf ..." or "Edit: ~/src/main.rs")

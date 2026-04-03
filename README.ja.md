@@ -266,6 +266,7 @@ ccm setup-hooks
 - **Stop** → Claude応答完了時にDONE
 - **Notification** → 許可プロンプト表示時にPERMIT、アイドル通知時にDONE
 - **SessionEnd** → セッション終了時にSHELL（/exit、Ctrl+D等）
+- **PermissionDenied** → autoモードで拒否時にPERMIT（`/permissions`で再試行）
 
 フックなしの場合、ccmはプロセスツリー検査を使用しますが、テキスト生成や許可プロンプトの確実な検出ができません。フックはオプションです — インストールしなくても動作しますが、検出精度が低下します。
 

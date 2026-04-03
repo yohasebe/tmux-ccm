@@ -153,6 +153,7 @@ ccm setup-hooks
 | `Stop` | DONE | Claude応答完了 |
 | `Notification` | PERMIT / DONE | 許可プロンプト表示 / アイドル通知 |
 | `SessionEnd` | SHELL | セッション終了（/exit、Ctrl+D等） |
+| `PermissionDenied` | PERMIT | autoモードでの拒否（`/permissions`で再試行） |
 
 フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE/PERMIT: 30秒）。
 

@@ -266,6 +266,7 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **Stop** → DONE when Claude finishes responding
 - **Notification** → PERMIT when permission is needed, DONE on idle notification
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
+- **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
 Without hooks, ccm uses process tree inspection which cannot detect text generation or permission prompts reliably. Hooks are optional — ccm works without them but with reduced detection accuracy.
 

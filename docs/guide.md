@@ -153,6 +153,7 @@ This adds hooks to `~/.claude/settings.json`:
 | `Stop` | DONE | Claude finished responding |
 | `Notification` | PERMIT / DONE | Permission prompt shown / idle notification |
 | `SessionEnd` | SHELL | Claude Code session ended (/exit, Ctrl+D, etc.) |
+| `PermissionDenied` | PERMIT | Auto mode denied an action (check `/permissions` to retry) |
 
 Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE/PERMIT: 30s).
 
