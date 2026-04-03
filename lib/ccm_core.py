@@ -58,6 +58,7 @@ HOOK_SCRIPTS = [
     "on-pre-tool-use.sh",
     "on-notification.sh",
     "on-permission-request.sh",
+    "on-permission-denied.sh",
     "on-session-end.sh",
 ]
 

@@ -245,6 +245,10 @@ _ccm_strip_hooks() {
                 .hooks.PermissionRequest[]? |
                 select(.hooks | any(.command | test("on-permission-request\\.sh")) | not)
             ] |
+            .hooks.PermissionDenied = [
+                .hooks.PermissionDenied[]? |
+                select(.hooks | any(.command | test("on-permission-denied\\.sh")) | not)
+            ] |
             .hooks.Notification = [
                 .hooks.Notification[]? |
                 select(.hooks | any(.command | test("on-notification\\.sh")) | not)
@@ -259,6 +263,7 @@ _ccm_strip_hooks() {
             if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end |
             if (.hooks.SubagentStart | length) == 0 then del(.hooks.SubagentStart) else . end |
             if (.hooks.PermissionRequest | length) == 0 then del(.hooks.PermissionRequest) else . end |
+            if (.hooks.PermissionDenied | length) == 0 then del(.hooks.PermissionDenied) else . end |
             if (.hooks.Notification | length) == 0 then del(.hooks.Notification) else . end |
             if (.hooks.SessionEnd | length) == 0 then del(.hooks.SessionEnd) else . end |
             if (.hooks | length) == 0 then del(.hooks) else . end
@@ -285,6 +290,7 @@ ccm_hooks_configured() {
     grep -q 'on-pre-tool-use\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-notification\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-permission-request\.sh' "$settings_file" 2>/dev/null || return 1
+    grep -q 'on-permission-denied\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-session-end\.sh' "$settings_file" 2>/dev/null || return 1
 }
 
@@ -322,6 +328,7 @@ ccm_setup_hooks() {
     local pre_tool_hook="${hooks_dir}/on-pre-tool-use.sh"
     local notify_hook="${hooks_dir}/on-notification.sh"
     local perm_hook="${hooks_dir}/on-permission-request.sh"
+    local perm_denied_hook="${hooks_dir}/on-permission-denied.sh"
     local session_end_hook="${hooks_dir}/on-session-end.sh"
     local timeout="${CCM_HOOK_CMD_TIMEOUT:-5000}"
 
@@ -332,6 +339,7 @@ ccm_setup_hooks() {
         --arg pre_tool_cmd "$pre_tool_hook" \
         --arg notify_cmd "$notify_hook" \
         --arg perm_cmd "$perm_hook" \
+        --arg perm_denied_cmd "$perm_denied_hook" \
         --arg session_end_cmd "$session_end_hook" \
         --argjson timeout "$timeout" '
         .hooks //= {} |
@@ -341,6 +349,7 @@ ccm_setup_hooks() {
         .hooks.PreToolUse //= [] |
         .hooks.SubagentStart //= [] |
         .hooks.PermissionRequest //= [] |
+        .hooks.PermissionDenied //= [] |
         .hooks.Notification //= [] |
         .hooks.SessionEnd //= [] |
         .hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": $prompt_cmd, "timeout": $timeout}]}] |
@@ -349,6 +358,7 @@ ccm_setup_hooks() {
         .hooks.PreToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionRequest += [{"hooks": [{"type": "command", "command": $perm_cmd, "timeout": $timeout}]}] |
+        .hooks.PermissionDenied += [{"hooks": [{"type": "command", "command": $perm_denied_cmd, "timeout": $timeout}]}] |
         .hooks.Notification += [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
                                 {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]}] |
         .hooks.SessionEnd += [{"hooks": [{"type": "command", "command": $session_end_cmd, "timeout": $timeout}]}]
@@ -359,6 +369,7 @@ ccm_setup_hooks() {
     echo "  Settings: ${settings_file}"
     echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, SubagentStart → BUSY"
     echo "         Stop/StopFailure → DONE, Notification → PERMIT/IDLE"
+    echo "         PermissionDenied → PERMIT (auto mode), SessionEnd → SHELL"
     echo "         SessionEnd → SHELL"
     echo ""
     echo "  Restart Claude Code to activate the hooks."
