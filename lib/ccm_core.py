@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ccm core — shared constants, helpers, state detection, and project list building."""
 
+import contextlib
 import glob as _glob_mod
 import hashlib
 import json
@@ -9,6 +10,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 # ─── Constants ───
@@ -929,8 +931,40 @@ _C_GREEN = "\033[0;32m"
 _C_YELLOW = "\033[1;33m"
 
 
+class CCMError(Exception):
+    """Raised by ccm_die when raise_on_die() context is active.
+
+    Allows TUI callers (e.g. dashboard) to receive errors as exceptions
+    instead of stderr output + sys.exit, which would corrupt curses display.
+    """
+    pass
+
+
+_die_mode = threading.local()
+
+
+@contextlib.contextmanager
+def raise_on_die():
+    """Context manager: make ccm_die raise CCMError instead of exit.
+
+    Thread-local, so CLI callers on other threads are unaffected.
+    """
+    prev = getattr(_die_mode, "raise_errors", False)
+    _die_mode.raise_errors = True
+    try:
+        yield
+    finally:
+        _die_mode.raise_errors = prev
+
+
 def ccm_die(msg):
-    """Print error message and exit."""
+    """Print error message and exit.
+
+    If called inside a raise_on_die() context on the same thread, raises
+    CCMError(msg) instead.
+    """
+    if getattr(_die_mode, "raise_errors", False):
+        raise CCMError(msg)
     print(f"{_C_RED}Error: {msg}{_C_RESET}", file=sys.stderr)
     sys.exit(1)
 

@@ -22,7 +22,11 @@ from ccm_core import (
     hooks_configured, save_tmux_conf_setting,
     cmd_add, cmd_remove, cmd_unregister, cmd_register,
     cmd_snapshot_save, cmd_snapshot_load,
+    CCMError, raise_on_die,
 )
+
+# Max characters shown in the single-line message area
+MSG_MAX_LEN = 200
 
 REFRESH_INTERVAL = 2
 
@@ -731,11 +735,8 @@ class Dashboard:
             return
         if not name:
             name = os.path.basename(directory)
-        try:
-            cmd_add(directory, name)
-        except SystemExit:
-            pass
-        self._trigger_rebuild()
+        if self._run_cmd(stdscr, cmd_add, directory, name):
+            self._trigger_rebuild()
 
     def _do_rename(self, stdscr):
         p = self.projects[self.selected]
@@ -752,16 +753,14 @@ class Dashboard:
         choice = self._prompt(stdscr, f"Remove '{p.name}'? [u]nregister / [d]elete / Esc: ")
         if not choice:
             return
-        try:
-            if choice.lower() == "u":
-                cmd_unregister(p.name)
-            elif choice.lower() == "d":
-                cmd_remove(p.name)
-            else:
-                return
-        except SystemExit:
-            pass
-        self._trigger_rebuild()
+        if choice.lower() == "u":
+            ok = self._run_cmd(stdscr, cmd_unregister, p.name)
+        elif choice.lower() == "d":
+            ok = self._run_cmd(stdscr, cmd_remove, p.name)
+        else:
+            return
+        if ok:
+            self._trigger_rebuild()
 
     def _do_exit_all(self, stdscr):
         """Exit all idle Claude Code sessions, optionally including BUSY/PERMIT."""
@@ -836,11 +835,8 @@ class Dashboard:
             return
         if not name:
             name = win
-        try:
-            cmd_register(win, name)
-        except SystemExit:
-            pass
-        self._trigger_rebuild()
+        if self._run_cmd(stdscr, cmd_register, win, name):
+            self._trigger_rebuild()
 
     def _do_search(self, stdscr):
         query = self._prompt(stdscr, "Search: ")
@@ -969,6 +965,26 @@ class Dashboard:
     def _show_message(self, stdscr, msg, duration=1):
         self._msg_text = msg
         self._msg_expires = time.monotonic() + duration
+
+    def _run_cmd(self, stdscr, func, *args, **kwargs):
+        """Run a ccm_core command in raise_on_die() context.
+
+        Errors are raised as CCMError (instead of stderr + sys.exit) and
+        shown via _show_message, preventing curses display corruption.
+        Returns True on success, False on error.
+        """
+        try:
+            with raise_on_die():
+                func(*args, **kwargs)
+            return True
+        except CCMError as e:
+            # Join multi-line messages, collapse whitespace, truncate
+            msg = " | ".join(line.strip() for line in str(e).splitlines() if line.strip())
+            if len(msg) > MSG_MAX_LEN:
+                msg = msg[: MSG_MAX_LEN - 3] + "..."
+            if msg:
+                self._show_message(stdscr, msg, 3)
+            return False
 
     @staticmethod
     def _preview_sound(sound_name):

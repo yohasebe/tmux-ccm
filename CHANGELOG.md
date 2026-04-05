@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - PERMIT state now persists indefinitely until user responds (was expiring after 5 minutes)
 - Fix false SHELL state from stale SessionEnd hook signal after Claude restarts with `--continue`
 - Fix notification sound not playing for DONE notifications (sound now applied to both PERMIT and DONE)
+- Dashboard: fix garbled display when add/register/remove fails (e.g. duplicate directory). Errors from `ccm_die` now propagate as `CCMError` within the dashboard and are shown in the message area instead of leaking to stderr and corrupting the curses screen
 
 ### Changed
 - Default `@ccm-notify` changed from `off` to `permit,done` — new users get PERMIT and DONE notifications out of the box

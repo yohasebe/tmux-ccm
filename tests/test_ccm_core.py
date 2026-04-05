@@ -844,3 +844,52 @@ class TestCmdRename:
         mock_find.side_effect = lambda sess, name: "1" if name == "old" else None
         ccm_core.cmd_rename("old", "new")
         mock_auto.assert_called_once()
+
+
+# ─── raise_on_die / CCMError ───
+
+class TestRaiseOnDie:
+    def test_ccm_die_exits_by_default(self):
+        with pytest.raises(SystemExit):
+            ccm_core.ccm_die("boom")
+
+    def test_ccm_die_raises_inside_context(self):
+        with ccm_core.raise_on_die():
+            with pytest.raises(ccm_core.CCMError, match="boom"):
+                ccm_core.ccm_die("boom")
+
+    def test_context_restores_previous_mode(self):
+        with ccm_core.raise_on_die():
+            pass
+        # After exit, default behavior (exit) must be restored
+        with pytest.raises(SystemExit):
+            ccm_core.ccm_die("after")
+
+    def test_nested_context(self):
+        with ccm_core.raise_on_die():
+            with ccm_core.raise_on_die():
+                with pytest.raises(ccm_core.CCMError):
+                    ccm_core.ccm_die("inner")
+            # Outer context still active
+            with pytest.raises(ccm_core.CCMError):
+                ccm_core.ccm_die("outer")
+
+    def test_other_thread_unaffected(self):
+        """raise_on_die() is thread-local: other threads keep exit behavior."""
+        import threading
+        result = {}
+
+        def worker():
+            try:
+                ccm_core.ccm_die("from worker")
+            except SystemExit:
+                result["exited"] = True
+            except ccm_core.CCMError:
+                result["raised"] = True
+
+        with ccm_core.raise_on_die():
+            t = threading.Thread(target=worker)
+            t.start()
+            t.join()
+        assert result.get("exited") is True
+        assert "raised" not in result
