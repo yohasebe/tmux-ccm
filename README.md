@@ -14,15 +14,17 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 **Dashboard** (`prefix + Tab`):
 
 > ```
-> -- ccm Dashboard --
+> ┌ ccm Dashboard ──
+>   4 project(s)
 >
-> > #1 ◉ BUSY    my-app (main*) [:3000] ~/code/my-app
+> ▸ #1 ◉ BUSY    my-app (main*) [:3000] ~/code/my-app
 >   #2 ⚠ PERMIT  api-server (dev) ~/code/api-server
 >   #3 ✔ DONE    web-client (main) ~/code/web-client
 >   #4 ● IDLE    docs (main) ~/code/docs
 >
-> [↑↓/jk] select [Enter] attach [p]review [a]dd [s]ave [q] quit
-> Last saved: 10:30:45
+> [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
+> e[x]it all [s]ave [t]ree [m]enu [q] quit
+> Last saved: 10:30:45  Hooks: ON
 > ```
 
 **Status bar** (mode 0):
@@ -33,7 +35,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 
 ## Features
 
-- **Resource Management** — Idle Claude Code sessions auto-exit after 5 minutes to free memory and CPU; auto-restart with `--continue` when you switch back (each Node.js instance uses significant resources)
+- **Resource Management** — Idle Claude Code sessions auto-exit after 10 minutes to free memory and CPU; auto-restart with `--continue` when you switch back (each Node.js instance uses significant resources)
 - **Dashboard** — Interactive popup with real-time Claude Code status (BUSY/IDLE/PERMIT/DONE)
 - **Tree View** — Hierarchical session/window/pane display with navigation
 - **Git Integration** — Branch name and dirty status (`main*`) per project
@@ -171,13 +173,13 @@ set -g @ccm-status-line 0     # default
 
 | Value | Mode | Description |
 |-------|------|-------------|
-| `0` | Icon (default) | Single priority icon appended to status-right |
+| `0` | Icon (default) | Priority icon with window indices appended to status-right |
 | `1` | Full | Replaces window list with ccm-style colored entries |
 | `2` | Dedicated line | Adds status line(s) with branch/port details for all projects |
 
-#### Mode 0 — Single icon (default)
+#### Mode 0 — Icon with indices (default)
 
-Appends a single icon to your existing status-right. Your clock, battery, etc. are preserved. The icon reflects the highest-priority state across all projects:
+Appends a priority icon with window indices to your existing status-right. Your clock, battery, etc. are preserved. When active projects exist, window numbers are shown (e.g., `1,2: ⚠ PERMIT`). When all are IDLE, a single `≡` icon is shown:
 
 | Priority | Condition | Icon | Color |
 |----------|-----------|------|-------|
@@ -225,10 +227,14 @@ Lines auto-expand based on terminal width and project count.
 | `s` | Save snapshot |
 | `p` | Preview pane content (`c` to copy) |
 | `a` | Add new project |
+| `n` | Rename selected project |
 | `g` | Register existing window |
 | `r` | Remove — choose [u]nregister (keep window) or [d]elete |
+| `x` | Exit all idle Claude Code sessions |
 | `/` | Search projects |
-| `q` / `Esc` | Close |
+| `t` | Switch to tree view |
+| `m` | Switch to menu |
+| `q` / `Esc` / `F1` | Close |
 
 ### CLI Commands
 
@@ -237,6 +243,7 @@ ccm add <dir> [name]              Add project (creates window + starts Claude)
 ccm open <dir> [name]             Start Claude in current pane (split-pane use)
 ccm register <window> [name]      Register existing window as ccm project
 ccm unregister <name>             Unregister window from ccm (keep window)
+ccm rename <name> <new_name>      Rename a project
 ccm remove <name>                 Remove project window (kill window)
 ccm attach <name|number>          Switch to project window
 ccm list                          List managed projects
@@ -251,6 +258,8 @@ ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm setup-hooks                   Install Claude Code hooks (improved detection)
 ccm remove-hooks                  Remove ccm hooks from Claude Code settings
+ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
+ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
 ```
 
 ### Status Icons
@@ -276,8 +285,9 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **UserPromptSubmit** → BUSY when you submit a prompt (detects text generation)
 - **PreToolUse** → BUSY when a tool starts executing (solves multi-turn detection gap)
 - **SubagentStart** → BUSY when a subagent is spawned
-- **Stop** → DONE when Claude finishes responding
-- **Notification** → PERMIT when permission is needed, DONE on idle notification
+- **Stop / StopFailure** → DONE when Claude finishes responding
+- **PermissionRequest** → PERMIT when a tool requires permission
+- **Notification** → PERMIT (permission_prompt) or DONE (idle_prompt)
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
@@ -331,6 +341,16 @@ set -g @ccm-preview-position "right"  # or "bottom"
 ```
 
 The preview updates when you move the cursor and refreshes automatically. ANSI colors (256-color and RGB) are rendered. Requires terminal width ≥ 80 columns. Can also be toggled from the dashboard menu (`m`).
+
+### Auto-Start Claude Code
+
+When you switch to a project window where Claude Code has exited (SHELL state), ccm automatically restarts it with `--continue` to resume the conversation.
+
+```tmux
+set -g @ccm-auto-start "on"     # default: on (set to "off" to disable)
+```
+
+Also configurable from the dashboard menu (`m`).
 
 ### Anti-Flicker
 

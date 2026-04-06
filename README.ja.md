@@ -14,15 +14,17 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 **ダッシュボード** (`prefix + Tab`):
 
 > ```
-> -- ccm Dashboard --
+> ┌ ccm Dashboard ──
+>   4 project(s)
 >
-> > #1 ◉ BUSY    my-app (main*) [:3000] ~/code/my-app
+> ▸ #1 ◉ BUSY    my-app (main*) [:3000] ~/code/my-app
 >   #2 ⚠ PERMIT  api-server (dev) ~/code/api-server
 >   #3 ✔ DONE    web-client (main) ~/code/web-client
 >   #4 ● IDLE    docs (main) ~/code/docs
 >
-> [↑↓/jk] select [Enter] attach [p]review [a]dd [s]ave [q] quit
-> Last saved: 10:30:45
+> [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
+> e[x]it all [s]ave [t]ree [m]enu [q] quit
+> Last saved: 10:30:45  Hooks: ON
 > ```
 
 **ステータスバー**（モード0）:
@@ -33,7 +35,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 
 ## 機能
 
-- **リソース管理** — アイドル状態のClaude Codeセッションを5分後に自動終了し、メモリとCPUを解放。ウィンドウに戻ると `--continue` で自動再起動（各Node.jsインスタンスは大量のリソースを消費します）
+- **リソース管理** — アイドル状態のClaude Codeセッションを10分後に自動終了し、メモリとCPUを解放。ウィンドウに戻ると `--continue` で自動再起動（各Node.jsインスタンスは大量のリソースを消費します）
 - **ダッシュボード** — Claude Codeの状態（BUSY/IDLE/PERMIT/DONE）をリアルタイム表示するインタラクティブポップアップ
 - **ツリービュー** — セッション/ウィンドウ/ペインの階層表示とナビゲーション
 - **Git連携** — プロジェクトごとのブランチ名とdirty状態（`main*`）の表示
@@ -171,13 +173,13 @@ set -g @ccm-status-line 0     # デフォルト
 
 | 値 | モード | 説明 |
 |----|--------|------|
-| `0` | アイコン（デフォルト） | status-rightにアイコン1つを追記 |
+| `0` | アイコン（デフォルト） | status-rightにウィンドウ番号付きアイコンを追記 |
 | `1` | 全表示 | ウィンドウリストをccm形式の色付きエントリに置換 |
 | `2` | 専用行 | ブランチ・ポート情報付きで全プロジェクトを専用行に表示 |
 
-#### モード0 — アイコン表示（デフォルト）
+#### モード0 — アイコン＋ウィンドウ番号（デフォルト）
 
-既存のstatus-rightにアイコン1つを追加。時計やバッテリー表示はそのまま保持。全プロジェクトの中で最も優先度の高い状態を表示：
+既存のstatus-rightにウィンドウ番号付きアイコンを追加。時計やバッテリー表示はそのまま保持。アクティブなプロジェクトがある場合はウィンドウ番号も表示（例: `1,2: ⚠ PERMIT`）。全てIDLEの場合は `≡` アイコンのみ：
 
 | 優先度 | 条件 | アイコン | 色 |
 |--------|------|---------|-----|
@@ -225,10 +227,14 @@ my-project:◉(main*) │ api:●(dev)[:8080] │ ccm:✔(main*)
 | `s` | スナップショット保存 |
 | `p` | プレビュー表示（`c` でクリップボードにコピー） |
 | `a` | プロジェクト追加 |
+| `n` | 選択プロジェクトの名前変更 |
 | `g` | 既存ウィンドウを登録 |
 | `r` | 削除 — [u]nregister（ウィンドウ残す）か [d]elete を選択 |
+| `x` | アイドル状態のClaude Codeを一括終了 |
 | `/` | プロジェクト名で検索 |
-| `q` / `Esc` | 閉じる |
+| `t` | ツリービューに切替 |
+| `m` | メニューに切替 |
+| `q` / `Esc` / `F1` | 閉じる |
 
 ### CLIコマンド
 
@@ -237,6 +243,7 @@ ccm add <dir> [name]              プロジェクト追加（ウィンドウ作�
 ccm open <dir> [name]             現在のペインでClaude起動（split-pane用）
 ccm register <window> [name]      既存ウィンドウをccmプロジェクトとして登録
 ccm unregister <name>             ccm管理から外す（ウィンドウは残る）
+ccm rename <name> <new_name>      プロジェクト名を変更
 ccm remove <name>                 プロジェクトウィンドウ削除（ウィンドウを閉じる）
 ccm attach <name|number>          プロジェクトウィンドウに切替
 ccm list                          管理中プロジェクト一覧
@@ -251,6 +258,8 @@ ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
 ccm setup-hooks                   Claude Codeフックをインストール（検出精度向上）
 ccm remove-hooks                  Claude Codeフックをアンインストール
+ccm setup-claude-md               ~/.claude/CLAUDE.mdにccmセクションを追加
+ccm remove-claude-md              ~/.claude/CLAUDE.mdからccmセクションを削除
 ```
 
 ### ステータスアイコン
@@ -276,8 +285,9 @@ ccm setup-hooks
 - **UserPromptSubmit** → プロンプト送信時にBUSY（テキスト生成を検出）
 - **PreToolUse** → ツール実行開始時にBUSY（マルチターンの検出ギャップを解消）
 - **SubagentStart** → サブエージェント起動時にBUSY
-- **Stop** → Claude応答完了時にDONE
-- **Notification** → 許可プロンプト表示時にPERMIT、アイドル通知時にDONE
+- **Stop / StopFailure** → Claude応答完了時にDONE
+- **PermissionRequest** → ツールの許可が必要な時にPERMIT
+- **Notification** → 許可プロンプト表示時にPERMIT（permission_prompt）、アイドル通知時にDONE（idle_prompt）
 - **SessionEnd** → セッション終了時にSHELL（/exit、Ctrl+D等）
 - **PermissionDenied** → autoモードで拒否時にPERMIT（`/permissions`で再試行）
 
@@ -331,6 +341,16 @@ set -g @ccm-preview-position "right"  # または "bottom"
 ```
 
 カーソル移動で即座に更新され、自動リフレッシュもされます。ANSIカラー（256色、RGB）に対応。端末幅80列以上が必要です。ダッシュボードメニュー（`m`）からもトグル可能。
+
+### Claude Code自動起動
+
+SHELL状態（Claude Codeが終了済み）のプロジェクトウィンドウに切り替えると、ccmが自動的に `--continue` 付きでClaude Codeを再起動し、会話を再開します。
+
+```tmux
+set -g @ccm-auto-start "on"     # デフォルト: on（"off"で無効化）
+```
+
+ダッシュボードメニュー（`m`）からも設定可能です。
 
 ### アンチフリッカー
 
