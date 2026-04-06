@@ -1,4 +1,9 @@
-# ccm - Claude Code Manager for tmux
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.png">
+  <img alt="ccm — Claude Code Manager for tmux" src="assets/logo-light.png" width="380" align="left">
+</picture>
+<br clear="left">
 
 **[日本語版 README](README.ja.md)**
 

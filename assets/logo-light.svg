@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 100" width="300" height="100">
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.15"/>
+    </filter>
+    <filter id="letter-shadow" x="-10%" y="-10%" width="130%" height="140%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1.5" flood-color="#000000" flood-opacity="0.2"/>
+    </filter>
+  </defs>
+
+  <!-- c — BUSY (coral) -->
+  <circle cx="34" cy="34" r="30" fill="#E8967D" filter="url(#shadow)"/>
+  <text x="32" y="44" text-anchor="middle" filter="url(#letter-shadow)"
+        font-family="Futura, 'Trebuchet MS', 'Gill Sans', Verdana, sans-serif"
+        font-weight="700" font-size="40" fill="#ffffff">c</text>
+
+  <!-- c — PERMIT (amber) -->
+  <circle cx="110" cy="34" r="30" fill="#E5A84B" filter="url(#shadow)"/>
+  <text x="108" y="44" text-anchor="middle" filter="url(#letter-shadow)"
+        font-family="Futura, 'Trebuchet MS', 'Gill Sans', Verdana, sans-serif"
+        font-weight="700" font-size="40" fill="#ffffff">c</text>
+
+  <!-- m — DONE (green) -->
+  <circle cx="186" cy="34" r="30" fill="#5BB98B" filter="url(#shadow)"/>
+  <text x="186" y="44" text-anchor="middle" filter="url(#letter-shadow)"
+        font-family="Futura, 'Trebuchet MS', 'Gill Sans', Verdana, sans-serif"
+        font-weight="700" font-size="40" fill="#ffffff">m</text>
+
+  <!-- Tagline -->
+  <text x="4" y="88"
+        font-family="Futura, 'Trebuchet MS', 'Gill Sans', Verdana, sans-serif"
+        font-weight="700" font-size="15" fill="#999999" letter-spacing="0.5">Claude Code Manager for tmux</text>
+</svg>

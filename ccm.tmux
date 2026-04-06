@@ -67,6 +67,11 @@ tmux run-shell -b "$CCM_BIN setup-hooks >/dev/null 2>&1 || true"
 # and saves the correct original value before injecting ccm's status.
 tmux run-shell -b "sleep 1 && $CCM_BIN inject-status 2>/dev/null || true"
 
+# Re-inject status on client attach — theme plugins may overwrite status-right
+# on reattach, removing the #(ccm inject-status) periodic trigger.
+# The delay lets the theme finish re-rendering before ccm re-injects.
+tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_BIN inject-status 2>/dev/null || true'"
+
 # Auto-restore: load _autosave snapshot on tmux start
 # Controlled by @ccm-auto-restore: "on" or "off" (default)
 CCM_AUTO_RESTORE=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)

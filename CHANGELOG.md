@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Dashboard prompt: Unicode/CJK input support (Japanese project names, directory paths with non-ASCII characters)
 - Dashboard: `F1` key toggles dashboard open/close (works in dashboard, tree view, and menu modes)
 - `ccm setup-claude-md` / `ccm remove-claude-md` — add/remove ccm commands section in `~/.claude/CLAUDE.md` so every Claude Code session can discover sibling projects
+- Logo: SVG-based ccm logo with status-colored circles, light/dark mode PNG variants for README
+- Re-inject status bar on `client-attached` — fixes mode 2 status disappearing after tmux detach/reattach when theme plugins overwrite status-right
 
 ### Fixed
 - Mode 2 status line: fix double-counted separator width causing unnecessary extra lines
