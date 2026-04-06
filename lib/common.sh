@@ -370,7 +370,6 @@ ccm_setup_hooks() {
     echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, SubagentStart → BUSY"
     echo "         Stop/StopFailure → DONE, Notification → PERMIT/IDLE"
     echo "         PermissionDenied → PERMIT (auto mode), SessionEnd → SHELL"
-    echo "         SessionEnd → SHELL"
     echo ""
     echo "  Restart Claude Code to activate the hooks."
     echo "  To remove: ccm remove-hooks"

@@ -368,11 +368,11 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
 class Project:
     __slots__ = (
         "win_target", "win_idx", "name", "dir", "state",
-        "branch", "ports", "last_done_ts", "sort_key", "tagged",
+        "branch", "ports", "last_done_ts", "sort_key",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
-                 branch="", ports="", last_done_ts=0, tagged=True):
+                 branch="", ports="", last_done_ts=0):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -381,7 +381,6 @@ class Project:
         self.branch = branch
         self.ports = ports
         self.last_done_ts = last_done_ts
-        self.tagged = tagged
         self.sort_key = (STATE_PRIORITY.get(state, 5), -(last_done_ts or 0))
 
 
@@ -498,7 +497,7 @@ def build_project_list(fast=False):
         projects.append(Project(
             win_target=win_target, win_idx=win_idx, name=project,
             directory=proj_dir, state=state, branch=branch, ports=ports,
-            last_done_ts=sort_ts, tagged=True,
+            last_done_ts=sort_ts,
         ))
 
     projects.sort(key=lambda p: p.sort_key)

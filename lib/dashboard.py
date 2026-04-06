@@ -5,6 +5,7 @@ import contextlib
 import curses
 import io
 import os
+import platform
 import re
 import signal
 import subprocess
@@ -31,6 +32,8 @@ from ccm_core import (
 MSG_MAX_LEN = 200
 
 REFRESH_INTERVAL = 2
+
+_IS_MACOS = platform.system() == "Darwin"
 
 # Color pair IDs (curses-specific, stay in dashboard.py)
 C_PERMIT = 1
@@ -458,8 +461,7 @@ class Dashboard:
                     self._addstr(stdscr, y, COL_STATE, f"{icon} {p.state:<6}", state_cp)
 
                     # Project name
-                    name_attr = curses.A_BOLD if p.tagged else curses.color_pair(C_DIM)
-                    self._addstr(stdscr, y, COL_NAME, p.name, name_attr)
+                    self._addstr(stdscr, y, COL_NAME, p.name, curses.A_BOLD)
 
                     # Remaining info after name column
                     col = COL_REST
@@ -1314,8 +1316,7 @@ class Dashboard:
         # Auto-start
         auto_start = tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
 
-        import platform
-        is_macos = platform.system() == "Darwin"
+        is_macos = _IS_MACOS
 
         self.menu_items = [
             ("Add project", "add"),
