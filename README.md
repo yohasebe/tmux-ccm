@@ -124,6 +124,14 @@ set -g @ccm-key-menu "C"        # optional: enable prefix + C for menu
 set -g @ccm-key-tree "T"        # optional: enable prefix + T for tree view
 ```
 
+> **Tip:** For even quicker access, you can bind a single key (no prefix) to toggle the dashboard. For example, to use `F1`:
+>
+> ```tmux
+> bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-claude-code-manager/ccm dashboard"
+> ```
+>
+> Place this **after** the ccm plugin loads. Press `F1` to open, `F1` again to close. Adjust the path if you installed ccm manually (e.g. `~/path/to/ccm/ccm dashboard`).
+
 > **Important:** All `set -g @ccm-*` options must be placed **before** the ccm plugin loads in `~/.tmux.conf` — that means before both the `source-file` line (manual install) and the TPM `run` line (TPM install). The plugin reads these options at load time, so settings placed after will not take effect.
 
 ### Desktop Notifications

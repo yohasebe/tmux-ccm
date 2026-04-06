@@ -82,7 +82,7 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 
 ## The Dashboard
 
-Open with `prefix + Tab`. This is the primary interface for managing projects.
+Open with `prefix + Tab`. This is the primary interface for managing projects. You can also bind a single key (e.g. `F1`) for prefix-free toggle — see the [Keybindings section in README](../README.md#keybindings) for details.
 
 > ```
 > -- ccm Dashboard --

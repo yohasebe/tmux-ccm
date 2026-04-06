@@ -107,7 +107,7 @@ ccm init
 
 ## 使い方
 
-### キーバインド
+### <a id="keybindings"></a>キーバインド
 
 | キー | 動作 | デフォルト |
 |------|------|-----------|
@@ -123,6 +123,14 @@ ccm init
 set -g @ccm-key-menu "C"        # 任意: prefix + C でメニュー
 set -g @ccm-key-tree "T"        # 任意: prefix + T でツリービュー
 ```
+
+> **ヒント:** prefixなしの単一キーでダッシュボードをトグルすることもできます。例えば `F1` に割り当てる場合：
+>
+> ```tmux
+> bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-claude-code-manager/ccm dashboard"
+> ```
+>
+> この行はccmプラグインの読み込みよりも**後に**配置してください。`F1` で開き、もう一度 `F1` で閉じます。手動インストールの場合はパスを調整してください（例: `~/path/to/ccm/ccm dashboard`）。
 
 > **重要:** すべての `set -g @ccm-*` オプションは、ccmプラグインが読み込まれるよりも**前に** `~/.tmux.conf` で設定する必要があります。`source-file` 行（手動インストール）およびTPMの `run` 行（TPMインストール）よりも前に配置してください。プラグインは読み込み時にこれらのオプションを参照するため、後に配置された設定は反映されません。
 

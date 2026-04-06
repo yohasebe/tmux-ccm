@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """ccm Dashboard — Python curses implementation for responsive TUI."""
 
+import contextlib
 import curses
+import io
 import os
 import re
 import signal
@@ -560,6 +562,30 @@ class Dashboard:
         return w
 
     @staticmethod
+    def _strip_last_grapheme(text):
+        """Remove the last user-perceived character (grapheme cluster).
+
+        Handles combining marks (category M) and zero-width joiners (U+200D)
+        so that e.g. accented characters and ZWJ emoji sequences are deleted
+        as a single unit on backspace.
+        """
+        if not text:
+            return text
+        i = len(text)
+        while i > 0:
+            i -= 1
+            cat = unicodedata.category(text[i])
+            if cat.startswith("M"):
+                # Combining mark — keep walking back
+                continue
+            # Base character found; check if preceded by ZWJ
+            if i > 0 and text[i - 1] == "\u200d":
+                i -= 1  # skip ZWJ, continue to next base char
+                continue
+            break
+        return text[:i]
+
+    @staticmethod
     def _truncate_to_width(text, max_width):
         """Truncate text to fit within max_width display columns."""
         w = 0
@@ -624,7 +650,7 @@ class Dashboard:
         elif key in (curses.KEY_ENTER, 10, 13):
             if n > 0:
                 return self._do_attach(stdscr)
-        elif key in (ord("q"), ord("Q"), 27):
+        elif key in (ord("q"), ord("Q"), 27, curses.KEY_F1):
             return "quit"
         elif key in (ord("s"), ord("S")):
             self._do_save(stdscr)
@@ -862,45 +888,75 @@ class Dashboard:
         curses.curs_set(1)
         height, width = stdscr.getmaxyx()
         row = height - 1
-        prompt_col = 2 + len(prompt_text)
+        prompt_col = 2 + self._display_width(prompt_text)
         stdscr.timeout(-1)  # Block for input
 
         buf = ""
-        col = prompt_col
 
         def _redraw():
             stdscr.move(row, 0)
             stdscr.clrtoeol()
             self._addstr(stdscr, row, 0, f"  {prompt_text}", curses.color_pair(C_DIM))
             self._addstr(stdscr, row, prompt_col, buf, 0)
-            stdscr.move(row, prompt_col + len(buf))
+            cursor_col = prompt_col + self._display_width(buf)
+            try:
+                stdscr.move(row, cursor_col)
+            except curses.error:
+                pass
 
         _redraw()
         stdscr.refresh()
 
         while True:
-            ch = stdscr.getch()
-            if ch == 27:  # Escape
-                curses.curs_set(0)
-                stdscr.timeout(50)
-                return None
-            elif ch in (curses.KEY_ENTER, 10, 13):
-                curses.curs_set(0)
-                stdscr.timeout(50)
-                return buf
-            elif ch in (curses.KEY_BACKSPACE, 127, 8):
-                if buf:
-                    buf = buf[:-1]
+            try:
+                wch = stdscr.get_wch()
+            except curses.error:
+                continue
+
+            # get_wch returns str for characters, int for special keys
+            if isinstance(wch, int):
+                if wch == 27:  # Escape
+                    curses.curs_set(0)
+                    stdscr.timeout(50)
+                    return None
+                elif wch in (curses.KEY_ENTER, 10, 13):
+                    curses.curs_set(0)
+                    stdscr.timeout(50)
+                    return buf
+                elif wch in (curses.KEY_BACKSPACE, 127, 8):
+                    if buf:
+                        buf = self._strip_last_grapheme(buf)
+                        _redraw()
+                        stdscr.refresh()
+                elif wch == 9 and path_completion:  # Tab
+                    buf = self._complete_path(buf, stdscr, row, prompt_col)
                     _redraw()
                     stdscr.refresh()
-            elif ch == 9 and path_completion:  # Tab
-                buf = self._complete_path(buf, stdscr, row, prompt_col)
-                _redraw()
-                stdscr.refresh()
-            elif 32 <= ch <= 126:
-                buf += chr(ch)
-                _redraw()
-                stdscr.refresh()
+            else:
+                # wch is a str (single character, may be wide/CJK)
+                if wch == "\x1b":  # Escape
+                    curses.curs_set(0)
+                    stdscr.timeout(50)
+                    return None
+                elif wch in ("\n", "\r"):
+                    curses.curs_set(0)
+                    stdscr.timeout(50)
+                    return buf
+                elif wch in ("\x7f", "\b"):  # Backspace
+                    if buf:
+                        buf = self._strip_last_grapheme(buf)
+                        _redraw()
+                        stdscr.refresh()
+                elif wch == "\t" and path_completion:
+                    buf = self._complete_path(buf, stdscr, row, prompt_col)
+                    _redraw()
+                    stdscr.refresh()
+                elif not wch.isspace() or wch == " ":
+                    # Accept any printable character (ASCII, CJK, etc.)
+                    if unicodedata.category(wch)[0] != "C":
+                        buf += wch
+                        _redraw()
+                        stdscr.refresh()
 
         stdscr.timeout(50)
         curses.curs_set(0)
@@ -970,11 +1026,16 @@ class Dashboard:
         """Run a ccm_core command in raise_on_die() context.
 
         Errors are raised as CCMError (instead of stderr + sys.exit) and
-        shown via _show_message, preventing curses display corruption.
+        shown via _show_message. Also suppresses stdout/stderr (ccm_info /
+        ccm_warn success messages) so they cannot bleed through the curses
+        display and desync its differential redraw model.
         Returns True on success, False on error.
         """
+        sink = io.StringIO()
         try:
-            with raise_on_die():
+            with raise_on_die(), \
+                 contextlib.redirect_stdout(sink), \
+                 contextlib.redirect_stderr(sink):
                 func(*args, **kwargs)
             return True
         except CCMError as e:
@@ -1216,7 +1277,7 @@ class Dashboard:
                     return "attached"
         elif key in (ord("d"), ord("D")):
             self.mode = "dashboard"
-        elif key in (ord("q"), ord("Q"), 27):
+        elif key in (ord("q"), ord("Q"), 27, curses.KEY_F1):
             return "quit"
 
         return ""
@@ -1438,7 +1499,7 @@ class Dashboard:
                 return "quit"
         elif key in (ord("d"), ord("D")):
             self.mode = "dashboard"
-        elif key in (ord("q"), ord("Q"), 27):
+        elif key in (ord("q"), ord("Q"), 27, curses.KEY_F1):
             return "quit"
 
         return ""

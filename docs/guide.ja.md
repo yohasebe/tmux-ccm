@@ -82,7 +82,7 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 
 ## ダッシュボード
 
-`prefix + Tab` で開きます。プロジェクト管理のメインインターフェースです。
+`prefix + Tab` で開きます。プロジェクト管理のメインインターフェースです。prefixなしの単一キー（例: `F1`）でトグルする設定も可能です — 詳しくは[READMEのキーバインドセクション](../README.ja.md#keybindings)を参照してください。
 
 > ```
 > -- ccm Dashboard --

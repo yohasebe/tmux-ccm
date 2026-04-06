@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Dashboard menu: Notifications, Notification sound, Sound name, Auto-start Claude (all auto-persisted to tmux.conf)
 - Sound preview on name change / sound enable (macOS, uses `afplay` for instant playback)
 - `@ccm-notify-sound-name` option for custom notification sound (default: Glass, 8 choices)
+- Dashboard prompt: Unicode/CJK input support (Japanese project names, directory paths with non-ASCII characters)
+- Dashboard: `F1` key toggles dashboard open/close (works in dashboard, tree view, and menu modes)
 
 ### Fixed
 - Mode 2 status line: fix double-counted separator width causing unnecessary extra lines
@@ -27,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix false SHELL state from stale SessionEnd hook signal after Claude restarts with `--continue`
 - Fix notification sound not playing for DONE notifications (sound now applied to both PERMIT and DONE)
 - Dashboard: fix garbled display when add/register/remove fails (e.g. duplicate directory). Errors from `ccm_die` now propagate as `CCMError` within the dashboard and are shown in the message area instead of leaking to stderr and corrupting the curses screen
+- Dashboard: fix display not updating after successful unregister/remove (stdout from `ccm_info` was desyncing curses differential redraw)
+- Dashboard prompt: fix cursor/input position offset when prompt text contains CJK characters (used character count instead of display width)
 
 ### Changed
 - Default `@ccm-notify` changed from `off` to `permit,done` — new users get PERMIT and DONE notifications out of the box
