@@ -56,6 +56,8 @@ Usage:
   ccm init                          Interactive setup wizard
   ccm setup-hooks                   Install Claude Code hooks for improved state detection
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
+  ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
+  ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
   ccm help                          Show this help
 USAGE
 }
@@ -151,6 +153,12 @@ case "${1:-help}" in
         ;;
     remove-hooks)
         ccm_remove_hooks
+        ;;
+    setup-claude-md)
+        ccm_setup_claude_md
+        ;;
+    remove-claude-md)
+        ccm_remove_claude_md
         ;;
     help|--help|-h)
         ccm_usage

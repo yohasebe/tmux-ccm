@@ -331,6 +331,32 @@ set -g @ccm-preview-position "right"  # または "bottom"
 
 ccmはtmux内でのClaude CodeのUIフリッカーを軽減するため、`CLAUDE_CODE_NO_FLICKER=1` を自動設定します。ユーザー側の設定は不要です。
 
+## Tips
+
+### Claude Codeに他プロジェクトの存在を教える
+
+デフォルトでは、各Claude Codeセッションは他のプロジェクトの存在を知りません。グローバル設定ファイル（`~/.claude/CLAUDE.md`）にccmコマンドの情報を追記することで、これを改善できます：
+
+```markdown
+## マルチプロジェクト環境
+
+このユーザーはccm（Claude Code Manager for tmux）で複数プロジェクトを同時管理している。
+他プロジェクトの情報が必要な場合は以下のコマンドが利用可能:
+
+- `ccm list` — 管理中の全プロジェクト一覧（名前・ディレクトリ）
+- `ccm status` — 全プロジェクトの状態（ブランチ・ポート含む）
+- `ccm capture <name>` — 指定プロジェクトのClaude Code画面出力を取得
+```
+
+これにより、すべてのClaude Codeセッションがccm配下の他プロジェクトを発見・参照できるようになります。例えば、あるライブラリが別のプロジェクトでどう使われているかを調べたり、別プロジェクトの `CLAUDE.md` を読んだりできます。
+
+自動設定：
+
+```bash
+ccm setup-claude-md     # ~/.claude/CLAUDE.md にccmセクションを追加
+ccm remove-claude-md    # ccmセクションを削除
+```
+
 ## 仕組み
 
 - プロジェクトはtmuxウィンドウの `@ccm_project` / `@ccm_dir` タグで管理

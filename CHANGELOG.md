@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `@ccm-notify-sound-name` option for custom notification sound (default: Glass, 8 choices)
 - Dashboard prompt: Unicode/CJK input support (Japanese project names, directory paths with non-ASCII characters)
 - Dashboard: `F1` key toggles dashboard open/close (works in dashboard, tree view, and menu modes)
+- `ccm setup-claude-md` / `ccm remove-claude-md` — add/remove ccm commands section in `~/.claude/CLAUDE.md` so every Claude Code session can discover sibling projects
 
 ### Fixed
 - Mode 2 status line: fix double-counted separator width causing unnecessary extra lines

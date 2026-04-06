@@ -331,6 +331,32 @@ The preview updates when you move the cursor and refreshes automatically. ANSI c
 
 ccm automatically sets `CLAUDE_CODE_NO_FLICKER=1` to reduce UI flicker when running Claude Code inside tmux. No user configuration needed.
 
+## Tips
+
+### Make Claude Code Aware of Other Projects
+
+By default, each Claude Code session is isolated and unaware of your other projects. You can change this by adding ccm commands to your global Claude Code instructions (`~/.claude/CLAUDE.md`):
+
+```markdown
+## Multi-Project Environment
+
+This user manages multiple projects with ccm (Claude Code Manager for tmux).
+Use the following commands to discover and inspect other projects:
+
+- `ccm list` — List all managed projects (names and directories)
+- `ccm status` — Show all project states (branch, port, Claude status)
+- `ccm capture <name>` — Capture visible terminal output from another project
+```
+
+This lets every Claude Code session discover sibling projects and inspect their state — for example, checking how a library is used in another project, or reading another project's `CLAUDE.md`.
+
+To set this up automatically:
+
+```bash
+ccm setup-claude-md     # add ccm section to ~/.claude/CLAUDE.md
+ccm remove-claude-md    # remove it
+```
+
 ## How It Works
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`

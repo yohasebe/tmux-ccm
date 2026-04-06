@@ -25,6 +25,8 @@ _ccm() {
         'init:Interactive setup wizard'
         'setup-hooks:Install Claude Code hooks for improved state detection'
         'remove-hooks:Remove ccm hooks from Claude Code settings'
+        'setup-claude-md:Add ccm section to ~/.claude/CLAUDE.md'
+        'remove-claude-md:Remove ccm section from ~/.claude/CLAUDE.md'
         'help:Show help'
     )
 

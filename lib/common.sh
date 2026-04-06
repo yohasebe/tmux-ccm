@@ -394,3 +394,89 @@ ccm_remove_hooks() {
     ccm_info "ccm hooks removed from Claude Code settings."
     echo "  Restart Claude Code to apply changes."
 }
+
+# ─── CLAUDE.md integration ───
+
+# Marker comments used to identify the ccm-managed section
+_CCM_MD_BEGIN="<!-- ccm:begin -->"
+_CCM_MD_END="<!-- ccm:end -->"
+
+_ccm_claude_md_section() {
+    cat <<'SECTION'
+<!-- ccm:begin -->
+## Multi-Project Environment
+
+This user manages multiple projects with ccm (Claude Code Manager for tmux).
+Use the following commands to discover and inspect other projects:
+
+- `ccm list` — List all managed projects (names and directories)
+- `ccm status` — Show all project states (branch, port, Claude status)
+- `ccm capture <name>` — Capture visible terminal output from another project
+<!-- ccm:end -->
+SECTION
+}
+
+ccm_setup_claude_md() {
+    local claude_md="${HOME}/.claude/CLAUDE.md"
+
+    # Ensure directory exists
+    mkdir -p "${HOME}/.claude"
+
+    # Check if section already present
+    if [[ -f "$claude_md" ]] && grep -qF "$_CCM_MD_BEGIN" "$claude_md"; then
+        ccm_info "ccm section already exists in ${claude_md}"
+        return 0
+    fi
+
+    # Show what will be added
+    echo "The following will be appended to ${claude_md}:"
+    echo ""
+    _ccm_claude_md_section | sed 's/^/  /'
+    echo ""
+
+    # Ask for confirmation
+    printf "Proceed? [y/N]: "
+    read -r ans
+    case "$ans" in
+        [yY]|[yY][eE][sS]) ;;
+        *) echo "Cancelled."; return 0 ;;
+    esac
+
+    # Append with a blank line separator
+    if [[ -f "$claude_md" ]] && [[ -s "$claude_md" ]]; then
+        # Ensure file ends with a newline before appending
+        [[ "$(tail -c 1 "$claude_md")" != "" ]] && echo "" >> "$claude_md"
+        echo "" >> "$claude_md"
+    fi
+    _ccm_claude_md_section >> "$claude_md"
+    ccm_info "ccm section added to ${claude_md}"
+}
+
+ccm_remove_claude_md() {
+    local claude_md="${HOME}/.claude/CLAUDE.md"
+
+    if [[ ! -f "$claude_md" ]]; then
+        ccm_warn "No file found at ${claude_md}"
+        return 0
+    fi
+
+    if ! grep -qF "$_CCM_MD_BEGIN" "$claude_md"; then
+        ccm_info "No ccm section found in ${claude_md}"
+        return 0
+    fi
+
+    # Remove the ccm section (begin marker through end marker, plus surrounding blank lines)
+    local tmp
+    tmp=$(mktemp)
+    awk -v begin="$_CCM_MD_BEGIN" -v end="$_CCM_MD_END" '
+        $0 == begin { skip = 1; next }
+        $0 == end   { skip = 0; next }
+        skip { next }
+        { print }
+    ' "$claude_md" > "$tmp"
+
+    # Clean up trailing blank lines left by removal
+    sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$tmp" > "$claude_md"
+    rm -f "$tmp"
+    ccm_info "ccm section removed from ${claude_md}"
+}
