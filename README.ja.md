@@ -94,7 +94,8 @@ ccm init
 
 フックのインストール、自動復元、ステータスバーの設定をまとめて案内します。
 
-> **Note:** フックはプラグイン読み込み時（TPM経由）に自動インストールされ、プラグイン更新時にも自動で最新化されます。手動で管理したい場合は `ccm setup-hooks` / `ccm remove-hooks` を使用してください。
+> [!NOTE]
+> フックはプラグイン読み込み時（TPM経由）に自動インストールされ、プラグイン更新時にも自動で最新化されます。手動で管理したい場合は `ccm setup-hooks` / `ccm remove-hooks` を使用してください。
 
 ## 使い方
 
@@ -115,7 +116,8 @@ set -g @ccm-key-menu "C"        # 任意: prefix + C でメニュー
 set -g @ccm-key-tree "T"        # 任意: prefix + T でツリービュー
 ```
 
-> **ヒント:** prefixなしの単一キーでダッシュボードをトグルすることもできます。例えば `F1` に割り当てる場合：
+> [!TIP]
+> prefixなしの単一キーでダッシュボードをトグルすることもできます。例えば `F1` に割り当てる場合：
 >
 > ```tmux
 > bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-ccm/ccm dashboard"
@@ -123,7 +125,8 @@ set -g @ccm-key-tree "T"        # 任意: prefix + T でツリービュー
 >
 > この行はccmプラグインの読み込みよりも**後に**配置してください。`F1` で開き、もう一度 `F1` で閉じます。手動インストールの場合はパスを調整してください（例: `~/path/to/ccm/ccm dashboard`）。
 
-> **重要:** すべての `set -g @ccm-*` オプションは、ccmプラグインが読み込まれるよりも**前に** `~/.tmux.conf` で設定する必要があります。`source-file` 行（手動インストール）およびTPMの `run` 行（TPMインストール）よりも前に配置してください。プラグインは読み込み時にこれらのオプションを参照するため、後に配置された設定は反映されません。
+> [!IMPORTANT]
+> すべての `set -g @ccm-*` オプションは、ccmプラグインが読み込まれるよりも**前に** `~/.tmux.conf` で設定する必要があります。`source-file` 行（手動インストール）およびTPMの `run` 行（TPMインストール）よりも前に配置してください。プラグインは読み込み時にこれらのオプションを参照するため、後に配置された設定は反映されません。
 
 ### デスクトップ通知
 
@@ -145,6 +148,7 @@ set -g @ccm-notify "permit,done"     # PERMITとDONEで通知
 
 ```tmux
 set -g @ccm-notify-sound "on"     # デフォルト: off（macOSでは「Glass」サウンドを再生）
+set -g @ccm-notify-sound-name "Ping"  # 任意: サウンドをカスタマイズ（macOSのみ）
 ```
 
 ### ステータスバー
@@ -198,7 +202,8 @@ tmux標準のウィンドウリストをccm形式の色付きエントリに置�
 
 端末幅とプロジェクト数に応じて行数が自動拡張。
 
-> **注意:** モード2は `status-format[1]` 〜 `status-format[5]` を使用します。他のプラグインがこれらのインデックスを使用している場合、衝突が発生する可能性があります。
+> [!NOTE]
+> モード2はプロジェクト数に応じて追加の `status-format` 行（最大 `status-format[5]`）を使用します。他のプラグインがこれらのインデックスを使用している場合、衝突が発生する可能性があります。
 
 ### ダッシュボード操作
 
@@ -238,11 +243,17 @@ ccm menu                          インタラクティブメニュー
 ccm snapshot save|load|list|delete  スナップショット管理
 ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
+ccm init                          対話型セットアップウィザード（フック・復元・ステータスバー）
 ccm setup-hooks                   Claude Codeフックをインストール（検出精度向上）
 ccm remove-hooks                  Claude Codeフックをアンインストール
 ccm setup-claude-md               ~/.claude/CLAUDE.mdにccmセクションを追加
 ccm remove-claude-md              ~/.claude/CLAUDE.mdからccmセクションを削除
+ccm statusline                    1行ステータス出力（tmuxステータスバー用）
+ccm inject-status                 tmuxステータスバー更新（内部使用）
 ```
+
+> [!TIP]
+> 多くのコマンドに短縮エイリアスがあります: `ls` (list), `st` (status), `a` (attach), `rm` (remove), `d` (dashboard), `reg` (register), `unreg` (unregister), `mv` (rename), `cap` (capture), `snap` (snapshot), `sl` (statusline)
 
 ### ステータスアイコン
 
@@ -289,7 +300,7 @@ ccm snapshot list
 ccm start my-workspace
 ```
 
-`ccm stop --all` 実行時に `_autosave` として自動保存：
+`_autosave` スナップショットはプロジェクトがアクティブな間、2分間隔で自動更新されます。`ccm stop --all` 実行時にも保存：
 
 ```bash
 ccm start _autosave   # 前回のセッションを復元
@@ -322,7 +333,7 @@ set -g @ccm-preview "on"              # デフォルト: off
 set -g @ccm-preview-position "right"  # または "bottom"
 ```
 
-カーソル移動で即座に更新され、自動リフレッシュもされます。ANSIカラー（256色、RGB）に対応。端末幅80列以上が必要です。ダッシュボードメニュー（`m`）からもトグル可能。
+カーソル移動で即座に更新され、自動リフレッシュもされます。ANSIカラー（256色、RGB）に対応。端末幅80列以上（右配置）または高さ20行以上（下配置）が必要です。ダッシュボードメニュー（`m`）からもトグル可能。
 
 ### Claude Code自動起動
 
@@ -367,7 +378,7 @@ ccm remove-claude-md    # ccmセクションを削除
 ## 仕組み
 
 - プロジェクトはtmuxウィンドウの `@ccm_project` / `@ccm_dir` タグで管理
-- Claude Codeの状態はプロセスツリー検査で検出（画面スクレイピングではない）
+- Claude Codeの状態はフック信号＋プロセスツリー検査で検出（プロンプトパターンマッチも補助的に使用）
 - DONE状態はBUSY/PERMIT → IDLE遷移で自動検出（30秒後に自動クリア）
 - tmuxテーマとの併用に対応（status-rightの変更を自動検出）
 - gitブランチとポート情報は30秒キャッシュで負荷軽減

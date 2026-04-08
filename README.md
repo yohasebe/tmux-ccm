@@ -94,7 +94,8 @@ ccm init
 
 This guides you through hooks installation, auto-restore, and status bar configuration in one step.
 
-> **Note:** Hooks are automatically installed on plugin load (via TPM) and kept up to date on plugin updates. If you prefer manual control, use `ccm setup-hooks` and `ccm remove-hooks`.
+> [!NOTE]
+> Hooks are automatically installed on plugin load (via TPM) and kept up to date on plugin updates. If you prefer manual control, use `ccm setup-hooks` and `ccm remove-hooks`.
 
 ## Usage
 
@@ -115,7 +116,8 @@ set -g @ccm-key-menu "C"        # optional: enable prefix + C for menu
 set -g @ccm-key-tree "T"        # optional: enable prefix + T for tree view
 ```
 
-> **Tip:** For even quicker access, you can bind a single key (no prefix) to toggle the dashboard. For example, to use `F1`:
+> [!TIP]
+> For even quicker access, you can bind a single key (no prefix) to toggle the dashboard. For example, to use `F1`:
 >
 > ```tmux
 > bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-ccm/ccm dashboard"
@@ -123,7 +125,8 @@ set -g @ccm-key-tree "T"        # optional: enable prefix + T for tree view
 >
 > Place this **after** the ccm plugin loads. Press `F1` to open, `F1` again to close. Adjust the path if you installed ccm manually (e.g. `~/path/to/ccm/ccm dashboard`).
 
-> **Important:** All `set -g @ccm-*` options must be placed **before** the ccm plugin loads in `~/.tmux.conf` — that means before both the `source-file` line (manual install) and the TPM `run` line (TPM install). The plugin reads these options at load time, so settings placed after will not take effect.
+> [!IMPORTANT]
+> All `set -g @ccm-*` options must be placed **before** the ccm plugin loads in `~/.tmux.conf` — that means before both the `source-file` line (manual install) and the TPM `run` line (TPM install). The plugin reads these options at load time, so settings placed after will not take effect.
 
 ### Desktop Notifications
 
@@ -145,6 +148,7 @@ Enable notification sound:
 
 ```tmux
 set -g @ccm-notify-sound "on"     # default: off (plays "Glass" sound on macOS)
+set -g @ccm-notify-sound-name "Ping"  # optional: customize sound (macOS only)
 ```
 
 ### Status Bar
@@ -198,7 +202,8 @@ Adds one or more tmux status lines below the main bar. Shows all projects includ
 
 Lines auto-expand based on terminal width and project count.
 
-> **Note:** Mode 2 uses `status-format[1]` through `status-format[5]`. If other plugins also use these indices, conflicts may occur.
+> [!NOTE]
+> Mode 2 uses additional `status-format` lines (up to `status-format[5]` depending on project count). If other plugins also use these indices, conflicts may occur.
 
 ### Dashboard Controls
 
@@ -238,11 +243,15 @@ ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
-ccm setup-hooks                   Install Claude Code hooks (improved detection)
-ccm remove-hooks                  Remove ccm hooks from Claude Code settings
+ccm init                          Interactive setup wizard (hooks, restore, status bar)
 ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
 ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
+ccm statusline                    Print one-line status (used by tmux status bar)
+ccm inject-status                 Update tmux status bar (called internally)
 ```
+
+> [!TIP]
+> Most commands have short aliases: `ls` (list), `st` (status), `a` (attach), `rm` (remove), `d` (dashboard), `reg` (register), `unreg` (unregister), `mv` (rename), `cap` (capture), `snap` (snapshot), `sl` (statusline).
 
 ### Status Icons
 
@@ -289,7 +298,7 @@ ccm snapshot list
 ccm start my-workspace
 ```
 
-When you run `ccm stop --all`, the current layout is auto-saved as `_autosave`:
+The `_autosave` snapshot is also updated automatically every 2 minutes while projects are active. When you run `ccm stop --all`, it is saved as well:
 
 ```bash
 ccm start _autosave   # restore previous session
@@ -322,7 +331,7 @@ set -g @ccm-preview "on"              # default: off
 set -g @ccm-preview-position "right"  # or "bottom"
 ```
 
-The preview updates when you move the cursor and refreshes automatically. ANSI colors (256-color and RGB) are rendered. Requires terminal width ≥ 80 columns. Can also be toggled from the dashboard menu (`m`).
+The preview updates when you move the cursor and refreshes automatically. ANSI colors (256-color and RGB) are rendered. Requires terminal width ≥ 80 columns (right position) or height ≥ 20 rows (bottom position). Can also be toggled from the dashboard menu (`m`).
 
 ### Auto-Start Claude Code
 
@@ -367,7 +376,7 @@ ccm remove-claude-md    # remove it
 ## How It Works
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`
-- Claude Code state is detected via process tree inspection (not screen scraping)
+- Claude Code state is detected via hook signals + process tree inspection (with prompt pattern matching as supplement)
 - DONE state is auto-detected on BUSY/PERMIT → IDLE transitions (auto-clears after 30s)
 - Works with any tmux theme — ccm auto-detects theme changes to status-right
 - Git branch and port info are cached (30s) to minimize overhead

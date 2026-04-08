@@ -126,8 +126,8 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 `prefix + T` で開きます。tmuxの全体構造を階層表示します：
 
 > ```
-> work <
->   ◉ my-project (main*) ~/code/my-project <
+> work ◀
+>   ◉ my-project (main*) ~/code/my-project ◀
 >   ● another-project (feature-x) ~/code/another-project
 >   ⚠ api-server (main) [:8080] ~/code/api-server
 >   ■ bash ~/home
@@ -167,7 +167,7 @@ ccm setup-hooks
 | `PermissionDenied` | PERMIT | autoモードでの拒否（`/permissions`で再試行） |
 
 > [!NOTE]
-> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE/PERMIT: 30秒）。
+> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE: 30秒、PERMIT: 10分）。
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
@@ -180,12 +180,12 @@ ccm setup-hooks
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
 | **BUSY** | フック / プロセスツリー | フック: UserPromptSubmit, PreToolUse, SubagentStart。フォールバック: `claude` が子プロセスを持つ |
 | **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし、新鮮なフック信号なし |
-| **PERMIT** | フックのみ | PermissionRequest / Notification（permission_prompt）。`ccm setup-hooks` が必要 |
+| **PERMIT** | フックのみ | PermissionRequest / PermissionDenied / Notification（permission_prompt）。`ccm setup-hooks` が必要 |
 | **DONE** | フック信号 / 状態遷移 | フック: Stop発火。フォールバック: BUSY/PERMIT → IDLE遷移を検出 |
 
 ### フックなしでの検出
 
-フックなしの場合、ccmはプロセスツリー検査のみにフォールバックします。この場合：
+フックなしの場合、ccmはプロセスツリー検査とプロンプトパターンマッチにフォールバックします。この場合：
 - テキスト生成中（ツール未使用）はBUSYではなくIDLEと表示される
 - DONE検出はBUSY→IDLE遷移のヒューリスティクスに依存する
 
@@ -453,10 +453,10 @@ tmux source-file ~/.tmux.conf
 
 ### ターミナルアプリを閉じるとプロジェクトは失われますか？
 
-いいえ。tmuxはターミナルエミュレータ（Ghostty、iTerm2など）とは独立したバックグラウンドサーバープロセスとして動作しています。ターミナルを閉じても表示が切断されるだけで、すべてのtmuxセッション、ウィンドウ、ccmプロジェクトは動作し続けます。
+いいえ。tmuxはターミナルエミュレータ（Ghostty、iTerm2など）とは独立したバックグラウンドサーバープロセスとして動作しています。ターミナルを閉じても表示が切断されるだけで、すべてのtmuxセッション、ウィンドウ、ccmプロジェクトは動作し続けます。ターミナルを再度開いて `tmux attach` を実行すれば再接続できます。
 
 > [!TIP]
-> ターミナルを再度開いて `tmux attach` を実行すれば、セッションとすべてのccmプロジェクトに再接続できます。
+> 複数のtmuxセッションがある場合は、`tmux attach -t work`（`work` をセッション名に置き換え）で特定のセッションに再接続できます。
 
 ### Macがスリープするとプロジェクトは失われますか？
 
@@ -497,7 +497,7 @@ claude --continue
 
 これにより、ccm管理下のプロジェクトと並行して、完全に独立したClaude Codeセッションで作業できます。
 
-**ccmとの同期:** 別ウィンドウでの作業後、ccm側のセッションは自動的にキャッチアップします。アイドル自動終了により、5分後に古いセッションが終了し、ウィンドウに切り替えるとClaude Codeが `--continue` で再起動して最新の会話を読み込みます。即座にキャッチアップしたい場合は、ccmウィンドウで `/exit` と入力してから一度離れて戻ってください。
+**ccmとの同期:** 別ウィンドウでの作業後、ccm側のセッションは自動的にキャッチアップします。アイドル自動終了により、10分後に古いセッションが終了し、ウィンドウに切り替えるとClaude Codeが `--continue` で再起動して最新の会話を読み込みます。即座にキャッチアップしたい場合は、ccmウィンドウで `/exit` と入力してから一度離れて戻ってください。
 
 ### プロジェクトのClaude Codeを止めるには？
 
@@ -505,7 +505,7 @@ Claude Codeのプロンプトで `/exit` を入力してください。Claude Co
 
 tmuxウィンドウ自体を直接閉じないでください（`prefix + &` やシェルの `exit` など）。ウィンドウを閉じるとccm登録も消え、次のautosaveからプロジェクトが消えます。
 
-ほとんどの場合、手動でClaude Codeを止める必要はありません。5分後にアイドル自動終了が処理します。
+ほとんどの場合、手動でClaude Codeを止める必要はありません。10分後にアイドル自動終了が処理します。
 
 ### `_autosave` と名前付きスナップショットの違いは？
 

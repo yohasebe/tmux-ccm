@@ -126,8 +126,8 @@ The dashboard auto-refreshes every 2 seconds to keep status icons up to date. Na
 Open with `prefix + T`. Shows the full tmux hierarchy:
 
 > ```
-> work <
->   ◉ my-project (main*) ~/code/my-project <
+> work ◀
+>   ◉ my-project (main*) ~/code/my-project ◀
 >   ● another-project (feature-x) ~/code/another-project
 >   ⚠ api-server (main) [:8080] ~/code/api-server
 >   ■ bash ~/home
@@ -167,7 +167,7 @@ This adds hooks to `~/.claude/settings.json`:
 | `PermissionDenied` | PERMIT | Auto mode denied an action (check `/permissions` to retry) |
 
 > [!NOTE]
-> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE/PERMIT: 30s).
+> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE: 30s, PERMIT: 10 min).
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
@@ -180,12 +180,12 @@ To remove: `ccm remove-hooks`
 | **SHELL** | Process check | No `claude` process found among window's child processes |
 | **BUSY** | Hook / Process tree | Hooks: UserPromptSubmit, PreToolUse, SubagentStart. Fallback: `claude` has child processes |
 | **IDLE** | Process tree | `claude` process exists but has no children, no fresh hook signal |
-| **PERMIT** | Hook only | PermissionRequest / Notification (permission_prompt). Requires `ccm setup-hooks` |
+| **PERMIT** | Hook only | PermissionRequest / PermissionDenied / Notification (permission_prompt). Requires `ccm setup-hooks` |
 | **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |
 
 ### Detection without hooks
 
-Without hooks, ccm falls back to process tree inspection only. This means:
+Without hooks, ccm falls back to process tree inspection with prompt pattern matching. This means:
 - Text generation (no tool use) appears as IDLE, not BUSY
 - DONE detection relies on BUSY→IDLE transition heuristics
 
@@ -497,7 +497,7 @@ claude --continue
 
 This gives you a fully independent Claude Code session alongside your ccm-managed projects. Both sessions can work on the same project directory without conflict.
 
-**Syncing back to ccm:** When you finish working in the separate window, the ccm-managed session will catch up automatically — idle auto-exit closes the stale session after 5 minutes, and switching to that window restarts Claude Code with `--continue`, loading the latest conversation. For immediate catch-up, type `/exit` in the ccm window and switch away then back.
+**Syncing back to ccm:** When you finish working in the separate window, the ccm-managed session will catch up automatically — idle auto-exit closes the stale session after 10 minutes, and switching to that window restarts Claude Code with `--continue`, loading the latest conversation. For immediate catch-up, type `/exit` in the ccm window and switch away then back.
 
 ### How should I stop Claude Code in a project?
 
@@ -505,7 +505,7 @@ Use `/exit` in the Claude Code prompt. This exits Claude Code but **keeps the tm
 
 Do **not** close the tmux window directly (e.g., `prefix + &` or `exit` in the shell). This removes the window and its ccm registration, and the project will be missing from the next autosave.
 
-In most cases, you don't need to manually stop Claude Code at all — idle auto-exit handles it automatically after 5 minutes.
+In most cases, you don't need to manually stop Claude Code at all — idle auto-exit handles it automatically after 10 minutes.
 
 ### What is the difference between `_autosave` and named snapshots?
 
