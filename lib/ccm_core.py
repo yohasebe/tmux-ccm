@@ -404,7 +404,13 @@ def read_cache_file(cache_dir, directory):
 
 
 def build_project_list(fast=False):
-    """Build project list from tmux. If fast, skip git/port refresh."""
+    """Build project list from tmux. If fast, skip git/port refresh.
+    Set CCM_MOCK_STATE=1 env var or @ccm-mock-state tmux option to force
+    fast mode (uses @ccm_prev_state only — for screenshots).
+    """
+    if (os.environ.get("CCM_MOCK_STATE") == "1"
+            or tmux_cmd("show-option", "-gqv", "@ccm-mock-state") == "1"):
+        fast = True
     raw = tmux_cmd(
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"

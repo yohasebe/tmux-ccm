@@ -13,25 +13,11 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 
 **ダッシュボード** (`prefix + Tab`):
 
-> ```
-> ┌ ccm Dashboard ──
->   4 project(s)
->
-> ▸ #1 ◉ BUSY    my-app (main*) [:3000] ~/code/my-app
->   #2 ⚠ PERMIT  api-server (dev) ~/code/api-server
->   #3 ✔ DONE    web-client (main) ~/code/web-client
->   #4 ● IDLE    docs (main) ~/code/docs
->
-> [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
-> e[x]it all [s]ave [t]ree [m]enu [q] quit
-> Last saved: 10:30:45  Hooks: ON
-> ```
+![ccm dashboard](assets/dashboard.png)
 
-**ステータスバー**（モード0）:
+**ステータスバー**（モード2）:
 
-> ```
-> 0:◉ my-app  1:⚠ api*  2:✔ web  3:● docs      10:30  ◉ BUSY
-> ```
+![ccm status bar mode 2](assets/statusbar-mode2.png)
 
 ## 機能
 
@@ -179,7 +165,9 @@ set -g @ccm-status-line 0     # デフォルト
 
 #### モード0 — アイコン＋ウィンドウ番号（デフォルト）
 
-既存のstatus-rightにウィンドウ番号付きアイコンを追加。時計やバッテリー表示はそのまま保持。アクティブなプロジェクトがある場合はウィンドウ番号も表示（例: `1,2: ⚠ PERMIT`）。全てIDLEの場合は `≡` アイコンのみ：
+既存のstatus-rightにウィンドウ番号付きアイコンを追加。時計やバッテリー表示はそのまま保持。アクティブなプロジェクトがある場合はウィンドウ番号も表示（例: `5: PERMIT ⚠`）。全てIDLEの場合は `≡` アイコンのみ：
+
+![status bar mode 0](assets/statusbar-mode0.png)
 
 | 優先度 | 条件 | アイコン | 色 |
 |--------|------|---------|-----|
@@ -194,17 +182,13 @@ set -g @ccm-status-line 0     # デフォルト
 
 tmux標準のウィンドウリストをccm形式の色付きエントリに置換。既存のstatus-right（時計等）は保持。
 
-```
-openai-workflow:● │ ccm:◉ │ monadic-chat:● │ 21:30 2026-03-21
-```
+![status bar mode 1](assets/statusbar-mode1.png)
 
 #### モード2 — 専用ステータス行
 
-メインバーの下に専用ステータス行を追加。IDLEを含む全プロジェクトをgitブランチ・ポート情報付きで表示。メインバーは変更しない。
+メインバーの下に専用ステータス行を追加。IDLEを含む全プロジェクトを表示。メインバーは変更しない。
 
-```
-my-project:◉(main*) │ api:●(dev)[:8080] │ ccm:✔(main*)
-```
+![status bar mode 2](assets/statusbar-mode2.png)
 
 | 状態 | アイコン | 色 |
 |------|---------|-----|

@@ -13,25 +13,11 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 
 **Dashboard** (`prefix + Tab`):
 
-> ```
-> ┌ ccm Dashboard ──
->   4 project(s)
->
-> ▸ #1 ◉ BUSY    my-app (main*) [:3000] ~/code/my-app
->   #2 ⚠ PERMIT  api-server (dev) ~/code/api-server
->   #3 ✔ DONE    web-client (main) ~/code/web-client
->   #4 ● IDLE    docs (main) ~/code/docs
->
-> [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
-> e[x]it all [s]ave [t]ree [m]enu [q] quit
-> Last saved: 10:30:45  Hooks: ON
-> ```
+![ccm dashboard](assets/dashboard.png)
 
-**Status bar** (mode 0):
+**Status bar** (mode 2 shown):
 
-> ```
-> 0:◉ my-app  1:⚠ api*  2:✔ web  3:● docs      10:30  ◉ BUSY
-> ```
+![ccm status bar mode 2](assets/statusbar-mode2.png)
 
 ## Features
 
@@ -179,7 +165,9 @@ set -g @ccm-status-line 0     # default
 
 #### Mode 0 — Icon with indices (default)
 
-Appends a priority icon with window indices to your existing status-right. Your clock, battery, etc. are preserved. When active projects exist, window numbers are shown (e.g., `1,2: ⚠ PERMIT`). When all are IDLE, a single `≡` icon is shown:
+Appends a priority icon with window indices to your existing status-right. Your clock, battery, etc. are preserved. When active projects exist, window numbers are shown (e.g., `5: PERMIT ⚠`). When all are IDLE, a single `≡` icon is shown:
+
+![status bar mode 0](assets/statusbar-mode0.png)
 
 | Priority | Condition | Icon | Color |
 |----------|-----------|------|-------|
@@ -194,17 +182,13 @@ Click the icon to open the dashboard for full details.
 
 Replaces the standard tmux window list with ccm-style colored entries showing project name and status icon. Your existing status-right (clock, etc.) is preserved.
 
-```
-openai-workflow:● │ ccm:◉ │ monadic-chat:● │ 21:30 2026-03-21
-```
+![status bar mode 1](assets/statusbar-mode1.png)
 
 #### Mode 2 — Dedicated status line
 
-Adds a second (or more) tmux status line below the main bar. Shows all projects including idle ones with git branch and port details. The main status bar is not modified.
+Adds one or more tmux status lines below the main bar. Shows all projects including idle ones. The main status bar is not modified.
 
-```
-my-project:◉(main*) │ api:●(dev)[:8080] │ ccm:✔(main*)
-```
+![status bar mode 2](assets/statusbar-mode2.png)
 
 | State | Icon | Color |
 |-------|------|-------|

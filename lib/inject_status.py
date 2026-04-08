@@ -307,7 +307,7 @@ def _inject_status_impl():
                 term_width = int(tmux_cmd("display-message", "-p", "#{client_width}") or "120")
             except ValueError:
                 pass
-            orig_visible = len(re.sub(r'#\[[^\]]*\]', '', original))
+            orig_visible = len(re.sub(r'#\[[^\]]*\]|#\{[^}]*\}', '', original))
             avail = term_width - orig_visible - 10  # margin for separators + refresh
 
             # Select entries by priority (highest first) until width is exhausted,
@@ -352,7 +352,7 @@ def _inject_status_impl():
         entries = build_detail_entries(all_projects, with_extras=True, current_win_idx=current_win_idx)
 
         if not entries:
-            fmt = "#[align=right]#[fg=#666666,bg=#3a3a3a] ≡ ccm: no projects  "
+            fmt = "#[fill=#3a3a3a]#[fg=#666666,bg=#3a3a3a] ≡ ccm: no projects  "
             tmux_batch(
                 ("set", "-g", "status", "2"),
                 ("set", "-g", "status-format[1]", fmt),
@@ -386,7 +386,7 @@ def _inject_status_impl():
                     line_str += f" {entries[entry_idx]}"
                     entry_idx += 1
                     count += 1
-                fmt = f"#[align=right]#[fg=#9E9E9E,bg=#3a3a3a]{line_str}  "
+                fmt = f"#[fill=#3a3a3a]#[fg=#9E9E9E,bg=#3a3a3a]{line_str}  "
                 cmds.append(("set", "-g", f"status-format[{line_idx + 1}]", fmt))
 
             # Clear extra lines
