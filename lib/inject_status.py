@@ -243,13 +243,19 @@ def _inject_status_impl():
     except OSError:
         pass
 
-    # Check if hook already sent a recent PERMIT notification (avoid duplicate)
-    permit_notified_file = os.path.join(CCM_TMP_DIR, "permit-notified")
-    hook_permit_ts = 0
+    # Check if hook already sent a recent notification (avoid duplicate)
+    # Marker file format: "<timestamp> <STATE>"
+    hook_notified_file = os.path.join(CCM_TMP_DIR, "hook-notified")
+    hook_notified_ts = 0
+    hook_notified_state = ""
     try:
-        if os.path.exists(permit_notified_file):
-            with open(permit_notified_file) as f:
-                hook_permit_ts = int(f.read().strip())
+        if os.path.exists(hook_notified_file):
+            with open(hook_notified_file) as f:
+                parts = f.read().strip().split(None, 1)
+                if len(parts) >= 1:
+                    hook_notified_ts = int(parts[0])
+                if len(parts) >= 2:
+                    hook_notified_state = parts[1]
     except (OSError, ValueError):
         pass
     now = int(time.time())
@@ -262,8 +268,8 @@ def _inject_status_impl():
                 f.write(f"{p.win_target}\t{p.state}\n")
                 prev = prev_states.get(p.win_target, "")
                 if p.state != prev and p.state in ("PERMIT", "DONE"):
-                    # Skip PERMIT notification if hook already sent one within 5 seconds
-                    if p.state == "PERMIT" and (now - hook_permit_ts) < 5:
+                    # Skip if hook already sent this notification within 5 seconds
+                    if p.state == hook_notified_state and (now - hook_notified_ts) < 5:
                         continue
                     # Read detail from hook signal for PERMIT notifications
                     detail = ""

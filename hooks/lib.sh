@@ -36,11 +36,13 @@ ccm_write_signal() {
             tmux rename-window -t "$win_target" "${icon} ${project}" 2>/dev/null
         fi
 
-        # PERMIT: instant status-right icon update + desktop notification
-        # (eliminates up to 3s polling delay for the most critical state)
+        # Instant desktop notification for PERMIT and DONE
+        # (eliminates up to 3s polling delay for critical states)
         if [[ "$state" == "PERMIT" && -n "$project" ]]; then
             _ccm_instant_permit_icon "$win_target" "$project" &
-            _ccm_instant_notify "$project" "$detail" &
+            _ccm_instant_notify "PERMIT" "$project" "$detail" &
+        elif [[ "$state" == "DONE" && -n "$project" ]]; then
+            _ccm_instant_notify "DONE" "$project" "" &
         fi
     fi
 }
@@ -62,10 +64,11 @@ _ccm_instant_permit_icon() {
     tmux refresh-client -S 2>/dev/null
 }
 
-# Send desktop notification immediately for PERMIT state.
+# Send desktop notification immediately for PERMIT or DONE state.
 # Writes a marker so inject-status can skip the duplicate notification.
+# Args: $1=STATE (PERMIT/DONE), $2=PROJECT_NAME, $3=DETAIL (optional)
 _ccm_instant_notify() {
-    local project="$1" detail="${2:-}"
+    local state="$1" project="$2" detail="${3:-}"
 
     # Check notification setting
     local notify_setting
@@ -73,28 +76,43 @@ _ccm_instant_notify() {
     notify_setting="${notify_setting:-permit,done}"
     [[ "$notify_setting" == "off" ]] && return
 
-    # Check if PERMIT notifications are enabled
+    # Check if this state's notifications are enabled
+    local state_lower="${state,,}"  # PERMIT→permit, DONE→done
     case "$notify_setting" in
-        all|*permit*) ;;
+        all) ;;
+        *"$state_lower"*) ;;
         *) return ;;
     esac
 
     # Write marker to prevent inject-status from sending duplicate notification
     local tmp_dir="${TMPDIR:-/tmp}/ccm-${UID}"
-    printf '%s' "$(date +%s)" > "${tmp_dir}/permit-notified" 2>/dev/null
+    printf '%s %s' "$(date +%s)" "$state" > "${tmp_dir}/hook-notified" 2>/dev/null
 
     # Sound setting
     local sound_setting
     sound_setting=$(tmux show-option -gqv @ccm-notify-sound 2>/dev/null)
     sound_setting="${sound_setting:-off}"
 
-    local title="ccm ⚠ ${project}"
-    local body
-    if [[ -n "$detail" ]]; then
-        body="Permission required: ${detail}"
-    else
-        body="Action required — respond to the permission prompt"
-    fi
+    local icon title body
+    case "$state" in
+        PERMIT)
+            icon="⚠"
+            if [[ -n "$detail" ]]; then
+                body="Permission required: ${detail}"
+            else
+                body="Action required — respond to the permission prompt"
+            fi
+            ;;
+        DONE)
+            icon="✔"
+            body="Response complete"
+            ;;
+        *)
+            icon="●"
+            body="State changed to ${state}"
+            ;;
+    esac
+    title="ccm ${icon} ${project}"
 
     # Escape for AppleScript
     title="${title//\\/\\\\}" ; title="${title//\"/\\\"}"
