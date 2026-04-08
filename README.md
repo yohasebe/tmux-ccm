@@ -47,7 +47,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 Add to your `~/.tmux.conf`:
 
 ```tmux
-set -g @plugin 'yohasebe/tmux-claude-code-manager'
+set -g @plugin 'yohasebe/tmux-ccm'
 ```
 
 Reload tmux and press `prefix + I` to install.
@@ -55,13 +55,13 @@ Reload tmux and press `prefix + I` to install.
 ### Manual
 
 ```bash
-git clone https://github.com/yohasebe/tmux-claude-code-manager.git ~/.tmux/plugins/tmux-claude-code-manager
+git clone https://github.com/yohasebe/tmux-ccm.git ~/.tmux/plugins/tmux-ccm
 ```
 
 Add to your `~/.tmux.conf`:
 
 ```tmux
-source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
+source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
 ```
 
 ### Add to PATH
@@ -70,14 +70,14 @@ For CLI usage (`ccm add`, `ccm status`, etc.), add the plugin directory to your 
 
 ```bash
 # In your .zshrc or .bashrc
-export PATH="$HOME/.tmux/plugins/tmux-claude-code-manager:$PATH"
+export PATH="$HOME/.tmux/plugins/tmux-ccm:$PATH"
 ```
 
 ### Zsh Completion (optional)
 
 ```bash
 # In your .zshrc (before compinit)
-fpath=($HOME/.tmux/plugins/tmux-claude-code-manager/completions $fpath)
+fpath=($HOME/.tmux/plugins/tmux-ccm/completions $fpath)
 ```
 
 ## First-Time Setup
@@ -120,7 +120,7 @@ set -g @ccm-key-tree "T"        # optional: enable prefix + T for tree view
 > **Tip:** For even quicker access, you can bind a single key (no prefix) to toggle the dashboard. For example, to use `F1`:
 >
 > ```tmux
-> bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-claude-code-manager/ccm dashboard"
+> bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-ccm/ccm dashboard"
 > ```
 >
 > Place this **after** the ccm plugin loads. Press `F1` to open, `F1` again to close. Adjust the path if you installed ccm manually (e.g. `~/path/to/ccm/ccm dashboard`).
@@ -380,9 +380,9 @@ ccm remove-claude-md    # remove it
 1. Remove from `~/.tmux.conf`:
    ```tmux
    # Delete this line:
-   set -g @plugin 'yohasebe/tmux-claude-code-manager'
+   set -g @plugin 'yohasebe/tmux-ccm'
    # Or if using source-file:
-   # source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
+   # source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
    ```
 
 2. Clean up tmux state:

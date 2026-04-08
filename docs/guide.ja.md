@@ -347,7 +347,7 @@ rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/dashboard.pid"
 # キャッシュをクリア
 rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/status-cache"
 rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/status-right-original"
-tmux source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
+tmux source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
 ```
 
 ### セッションのコンテキストがずれる

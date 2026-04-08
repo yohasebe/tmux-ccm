@@ -47,7 +47,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 `~/.tmux.conf` に追加：
 
 ```tmux
-set -g @plugin 'yohasebe/tmux-claude-code-manager'
+set -g @plugin 'yohasebe/tmux-ccm'
 ```
 
 tmuxをリロードし、`prefix + I` でインストール。
@@ -55,13 +55,13 @@ tmuxをリロードし、`prefix + I` でインストール。
 ### 手動インストール
 
 ```bash
-git clone https://github.com/yohasebe/tmux-claude-code-manager.git ~/.tmux/plugins/tmux-claude-code-manager
+git clone https://github.com/yohasebe/tmux-ccm.git ~/.tmux/plugins/tmux-ccm
 ```
 
 `~/.tmux.conf` に追加：
 
 ```tmux
-source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
+source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
 ```
 
 ### PATHに追加
@@ -70,14 +70,14 @@ CLI（`ccm add`、`ccm status` 等）を使うには、プラグインディレ�
 
 ```bash
 # .zshrc または .bashrc に追加
-export PATH="$HOME/.tmux/plugins/tmux-claude-code-manager:$PATH"
+export PATH="$HOME/.tmux/plugins/tmux-ccm:$PATH"
 ```
 
 ### Zsh補完（オプション）
 
 ```bash
 # .zshrc に追加（compinit の前）
-fpath=($HOME/.tmux/plugins/tmux-claude-code-manager/completions $fpath)
+fpath=($HOME/.tmux/plugins/tmux-ccm/completions $fpath)
 ```
 
 ## 初回セットアップ
@@ -120,7 +120,7 @@ set -g @ccm-key-tree "T"        # 任意: prefix + T でツリービュー
 > **ヒント:** prefixなしの単一キーでダッシュボードをトグルすることもできます。例えば `F1` に割り当てる場合：
 >
 > ```tmux
-> bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-claude-code-manager/ccm dashboard"
+> bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-ccm/ccm dashboard"
 > ```
 >
 > この行はccmプラグインの読み込みよりも**後に**配置してください。`F1` で開き、もう一度 `F1` で閉じます。手動インストールの場合はパスを調整してください（例: `~/path/to/ccm/ccm dashboard`）。
@@ -380,9 +380,9 @@ ccm remove-claude-md    # ccmセクションを削除
 1. `~/.tmux.conf` から削除：
    ```tmux
    # この行を削除:
-   set -g @plugin 'yohasebe/tmux-claude-code-manager'
+   set -g @plugin 'yohasebe/tmux-ccm'
    # または source-file の場合:
-   # source-file ~/.tmux/plugins/tmux-claude-code-manager/ccm.tmux.conf
+   # source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
    ```
 
 2. tmux状態をクリーンアップ：
