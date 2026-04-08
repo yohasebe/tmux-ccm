@@ -301,28 +301,28 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
             hook_ts, hook_state, _hook_detail = hook
             hook_age = now - hook_ts
 
-            if raw == "IDLE":
-                # PERMIT signal from PermissionRequest/Notification hook.
-                # No timeout — permission prompts can persist indefinitely.
-                # Only cleared when user responds (window_activity > hook_ts)
-                # or a newer BUSY/DONE signal overwrites it.
-                if hook_state == "PERMIT":
-                    # Check if user has responded since PERMIT was set
-                    # (window_activity > hook timestamp = user pressed a key)
-                    win_act = tmux_cmd("display-message", "-t", win_target, "-p", "#{window_activity}")
-                    try:
-                        if win_act and int(win_act) > hook_ts:
-                            _set_win_state(win_target, "BUSY")
-                            return "BUSY", done_flag, last_done_ts
-                    except ValueError:
-                        pass
-                    _set_win_state(win_target, "PERMIT")
-                    return "PERMIT", done_flag, last_done_ts
+            # PERMIT signal from PermissionRequest/Notification hook.
+            # PERMIT always overrides raw state (including BUSY) because
+            # the process tree often reports BUSY during permission prompts
+            # due to background processes (MCP servers, etc.).
+            # No timeout — permission prompts can persist indefinitely.
+            # Only cleared when user responds (window_activity > hook_ts)
+            # or a newer BUSY/DONE signal overwrites it.
+            if hook_state == "PERMIT":
+                # Check if user has responded since PERMIT was set
+                # (window_activity > hook timestamp = user pressed a key)
+                win_act = tmux_cmd("display-message", "-t", win_target, "-p", "#{window_activity}")
+                try:
+                    if win_act and int(win_act) > hook_ts:
+                        _set_win_state(win_target, "BUSY")
+                        return "BUSY", done_flag, last_done_ts
+                except ValueError:
+                    pass
+                _set_win_state(win_target, "PERMIT")
+                return "PERMIT", done_flag, last_done_ts
 
+            if raw == "IDLE":
                 if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT:
-                    # PERMIT is now detected by Notification hook (writes PERMIT signal)
-                    # No capture-pane fallback needed — avoids false positives from
-                    # Claude Code UI text (e.g., "pre-approve" in tips)
                     _set_win_state(win_target, "BUSY")
                     return "BUSY", done_flag, last_done_ts
 
@@ -483,7 +483,11 @@ def build_project_list(fast=False):
                 if hook:
                     hook_ts, hook_state, _hook_detail = hook
                     hook_age = int(time.time()) - hook_ts
-                    if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT and state != "PERMIT":
+                    # PERMIT always wins — permission prompts persist while
+                    # process tree may report BUSY (background processes)
+                    if hook_state == "PERMIT":
+                        state = "PERMIT"
+                    elif hook_state == "BUSY" and hook_age < HOOK_TIMEOUT and state != "PERMIT":
                         state = "BUSY"
                     elif hook_state == "DONE" and hook_age < DONE_TIMEOUT and state == "IDLE":
                         state = "DONE"

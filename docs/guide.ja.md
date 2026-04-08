@@ -64,7 +64,8 @@ ccm attach my-project    # 名前で
 ccm attach 2             # 番号で
 ```
 
-Claude Codeが動いていないウィンドウに切り替えると、`claude --continue` で自動的に前回の会話を再開します。
+> [!TIP]
+> Claude Codeが動いていないウィンドウに切り替えると、`claude --continue` で自動的に前回の会話を再開します。
 
 ### 5. 状態を確認
 
@@ -82,17 +83,22 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 
 ## ダッシュボード
 
-`prefix + Tab` で開きます。プロジェクト管理のメインインターフェースです。prefixなしの単一キー（例: `F1`）でトグルする設定も可能です — 詳しくは[READMEのキーバインドセクション](../README.ja.md#keybindings)を参照してください。
+`prefix + Tab` で開きます。プロジェクト管理のメインインターフェースです。prefixなしの単一キー（例: `F1`）でトグルする設定も可能です — 詳しくは[READMEのキーバインドセクション](../README.ja.md#キーバインド)を参照してください。
 
 > ```
-> -- ccm Dashboard --
+> ── ccm Dashboard ──────────────
+>   6 project(s)
 >
-> > #1 ◉ BUSY    my-project (main*) ~/code/my-project
->   #2 ● IDLE    another-project (feature-x) ~/code/another-project
->   #3 ⚠ PERMIT  api-server (main) [:8080] ~/code/api-server
+> ▶ #5  ⚠PERMIT  ml-pipeline    ✔20s ~/code/ml-pipeline
+>   #4  ✔DONE    auth-service   ✔2s  ~/code/auth-service
+>   #2  ◉BUSY    api-gateway    ✔6s  ~/code/api-gateway
+>   #3  ●IDLE    web-dashboard  ✔1m  ~/code/web-dashboard
+>   #6  ●IDLE    mobile-app     ✔5m  ~/code/mobile-app
+>   #7  ■SHELL   docs-site      ✔1d  ~/code/docs-site
 >
-> [↑↓/jk] select [Enter] attach [p]review [a]dd [s]ave [q] quit
-> Last saved: 10:30:45
+> [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
+> e[x]it all [s]ave [t]ree [m]enu [q] quit
+> Hooks: ON
 > ```
 
 ### ダッシュボードの操作
@@ -104,10 +110,14 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 | `s` | 保存 | スナップショット保存（名前を入力、デフォルトは `_autosave`） |
 | `p` | プレビュー | プロジェクトの画面内容を表示（`c` でコピー） |
 | `a` | 追加 | 新しいプロジェクトディレクトリを登録 |
+| `n` | 名前変更 | 選択プロジェクトの名前を変更 |
 | `g` | 登録 | 既存のtmuxウィンドウをccmプロジェクトとしてタグ付け |
 | `r` | 削除 | [u]nregister（ウィンドウ残す）か [d]elete（ウィンドウ閉じる）を選択 |
+| `x` | 一括終了 | アイドル状態のClaude Codeを全て終了してリソースを解放 |
 | `/` | 検索 | プロジェクト名でフィルタ |
-| `q` or `Esc` | 閉じる | ダッシュボードを閉じる |
+| `t` | ツリー | ツリービューに切替 |
+| `m` | メニュー | インタラクティブメニューに切替 |
+| `q` / `Esc` | 閉じる | ダッシュボードを閉じる |
 
 ダッシュボードは2秒間隔で自動リフレッシュされます。ナビゲーションキー（`↑↓/jk`）はリフレッシュを待たずに即座に反応します。
 
@@ -150,12 +160,14 @@ ccm setup-hooks
 | `UserPromptSubmit` | BUSY | プロンプト送信 → Claude処理中（テキスト生成含む） |
 | `PreToolUse` | BUSY | ツール実行開始（マルチターンの検出ギャップを解消） |
 | `SubagentStart` | BUSY | サブエージェント起動（Agentツール） |
-| `Stop` | DONE | Claude応答完了 |
+| `Stop` / `StopFailure` | DONE | Claude応答完了 |
+| `PermissionRequest` | PERMIT | ツールがユーザーの許可を要求 |
 | `Notification` | PERMIT / DONE | 許可プロンプト表示 / アイドル通知 |
 | `SessionEnd` | SHELL | セッション終了（/exit、Ctrl+D等） |
 | `PermissionDenied` | PERMIT | autoモードでの拒否（`/permissions`で再試行） |
 
-フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE/PERMIT: 30秒）。
+> [!NOTE]
+> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE/PERMIT: 30秒）。
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
@@ -168,7 +180,7 @@ ccm setup-hooks
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
 | **BUSY** | フック / プロセスツリー | フック: UserPromptSubmit, PreToolUse, SubagentStart。フォールバック: `claude` が子プロセスを持つ |
 | **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし、新鮮なフック信号なし |
-| **PERMIT** | フックのみ | Notificationフック（permission_prompt）。`ccm setup-hooks` が必要 |
+| **PERMIT** | フックのみ | PermissionRequest / Notification（permission_prompt）。`ccm setup-hooks` が必要 |
 | **DONE** | フック信号 / 状態遷移 | フック: Stop発火。フォールバック: BUSY/PERMIT → IDLE遷移を検出 |
 
 ### フックなしでの検出
@@ -191,7 +203,7 @@ DONEフラグは以下の場合にクリアされます：
 
 ## ステータスバーモード
 
-`~/.tmux.conf` で `set -g @ccm-status-line` を設定します。
+`~/.tmux.conf` で `set -g @ccm-status-line` を設定します。設定の詳細とスクリーンショットは[READMEのステータスバーセクション](../README.ja.md#ステータスバー)を参照してください。
 
 ### モード0 — アイコン表示（デフォルト）
 
@@ -201,7 +213,7 @@ DONEフラグは以下の場合にクリアされます：
 > 0:◉ my-project  1:⚠ api*  2:✔ web  3:● docs      07:30  ⚠ PERMIT
 > ```
 
-優先順: `⚠` PERMIT（黄） > `◉` BUSY（シアン） > `✔` DONE（緑） > `≡` 全IDLE（グレー）
+優先順: `⚠` PERMIT（黄） > `◉` BUSY（オレンジ） > `✔` DONE（緑） > `≡` 全IDLE（グレー）
 
 - 向いている人: ステータスバーへの影響を最小限にしたい人
 - 注意: プロジェクトごとの詳細はダッシュボードで確認
@@ -229,9 +241,9 @@ tmux標準のウィンドウリストをccm形式の色付きエントリに置�
 | アイコン | 状態 | 色 |
 |----------|------|-----|
 | `⚠` | PERMIT | 黄 |
-| `◉` | BUSY | シアン |
+| `◉` | BUSY | オレンジ |
 | `✔` | DONE | 緑 |
-| `●` | IDLE | グレー |
+| `●` | IDLE | ブルー |
 | `■` | SHELL | 暗グレー |
 
 - DONEは30秒後に自動クリアされIDLEに戻る
@@ -274,7 +286,8 @@ tmux起動時に最後の `_autosave` スナップショットを自動復元す
 set -g @ccm-auto-restore "on"    # デフォルト: off
 ```
 
-TPM経由で起動時に `_autosave` をロードします。既にccmプロジェクトがある場合はスキップされます。
+> [!NOTE]
+> TPM経由で起動時に `_autosave` をロードします。既にccmプロジェクトがある場合はスキップされます。
 
 ### スナップショット管理
 
@@ -440,7 +453,10 @@ tmux source-file ~/.tmux.conf
 
 ### ターミナルアプリを閉じるとプロジェクトは失われますか？
 
-いいえ。tmuxはターミナルエミュレータ（Ghostty、iTerm2など）とは独立したバックグラウンドサーバープロセスとして動作しています。ターミナルを閉じても表示が切断されるだけで、すべてのtmuxセッション、ウィンドウ、ccmプロジェクトは動作し続けます。ターミナルを再度開いて `tmux attach` を実行すれば再接続できます。
+いいえ。tmuxはターミナルエミュレータ（Ghostty、iTerm2など）とは独立したバックグラウンドサーバープロセスとして動作しています。ターミナルを閉じても表示が切断されるだけで、すべてのtmuxセッション、ウィンドウ、ccmプロジェクトは動作し続けます。
+
+> [!TIP]
+> ターミナルを再度開いて `tmux attach` を実行すれば、セッションとすべてのccmプロジェクトに再接続できます。
 
 ### Macがスリープするとプロジェクトは失われますか？
 

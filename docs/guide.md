@@ -64,7 +64,8 @@ ccm attach my-project    # by name
 ccm attach 2             # by number
 ```
 
-When you switch to a project window where Claude Code isn't running, ccm automatically starts it with `claude --continue` to resume your last conversation.
+> [!TIP]
+> When you switch to a project window where Claude Code isn't running, ccm automatically starts it with `claude --continue` to resume your last conversation.
 
 ### 5. Check status
 
@@ -85,14 +86,19 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 Open with `prefix + Tab`. This is the primary interface for managing projects. You can also bind a single key (e.g. `F1`) for prefix-free toggle — see the [Keybindings section in README](../README.md#keybindings) for details.
 
 > ```
-> -- ccm Dashboard --
+> ── ccm Dashboard ──────────────
+>   6 project(s)
 >
-> > #1 ◉ BUSY    my-project (main*) ~/code/my-project
->   #2 ● IDLE    another-project (feature-x) ~/code/another-project
->   #3 ⚠ PERMIT  api-server (main) [:8080] ~/code/api-server
+> ▶ #5  ⚠PERMIT  ml-pipeline    ✔20s ~/code/ml-pipeline
+>   #4  ✔DONE    auth-service   ✔2s  ~/code/auth-service
+>   #2  ◉BUSY    api-gateway    ✔6s  ~/code/api-gateway
+>   #3  ●IDLE    web-dashboard  ✔1m  ~/code/web-dashboard
+>   #6  ●IDLE    mobile-app     ✔5m  ~/code/mobile-app
+>   #7  ■SHELL   docs-site      ✔1d  ~/code/docs-site
 >
-> [↑↓/jk] select [Enter] attach [p]review [a]dd [s]ave [q] quit
-> Last saved: 10:30:45
+> [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
+> e[x]it all [s]ave [t]ree [m]enu [q] quit
+> Hooks: ON
 > ```
 
 ### Dashboard actions
@@ -104,10 +110,14 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `s` | Save | Save snapshot (enter name or default `_autosave`) |
 | `p` | Preview | See what's on the project's screen (press `c` to copy) |
 | `a` | Add | Register a new project directory |
+| `n` | Rename | Change the selected project's name |
 | `g` | Register | Tag an existing tmux window as a ccm project |
 | `r` | Remove | Choose [u]nregister (keep window) or [d]elete (kill window) |
+| `x` | Exit all | Exit all idle Claude Code sessions to free resources |
 | `/` | Search | Filter projects by name |
-| `q` or `Esc` | Quit | Close the dashboard |
+| `t` | Tree | Switch to tree view |
+| `m` | Menu | Switch to interactive menu |
+| `q` / `Esc` | Quit | Close the dashboard |
 
 The dashboard auto-refreshes every 2 seconds to keep status icons up to date. Navigation keys (`↑↓/jk`) respond instantly without waiting for a refresh.
 
@@ -150,12 +160,14 @@ This adds hooks to `~/.claude/settings.json`:
 | `UserPromptSubmit` | BUSY | Prompt submitted → Claude is processing (including text generation) |
 | `PreToolUse` | BUSY | Tool execution starting (solves multi-turn detection gap) |
 | `SubagentStart` | BUSY | Subagent spawned (Agent tool) |
-| `Stop` | DONE | Claude finished responding |
+| `Stop` / `StopFailure` | DONE | Claude finished responding |
+| `PermissionRequest` | PERMIT | Tool requires user permission |
 | `Notification` | PERMIT / DONE | Permission prompt shown / idle notification |
 | `SessionEnd` | SHELL | Claude Code session ended (/exit, Ctrl+D, etc.) |
 | `PermissionDenied` | PERMIT | Auto mode denied an action (check `/permissions` to retry) |
 
-Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE/PERMIT: 30s).
+> [!NOTE]
+> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE/PERMIT: 30s).
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
@@ -168,7 +180,7 @@ To remove: `ccm remove-hooks`
 | **SHELL** | Process check | No `claude` process found among window's child processes |
 | **BUSY** | Hook / Process tree | Hooks: UserPromptSubmit, PreToolUse, SubagentStart. Fallback: `claude` has child processes |
 | **IDLE** | Process tree | `claude` process exists but has no children, no fresh hook signal |
-| **PERMIT** | Hook only | Notification hook (permission_prompt). Requires `ccm setup-hooks` |
+| **PERMIT** | Hook only | PermissionRequest / Notification (permission_prompt). Requires `ccm setup-hooks` |
 | **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |
 
 ### Detection without hooks
@@ -191,7 +203,7 @@ The DONE flag clears when:
 
 ## Status Bar Modes
 
-Configure with `set -g @ccm-status-line` in your `~/.tmux.conf`.
+Configure with `set -g @ccm-status-line` in your `~/.tmux.conf`. See the [README Status Bar section](../README.md#status-bar) for configuration details and screenshots.
 
 ### Mode 0 — Single icon (default)
 
@@ -201,7 +213,7 @@ Appends one icon to your existing status-right. The icon shows the highest-prior
 > 0:◉ my-project  1:⚠ api*  2:✔ web  3:● docs      07:30  ⚠ PERMIT
 > ```
 
-Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (cyan) > `✔` DONE (green) > `≡` all idle (gray)
+Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (orange) > `✔` DONE (green) > `≡` all idle (gray)
 
 - Best for: users who want minimal status bar impact
 - Trade-off: no per-project detail (use dashboard for that)
@@ -229,9 +241,9 @@ Adds a second status bar line below the main bar, showing all projects including
 | Icon | State | Color |
 |------|-------|-------|
 | `⚠` | PERMIT | Yellow |
-| `◉` | BUSY | Cyan |
+| `◉` | BUSY | Orange |
 | `✔` | DONE | Green |
-| `●` | IDLE | Gray |
+| `●` | IDLE | Blue |
 | `■` | SHELL | Dark gray |
 
 - DONE auto-clears after 30 seconds and reverts to IDLE
@@ -274,7 +286,8 @@ To automatically restore the last `_autosave` snapshot when tmux starts, add to 
 set -g @ccm-auto-restore "on"    # default: off
 ```
 
-This loads `_autosave` via TPM on startup. If ccm projects are already loaded, the restore is skipped.
+> [!NOTE]
+> This loads `_autosave` via TPM on startup. If ccm projects are already loaded, the restore is skipped.
 
 ### Manage snapshots
 
@@ -441,6 +454,9 @@ tmux source-file ~/.tmux.conf
 ### Do I lose my projects if I close my terminal app?
 
 No. tmux runs as a background server process, independent of your terminal emulator (Ghostty, iTerm2, etc.). Closing or quitting the terminal only disconnects the display — all tmux sessions, windows, and ccm projects continue running. Just reopen your terminal and run `tmux attach` to reconnect.
+
+> [!TIP]
+> If you have multiple tmux sessions, use `tmux attach -t work` (replacing `work` with your session name) to reconnect to a specific one.
 
 ### Do I lose my projects when my Mac goes to sleep?
 

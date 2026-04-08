@@ -19,7 +19,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 
 ## Features
 
-- **Resource Management** — Idle Claude Code sessions auto-exit after 10 minutes to free memory and CPU; auto-restart with `--continue` when you switch back (each Node.js instance uses significant resources)
+- **Resource Management** — Idle Claude Code sessions auto-exit after 10 minutes to free memory and CPU; auto-restart with `--continue` when you switch back
 - **Dashboard** — Interactive popup with real-time Claude Code status (BUSY/IDLE/PERMIT/DONE)
 - **Tree View** — Hierarchical session/window/pane display with navigation
 - **Git Integration** — Branch name and dirty status (`main*`) per project
@@ -141,7 +141,7 @@ set -g @ccm-notify "permit,done"     # notify on PERMIT and DONE
 | `all` | All state changes |
 | `off` | No notifications |
 
-Disable notification sound:
+Enable notification sound:
 
 ```tmux
 set -g @ccm-notify-sound "on"     # default: off (plays "Glass" sound on macOS)
@@ -170,7 +170,7 @@ Appends a priority icon with window indices to your existing status-right. Your 
 | Priority | Condition | Icon | Color |
 |----------|-----------|------|-------|
 | 1 (highest) | Any project has PERMIT | `⚠` | Yellow |
-| 2 | Any project has BUSY | `◉` | Cyan |
+| 2 | Any project has BUSY | `◉` | Orange |
 | 3 | Any project has DONE | `✔` | Green |
 | 4 (lowest) | All projects are IDLE | `≡` | Gray |
 
@@ -184,16 +184,16 @@ Replaces the standard tmux window list with ccm-style colored entries showing pr
 
 #### Mode 2 — Dedicated status line
 
-Adds one or more tmux status lines below the main bar. Shows all projects including idle ones. The main status bar is not modified.
+Adds one or more tmux status lines below the main bar. Shows all projects including idle ones, with git branch and port details when available. The main status bar is not modified.
 
 ![status bar mode 2](assets/statusbar-mode2.png)
 
 | State | Icon | Color |
 |-------|------|-------|
 | PERMIT | `⚠` | Yellow |
-| BUSY | `◉` | Cyan |
+| BUSY | `◉` | Orange |
 | DONE | `✔` | Green |
-| IDLE | `●` | Gray |
+| IDLE | `●` | Blue |
 | SHELL | `■` | Dark gray |
 
 Lines auto-expand based on terminal width and project count.
@@ -403,8 +403,8 @@ ccm remove-claude-md    # remove it
 
 ## Documentation
 
-- **[User Guide](docs/guide.md)** — Tutorial, workflows, state detection, status bar modes, snapshots, tips, FAQ, and troubleshooting
-- **[日本語版 README](README.ja.md)** / **[ユーザーガイド（日本語）](docs/guide.ja.md)**
+- **[User Guide](docs/guide.md)**
+- **[日本語版 README](README.ja.md)** / **[ユーザーガイド](docs/guide.ja.md)**
 
 ## License
 
