@@ -5,8 +5,6 @@
 </picture>
 <br clear="left">
 
-**[日本語版 README](README.ja.md)**
-
 Run multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions in parallel. Switch between projects instantly, see which ones need your attention, and never lose your workspace.
 
 ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with a live dashboard, state detection, and snapshot restore.
@@ -406,7 +404,7 @@ ccm remove-claude-md    # remove it
 ## Documentation
 
 - **[User Guide](docs/guide.md)** — Tutorial, workflows, state detection, status bar modes, snapshots, tips, FAQ, and troubleshooting
-- **[ユーザーガイド（日本語）](docs/guide.ja.md)** — 同内容の日本語版
+- **[日本語版 README](README.ja.md)** / **[ユーザーガイド（日本語）](docs/guide.ja.md)**
 
 ## License
 
