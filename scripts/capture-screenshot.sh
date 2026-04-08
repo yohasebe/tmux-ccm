@@ -66,13 +66,13 @@ DASH=$(new_capture_win)
 T send-keys -t "$DASH" "ccm dashboard" Enter
 sleep 3
 
-T capture-pane -e -p -t "$DASH" > /tmp/ccm-ss-dashboard.ansi
+T capture-pane -e -p -t "$DASH" > ${TMPDIR:-/tmp}/ccm-ss-dashboard.ansi
 T send-keys -t "$DASH" "q"
 sleep 0.5
 T kill-window -t "$DASH" 2>/dev/null || true
 sleep 0.3
 
-save_capture "dashboard" /tmp/ccm-ss-dashboard.ansi
+save_capture "dashboard" ${TMPDIR:-/tmp}/ccm-ss-dashboard.ansi
 
 # ── 2. ccm status ──
 
@@ -83,10 +83,10 @@ sleep 0.3
 T send-keys -t "$STATUS" "ccm status" Enter
 sleep 2
 
-T capture-pane -e -p -t "$STATUS" > /tmp/ccm-ss-status.ansi
+T capture-pane -e -p -t "$STATUS" > ${TMPDIR:-/tmp}/ccm-ss-status.ansi
 T kill-window -t "$STATUS" 2>/dev/null || true
 
-save_capture "status-cmd" /tmp/ccm-ss-status.ansi
+save_capture "status-cmd" ${TMPDIR:-/tmp}/ccm-ss-status.ansi
 
 echo ""
 echo "Screenshots saved to: $OUT_DIR/"

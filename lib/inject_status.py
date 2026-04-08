@@ -29,6 +29,31 @@ TMUX_COLORS = {
 }
 
 
+def strip_tmux_formats(s):
+    """Strip tmux format codes (#[...] and #{...} including nested braces) for visible width estimation."""
+    # First strip #[...] (style codes, no nesting)
+    s = re.sub(r'#\[[^\]]*\]', '', s)
+    # Then strip #{...} with nested braces (conditionals like #{?#{pane_in_mode},M,})
+    result = []
+    i = 0
+    while i < len(s):
+        if s[i:i+2] == '#{':
+            # Find matching closing brace, accounting for nesting
+            depth = 1
+            j = i + 2
+            while j < len(s) and depth > 0:
+                if s[j] == '{':
+                    depth += 1
+                elif s[j] == '}':
+                    depth -= 1
+                j += 1
+            i = j  # skip past the closing brace
+        else:
+            result.append(s[i])
+            i += 1
+    return ''.join(result)
+
+
 def acquire_lockfile():
     """Prevent concurrent inject-status execution using flock."""
     lockfile = os.path.join(CCM_TMP_DIR, "inject.lock")
@@ -307,7 +332,7 @@ def _inject_status_impl():
                 term_width = int(tmux_cmd("display-message", "-p", "#{client_width}") or "120")
             except ValueError:
                 pass
-            orig_visible = len(re.sub(r'#\[[^\]]*\]|#\{[^}]*\}', '', original))
+            orig_visible = len(strip_tmux_formats(original))
             avail = term_width - orig_visible - 10  # margin for separators + refresh
 
             # Select entries by priority (highest first) until width is exhausted,

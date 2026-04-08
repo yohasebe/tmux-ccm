@@ -30,6 +30,7 @@ CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 
 DONE_TIMEOUT = int(os.environ.get("CCM_DONE_TIMEOUT", "30"))
 HOOK_TIMEOUT = int(os.environ.get("CCM_HOOK_TIMEOUT", "300"))
+PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))  # 10 min safety net
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 
@@ -305,10 +306,11 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
             # PERMIT always overrides raw state (including BUSY) because
             # the process tree often reports BUSY during permission prompts
             # due to background processes (MCP servers, etc.).
-            # No timeout — permission prompts can persist indefinitely.
-            # Only cleared when user responds (window_activity > hook_ts)
+            # Safety net: expire after PERMIT_MAX_TIMEOUT (10 min) in case
+            # Claude Code crashes without sending a clearing signal.
+            # Cleared when user responds (window_activity > hook_ts)
             # or a newer BUSY/DONE signal overwrites it.
-            if hook_state == "PERMIT":
+            if hook_state == "PERMIT" and hook_age < PERMIT_MAX_TIMEOUT:
                 # Check if user has responded since PERMIT was set
                 # (window_activity > hook timestamp = user pressed a key)
                 win_act = tmux_cmd("display-message", "-t", win_target, "-p", "#{window_activity}")
@@ -484,8 +486,9 @@ def build_project_list(fast=False):
                     hook_ts, hook_state, _hook_detail = hook
                     hook_age = int(time.time()) - hook_ts
                     # PERMIT always wins — permission prompts persist while
-                    # process tree may report BUSY (background processes)
-                    if hook_state == "PERMIT":
+                    # process tree may report BUSY (background processes).
+                    # Safety net: expire after PERMIT_MAX_TIMEOUT.
+                    if hook_state == "PERMIT" and hook_age < PERMIT_MAX_TIMEOUT:
                         state = "PERMIT"
                     elif hook_state == "BUSY" and hook_age < HOOK_TIMEOUT and state != "PERMIT":
                         state = "BUSY"

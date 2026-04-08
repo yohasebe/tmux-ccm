@@ -333,6 +333,68 @@ class TestDetectWindowStateHooks:
         )
         assert state == "IDLE"
 
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_permit_overrides_raw_busy(self, mock_hook, mock_tmux):
+        """raw=BUSY + hook=PERMIT → PERMIT (background processes don't mask permission prompt)."""
+        hook_ts = int(time.time())
+        mock_hook.return_value = (hook_ts, "PERMIT", "")
+        # window_activity is older (no user response yet)
+        mock_tmux.return_value = str(hook_ts - 5)
+        # Claude has child processes → raw would be BUSY
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "node"),  # MCP server or other child
+        )
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "BUSY", "", 0, panes, ps, "99999"
+        )
+        assert state == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_permit_expires_after_max_timeout(self, mock_hook, mock_tmux):
+        """Stale PERMIT signal (older than PERMIT_MAX_TIMEOUT) is ignored."""
+        old_ts = int(time.time()) - ccm_core.PERMIT_MAX_TIMEOUT - 10
+        mock_hook.return_value = (old_ts, "PERMIT", "")
+        mock_tmux.return_value = str(old_ts - 5)
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "PERMIT", "", 0, panes, ps, "99999"
+        )
+        # Should NOT return PERMIT — signal expired
+        assert state != "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_busy_signal_clears_stale_permit(self, mock_hook, mock_tmux):
+        """prev_state=PERMIT + hook=BUSY → BUSY (new signal clears old PERMIT)."""
+        mock_hook.return_value = (int(time.time()), "BUSY", "")
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "PERMIT", "", 0, panes, ps, "99999"
+        )
+        assert state == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_done_signal_clears_stale_permit(self, mock_hook, mock_tmux):
+        """prev_state=PERMIT + hook=DONE → DONE (user responded, clearing PERMIT)."""
+        mock_hook.return_value = (int(time.time()), "DONE", "")
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "PERMIT", "", 0, panes, ps, "99999"
+        )
+        assert state == "DONE"
+
 
 # ─── Formatting helpers ───
 
