@@ -375,6 +375,25 @@ ccm setup-claude-md     # ~/.claude/CLAUDE.md にccmセクションを追加
 ccm remove-claude-md    # ccmセクションを削除
 ```
 
+### tmuxセッションでプロジェクトをカテゴリ分け
+
+tmuxセッションを分けることで、プロジェクトを文脈ごとにグループ化できます（例: 業務、OSS、研究）。ccmはセッションごとに独立して動作し、ダッシュボードとステータスバーはそのセッションのプロジェクトのみを表示します。
+
+```bash
+tmux new-session -s work       # 業務プロジェクト
+tmux new-session -s oss        # OSSプロジェクト
+
+# 各セッション内で通常通りプロジェクトを追加:
+ccm add ~/code/auth-service
+ccm add ~/code/dashboard-ui
+
+# セッション間の切り替え:
+tmux switch-client -t oss      # tmux標準のセッション切り替え
+```
+
+> [!TIP]
+> スナップショットとの併用も効果的です。各セッションで `ccm snapshot save` / `ccm start` を使えば、プロジェクトレイアウトの保存・復元をセッション単位で独立して行えます。
+
 ## 仕組み
 
 - プロジェクトはtmuxウィンドウの `@ccm_project` / `@ccm_dir` タグで管理

@@ -373,6 +373,25 @@ ccm setup-claude-md     # add ccm section to ~/.claude/CLAUDE.md
 ccm remove-claude-md    # remove it
 ```
 
+### Organize Projects by Category with tmux Sessions
+
+Use separate tmux sessions to group projects by context (e.g., work, OSS, research). ccm manages each session independently — dashboard and status bar only show that session's projects.
+
+```bash
+tmux new-session -s work       # Work projects
+tmux new-session -s oss        # Open source projects
+
+# In each session, add projects as usual:
+ccm add ~/code/auth-service
+ccm add ~/code/dashboard-ui
+
+# Switch between sessions:
+tmux switch-client -t oss      # Standard tmux session switching
+```
+
+> [!TIP]
+> This pairs well with snapshots. Each session can save and restore its own project layout independently with `ccm snapshot save` / `ccm start`.
+
 ## How It Works
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`
