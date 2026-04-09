@@ -306,20 +306,15 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
             # PERMIT always overrides raw state (including BUSY) because
             # the process tree often reports BUSY during permission prompts
             # due to background processes (MCP servers, etc.).
+            # PERMIT persists until a newer hook signal overwrites it:
+            #   - User allows → PreToolUse fires → BUSY overwrites PERMIT
+            #   - User denies → Stop fires → DONE overwrites PERMIT
             # Safety net: expire after PERMIT_MAX_TIMEOUT (10 min) in case
             # Claude Code crashes without sending a clearing signal.
-            # Cleared when user responds (window_activity > hook_ts)
-            # or a newer BUSY/DONE signal overwrites it.
+            # NOTE: window_activity is NOT used to detect user response.
+            # It updates on any window interaction (selection, mouse, etc.)
+            # and caused frequent false BUSY during actual PERMIT waits.
             if hook_state == "PERMIT" and hook_age < PERMIT_MAX_TIMEOUT:
-                # Check if user has responded since PERMIT was set
-                # (window_activity > hook timestamp = user pressed a key)
-                win_act = tmux_cmd("display-message", "-t", win_target, "-p", "#{window_activity}")
-                try:
-                    if win_act and int(win_act) > hook_ts:
-                        _set_win_state(win_target, "BUSY")
-                        return "BUSY", done_flag, last_done_ts
-                except ValueError:
-                    pass
                 _set_win_state(win_target, "PERMIT")
                 return "PERMIT", done_flag, last_done_ts
 
