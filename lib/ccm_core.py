@@ -30,6 +30,10 @@ CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 
 DONE_TIMEOUT = int(os.environ.get("CCM_DONE_TIMEOUT", "30"))
 HOOK_TIMEOUT = int(os.environ.get("CCM_HOOK_TIMEOUT", "300"))
+# Minimum seconds before showing DONE after Stop hook fires.
+# Suppresses false DONE at multi-turn boundaries where Stop fires
+# between tool executions and the next turn starts within seconds.
+DONE_SETTLE_TIME = int(os.environ.get("CCM_DONE_SETTLE_TIME", "3"))
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))  # 10 min safety net
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
@@ -323,8 +327,12 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
                     return "BUSY", done_flag, last_done_ts
 
                 if hook_state == "DONE" and hook_age < DONE_TIMEOUT:
-                    # Trust the DONE hook signal — no capture-pane verification needed.
-                    # The Notification(idle_prompt) also writes DONE, providing redundancy.
+                    if hook_age < DONE_SETTLE_TIME and prev_state == "BUSY":
+                        # Too early to confirm DONE — Stop hook fires at
+                        # multi-turn boundaries, and the next turn may start
+                        # within seconds. Keep showing BUSY to avoid flicker.
+                        _set_win_state(win_target, "BUSY")
+                        return "BUSY", done_flag, last_done_ts
                     _set_win_state(win_target, "DONE", done=hook_ts, last_done=hook_ts)
                     return "DONE", str(hook_ts), hook_ts
 
