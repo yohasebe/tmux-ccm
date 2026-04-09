@@ -685,6 +685,10 @@ class Dashboard:
 
     def _do_attach(self, stdscr):
         p = self.projects[self.selected]
+        # Check if project directory still exists
+        if p.dir and not os.path.isdir(os.path.expanduser(p.dir)):
+            self._show_message(stdscr, f"Directory not found: {p.dir}", 3)
+            return ""
         # Auto-start if SHELL
         if p.state == "SHELL":
             tmux_cmd("send-keys", "-t", p.win_target, CLAUDE_CMD, "Enter")
