@@ -4,6 +4,7 @@
   <img alt="ccm — Claude Code Manager for tmux" src="assets/logo-light.png" width="380" align="left">
 </picture>
 <br clear="left">
+<br>
 
 Run multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions in parallel. Switch between projects instantly, see which ones need your attention, and never lose your workspace.
 

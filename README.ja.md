@@ -4,6 +4,7 @@
   <img alt="ccm — Claude Code Manager for tmux" src="assets/logo-light.png" width="380" align="left">
 </picture>
 <br clear="left">
+<br>
 
 複数の [Claude Code](https://docs.anthropic.com/en/docs/claude-code) セッションを並行して実行。プロジェクトを瞬時に切り替え、どれが注意を必要としているか一目で把握し、ワークスペースを失うことなく作業を続けられます。
 
