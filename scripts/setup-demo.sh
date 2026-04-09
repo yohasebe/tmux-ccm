@@ -13,6 +13,13 @@ echo "Creating demo projects in: $DEMO_DIR"
 
 mkdir -p "$DEMO_DIR"/{auth-service/cmd/server,dashboard-ui,data-pipeline,sdk-python/src}
 
+# ─── CLAUDE.md for each project (English responses) ───
+for proj in auth-service dashboard-ui data-pipeline sdk-python; do
+    cat > "$DEMO_DIR/$proj/CLAUDE.md" << 'CLEOF'
+Respond in English. Keep responses concise.
+CLEOF
+done
+
 # ─── auth-service (Go) ───
 cat > "$DEMO_DIR/auth-service/README.md" << 'EOF'
 # auth-service
