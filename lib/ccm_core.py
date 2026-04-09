@@ -327,12 +327,23 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
                     return "BUSY", done_flag, last_done_ts
 
                 if hook_state == "DONE" and hook_age < DONE_TIMEOUT:
-                    if hook_age < DONE_SETTLE_TIME and prev_state == "BUSY":
-                        # Too early to confirm DONE — Stop hook fires at
-                        # multi-turn boundaries, and the next turn may start
-                        # within seconds. Keep showing BUSY to avoid flicker.
-                        _set_win_state(win_target, "BUSY")
-                        return "BUSY", done_flag, last_done_ts
+                    # Check if this DONE is from a multi-turn boundary.
+                    # PreToolUse records last BUSY timestamp in .busy file.
+                    # If BUSY was very recent before this DONE, it's likely
+                    # a turn boundary (Stop between tool executions), not
+                    # a genuine completion.
+                    if prev_state == "BUSY":
+                        busy_file = _hook_signal_path(project_dir) + ".busy"
+                        try:
+                            with open(busy_file) as f:
+                                last_busy_ts = int(f.read().strip())
+                            # DONE came within DONE_SETTLE_TIME of last BUSY
+                            # → likely a turn boundary, keep BUSY
+                            if hook_ts - last_busy_ts < DONE_SETTLE_TIME:
+                                _set_win_state(win_target, "BUSY")
+                                return "BUSY", done_flag, last_done_ts
+                        except (OSError, ValueError):
+                            pass
                     _set_win_state(win_target, "DONE", done=hook_ts, last_done=hook_ts)
                     return "DONE", str(hook_ts), hook_ts
 

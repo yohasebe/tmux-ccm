@@ -27,3 +27,9 @@ else
 fi
 
 ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "$CWD"
+
+# Record last BUSY timestamp for multi-turn boundary detection.
+# detect_window_state uses this to suppress false DONE from Stop
+# firing at turn boundaries (DONE is only trusted if last BUSY
+# was not recent).
+printf '%s' "$(date +%s)" > "${HOOK_DIR}/${KEY}.busy"
