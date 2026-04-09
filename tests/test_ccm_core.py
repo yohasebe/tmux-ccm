@@ -166,13 +166,18 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_hook_permit_signal(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=PERMIT + no user activity → PERMIT."""
+    def test_hook_permit_with_raw_busy(self, mock_hook, mock_tmux):
+        """raw=BUSY + hook=PERMIT → PERMIT.
+
+        During permission dialog, process tree reports BUSY (background
+        MCP servers etc.) and input prompt is not visible. PERMIT overrides.
+        """
         hook_ts = int(time.time())
         mock_hook.return_value = (hook_ts, "PERMIT", "")
-        # window_activity is older than hook timestamp (no user response yet)
-        mock_tmux.return_value = str(hook_ts - 5)
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = ""  # capture-pane: no input prompt visible
+        # claude (200) has child process (300) → raw=BUSY
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"),
+                           (300, 200, 100, "node"))
         panes = [("0:1", "100", "%0")]
 
         state, _, _ = ccm_core.detect_window_state(
@@ -182,23 +187,23 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_permit_persists_despite_window_activity(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=PERMIT + window activity after PERMIT → still PERMIT.
+    def test_permit_clears_when_raw_idle(self, mock_hook, mock_tmux):
+        """raw=IDLE + hook=PERMIT → falls through to DONE (not PERMIT).
 
-        PERMIT must persist until a newer hook signal (BUSY/DONE) overwrites it.
-        window_activity changes for any interaction (window selection, mouse, etc.)
-        and must NOT clear PERMIT state.
+        When input prompt ❯ is visible (raw=IDLE), the user has already
+        moved past the permission dialog. Stale PERMIT signal must not
+        override the actual IDLE state.
         """
         hook_ts = int(time.time()) - 3
         mock_hook.return_value = (hook_ts, "PERMIT", "")
-        mock_tmux.return_value = str(hook_ts + 2)
+        mock_tmux.return_value = ""
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
 
         state, _, _ = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "PERMIT", "", 0, panes, ps, "99999"
         )
-        assert state == "PERMIT"
+        assert state == "DONE"  # PERMIT → IDLE triggers DONE transition
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")

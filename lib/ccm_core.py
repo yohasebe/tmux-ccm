@@ -303,20 +303,19 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
             hook_age = now - hook_ts
 
             # PERMIT signal from PermissionRequest/Notification hook.
-            # PERMIT always overrides raw state (including BUSY) because
-            # the process tree often reports BUSY during permission prompts
-            # due to background processes (MCP servers, etc.).
-            # PERMIT persists until a newer hook signal overwrites it:
-            #   - User allows → PreToolUse fires → BUSY overwrites PERMIT
-            #   - User denies → Stop fires → DONE overwrites PERMIT
+            # PERMIT overrides raw=BUSY because the process tree often
+            # reports BUSY during permission prompts (background MCP servers).
+            # However, if raw=IDLE (input prompt ❯ visible), the user has
+            # already moved past the permission dialog — trust raw state
+            # and let it fall through to normal IDLE/DONE handling.
             # Safety net: expire after PERMIT_MAX_TIMEOUT (10 min) in case
             # Claude Code crashes without sending a clearing signal.
-            # NOTE: window_activity is NOT used to detect user response.
-            # It updates on any window interaction (selection, mouse, etc.)
-            # and caused frequent false BUSY during actual PERMIT waits.
             if hook_state == "PERMIT" and hook_age < PERMIT_MAX_TIMEOUT:
-                _set_win_state(win_target, "PERMIT")
-                return "PERMIT", done_flag, last_done_ts
+                if raw != "IDLE":
+                    _set_win_state(win_target, "PERMIT")
+                    return "PERMIT", done_flag, last_done_ts
+                # raw=IDLE: user has responded, permission dialog is gone.
+                # Fall through to IDLE handling below (will transition to DONE).
 
             if raw == "IDLE":
                 if hook_state == "BUSY" and hook_age < HOOK_TIMEOUT:
