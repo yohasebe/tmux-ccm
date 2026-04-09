@@ -20,7 +20,7 @@ README用のスクリーンショットを撮影するためのツール群。
 ### 1. モック環境セットアップ
 
 ```bash
-cd ~/Library/CloudStorage/Dropbox/code/ccm
+cd /path/to/ccm
 tmux -L ccm-ss kill-server 2>/dev/null
 ./scripts/setup-screenshot.sh
 tmux -L ccm-ss attach -t work
