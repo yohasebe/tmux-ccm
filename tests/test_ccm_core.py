@@ -487,12 +487,27 @@ class TestEvaluateRules:
         )
         assert (rule.name, state) == ("hook_fresh_busy", "BUSY")
 
-    def test_hook_stale_busy_falls_through(self):
-        """Age >= 2 but < HOOK_TIMEOUT → slow path rule (hook_busy_idle)."""
+    def test_hook_stale_busy_slow_path(self):
+        """Age >= 2 → slow path rule (hook_busy_idle)."""
         rule, state = ccm_core.evaluate_rules(
             make_ctx(raw="IDLE", hook_state="BUSY", hook_age=5)
         )
         assert (rule.name, state) == ("hook_busy_idle", "BUSY")
+
+    def test_hook_busy_trusted_regardless_of_age(self):
+        """Long-running tool / text generation: BUSY hook age >5 min still wins.
+
+        Regression guard: previously HOOK_TIMEOUT=300 capped this rule,
+        causing fallback_busy_to_done to fire false DONE on long tasks.
+        """
+        for age in (60, 299, 400, 900, 3600, 86400):
+            rule, state = ccm_core.evaluate_rules(
+                make_ctx(raw="IDLE", hook_state="BUSY", hook_age=age,
+                         prev_state="BUSY")
+            )
+            assert (rule.name, state) == ("hook_busy_idle", "BUSY"), (
+                f"age={age} should still match hook_busy_idle"
+            )
 
     # --- PERMIT ---
 
@@ -773,6 +788,37 @@ class TestLifecycleSequences:
         assert self._eval(raw="IDLE", prev_state="BUSY") == (
             "fallback_busy_to_done", "DONE",
         )
+
+    def test_long_running_tool_stays_busy(self):
+        """Long bash / text generation: BUSY hook goes stale but state must stay BUSY.
+
+        Real incident (jwriter, 2026-04-10): a multi-minute tool chain
+        produced no PreToolUse refresh for >5 min. With the old HOOK_TIMEOUT
+        cap, the hook path failed and fallback_busy_to_done fired false DONE,
+        then fallback_done_expired → IDLE. Now rule hook_busy_idle has no
+        age limit so BUSY is maintained as long as the hook says BUSY.
+        """
+        # Tool starts: fresh BUSY
+        assert self._eval(
+            raw="IDLE", hook_state="BUSY", hook_age=0, prev_state="BUSY",
+        ) == ("hook_fresh_busy", "BUSY")
+        # Still going at 1 min
+        assert self._eval(
+            raw="IDLE", hook_state="BUSY", hook_age=60, prev_state="BUSY",
+        ) == ("hook_busy_idle", "BUSY")
+        # Past old HOOK_TIMEOUT boundary (was the regression)
+        assert self._eval(
+            raw="IDLE", hook_state="BUSY", hook_age=301, prev_state="BUSY",
+        ) == ("hook_busy_idle", "BUSY")
+        # 15 minutes in
+        assert self._eval(
+            raw="IDLE", hook_state="BUSY", hook_age=900, prev_state="BUSY",
+        ) == ("hook_busy_idle", "BUSY")
+        # Finally Stop fires → DONE
+        assert self._eval(
+            raw="IDLE", hook_state="DONE", hook_age=0, prev_state="BUSY",
+            last_busy_age=905,
+        ) == ("hook_done_genuine", "DONE")
 
     def test_shell_override_anywhere(self):
         """SHELL from process tree wins over any hook state, any prev."""

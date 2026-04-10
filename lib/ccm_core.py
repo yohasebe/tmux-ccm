@@ -32,7 +32,6 @@ CCM_GIT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "git-cache")
 CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 
 DONE_TIMEOUT = int(os.environ.get("CCM_DONE_TIMEOUT", "30"))
-HOOK_TIMEOUT = int(os.environ.get("CCM_HOOK_TIMEOUT", "300"))
 # Minimum seconds before showing DONE after Stop hook fires.
 # Suppresses false DONE at multi-turn boundaries where Stop fires
 # between tool executions and the next turn starts within seconds.
@@ -463,11 +462,15 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         action=Action.SET_DONE_HOOK,
     ),
     Rule(
-        # Slow path: BUSY hook still within HOOK_TIMEOUT while raw=IDLE.
-        # Text generation phase (no child processes, but hook says busy).
+        # Slow path: trust any BUSY hook signal while raw=IDLE.
+        # No age limit — long-running tool executions and text generation
+        # phases can legitimately exceed 5+ minutes without any intervening
+        # hook refresh. If Claude Code crashes, rule 1/2 (raw=DOWN/SHELL)
+        # clears state authoritatively. If Stop hook fails to fire
+        # (Claude Code bug), we prefer showing stale BUSY over false IDLE —
+        # BUSY is closer to the truth and prompts user investigation.
         name="hook_busy_idle",
         hook_in=("BUSY",),
-        hook_age_lt=HOOK_TIMEOUT,
         raw_in=("IDLE",),
         result="BUSY",
     ),
@@ -784,7 +787,9 @@ def build_project_list(fast=False):
                     # Safety net: expire after PERMIT_MAX_TIMEOUT.
                     if hook_state == "PERMIT" and hook_age < PERMIT_MAX_TIMEOUT:
                         state = "PERMIT"
-                    elif hook_state == "BUSY" and hook_age < HOOK_TIMEOUT and state != "PERMIT":
+                    elif hook_state == "BUSY" and state != "PERMIT":
+                        # Trust any BUSY hook signal — mirrors rule
+                        # hook_busy_idle in DETECTION_RULES. No age limit.
                         state = "BUSY"
                     elif hook_state == "DONE" and hook_age < DONE_TIMEOUT and state == "IDLE":
                         state = "DONE"

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Re-inject status bar on `client-attached` — fixes mode 2 status disappearing after tmux detach/reattach when theme plugins overwrite status-right
 
 ### Fixed
+- **Long-running tool execution no longer shows false IDLE** — removed the 5-minute `HOOK_TIMEOUT` cap on the BUSY hook detection path. Previously, any tool run or text-generation phase exceeding 5 minutes without an intervening `PreToolUse`/`PostToolUse` refresh would cause the BUSY hook rule to expire, fall through to `fallback_busy_to_done` (false DONE), and after 30 s become IDLE while Claude was still working. BUSY hook signals are now trusted regardless of age; `raw=SHELL`/`raw=DOWN` from the process tree remains the authoritative clear. The `CCM_HOOK_TIMEOUT` env var and the `HOOK_TIMEOUT` constant are removed.
 - Mode 2 status line: fix double-counted separator width causing unnecessary extra lines
 - PERMIT state now persists indefinitely until user responds (was expiring after 5 minutes)
 - Fix false SHELL state from stale SessionEnd hook signal after Claude restarts with `--continue`
