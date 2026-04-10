@@ -281,7 +281,13 @@ def _set_win_state(win_target, state, done=None, last_done=None, unset_done=Fals
 
 def detect_window_state(win_target, project_dir, prev_state, done_flag, last_done_ts,
                         panes_cache, ps_lines, own_pgid):
-    """Full detection pipeline. Returns (state, new_done_flag, new_last_done)."""
+    """Full detection pipeline. Returns (state, new_done_flag, new_last_done).
+
+    Priority: DOWN/SHELL (process tree) > fresh hook signal (< 2s) > full pipeline.
+    When multiple projects are active simultaneously, hook signals provide
+    more accurate instant state than the process tree + capture-pane pipeline
+    which can lag behind rapid state changes.
+    """
     now = int(time.time())
     raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid)
 
@@ -305,6 +311,15 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
         if hook and hook[1] != "SHELL":
             hook_ts, hook_state, _hook_detail = hook
             hook_age = now - hook_ts
+
+            # Fast path: trust very fresh hook signals (< 2s) for BUSY.
+            # When multiple projects are active, the full detection pipeline
+            # (process tree + capture-pane) can produce stale results because
+            # it takes time to evaluate all projects sequentially. Fresh hook
+            # signals are more authoritative than the pipeline for BUSY state.
+            if hook_state == "BUSY" and hook_age < 2:
+                _set_win_state(win_target, "BUSY")
+                return "BUSY", done_flag, last_done_ts
 
             # PERMIT signal from PermissionRequest/Notification hook.
             # PERMIT overrides raw=BUSY because the process tree often
