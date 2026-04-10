@@ -342,18 +342,26 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
                     return "BUSY", done_flag, last_done_ts
 
                 if hook_state == "DONE" and hook_age < DONE_TIMEOUT:
-                    # Check if this DONE is from a multi-turn boundary.
-                    # PreToolUse records last BUSY timestamp in .busy file.
-                    # If BUSY was very recent before this DONE, it's likely
-                    # a turn boundary (Stop between tool executions), not
-                    # a genuine completion.
+                    # Suppress false DONE in two scenarios:
+                    #
+                    # 1. Multi-turn boundary (BUSY → DONE → next tool):
+                    #    PreToolUse records timestamp in .busy file.
+                    #    If DONE came within DONE_SETTLE_TIME of last BUSY,
+                    #    it's a turn boundary, not genuine completion.
+                    #
+                    # 2. Post-PERMIT tool execution (PERMIT → allow → DONE):
+                    #    After user grants permission, the tool runs but
+                    #    PreToolUse does NOT re-fire (it fired before the
+                    #    permission dialog). Stop fires → DONE, but user
+                    #    expects BUSY. Apply settle time unconditionally.
+                    if prev_state == "PERMIT" and hook_age < DONE_SETTLE_TIME:
+                        _set_win_state(win_target, "BUSY")
+                        return "BUSY", done_flag, last_done_ts
                     if prev_state == "BUSY":
                         busy_file = _hook_signal_path(project_dir) + ".busy"
                         try:
                             with open(busy_file) as f:
                                 last_busy_ts = int(f.read().strip())
-                            # DONE came within DONE_SETTLE_TIME of last BUSY
-                            # → likely a turn boundary, keep BUSY
                             if hook_ts - last_busy_ts < DONE_SETTLE_TIME:
                                 _set_win_state(win_target, "BUSY")
                                 return "BUSY", done_flag, last_done_ts

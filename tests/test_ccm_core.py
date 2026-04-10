@@ -393,9 +393,27 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_done_signal_clears_stale_permit(self, mock_hook, mock_tmux):
-        """prev_state=PERMIT + hook=DONE → DONE (user responded, clearing PERMIT)."""
+    def test_done_after_permit_within_settle_time(self, mock_hook, mock_tmux):
+        """prev_state=PERMIT + hook=DONE (fresh) → BUSY (settle time).
+
+        After user grants permission, the tool runs and Stop fires DONE.
+        Within DONE_SETTLE_TIME, keep showing BUSY to reflect the tool
+        execution that happens between PERMIT and DONE.
+        """
         mock_hook.return_value = (int(time.time()), "DONE", "")
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "PERMIT", "", 0, panes, ps, "99999"
+        )
+        assert state == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_done_after_permit_past_settle_time(self, mock_hook, mock_tmux):
+        """prev_state=PERMIT + hook=DONE (old) → DONE (settle time passed)."""
+        mock_hook.return_value = (int(time.time()) - 5, "DONE", "")
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
 
