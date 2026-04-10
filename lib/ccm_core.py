@@ -380,22 +380,16 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
 
     # Fallback: transition-based DONE tracking
     if raw == "IDLE":
-        if prev_state in ("BUSY", "PERMIT"):
-            # After PERMIT, the tool may still be starting (brief IDLE gap
-            # between user responding and subprocess spawning). Check .busy
-            # to see if we're in a recent work period.
-            if project_dir and prev_state == "PERMIT":
-                busy_file = _hook_signal_path(project_dir) + ".busy"
-                try:
-                    with open(busy_file) as f:
-                        last_busy_ts = int(f.read().strip())
-                    if now - last_busy_ts < DONE_SETTLE_TIME:
-                        _set_win_state(win_target, "BUSY")
-                        return "BUSY", done_flag, last_done_ts
-                except (OSError, ValueError):
-                    pass
+        if prev_state == "BUSY":
             _set_win_state(win_target, "DONE", done=now, last_done=now)
             return "DONE", str(now), now
+        if prev_state == "PERMIT":
+            # Don't transition PERMIT→DONE via fallback. After user responds
+            # to permission, there's a brief IDLE gap before the tool starts.
+            # The fallback would incorrectly show DONE during this gap.
+            # Instead, keep PERMIT until a hook signal (BUSY/DONE) overwrites
+            # it — the hook path handles the transition correctly.
+            return "PERMIT", done_flag, last_done_ts
 
         if done_flag:
             try:

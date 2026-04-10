@@ -187,12 +187,12 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_permit_clears_when_raw_idle(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=PERMIT → falls through to DONE (not PERMIT).
+    def test_permit_persists_when_raw_idle(self, mock_hook, mock_tmux):
+        """raw=IDLE + hook=PERMIT + prev=PERMIT → still PERMIT.
 
-        When input prompt ❯ is visible (raw=IDLE), the user has already
-        moved past the permission dialog. Stale PERMIT signal must not
-        override the actual IDLE state.
+        After user responds to permission dialog, there's a brief IDLE gap
+        before the tool subprocess starts. The fallback must NOT convert
+        this to DONE — keep PERMIT until a hook signal (BUSY/DONE) arrives.
         """
         hook_ts = int(time.time()) - 3
         mock_hook.return_value = (hook_ts, "PERMIT", "")
@@ -203,7 +203,7 @@ class TestDetectWindowStateHooks:
         state, _, _ = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "PERMIT", "", 0, panes, ps, "99999"
         )
-        assert state == "DONE"  # PERMIT → IDLE triggers DONE transition
+        assert state == "PERMIT"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
@@ -365,18 +365,23 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
     def test_permit_expires_after_max_timeout(self, mock_hook, mock_tmux):
-        """Stale PERMIT signal (older than PERMIT_MAX_TIMEOUT) is ignored."""
+        """Stale PERMIT signal (older than PERMIT_MAX_TIMEOUT) is ignored in hook path.
+
+        When PERMIT expires, the hook check falls through. With prev_state=PERMIT,
+        the fallback keeps PERMIT until a new hook signal arrives. But with
+        prev_state=IDLE (no prior PERMIT), it would stay IDLE.
+        """
         old_ts = int(time.time()) - ccm_core.PERMIT_MAX_TIMEOUT - 10
         mock_hook.return_value = (old_ts, "PERMIT", "")
         mock_tmux.return_value = str(old_ts - 5)
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
 
+        # With prev_state=IDLE: expired PERMIT doesn't resurrect
         state, _, _ = ccm_core.detect_window_state(
-            "0:1", "/tmp/project", "PERMIT", "", 0, panes, ps, "99999"
+            "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
         )
-        # Should NOT return PERMIT — signal expired
-        assert state != "PERMIT"
+        assert state == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
