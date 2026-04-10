@@ -167,7 +167,7 @@ ccm setup-hooks
 | `PermissionDenied` | PERMIT | autoモードでの拒否（`/permissions`で再試行） |
 
 > [!NOTE]
-> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれ、自動的に期限切れになります（BUSY: 5分、DONE: 30秒、PERMIT: 10分）。
+> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれます。BUSY は Claude Code プロセスが生存している限り信頼されます（`Stop`/`SessionEnd` フックまたはプロセス終了でクリア）。DONE は30秒後、PERMIT は安全網として10分後に自動クリアされます。
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 

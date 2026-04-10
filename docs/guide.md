@@ -167,7 +167,7 @@ This adds hooks to `~/.claude/settings.json`:
 | `PermissionDenied` | PERMIT | Auto mode denied an action (check `/permissions` to retry) |
 
 > [!NOTE]
-> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/` and automatically expire (BUSY: 5 min, DONE: 30s, PERMIT: 10 min).
+> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/`. BUSY is trusted as long as the Claude Code process is alive (cleared by `Stop`/`SessionEnd` or by process exit); DONE auto-clears after 30 s; PERMIT auto-clears after 10 min as a safety net.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
