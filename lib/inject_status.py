@@ -206,11 +206,24 @@ def _inject_status_impl():
     detect_external_status_change()
     sanitize_orig_status()
 
+    # If dashboard is running, skip full detection to avoid race conditions.
+    # Both inject-status and dashboard write @ccm_prev_state via _set_win_state;
+    # running both causes state flickering between different detection results.
+    dash_pidfile = os.path.join(CCM_TMP_DIR, "dashboard.pid")
+    dashboard_running = False
+    if os.path.exists(dash_pidfile):
+        try:
+            dash_pid = int(open(dash_pidfile).read().strip())
+            os.kill(dash_pid, 0)
+            dashboard_running = True
+        except (ProcessLookupError, ValueError, PermissionError, OSError):
+            pass
+
     # Get mode
     mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "0"
 
-    # Build project list (full detection)
-    projects = build_project_list(fast=False)
+    # Build project list — use fast mode when dashboard handles full detection
+    projects = build_project_list(fast=dashboard_running)
 
     # Check for instant PERMIT flag set by hook (bypass polling delay)
     permit_pending = tmux_cmd("show-option", "-gqv", "@ccm-permit-pending")
@@ -288,17 +301,8 @@ def _inject_status_impl():
     # Auto-exit idle sessions
     auto_exit_idle(projects)
 
-    # Check if dashboard is running — skip status bar rendering if so
-    dash_pidfile = os.path.join(CCM_TMP_DIR, "dashboard.pid")
-    if os.path.exists(dash_pidfile):
-        try:
-            dash_pid = int(open(dash_pidfile).read().strip())
-            os.kill(dash_pid, 0)  # Check if running
-            return  # Dashboard handles its own display
-        except (ProcessLookupError, ValueError, PermissionError, OSError):
-            pass
-
-    # Status bar rendering
+    # Status bar rendering (continues even when dashboard is running,
+    # using fast-mode project list to stay in sync without race conditions)
     cache_file = os.path.join(CCM_TMP_DIR, "status-cache")
     prev_status = ""
     try:
