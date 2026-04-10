@@ -26,7 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Logo: SVG-based ccm logo with status-colored circles, light/dark mode PNG variants for README
 - Re-inject status bar on `client-attached` — fixes mode 2 status disappearing after tmux detach/reattach when theme plugins overwrite status-right
 
+### Removed
+- `CCM_HOOK_TIMEOUT` environment variable and the `HOOK_TIMEOUT` constant. The BUSY hook detection path no longer caps signal age (see corresponding Fixed entry). If you were setting `CCM_HOOK_TIMEOUT` in your shell config, it is now silently ignored — you can remove it.
+
 ### Fixed
+- **PERMIT state could get stuck indefinitely** if Claude Code crashed during a permission dialog. The `fallback_permit_hold` rule now requires the PERMIT hook signal to still be present and within `PERMIT_MAX_TIMEOUT`, so a stale prev_state=PERMIT without a live hook signal correctly falls through to IDLE.
 - **Long-running tool execution no longer shows false IDLE** — removed the 5-minute `HOOK_TIMEOUT` cap on the BUSY hook detection path. Previously, any tool run or text-generation phase exceeding 5 minutes without an intervening `PreToolUse`/`PostToolUse` refresh would cause the BUSY hook rule to expire, fall through to `fallback_busy_to_done` (false DONE), and after 30 s become IDLE while Claude was still working. BUSY hook signals are now trusted regardless of age; `raw=SHELL`/`raw=DOWN` from the process tree remains the authoritative clear. The `CCM_HOOK_TIMEOUT` env var and the `HOOK_TIMEOUT` constant are removed.
 - Mode 2 status line: fix double-counted separator width causing unnecessary extra lines
 - PERMIT state now persists indefinitely until user responds (was expiring after 5 minutes)
@@ -37,7 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Dashboard prompt: fix cursor/input position offset when prompt text contains CJK characters (used character count instead of display width)
 
 ### Changed
-- **State detection refactored to a declarative rule table** — `detect_window_state` is now a thin 3-step orchestration (build context → evaluate rules → apply actions). All 14 state transitions are declared in `DETECTION_RULES` as a priority-ordered table, replacing ~130 lines of nested if/else. Pure `evaluate_rules()` function enables testing without tmux/ps/filesystem mocks. Behavior is preserved; adds 32 new pure unit and lifecycle tests.
+- **State detection refactored to a declarative rule table** — `detect_window_state` is now a thin 3-step orchestration (build context → evaluate rules → apply actions). All 14 state transitions are declared in `DETECTION_RULES` as a priority-ordered table, replacing ~130 lines of nested if/else. Pure `evaluate_rules()` function enables testing without tmux/ps/filesystem mocks.
+- **Fast statusline path unified with rule table** — `build_project_list(fast=True)` now calls the shared `evaluate_fast()` helper, which runs the same `DETECTION_RULES` against a synthetic context derived from `prev_state`. Eliminates the duplicate hook-override logic that previously had to be kept in sync by hand.
 - Default `@ccm-notify` changed from `off` to `permit,done` — new users get PERMIT and DONE notifications out of the box
 - Default `@ccm-notify-sound` changed to `off` (was `on`); notification sound: Basso → Glass
 - Default idle auto-exit timeout changed from 5 to 10 minutes

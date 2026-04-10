@@ -606,10 +606,41 @@ class TestEvaluateRules:
 
     def test_fallback_permit_hold(self):
         rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="PERMIT")
+            make_ctx(
+                raw="IDLE", prev_state="PERMIT",
+                hook_state="PERMIT", hook_age=5,
+            )
         )
         assert (rule.name, state) == ("fallback_permit_hold", "PERMIT")
         assert rule.action == ccm_core.Action.HOLD_NO_WRITE
+
+    def test_fallback_permit_hold_requires_hook_signal(self):
+        """Without an active PERMIT hook, do not hold PERMIT indefinitely.
+
+        Regression guard: if Claude Code crashes during a permission
+        dialog, the PERMIT hook eventually ages out but prev_state stays
+        PERMIT in tmux. The old unconditional fallback_permit_hold would
+        keep PERMIT forever. Now we require the hook signal to still be
+        present and within PERMIT_MAX_TIMEOUT.
+        """
+        # No hook signal at all → fall through to default (IDLE)
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", prev_state="PERMIT")
+        )
+        assert rule.name == "default"
+        assert state == "IDLE"
+
+        # PERMIT hook present but expired → fall through
+        rule2, state2 = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                prev_state="PERMIT",
+                hook_state="PERMIT",
+                hook_age=ccm_core.PERMIT_MAX_TIMEOUT + 10,
+            )
+        )
+        assert rule2.name == "default"
+        assert state2 == "IDLE"
 
     def test_fallback_done_active(self):
         rule, state = ccm_core.evaluate_rules(
@@ -680,6 +711,176 @@ class TestRuleMatching:
         rule = ccm_core.Rule(name="wild")
         assert rule.matches(make_ctx())
         assert rule.matches(make_ctx(raw="BUSY", hook_state="DONE"))
+
+
+class TestApplyActions:
+    """Direct tests for the side-effect layer.
+
+    Uses a tmp dir for the hook signal path and mocks `_set_win_state`
+    so we can assert both tmux writes and filesystem writes per action.
+    """
+
+    @pytest.fixture
+    def project_dir(self, tmp_path, monkeypatch):
+        # Redirect hook signal files to an isolated tmp dir
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        return str(proj)
+
+    def _run(self, rule, ctx, project_dir="", win_target="0:1"):
+        with patch.object(ccm_core, "_set_win_state") as set_win:
+            result = ccm_core.apply_actions(
+                win_target, project_dir, ctx, rule, rule.result
+            )
+        return result, set_win
+
+    def test_default_writes_state_keeps_done(self):
+        rule = ccm_core.Rule(name="t", result="BUSY", action=ccm_core.Action.DEFAULT)
+        ctx = make_ctx(done_flag="100", last_done_ts=100)
+        (state, df, ldt), set_win = self._run(rule, ctx)
+        assert state == "BUSY" and df == "100" and ldt == 100
+        set_win.assert_called_once_with("0:1", "BUSY")
+
+    def test_clear_done_unsets_flag(self):
+        rule = ccm_core.Rule(
+            name="t", result="SHELL", action=ccm_core.Action.CLEAR_DONE
+        )
+        ctx = make_ctx(done_flag="100", last_done_ts=100)
+        (state, df, ldt), set_win = self._run(rule, ctx)
+        assert state == "SHELL" and df == ""
+        set_win.assert_called_once_with("0:1", "SHELL", unset_done=True)
+
+    def test_hold_no_write_skips_tmux(self):
+        rule = ccm_core.Rule(
+            name="t", result="PERMIT", action=ccm_core.Action.HOLD_NO_WRITE
+        )
+        ctx = make_ctx(done_flag="99", last_done_ts=99)
+        (state, df, ldt), set_win = self._run(rule, ctx)
+        assert state == "PERMIT" and df == "99" and ldt == 99
+        set_win.assert_not_called()
+
+    def test_set_done_now_uses_ctx_now(self):
+        rule = ccm_core.Rule(
+            name="t", result="DONE", action=ccm_core.Action.SET_DONE_NOW
+        )
+        ctx = make_ctx(now=12345)
+        (state, df, ldt), set_win = self._run(rule, ctx)
+        assert state == "DONE" and df == "12345" and ldt == 12345
+        set_win.assert_called_once_with("0:1", "DONE", done=12345, last_done=12345)
+
+    def test_set_done_hook_uses_hook_ts(self):
+        rule = ccm_core.Rule(
+            name="t", result="DONE", action=ccm_core.Action.SET_DONE_HOOK
+        )
+        ctx = make_ctx(hook_ts=98765, hook_state="DONE", hook_age=1)
+        (state, df, ldt), set_win = self._run(rule, ctx)
+        assert state == "DONE" and df == "98765" and ldt == 98765
+        set_win.assert_called_once_with("0:1", "DONE", done=98765, last_done=98765)
+
+    def test_write_busy_file_creates_file(self, project_dir):
+        rule = ccm_core.Rule(
+            name="t", result="BUSY", action=ccm_core.Action.WRITE_BUSY_FILE
+        )
+        ctx = make_ctx(now=55555)
+        (state, _, _), _ = self._run(rule, ctx, project_dir=project_dir)
+        assert state == "BUSY"
+        busy_file = ccm_core._hook_signal_path(project_dir) + ".busy"
+        assert os.path.exists(busy_file)
+        with open(busy_file) as f:
+            assert f.read().strip() == "55555"
+
+    def test_write_busy_file_no_project_dir_is_safe(self):
+        """Action.WRITE_BUSY_FILE with empty project_dir should not crash."""
+        rule = ccm_core.Rule(
+            name="t", result="BUSY", action=ccm_core.Action.WRITE_BUSY_FILE
+        )
+        ctx = make_ctx(now=1)
+        (state, _, _), set_win = self._run(rule, ctx, project_dir="")
+        assert state == "BUSY"
+        set_win.assert_called_once_with("0:1", "BUSY")
+
+
+class TestFastPath:
+    """evaluate_fast uses the same DETECTION_RULES as the slow path,
+    so the statusline and dashboard can never disagree on state logic.
+    """
+
+    @pytest.fixture
+    def project_dir(self, tmp_path, monkeypatch):
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        return str(proj)
+
+    def _write_hook(self, project_dir, state, age=0):
+        path = ccm_core._hook_signal_path(project_dir)
+        ts = int(time.time()) - age
+        with open(path, "w") as f:
+            f.write(f"{ts} {state}")
+
+    # --- basic prev_state → state propagation ---
+
+    def test_prev_idle_no_hook(self, project_dir):
+        assert ccm_core.evaluate_fast("IDLE", "", project_dir) == "IDLE"
+
+    def test_prev_busy_no_hook_stays_busy(self, project_dir):
+        """Without ps info, prev=BUSY stays BUSY via rule raw_not_idle_clear."""
+        assert ccm_core.evaluate_fast("BUSY", "", project_dir) == "BUSY"
+
+    def test_prev_permit_no_hook_stays_permit(self, project_dir):
+        assert ccm_core.evaluate_fast("PERMIT", "", project_dir) == "PERMIT"
+
+    def test_prev_shell_stays_shell(self, project_dir):
+        assert ccm_core.evaluate_fast("SHELL", "", project_dir) == "SHELL"
+
+    def test_prev_done_with_valid_flag(self, project_dir):
+        """prev=DONE + fresh done_flag → DONE via fallback_done_active."""
+        now = int(time.time())
+        assert ccm_core.evaluate_fast("DONE", str(now - 5), project_dir) == "DONE"
+
+    def test_prev_done_with_expired_flag(self, project_dir):
+        """prev=DONE + stale done_flag → IDLE via fallback_done_expired."""
+        now = int(time.time())
+        expired = str(now - ccm_core.DONE_TIMEOUT - 10)
+        assert ccm_core.evaluate_fast("DONE", expired, project_dir) == "IDLE"
+
+    # --- hook overrides ---
+
+    def test_hook_busy_overrides_idle(self, project_dir):
+        self._write_hook(project_dir, "BUSY", age=1)
+        assert ccm_core.evaluate_fast("IDLE", "", project_dir) == "BUSY"
+
+    def test_hook_permit_overrides_busy(self, project_dir):
+        self._write_hook(project_dir, "PERMIT", age=2)
+        assert ccm_core.evaluate_fast("BUSY", "", project_dir) == "PERMIT"
+
+    def test_hook_busy_trusted_regardless_of_age(self, project_dir):
+        """Regression guard: no HOOK_TIMEOUT cap in fast path either."""
+        self._write_hook(project_dir, "BUSY", age=900)
+        assert ccm_core.evaluate_fast("IDLE", "", project_dir) == "BUSY"
+
+    def test_hook_done_fresh_from_idle(self, project_dir):
+        self._write_hook(project_dir, "DONE", age=1)
+        assert ccm_core.evaluate_fast("IDLE", "", project_dir) == "DONE"
+
+    def test_hook_permit_expired(self, project_dir):
+        """Stale PERMIT hook + prev=IDLE → IDLE (not stuck PERMIT)."""
+        self._write_hook(
+            project_dir, "PERMIT",
+            age=ccm_core.PERMIT_MAX_TIMEOUT + 10,
+        )
+        assert ccm_core.evaluate_fast("IDLE", "", project_dir) == "IDLE"
+
+    # --- no project dir ---
+
+    def test_no_project_dir(self):
+        """evaluate_fast with empty project_dir skips hook read gracefully."""
+        assert ccm_core.evaluate_fast("BUSY", "", "") == "BUSY"
 
 
 class TestLifecycleSequences:

@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Optional, Tuple
+from typing import Optional, Tuple
 
 # ─── Constants ───
 
@@ -32,6 +32,10 @@ CCM_GIT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "git-cache")
 CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 
 DONE_TIMEOUT = int(os.environ.get("CCM_DONE_TIMEOUT", "30"))
+# Hook signal age (seconds) below which a BUSY signal is treated as "fresh"
+# and trusted unconditionally — bypasses the slower pipeline when multiple
+# projects contend for evaluation time.
+HOOK_FRESH_THRESHOLD = 2
 # Minimum seconds before showing DONE after Stop hook fires.
 # Suppresses false DONE at multi-turn boundaries where Stop fires
 # between tool executions and the next turn starts within seconds.
@@ -328,8 +332,16 @@ class Action(Enum):
     HOLD_NO_WRITE = "hold_no_write"
 
 
-# Sentinel: result="RAW" means "use ctx.raw as the resolved state"
-RAW_RESULT = "RAW"
+# Sentinel: result=USE_RAW means "use ctx.raw as the resolved state".
+# A unique object ensures it cannot collide with a real state name.
+class _UseRawSentinel:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<USE_RAW>"
+
+
+USE_RAW = _UseRawSentinel()
 
 
 @dataclass(frozen=True)
@@ -344,10 +356,10 @@ class Rule:
     - busy_age_lt    — ctx.last_busy_age must satisfy 0 <= age < value
     - done_valid     — True: done_flag present AND 0 <= done_age < DONE_TIMEOUT
                        False: done_flag present AND NOT valid (expired/invalid)
-    - custom         — escape hatch: callable(ctx) -> bool for rare cases
     """
     name: str
-    result: str = RAW_RESULT
+    # str for concrete state (e.g. "BUSY"), or the USE_RAW sentinel
+    result: object = USE_RAW
     action: Action = Action.DEFAULT
     raw_in: Optional[Tuple[str, ...]] = None
     hook_in: Optional[Tuple[str, ...]] = None
@@ -355,7 +367,6 @@ class Rule:
     hook_age_lt: Optional[int] = None
     busy_age_lt: Optional[int] = None
     done_valid: Optional[bool] = None
-    custom: Optional[Callable[["DetectionContext"], bool]] = None
 
     def matches(self, ctx: "DetectionContext") -> bool:
         if self.raw_in is not None and ctx.raw not in self.raw_in:
@@ -380,8 +391,6 @@ class Rule:
                 return False
             if 0 <= ctx.done_age < DONE_TIMEOUT:
                 return False
-        if self.custom is not None and not self.custom(ctx):
-            return False
         return True
 
 
@@ -410,12 +419,12 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         action=Action.CLEAR_DONE,
     ),
     Rule(
-        # Fast path: very fresh BUSY hook (< 2s) is trusted over any raw
-        # state. Resolves races where the pipeline lags behind rapid
-        # BUSY transitions across multiple projects.
+        # Fast path: very fresh BUSY hook is trusted over any raw state.
+        # Resolves races where the pipeline lags behind rapid BUSY
+        # transitions across multiple projects.
         name="hook_fresh_busy",
         hook_in=("BUSY",),
-        hook_age_lt=2,
+        hook_age_lt=HOOK_FRESH_THRESHOLD,
         result="BUSY",
     ),
     Rule(
@@ -487,9 +496,16 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         # After user responds, there's a brief IDLE gap before the tool
         # starts; don't let the fallback turn that into DONE.
         # HOLD_NO_WRITE: do not touch tmux state — preserve prior PERMIT.
+        #
+        # Safety net: require the PERMIT hook signal to still be present
+        # and within PERMIT_MAX_TIMEOUT. Without this, a crashed Claude
+        # during a permission dialog would leave PERMIT stuck forever
+        # (no hook signal would ever clear prev_state=PERMIT).
         name="fallback_permit_hold",
         raw_in=("IDLE",),
         prev_in=("PERMIT",),
+        hook_in=("PERMIT",),
+        hook_age_lt=PERMIT_MAX_TIMEOUT,
         result="PERMIT",
         action=Action.HOLD_NO_WRITE,
     ),
@@ -505,20 +521,20 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         name="fallback_done_expired",
         raw_in=("IDLE",),
         done_valid=False,
-        result=RAW_RESULT,
+        result=USE_RAW,
         action=Action.CLEAR_DONE,
     ),
     Rule(
         # Leaving IDLE: clear any stale @ccm_done.
         name="raw_not_idle_clear",
         raw_in=("BUSY", "PERMIT"),
-        result=RAW_RESULT,
+        result=USE_RAW,
         action=Action.CLEAR_DONE,
     ),
     Rule(
         # Default: trust raw state. Always matches (terminal rule).
         name="default",
-        result=RAW_RESULT,
+        result=USE_RAW,
     ),
 )
 
@@ -531,7 +547,7 @@ def evaluate_rules(ctx: DetectionContext,
     """
     for rule in rules:
         if rule.matches(ctx):
-            state = ctx.raw if rule.result == RAW_RESULT else rule.result
+            state = ctx.raw if rule.result is USE_RAW else rule.result
             return rule, state
     # The terminal "default" rule guarantees a match. If we get here the
     # rule table is broken.
@@ -548,6 +564,86 @@ def _read_busy_ts(project_dir: str) -> int:
             return int(f.read().strip())
     except (OSError, ValueError):
         return 0
+
+
+# prev_state → synthetic raw mapping for the fast path.
+# The fast path (statusline) skips the ps/capture-pane pipeline, so it
+# has no real `raw` value. It derives one from prev_state under the
+# assumption that Claude is still in the same lifecycle phase as the
+# last authoritative slow-path evaluation. DONE is not a raw value —
+# it's a derived state, so we map it back to IDLE and let rule 11
+# (fallback_done_active) re-derive DONE from done_flag.
+_FAST_PREV_TO_RAW = {
+    "DOWN": "DOWN",
+    "SHELL": "SHELL",
+    "BUSY": "BUSY",
+    "PERMIT": "PERMIT",
+    "IDLE": "IDLE",
+    "DONE": "IDLE",
+    "": "IDLE",
+}
+
+
+def build_fast_context(prev_state, done_flag, project_dir,
+                       now=None) -> DetectionContext:
+    """Build a DetectionContext for the read-only statusline path.
+
+    Does not call ps/capture-pane/tmux queries for process tree info.
+    Derives `raw` from prev_state, reads hook signal + done_flag only.
+    Skips the .busy file read — multi-turn boundary suppression is a
+    slow-path concern; the fast path may briefly flash DONE which the
+    next slow-path cycle will correct.
+    """
+    if now is None:
+        now = int(time.time())
+
+    raw = _FAST_PREV_TO_RAW.get(prev_state, "IDLE")
+
+    hook_state = ""
+    hook_ts = 0
+    hook_age = -1
+    if project_dir:
+        sig = read_hook_signal(project_dir)
+        if sig is not None:
+            hook_ts, hook_state, _detail = sig
+            if hook_state == "SHELL":
+                hook_state = ""
+                hook_ts = 0
+            else:
+                hook_age = now - hook_ts
+
+    done_age = -1
+    if done_flag:
+        try:
+            done_age = now - int(done_flag)
+        except ValueError:
+            done_age = -1
+
+    return DetectionContext(
+        raw=raw,
+        hook_state=hook_state,
+        hook_ts=hook_ts,
+        hook_age=hook_age,
+        prev_state=prev_state,
+        done_flag=done_flag,
+        done_age=done_age,
+        last_done_ts=0,
+        last_busy_age=-1,
+        now=now,
+    )
+
+
+def evaluate_fast(prev_state, done_flag, project_dir, now=None) -> str:
+    """Read-only state evaluation for statusline-speed contexts.
+
+    Runs the same DETECTION_RULES table as the slow path, so there is
+    one source of truth for state transitions. Does not write to tmux
+    or touch .busy files — the slow-path run next cycle is authoritative
+    for persisting state.
+    """
+    ctx = build_fast_context(prev_state, done_flag, project_dir, now)
+    _rule, state = evaluate_rules(ctx)
+    return state
 
 
 def build_detection_context(win_target, project_dir, prev_state, done_flag,
@@ -577,8 +673,14 @@ def build_detection_context(win_target, project_dir, prev_state, done_flag,
             else:
                 hook_age = now - hook_ts
 
-    last_busy_ts = _read_busy_ts(project_dir)
-    last_busy_age = (now - last_busy_ts) if last_busy_ts else -1
+    # .busy file is only consulted by the hook_multiturn_boundary rule,
+    # which requires hook=DONE and prev=BUSY. Skip the filesystem read
+    # in all other cases to keep per-project overhead minimal.
+    last_busy_age = -1
+    if hook_state == "DONE" and prev_state == "BUSY":
+        last_busy_ts = _read_busy_ts(project_dir)
+        if last_busy_ts:
+            last_busy_age = now - last_busy_ts
 
     done_age = -1
     if done_flag:
@@ -769,30 +871,9 @@ def build_project_list(fast=False):
                 pass
 
         if fast:
-            state = prev_state if prev_state else "IDLE"
-            if state == "IDLE" and done_flag:
-                try:
-                    done_age = int(time.time()) - int(done_flag)
-                    if 0 <= done_age < DONE_TIMEOUT:
-                        state = "DONE"
-                except ValueError:
-                    pass
-            if proj_dir:
-                hook = read_hook_signal(proj_dir)
-                if hook:
-                    hook_ts, hook_state, _hook_detail = hook
-                    hook_age = int(time.time()) - hook_ts
-                    # PERMIT always wins — permission prompts persist while
-                    # process tree may report BUSY (background processes).
-                    # Safety net: expire after PERMIT_MAX_TIMEOUT.
-                    if hook_state == "PERMIT" and hook_age < PERMIT_MAX_TIMEOUT:
-                        state = "PERMIT"
-                    elif hook_state == "BUSY" and state != "PERMIT":
-                        # Trust any BUSY hook signal — mirrors rule
-                        # hook_busy_idle in DETECTION_RULES. No age limit.
-                        state = "BUSY"
-                    elif hook_state == "DONE" and hook_age < DONE_TIMEOUT and state == "IDLE":
-                        state = "DONE"
+            # Unified with slow path via DETECTION_RULES. Read-only:
+            # does not touch tmux state or .busy files.
+            state = evaluate_fast(prev_state, done_flag, proj_dir)
         else:
             state, done_flag, last_done_ts_new = detect_window_state(
                 win_target, proj_dir, prev_state, done_flag, last_done_ts,
