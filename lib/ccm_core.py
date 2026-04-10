@@ -355,6 +355,14 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
                     #    permission dialog). Stop fires → DONE, but user
                     #    expects BUSY. Apply settle time unconditionally.
                     if prev_state == "PERMIT" and hook_age < DONE_SETTLE_TIME:
+                        # Update .busy so subsequent cycles (where prev_state
+                        # becomes BUSY) can continue suppressing this DONE.
+                        busy_file = _hook_signal_path(project_dir) + ".busy"
+                        try:
+                            with open(busy_file, "w") as f:
+                                f.write(str(now))
+                        except OSError:
+                            pass
                         _set_win_state(win_target, "BUSY")
                         return "BUSY", done_flag, last_done_ts
                     if prev_state == "BUSY":
