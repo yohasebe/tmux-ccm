@@ -428,6 +428,362 @@ class TestDetectWindowStateHooks:
         assert state == "DONE"
 
 
+# ─── Declarative rule evaluation (pure) ───
+
+
+def make_ctx(**overrides):
+    """Build a DetectionContext with sensible defaults for rule testing."""
+    now = int(time.time())
+    defaults = dict(
+        raw="IDLE",
+        hook_state="",
+        hook_ts=0,
+        hook_age=-1,
+        prev_state="IDLE",
+        done_flag="",
+        done_age=-1,
+        last_done_ts=0,
+        last_busy_age=-1,
+        now=now,
+    )
+    defaults.update(overrides)
+    return ccm_core.DetectionContext(**defaults)
+
+
+class TestEvaluateRules:
+    """Pure unit tests: each case asserts (matched_rule_name, resolved_state).
+
+    No tmux, ps, or filesystem mocking — the Context is built directly.
+    """
+
+    # --- process-level ---
+
+    def test_raw_down(self):
+        rule, state = ccm_core.evaluate_rules(make_ctx(raw="DOWN"))
+        assert (rule.name, state) == ("process_down", "DOWN")
+
+    def test_raw_shell(self):
+        rule, state = ccm_core.evaluate_rules(make_ctx(raw="SHELL"))
+        assert (rule.name, state) == ("process_shell", "SHELL")
+
+    def test_shell_beats_hook_busy(self):
+        """Process tree authoritative: SHELL beats any hook signal."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="SHELL", hook_state="BUSY", hook_age=0)
+        )
+        assert (rule.name, state) == ("process_shell", "SHELL")
+
+    # --- fresh BUSY hook fast path ---
+
+    def test_hook_fresh_busy_over_raw_idle(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=1)
+        )
+        assert (rule.name, state) == ("hook_fresh_busy", "BUSY")
+
+    def test_hook_fresh_busy_over_raw_busy_is_noop(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="BUSY", hook_state="BUSY", hook_age=0)
+        )
+        assert (rule.name, state) == ("hook_fresh_busy", "BUSY")
+
+    def test_hook_stale_busy_falls_through(self):
+        """Age >= 2 but < HOOK_TIMEOUT → slow path rule (hook_busy_idle)."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=5)
+        )
+        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
+
+    # --- PERMIT ---
+
+    def test_hook_permit_blocking_raw_busy(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=3)
+        )
+        assert (rule.name, state) == ("hook_permit_blocking", "PERMIT")
+
+    def test_hook_permit_idle_falls_through_to_fallback(self):
+        """raw=IDLE means user moved past dialog; don't force PERMIT via rule 4."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", hook_state="PERMIT", hook_age=3, prev_state="PERMIT")
+        )
+        assert rule.name == "fallback_permit_hold"
+        assert state == "PERMIT"
+
+    def test_hook_permit_expired_no_hold(self):
+        """Expired PERMIT + prev=IDLE → default rule, state=IDLE."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                hook_state="PERMIT",
+                hook_age=ccm_core.PERMIT_MAX_TIMEOUT + 10,
+                prev_state="IDLE",
+            )
+        )
+        assert rule.name == "default"
+        assert state == "IDLE"
+
+    # --- DONE variants ---
+
+    def test_hook_post_permit_tool(self):
+        """prev=PERMIT + DONE within settle → BUSY + write_busy_file."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE", hook_state="DONE", hook_age=1, prev_state="PERMIT"
+            )
+        )
+        assert (rule.name, state) == ("hook_post_permit_tool", "BUSY")
+        assert rule.action == ccm_core.Action.WRITE_BUSY_FILE
+
+    def test_hook_multiturn_boundary(self):
+        """prev=BUSY + DONE with recent .busy file → BUSY (not genuine)."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                hook_state="DONE",
+                hook_age=2,
+                prev_state="BUSY",
+                last_busy_age=1,
+            )
+        )
+        assert (rule.name, state) == ("hook_multiturn_boundary", "BUSY")
+
+    def test_hook_multiturn_no_busy_file_passes_through(self):
+        """prev=BUSY + DONE but no .busy file → genuine DONE."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                hook_state="DONE",
+                hook_age=2,
+                prev_state="BUSY",
+                last_busy_age=-1,
+            )
+        )
+        assert (rule.name, state) == ("hook_done_genuine", "DONE")
+
+    def test_hook_done_genuine(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", hook_state="DONE", hook_age=2, prev_state="IDLE")
+        )
+        assert (rule.name, state) == ("hook_done_genuine", "DONE")
+        assert rule.action == ccm_core.Action.SET_DONE_HOOK
+
+    def test_hook_done_expired_falls_through(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                hook_state="DONE",
+                hook_age=ccm_core.DONE_TIMEOUT + 10,
+                prev_state="IDLE",
+            )
+        )
+        assert rule.name == "default"
+        assert state == "IDLE"
+
+    # --- fallback (no hooks) ---
+
+    def test_fallback_busy_to_done(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", prev_state="BUSY")
+        )
+        assert (rule.name, state) == ("fallback_busy_to_done", "DONE")
+        assert rule.action == ccm_core.Action.SET_DONE_NOW
+
+    def test_fallback_permit_hold(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", prev_state="PERMIT")
+        )
+        assert (rule.name, state) == ("fallback_permit_hold", "PERMIT")
+        assert rule.action == ccm_core.Action.HOLD_NO_WRITE
+
+    def test_fallback_done_active(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", done_flag="1000", done_age=5)
+        )
+        assert (rule.name, state) == ("fallback_done_active", "DONE")
+
+    def test_fallback_done_expired_clears(self):
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                done_flag="1000",
+                done_age=ccm_core.DONE_TIMEOUT + 5,
+            )
+        )
+        assert (rule.name, state) == ("fallback_done_expired", "IDLE")
+        assert rule.action == ccm_core.Action.CLEAR_DONE
+
+    # --- raw_not_idle_clear ---
+
+    def test_raw_busy_clears_done(self):
+        rule, state = ccm_core.evaluate_rules(make_ctx(raw="BUSY"))
+        assert (rule.name, state) == ("raw_not_idle_clear", "BUSY")
+        assert rule.action == ccm_core.Action.CLEAR_DONE
+
+    def test_raw_permit_clears_done(self):
+        rule, state = ccm_core.evaluate_rules(make_ctx(raw="PERMIT"))
+        assert (rule.name, state) == ("raw_not_idle_clear", "PERMIT")
+
+    # --- default ---
+
+    def test_default_pure_idle(self):
+        rule, state = ccm_core.evaluate_rules(make_ctx(raw="IDLE"))
+        assert rule.name == "default"
+        assert state == "IDLE"
+
+
+class TestRuleMatching:
+    """Directly exercise Rule.matches() edge cases."""
+
+    def test_hook_in_requires_signal_present(self):
+        rule = ccm_core.Rule(name="t", hook_in=("BUSY",), hook_age_lt=10)
+        # hook_state="" should NOT match even if hook_age_lt is satisfied by -1
+        assert not rule.matches(make_ctx(hook_state="", hook_age=-1))
+
+    def test_hook_age_lt_rejects_missing_signal(self):
+        rule = ccm_core.Rule(name="t", hook_age_lt=10)
+        assert not rule.matches(make_ctx(hook_age=-1))
+
+    def test_busy_age_lt_rejects_missing_busy_file(self):
+        rule = ccm_core.Rule(name="t", busy_age_lt=5)
+        assert not rule.matches(make_ctx(last_busy_age=-1))
+
+    def test_done_valid_true_requires_flag(self):
+        rule = ccm_core.Rule(name="t", done_valid=True)
+        assert not rule.matches(make_ctx(done_flag="", done_age=-1))
+        assert rule.matches(make_ctx(done_flag="100", done_age=5))
+
+    def test_done_valid_false_requires_flag_present(self):
+        """done_valid=False means flag exists but expired — not 'no flag'."""
+        rule = ccm_core.Rule(name="t", done_valid=False)
+        assert not rule.matches(make_ctx(done_flag="", done_age=-1))
+        assert rule.matches(
+            make_ctx(done_flag="100", done_age=ccm_core.DONE_TIMEOUT + 1)
+        )
+
+    def test_wildcard_matches_all(self):
+        rule = ccm_core.Rule(name="wild")
+        assert rule.matches(make_ctx())
+        assert rule.matches(make_ctx(raw="BUSY", hook_state="DONE"))
+
+
+class TestLifecycleSequences:
+    """End-to-end state transition sequences, evaluated as pure rule chains.
+
+    Each test walks a realistic Claude Code lifecycle (user prompt → tool
+    execution → permission → completion) and asserts that the rule table
+    produces the right state at every step. No tmux/ps/file mocking —
+    Context is constructed directly so we focus on detection logic.
+    """
+
+    def _eval(self, **ctx_kwargs):
+        rule, state = ccm_core.evaluate_rules(make_ctx(**ctx_kwargs))
+        return rule.name, state
+
+    def test_simple_turn(self):
+        """IDLE → BUSY(fresh) → BUSY(slow) → DONE(genuine) → IDLE(held)."""
+        # Initial idle
+        assert self._eval(raw="IDLE", prev_state="IDLE") == ("default", "IDLE")
+        # UserPromptSubmit fires BUSY hook (< 2s)
+        assert self._eval(
+            raw="IDLE", prev_state="IDLE", hook_state="BUSY", hook_age=0
+        ) == ("hook_fresh_busy", "BUSY")
+        # Text generation continues, pipeline still sees IDLE
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="BUSY", hook_age=5
+        ) == ("hook_busy_idle", "BUSY")
+        # Stop fires DONE, no recent .busy → genuine completion
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="DONE", hook_age=1,
+            last_busy_age=-1,
+        ) == ("hook_done_genuine", "DONE")
+        # Next cycle: DONE flag still valid
+        assert self._eval(
+            raw="IDLE", prev_state="DONE", done_flag="999999999", done_age=2,
+        ) == ("fallback_done_active", "DONE")
+        # After DONE_TIMEOUT the flag expires
+        assert self._eval(
+            raw="IDLE", prev_state="DONE",
+            done_flag="1", done_age=ccm_core.DONE_TIMEOUT + 1,
+        ) == ("fallback_done_expired", "IDLE")
+
+    def test_multi_turn_false_done_suppressed(self):
+        """BUSY → (Stop fires DONE between tools) → BUSY must be kept.
+
+        Real scenario: Claude uses Bash, Stop fires, PreToolUse fires
+        again within 1-2s for another Bash call. The .busy file was
+        touched by PreToolUse, so DONE is within busy_age_lt window.
+        """
+        # Tool execution in progress
+        assert self._eval(
+            raw="BUSY", prev_state="BUSY", hook_state="BUSY", hook_age=0,
+        ) == ("hook_fresh_busy", "BUSY")
+        # Stop fires, but .busy was just touched → multi-turn boundary
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="DONE", hook_age=1,
+            last_busy_age=1,
+        ) == ("hook_multiturn_boundary", "BUSY")
+        # Next PreToolUse immediately fires BUSY again
+        assert self._eval(
+            raw="BUSY", prev_state="BUSY", hook_state="BUSY", hook_age=0,
+            last_busy_age=0,
+        ) == ("hook_fresh_busy", "BUSY")
+
+    def test_permit_lifecycle(self):
+        """BUSY → PERMIT → (user approves) → BUSY(post-permit) → DONE."""
+        # Tool wants permission: PreToolUse fired BUSY, then
+        # PermissionRequest fired PERMIT. raw=BUSY (background MCP).
+        assert self._eval(
+            raw="BUSY", prev_state="BUSY", hook_state="PERMIT", hook_age=0,
+        ) == ("hook_permit_blocking", "PERMIT")
+        # User sees dialog for a while
+        assert self._eval(
+            raw="BUSY", prev_state="PERMIT", hook_state="PERMIT", hook_age=5,
+        ) == ("hook_permit_blocking", "PERMIT")
+        # User approves; brief IDLE gap before tool actually runs.
+        # hook=PERMIT still in file (not cleared yet), raw=IDLE now.
+        # Rule 4 declines (raw=IDLE); rule 10 holds PERMIT.
+        assert self._eval(
+            raw="IDLE", prev_state="PERMIT", hook_state="PERMIT", hook_age=6,
+        ) == ("fallback_permit_hold", "PERMIT")
+        # Tool runs → Stop fires DONE within SETTLE → post-permit BUSY.
+        assert self._eval(
+            raw="IDLE", prev_state="PERMIT", hook_state="DONE", hook_age=1,
+        ) == ("hook_post_permit_tool", "BUSY")
+        # Next cycle: prev=BUSY now. Even if hook=DONE still fresh,
+        # multi-turn rule keeps BUSY because WRITE_BUSY_FILE refreshed
+        # last_busy_age to 0 in the previous step.
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="DONE", hook_age=2,
+            last_busy_age=1,
+        ) == ("hook_multiturn_boundary", "BUSY")
+        # Tool finishes cleanly; no more BUSY refresh, genuine DONE.
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="DONE", hook_age=2,
+            last_busy_age=ccm_core.DONE_SETTLE_TIME + 5,
+        ) == ("hook_done_genuine", "DONE")
+
+    def test_fallback_no_hooks(self):
+        """Hook signals absent entirely (old config or disabled)."""
+        # Text generation: raw=BUSY from process tree
+        assert self._eval(raw="BUSY", prev_state="IDLE") == (
+            "raw_not_idle_clear", "BUSY",
+        )
+        # Prompt returns: raw=IDLE, prev=BUSY → DONE via fallback
+        assert self._eval(raw="IDLE", prev_state="BUSY") == (
+            "fallback_busy_to_done", "DONE",
+        )
+
+    def test_shell_override_anywhere(self):
+        """SHELL from process tree wins over any hook state, any prev."""
+        for prev in ("IDLE", "BUSY", "PERMIT", "DONE"):
+            for hook in ("", "BUSY", "DONE", "PERMIT"):
+                name, state = self._eval(
+                    raw="SHELL", prev_state=prev, hook_state=hook, hook_age=0,
+                )
+                assert state == "SHELL", f"prev={prev} hook={hook}"
+
+
 # ─── Formatting helpers ───
 
 class TestFormatElapsed:

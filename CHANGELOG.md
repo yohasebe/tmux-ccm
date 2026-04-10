@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Dashboard prompt: fix cursor/input position offset when prompt text contains CJK characters (used character count instead of display width)
 
 ### Changed
+- **State detection refactored to a declarative rule table** — `detect_window_state` is now a thin 3-step orchestration (build context → evaluate rules → apply actions). All 14 state transitions are declared in `DETECTION_RULES` as a priority-ordered table, replacing ~130 lines of nested if/else. Pure `evaluate_rules()` function enables testing without tmux/ps/filesystem mocks. Behavior is preserved; adds 32 new pure unit and lifecycle tests.
 - Default `@ccm-notify` changed from `off` to `permit,done` — new users get PERMIT and DONE notifications out of the box
 - Default `@ccm-notify-sound` changed to `off` (was `on`); notification sound: Basso → Glass
 - Default idle auto-exit timeout changed from 5 to 10 minutes
