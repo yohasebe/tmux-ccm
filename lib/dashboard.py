@@ -155,7 +155,7 @@ class Dashboard:
         if curses.COLORS >= 256:
             # Salmon for BUSY (matches Claude Code's "Choreographing..." text)
             curses.init_pair(C_PERMIT, curses.COLOR_YELLOW, -1)
-            curses.init_pair(C_BUSY, 209, -1)    # salmon
+            curses.init_pair(C_BUSY, 216, -1)    # salmon (#ff9966, matches status bar #e8967d)
             curses.init_pair(C_DONE, curses.COLOR_GREEN, -1)
             curses.init_pair(C_IDLE, 68, -1)      # blue
             curses.init_pair(C_SHELL, 245, -1)    # gray
