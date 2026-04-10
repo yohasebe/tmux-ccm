@@ -347,6 +347,7 @@ ccm_setup_hooks() {
         .hooks.Stop //= [] |
         .hooks.StopFailure //= [] |
         .hooks.PreToolUse //= [] |
+        .hooks.PostToolUse //= [] |
         .hooks.SubagentStart //= [] |
         .hooks.PermissionRequest //= [] |
         .hooks.PermissionDenied //= [] |
@@ -356,6 +357,7 @@ ccm_setup_hooks() {
         .hooks.Stop += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
         .hooks.StopFailure += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
         .hooks.PreToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
+        .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionRequest += [{"hooks": [{"type": "command", "command": $perm_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionDenied += [{"hooks": [{"type": "command", "command": $perm_denied_cmd, "timeout": $timeout}]}] |
@@ -367,9 +369,10 @@ ccm_setup_hooks() {
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "Claude Code hooks installed successfully."
     echo "  Settings: ${settings_file}"
-    echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, SubagentStart → BUSY"
-    echo "         Stop/StopFailure → DONE, Notification → PERMIT/IDLE"
-    echo "         PermissionDenied → PERMIT (auto mode), SessionEnd → SHELL"
+    echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, PostToolUse → BUSY"
+    echo "         SubagentStart → BUSY, Stop/StopFailure → DONE"
+    echo "         Notification → PERMIT/IDLE, PermissionDenied → PERMIT"
+    echo "         SessionEnd → SHELL"
     echo ""
     echo "  Restart Claude Code to activate the hooks."
     echo "  To remove: ccm remove-hooks"
