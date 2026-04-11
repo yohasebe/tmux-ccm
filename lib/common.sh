@@ -237,6 +237,14 @@ _ccm_strip_hooks() {
                 .hooks.PreToolUse[]? |
                 select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
             ] |
+            .hooks.PostToolUse = [
+                .hooks.PostToolUse[]? |
+                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
+            ] |
+            .hooks.PostToolUseFailure = [
+                .hooks.PostToolUseFailure[]? |
+                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
+            ] |
             .hooks.SubagentStart = [
                 .hooks.SubagentStart[]? |
                 select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
@@ -261,6 +269,8 @@ _ccm_strip_hooks() {
             if (.hooks.Stop | length) == 0 then del(.hooks.Stop) else . end |
             if (.hooks.StopFailure | length) == 0 then del(.hooks.StopFailure) else . end |
             if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end |
+            if (.hooks.PostToolUse | length) == 0 then del(.hooks.PostToolUse) else . end |
+            if (.hooks.PostToolUseFailure | length) == 0 then del(.hooks.PostToolUseFailure) else . end |
             if (.hooks.SubagentStart | length) == 0 then del(.hooks.SubagentStart) else . end |
             if (.hooks.PermissionRequest | length) == 0 then del(.hooks.PermissionRequest) else . end |
             if (.hooks.PermissionDenied | length) == 0 then del(.hooks.PermissionDenied) else . end |
@@ -348,6 +358,7 @@ ccm_setup_hooks() {
         .hooks.StopFailure //= [] |
         .hooks.PreToolUse //= [] |
         .hooks.PostToolUse //= [] |
+        .hooks.PostToolUseFailure //= [] |
         .hooks.SubagentStart //= [] |
         .hooks.PermissionRequest //= [] |
         .hooks.PermissionDenied //= [] |
@@ -358,6 +369,7 @@ ccm_setup_hooks() {
         .hooks.StopFailure += [{"hooks": [{"type": "command", "command": $stop_cmd, "timeout": $timeout}]}] |
         .hooks.PreToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
+        .hooks.PostToolUseFailure += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionRequest += [{"hooks": [{"type": "command", "command": $perm_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionDenied += [{"hooks": [{"type": "command", "command": $perm_denied_cmd, "timeout": $timeout}]}] |
@@ -370,7 +382,7 @@ ccm_setup_hooks() {
     ccm_info "Claude Code hooks installed successfully."
     echo "  Settings: ${settings_file}"
     echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, PostToolUse → BUSY"
-    echo "         SubagentStart → BUSY, Stop/StopFailure → DONE"
+    echo "         PostToolUseFailure → BUSY, SubagentStart → BUSY, Stop/StopFailure → DONE"
     echo "         Notification → PERMIT/IDLE, PermissionDenied → PERMIT"
     echo "         SessionEnd → SHELL"
     echo ""

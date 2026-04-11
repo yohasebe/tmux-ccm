@@ -55,6 +55,12 @@ _PROMPT_CHARS = "❯"
 _ACCEPT_CHARS = "❯⏵"
 PATTERN_INPUT_PROMPT = re.compile(rf"^[{_PROMPT_CHARS}]\s")
 PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
+# Permission dialog footer markers (v2.1.101+). "Tab to amend" and
+# "ctrl+e to explain" are unique to the permission prompt — other
+# menus (slash commands, /hooks) only show "Esc to cancel". Used as a
+# hook-independent fallback when Claude Code stops firing hooks
+# mid-session (see anthropics/claude-code#16047, #13193).
+PATTERN_PERMIT_FOOTER = re.compile(r"Tab to amend|ctrl\+e to explain")
 
 # Claude Code process name in `ps` output
 CLAUDE_PROCESS_NAME = "claude"
@@ -240,10 +246,19 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid):
     if not claude_pid:
         return "SHELL"
 
-    if has_children(claude_pid, ps_lines, own_pgid):
-        # PERMIT is detected by Notification hook (not capture-pane text matching)
+    has_child = has_children(claude_pid, ps_lines, own_pgid)
+
+    # PERMIT fallback: permission dialog footer is hook-independent and
+    # highly specific (only permission prompts carry "Tab to amend" /
+    # "ctrl+e to explain"). Always check — catches the case where
+    # Claude Code stops firing PermissionRequest mid-session.
+    bottom = capture_pane_bottom(pane_target)
+    for line in bottom:
+        if PATTERN_PERMIT_FOOTER.search(line):
+            return "PERMIT"
+
+    if has_child:
         # Check if input prompt visible → background workers, not tool execution
-        bottom = capture_pane_bottom(pane_target)
         for line in bottom:
             if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
                 return "IDLE"

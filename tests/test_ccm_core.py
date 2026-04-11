@@ -95,7 +95,9 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_busy_with_children_permit_text_ignored(self, mock_tmux):
-        """PERMIT is detected by hook, not capture-pane. Children + any text = BUSY."""
+        """Generic 'Do you want to allow this?' text without the v2.1+ footer
+        markers does NOT trigger PERMIT — only 'Tab to amend' / 'ctrl+e to explain'
+        do. Children + ordinary text still resolves to BUSY."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
         )
@@ -128,6 +130,47 @@ class TestDetectPaneState:
         )
         mock_tmux.return_value = "Running tests...\n  ⏵⏵ accept edits on (shift+tab to cycle)"
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_permit_from_footer_tab_to_amend(self, mock_tmux):
+        """Permission dialog footer 'Tab to amend' → PERMIT (hook-independent).
+
+        Fallback for when Claude Code stops firing PermissionRequest hooks
+        mid-session (anthropics/claude-code#16047).
+        """
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = (
+            "Do you want to proceed?\n"
+            "❯ 1. Yes\n"
+            "  2. No\n"
+            "\n"
+            "Esc to cancel · Tab to amend · ctrl+e to explain"
+        )
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_permit_from_footer_ctrl_e_to_explain(self, mock_tmux):
+        """Permission footer 'ctrl+e to explain' alone is enough."""
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = "❯ 1. Yes\n  ctrl+e to explain"
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_permit_detected_even_with_children(self, mock_tmux):
+        """PERMIT footer during parallel tool execution overrides BUSY."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
+        )
+        mock_tmux.return_value = "Running...\nEsc to cancel · Tab to amend"
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_no_permit_from_slash_menu_footer(self, mock_tmux):
+        """'Esc to cancel' alone (slash menu footer) is NOT permission."""
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = "Choose a model\n❯ Opus\n  Sonnet\nEnter to confirm · Esc to cancel"
+        # No Tab to amend / ctrl+e → falls through to IDLE (prompt visible)
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
 
 # ─── detect_window_raw ───
@@ -208,7 +251,12 @@ class TestDetectWindowStateHooks:
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
     def test_hook_busy_stays_busy_even_with_permit_text(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=BUSY → BUSY (PERMIT now detected by Notification hook, not capture-pane)."""
+        """raw=IDLE + hook=BUSY + generic permission text (no footer marker) → BUSY.
+
+        The v2.1+ capture-pane PERMIT fallback only triggers on 'Tab to amend'
+        or 'ctrl+e to explain' — plain 'Do you want to proceed?' text still
+        defers to the hook signal.
+        """
         mock_hook.return_value = (int(time.time()), "BUSY", "")
         mock_tmux.return_value = "Do you want to proceed?\n  1. Yes\n  2. No"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))

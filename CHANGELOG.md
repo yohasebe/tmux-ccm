@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Hook-independent PERMIT detection** — `detect_pane_state` now recognizes Claude Code v2.1.101+ permission dialogs by matching the footer markers `Tab to amend` / `ctrl+e to explain` (unique to permission prompts) in the visible pane. This is a fallback for cases where Claude Code stops firing `PermissionRequest` hooks mid-session (see anthropics/claude-code#16047, #13193). Other menus such as `/hooks` and slash command pickers use a different footer and are not falsely classified as PERMIT
+- `PostToolUseFailure` hook registration — v2.1.101 split tool failures out of `PostToolUse` into a dedicated event; ccm now writes BUSY for both, so state stays accurate across tool errors
 - `SessionEnd` hook for instant SHELL state detection when Claude Code session ends (`/exit`, Ctrl+D, etc.) — eliminates up to 2s polling delay for session exit detection
 - `PermissionDenied` hook for auto mode support — when auto mode classifier denies an action, ccm shows PERMIT state with "Denied: <tool>" detail and sends notification
 - `ccm setup-hooks` now installs 8 hook events (was 5): added `SessionEnd → SHELL`, `PermissionDenied → PERMIT`
