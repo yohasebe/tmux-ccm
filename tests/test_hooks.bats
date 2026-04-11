@@ -162,6 +162,31 @@ teardown() {
     [[ "$status" -ne 0 ]]
 }
 
+@test "hooks-configured: returns false when PostToolUseFailure missing" {
+    # Simulate a pre-v2.1.101 install: all script paths present but no
+    # PostToolUseFailure event registered.
+    ccm_setup_hooks >/dev/null 2>&1
+    jq 'del(.hooks.PostToolUseFailure)' "${MOCK_DIR}/.claude/settings.json" \
+        > "${MOCK_DIR}/.claude/settings.json.tmp"
+    mv "${MOCK_DIR}/.claude/settings.json.tmp" "${MOCK_DIR}/.claude/settings.json"
+    run ccm_hooks_configured
+    [[ "$status" -ne 0 ]]
+}
+
+@test "setup-hooks: reinstalls when PostToolUseFailure missing" {
+    # Same scenario: event-level gap should trigger update path.
+    ccm_setup_hooks >/dev/null 2>&1
+    jq 'del(.hooks.PostToolUseFailure)' "${MOCK_DIR}/.claude/settings.json" \
+        > "${MOCK_DIR}/.claude/settings.json.tmp"
+    mv "${MOCK_DIR}/.claude/settings.json.tmp" "${MOCK_DIR}/.claude/settings.json"
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"already installed"* ]]
+    local hook_count
+    hook_count=$(jq '.hooks.PostToolUseFailure | length' "${MOCK_DIR}/.claude/settings.json")
+    [[ "$hook_count" -eq 1 ]]
+}
+
 @test "setup-hooks: skips when already installed" {
     ccm_setup_hooks >/dev/null 2>&1
     run ccm_setup_hooks

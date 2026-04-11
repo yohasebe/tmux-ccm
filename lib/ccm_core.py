@@ -60,7 +60,14 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # menus (slash commands, /hooks) only show "Esc to cancel". Used as a
 # hook-independent fallback when Claude Code stops firing hooks
 # mid-session (see anthropics/claude-code#16047, #13193).
-PATTERN_PERMIT_FOOTER = re.compile(r"Tab to amend|ctrl\+e to explain")
+#
+# Anchored to the start of the line (after optional whitespace and the
+# "Esc to cancel · " prefix) so that the same words appearing in the
+# body of a Claude response — e.g. "use ctrl+e to explain" inside an
+# answer — do not falsely trigger PERMIT.
+PATTERN_PERMIT_FOOTER = re.compile(
+    r"^\s*Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
+)
 
 # Claude Code process name in `ps` output
 CLAUDE_PROCESS_NAME = "claude"
@@ -248,17 +255,18 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid):
 
     has_child = has_children(claude_pid, ps_lines, own_pgid)
 
-    # PERMIT fallback: permission dialog footer is hook-independent and
-    # highly specific (only permission prompts carry "Tab to amend" /
-    # "ctrl+e to explain"). Always check — catches the case where
-    # Claude Code stops firing PermissionRequest mid-session.
+    # Capture once and share between the permit-footer check and the
+    # input-prompt check below. We check permit before has_children
+    # because permission dialogs can appear with no Claude child
+    # process (the tool subprocess has not been spawned yet — Claude
+    # is waiting for user approval).
     bottom = capture_pane_bottom(pane_target)
     for line in bottom:
-        if PATTERN_PERMIT_FOOTER.search(line):
+        if PATTERN_PERMIT_FOOTER.match(line):
             return "PERMIT"
 
     if has_child:
-        # Check if input prompt visible → background workers, not tool execution
+        # Input prompt visible → background workers, not tool execution
         for line in bottom:
             if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
                 return "IDLE"

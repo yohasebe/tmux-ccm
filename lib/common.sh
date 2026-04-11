@@ -302,6 +302,10 @@ ccm_hooks_configured() {
     grep -q 'on-permission-request\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-permission-denied\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-session-end\.sh' "$settings_file" 2>/dev/null || return 1
+    # Event-level check: PostToolUseFailure was added in v2.1.101. If
+    # settings.json pre-dates that addition, force a reinstall so the
+    # new event gets registered.
+    grep -q 'PostToolUseFailure' "$settings_file" 2>/dev/null || return 1
 }
 
 # Install Claude Code hooks for improved state detection

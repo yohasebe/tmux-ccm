@@ -149,10 +149,10 @@ class TestDetectPaneState:
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
 
     @patch("ccm_core.tmux_cmd")
-    def test_permit_from_footer_ctrl_e_to_explain(self, mock_tmux):
-        """Permission footer 'ctrl+e to explain' alone is enough."""
+    def test_permit_from_footer_indented(self, mock_tmux):
+        """Footer with leading whitespace still matches."""
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        mock_tmux.return_value = "❯ 1. Yes\n  ctrl+e to explain"
+        mock_tmux.return_value = "  Esc to cancel · Tab to amend · ctrl+e to explain"
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
 
     @patch("ccm_core.tmux_cmd")
@@ -161,16 +161,43 @@ class TestDetectPaneState:
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
         )
-        mock_tmux.return_value = "Running...\nEsc to cancel · Tab to amend"
+        mock_tmux.return_value = "Running...\nEsc to cancel · Tab to amend · ctrl+e to explain"
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
 
     @patch("ccm_core.tmux_cmd")
     def test_no_permit_from_slash_menu_footer(self, mock_tmux):
-        """'Esc to cancel' alone (slash menu footer) is NOT permission."""
+        """'Enter to confirm · Esc to cancel' (slash menu) is NOT permission."""
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         mock_tmux.return_value = "Choose a model\n❯ Opus\n  Sonnet\nEnter to confirm · Esc to cancel"
-        # No Tab to amend / ctrl+e → falls through to IDLE (prompt visible)
+        # No "Esc to cancel · Tab to amend" prefix → falls through to IDLE
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_no_permit_from_response_body_mentioning_footer(self, mock_tmux):
+        """Claude response body containing 'ctrl+e to explain' in prose
+        must not false-trigger PERMIT. Pattern is anchored to the start
+        of a line with the 'Esc to cancel · ' prefix; in-body mentions
+        always have leading text before the phrase.
+        """
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = (
+            "⏺ In permit dialogs you can use ctrl+e to explain the\n"
+            "  command, or Tab to amend it before approving.\n"
+            "❯ "
+        )
+        # Input prompt visible, no footer → IDLE
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_no_permit_from_inline_mention(self, mock_tmux):
+        """Even a line that ENDS with 'ctrl+e to explain' but has other
+        text first (e.g. a quoted example) should not match."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
+        )
+        mock_tmux.return_value = "  The footer says: Esc to cancel · Tab to amend · ctrl+e to explain"
+        # Has indentation but the "The footer says:" prefix breaks the anchor
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
 
 # ─── detect_window_raw ───
@@ -225,6 +252,46 @@ class TestDetectWindowStateHooks:
 
         state, _, _ = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "BUSY", "", 0, panes, ps, "99999"
+        )
+        assert state == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_raw_permit_overrides_stale_busy_hook(self, mock_hook, mock_tmux):
+        """capture-pane detects PERMIT footer + stale BUSY hook → PERMIT.
+
+        End-to-end scenario for anthropics/claude-code#16047: Claude Code
+        stopped firing PermissionRequest mid-session, so the hook signal
+        is stuck on stale BUSY. The capture-pane fallback must win.
+        """
+        hook_ts = int(time.time()) - 600  # 10 min stale
+        mock_hook.return_value = (hook_ts, "BUSY", "")
+        mock_tmux.return_value = (
+            "❯ 1. Yes\n  2. No\n"
+            "Esc to cancel · Tab to amend · ctrl+e to explain"
+        )
+        # claude with no child (permission dialog pre-tool-spawn)
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "BUSY", "", 0, panes, ps, "99999"
+        )
+        assert state == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    def test_raw_permit_without_any_hook(self, mock_hook, mock_tmux):
+        """capture-pane PERMIT + no hook signal at all → PERMIT."""
+        mock_hook.return_value = None
+        mock_tmux.return_value = (
+            "  Esc to cancel · Tab to amend · ctrl+e to explain"
+        )
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+
+        state, _, _ = ccm_core.detect_window_state(
+            "0:1", "/tmp/project", "IDLE", "", 0, panes, ps, "99999"
         )
         assert state == "PERMIT"
 
