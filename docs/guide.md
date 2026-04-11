@@ -159,6 +159,8 @@ This adds hooks to `~/.claude/settings.json`:
 |------|--------|---------|
 | `UserPromptSubmit` | BUSY | Prompt submitted → Claude is processing (including text generation) |
 | `PreToolUse` | BUSY | Tool execution starting (solves multi-turn detection gap) |
+| `PostToolUse` | BUSY | Tool execution completed — keeps BUSY held across post-permission gaps |
+| `PostToolUseFailure` | BUSY | Tool execution failed (Claude Code v2.1.101+ split from `PostToolUse`) |
 | `SubagentStart` | BUSY | Subagent spawned (Agent tool) |
 | `Stop` / `StopFailure` | DONE | Claude finished responding |
 | `PermissionRequest` | PERMIT | Tool requires user permission |
@@ -180,7 +182,7 @@ To remove: `ccm remove-hooks`
 | **SHELL** | Process check | No `claude` process found among window's child processes |
 | **BUSY** | Hook / Process tree | Hooks: UserPromptSubmit, PreToolUse, SubagentStart. Fallback: `claude` has child processes |
 | **IDLE** | Process tree | `claude` process exists but has no children, no fresh hook signal |
-| **PERMIT** | Hook only | PermissionRequest / PermissionDenied / Notification (permission_prompt). Requires `ccm setup-hooks` |
+| **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the v2.1.101+ footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
 | **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |
 
 ### Detection without hooks

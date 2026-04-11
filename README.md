@@ -275,7 +275,7 @@ ccm setup-hooks
 
 This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **UserPromptSubmit** → BUSY when you submit a prompt (detects text generation)
-- **PreToolUse** → BUSY when a tool starts executing (solves multi-turn detection gap)
+- **PreToolUse / PostToolUse / PostToolUseFailure** → BUSY across tool execution (PostToolUseFailure is a Claude Code v2.1.101+ event for tool errors)
 - **SubagentStart** → BUSY when a subagent is spawned
 - **Stop / StopFailure** → DONE when Claude finishes responding
 - **PermissionRequest** → PERMIT when a tool requires permission
@@ -283,7 +283,7 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
-Without hooks, ccm uses process tree inspection which cannot detect text generation or permission prompts reliably. Hooks are optional — ccm works without them but with reduced detection accuracy.
+Without hooks, ccm uses process tree inspection which cannot detect text generation reliably. PERMIT still has a fallback: ccm matches the Claude Code v2.1.101+ permission footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) directly from the visible pane, so permission prompts are caught even when Claude Code stops firing hooks mid-session ([anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047)). Hooks remain recommended for best accuracy.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 

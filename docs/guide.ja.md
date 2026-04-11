@@ -159,6 +159,8 @@ ccm setup-hooks
 |--------|------|----------|
 | `UserPromptSubmit` | BUSY | プロンプト送信 → Claude処理中（テキスト生成含む） |
 | `PreToolUse` | BUSY | ツール実行開始（マルチターンの検出ギャップを解消） |
+| `PostToolUse` | BUSY | ツール実行完了 — permission 後のBUSYシグナルを維持 |
+| `PostToolUseFailure` | BUSY | ツール実行失敗（Claude Code v2.1.101+ で `PostToolUse` から分離） |
 | `SubagentStart` | BUSY | サブエージェント起動（Agentツール） |
 | `Stop` / `StopFailure` | DONE | Claude応答完了 |
 | `PermissionRequest` | PERMIT | ツールがユーザーの許可を要求 |
@@ -180,7 +182,7 @@ ccm setup-hooks
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
 | **BUSY** | フック / プロセスツリー | フック: UserPromptSubmit, PreToolUse, SubagentStart。フォールバック: `claude` が子プロセスを持つ |
 | **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし、新鮮なフック信号なし |
-| **PERMIT** | フックのみ | PermissionRequest / PermissionDenied / Notification（permission_prompt）。`ccm setup-hooks` が必要 |
+| **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: v2.1.101+ のフッター `Esc to cancel · Tab to amend · ctrl+e to explain` をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能（[#16047](https://github.com/anthropics/claude-code/issues/16047)） |
 | **DONE** | フック信号 / 状態遷移 | フック: Stop発火。フォールバック: BUSY/PERMIT → IDLE遷移を検出 |
 
 ### フックなしでの検出
