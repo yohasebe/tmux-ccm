@@ -72,6 +72,61 @@ class TestHasChildren:
         assert ccm_core.has_children("200", ps, "99999") is True
 
 
+# ─── has_grandchildren ───
+
+class TestHasGrandchildren:
+    def test_false_when_only_direct_children(self):
+        """MCP servers / language servers as direct children → no grandchildren."""
+        ps = make_ps_lines(
+            (200, 100, 100, "claude"),
+            (300, 200, 200, "node"),               # MCP server
+            (400, 200, 200, "sourcekit-lsp"),      # language server
+        )
+        assert ccm_core.has_grandchildren("200", ps, "99999") is False
+
+    def test_true_when_bash_tool_running(self):
+        """claude → bash → command (e.g. xcodebuild) — tool execution."""
+        ps = make_ps_lines(
+            (200, 100, 100, "claude"),
+            (300, 200, 200, "bash"),
+            (400, 300, 300, "xcodebuild"),
+        )
+        assert ccm_core.has_grandchildren("200", ps, "99999") is True
+
+    def test_false_when_no_children(self):
+        ps = make_ps_lines((200, 100, 100, "claude"))
+        assert ccm_core.has_grandchildren("200", ps, "99999") is False
+
+    def test_excludes_caffeinate_at_grandchild_level(self):
+        """A bash child whose only grandchild is caffeinate is not a tool run."""
+        ps = make_ps_lines(
+            (200, 100, 100, "claude"),
+            (300, 200, 200, "bash"),
+            (400, 300, 300, "caffeinate"),
+        )
+        assert ccm_core.has_grandchildren("200", ps, "99999") is False
+
+    def test_excludes_caffeinate_at_child_level(self):
+        """caffeinate as a direct child is excluded from the children set,
+        so its (hypothetical) own children do not count as claude grandchildren."""
+        ps = make_ps_lines(
+            (200, 100, 100, "claude"),
+            (300, 200, 200, "caffeinate"),
+            (400, 300, 300, "node"),
+        )
+        assert ccm_core.has_grandchildren("200", ps, "99999") is False
+
+    def test_mixed_mcp_and_tool(self):
+        """MCP server as direct child + bash → cmd as another branch → True."""
+        ps = make_ps_lines(
+            (200, 100, 100, "claude"),
+            (300, 200, 200, "node"),               # MCP server (direct only)
+            (400, 200, 200, "bash"),               # Bash tool
+            (500, 400, 400, "xcodebuild"),         # tool subprocess
+        )
+        assert ccm_core.has_grandchildren("200", ps, "99999") is True
+
+
 # ─── detect_pane_state ───
 
 class TestDetectPaneState:
@@ -198,6 +253,39 @@ class TestDetectPaneState:
         mock_tmux.return_value = "  The footer says: Esc to cancel · Tab to amend · ctrl+e to explain"
         # Has indentation but the "The footer says:" prefix breaks the anchor
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_busy_when_grandchild_overrides_visible_prompt(self, mock_tmux):
+        """Tool running (claude → bash → xcodebuild) + visible `❯ ` prompt
+        from the v2.1+ background-tool UI → BUSY (grandchild signal wins)."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"),
+            (200, 100, 100, "claude"),
+            (300, 200, 200, "bash"),               # Bash tool
+            (400, 300, 300, "xcodebuild"),         # subprocess
+        )
+        mock_tmux.return_value = (
+            "✳ Doodling… (1m 57s · ↓ 646 tokens)\n"
+            "─────\n"
+            "❯ \n"
+            "─────\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)"
+        )
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_idle_when_only_mcp_children_and_prompt_visible(self, mock_tmux):
+        """No grandchildren (only MCP/LSP direct children) + visible prompt → IDLE.
+        Regression guard: the new grandchild path must not break the
+        established 'background workers + ❯ = IDLE' rule."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"),
+            (200, 100, 100, "claude"),
+            (300, 200, 200, "node"),               # MCP server
+            (400, 200, 200, "sourcekit-lsp"),      # LSP
+        )
+        mock_tmux.return_value = "Some output\n❯ "
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
 
 # ─── detect_window_raw ───

@@ -233,6 +233,40 @@ def has_children(pid, ps_lines, own_pgid):
     return False
 
 
+def has_grandchildren(pid, ps_lines, own_pgid):
+    """True if any descendant two levels below `pid` exists.
+
+    Claude Code's Bash tool runs commands as `claude → bash → cmd`,
+    so a grandchild process is unambiguous evidence that a foreground
+    tool is executing. MCP servers and language servers are direct
+    children of claude only — they do not spawn nested workers in
+    normal operation, so this check does not false-trigger on them.
+
+    This is the hook-independent fallback for the case where Claude
+    Code's UI shows the empty `❯ ` prompt above a still-running tool
+    (the v2.1+ "ctrl+b ctrl+b to background" affordance), which would
+    otherwise let the input-prompt heuristic resolve to IDLE.
+    """
+    children = set()
+    for line in ps_lines:
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] == str(pid):
+            if parts[2] == str(own_pgid):
+                continue
+            if parts[3] in IGNORED_CHILDREN:
+                continue
+            children.add(parts[0])
+    if not children:
+        return False
+    for line in ps_lines:
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] in children:
+            if parts[3] in IGNORED_CHILDREN:
+                continue
+            return True
+    return False
+
+
 def capture_pane_bottom(pane_target, lines=8):
     """Capture bottom non-empty lines of a pane.
     Handles alternate screen mode (CLAUDE_CODE_NO_FLICKER=1) by trying
@@ -266,7 +300,15 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid):
             return "PERMIT"
 
     if has_child:
-        # Input prompt visible → background workers, not tool execution
+        # Foreground tool execution (claude → bash → cmd) leaves a
+        # grandchild in the process tree. When that is the case, the
+        # input-prompt IDLE heuristic does not apply — newer Claude
+        # Code UIs render the empty `❯ ` line above a still-running
+        # tool to advertise ctrl+b ctrl+b backgrounding.
+        if has_grandchildren(claude_pid, ps_lines, own_pgid):
+            return "BUSY"
+        # Otherwise: only direct children → MCP / language servers.
+        # Visible input prompt means user is being asked for input.
         for line in bottom:
             if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
                 return "IDLE"

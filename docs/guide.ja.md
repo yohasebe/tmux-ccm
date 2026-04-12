@@ -180,8 +180,8 @@ ccm setup-hooks
 | 状態 | 検出方法 | 詳細 |
 |------|----------|------|
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
-| **BUSY** | フック / プロセスツリー | フック: UserPromptSubmit, PreToolUse, SubagentStart。フォールバック: `claude` が子プロセスを持つ |
-| **IDLE** | プロセスツリー | `claude` プロセスが存在するが子プロセスなし、新鮮なフック信号なし |
+| **BUSY** | フック / プロセスツリー | フック: UserPromptSubmit, PreToolUse, SubagentStart。フォールバック: `claude` の孫プロセスが存在する場合（Bash ツール実行中の `bash → xcodebuild` 等）は v2.1+ UI が末尾に `❯ ` を表示していても BUSY と判定。それ以外は `claude` が非MCP の子プロセスを持つ場合 |
+| **IDLE** | プロセスツリー | `claude` が直接の子（MCP / 言語サーバー）のみを持ち、入力プロンプトが見え、新鮮な BUSY フック信号がない |
 | **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: v2.1.101+ のフッター `Esc to cancel · Tab to amend · ctrl+e to explain` をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能（[#16047](https://github.com/anthropics/claude-code/issues/16047)） |
 | **DONE** | フック信号 / 状態遷移 | フック: Stop発火。フォールバック: BUSY/PERMIT → IDLE遷移を検出 |
 

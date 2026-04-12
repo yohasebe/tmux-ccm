@@ -180,8 +180,8 @@ To remove: `ccm remove-hooks`
 | State | Method | Details |
 |-------|--------|---------|
 | **SHELL** | Process check | No `claude` process found among window's child processes |
-| **BUSY** | Hook / Process tree | Hooks: UserPromptSubmit, PreToolUse, SubagentStart. Fallback: `claude` has child processes |
-| **IDLE** | Process tree | `claude` process exists but has no children, no fresh hook signal |
+| **BUSY** | Hook / Process tree | Hooks: UserPromptSubmit, PreToolUse, SubagentStart. Fallbacks: `claude` has a grandchild process (e.g. `bash → xcodebuild` from the Bash tool) → BUSY even when the v2.1+ UI shows an empty `❯ ` prompt above the running tool. Otherwise: `claude` has any non-MCP child |
+| **IDLE** | Process tree | `claude` exists with only direct children (MCP / language servers) and a visible input prompt, with no fresh BUSY hook |
 | **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the v2.1.101+ footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
 | **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |
 
