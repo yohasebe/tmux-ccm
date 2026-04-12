@@ -127,6 +127,117 @@ class TestHasGrandchildren:
         assert ccm_core.has_grandchildren("200", ps, "99999") is True
 
 
+# ─── JSONL session log freshness ───
+
+class TestJsonlFreshness:
+    def setup_method(self):
+        # Reset the in-process cache so tests do not leak across cases
+        ccm_core._jsonl_path_cache.clear()
+
+    def teardown_method(self):
+        ccm_core._jsonl_path_cache.clear()
+
+    def test_slug_simple(self):
+        assert ccm_core._project_slug("/Users/yo/code/foo") == "-Users-yo-code-foo"
+
+    def test_slug_with_tilde(self):
+        # ~ should expand; trailing slash and structure preserved
+        slug = ccm_core._project_slug("~/code/foo")
+        home = os.path.expanduser("~")
+        assert slug == (home + "/code/foo").replace("/", "-")
+
+    def test_age_minus_one_when_no_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        assert ccm_core.read_jsonl_age("/nonexistent/path/foo") == -1
+
+    def test_age_minus_one_when_no_jsonl(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        slug = ccm_core._project_slug("/x/y")
+        (tmp_path / slug).mkdir()
+        # empty dir
+        assert ccm_core.read_jsonl_age("/x/y") == -1
+
+    def test_age_reads_newest(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        slug = ccm_core._project_slug("/x/y")
+        d = tmp_path / slug
+        d.mkdir()
+        old = d / "old.jsonl"
+        new = d / "new.jsonl"
+        old.write_text("{}\n")
+        new.write_text("{}\n")
+        now = time.time()
+        os.utime(old, (now - 1000, now - 1000))
+        os.utime(new, (now - 3, now - 3))
+        age = ccm_core.read_jsonl_age("/x/y")
+        assert 2 <= age <= 5  # newest mtime is ~3s old
+
+    def test_ignores_non_jsonl(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        slug = ccm_core._project_slug("/x/y")
+        d = tmp_path / slug
+        d.mkdir()
+        (d / "foo.txt").write_text("ignored")
+        (d / "bar.log").write_text("ignored")
+        assert ccm_core.read_jsonl_age("/x/y") == -1
+
+    def test_cache_returns_stable_path(self, tmp_path, monkeypatch):
+        """Calling twice should not re-listdir if cache is hot.
+        We assert by deleting the dir between calls — second call
+        still returns the cached path's mtime (until path vanishes)."""
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        slug = ccm_core._project_slug("/x/y")
+        d = tmp_path / slug
+        d.mkdir()
+        f = d / "session.jsonl"
+        f.write_text("{}\n")
+        a1 = ccm_core.read_jsonl_age("/x/y")
+        assert a1 >= 0
+        # Cache hit on second call: same file, same age (within 1s)
+        a2 = ccm_core.read_jsonl_age("/x/y")
+        assert abs(a2 - a1) <= 1
+
+    def test_cache_recovers_when_file_disappears(self, tmp_path, monkeypatch):
+        """If the cached file is deleted, the next call must re-glob
+        and either find a replacement or return -1."""
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        slug = ccm_core._project_slug("/x/y")
+        d = tmp_path / slug
+        d.mkdir()
+        f = d / "session.jsonl"
+        f.write_text("{}\n")
+        assert ccm_core.read_jsonl_age("/x/y") >= 0
+        f.unlink()
+        # No replacement → -1
+        assert ccm_core.read_jsonl_age("/x/y") == -1
+
+
+# ─── hooks.log canary ───
+
+class TestHooksLogWarning:
+    def test_no_file_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_HOOKS_LOG", str(tmp_path / "missing.log"))
+        assert ccm_core.hooks_log_size() == -1
+        assert ccm_core.hooks_log_warning() == ""
+
+    def test_small_file_returns_empty(self, tmp_path, monkeypatch):
+        log = tmp_path / "hooks.log"
+        log.write_text("a" * 1024)  # 1 KB
+        monkeypatch.setattr(ccm_core, "CLAUDE_HOOKS_LOG", str(log))
+        assert ccm_core.hooks_log_warning() == ""
+
+    def test_bloated_file_returns_warning(self, tmp_path, monkeypatch):
+        log = tmp_path / "hooks.log"
+        log.write_text("x")  # tiny file
+        monkeypatch.setattr(ccm_core, "CLAUDE_HOOKS_LOG", str(log))
+        # Lower threshold so the tiny file qualifies
+        monkeypatch.setattr(ccm_core, "HOOKS_LOG_WARN_BYTES", 0)
+        msg = ccm_core.hooks_log_warning()
+        assert "hooks.log" in msg
+        assert "#16047" in msg
+        assert ": > ~/.claude/hooks.log" in msg
+
+
 # ─── detect_pane_state ───
 
 class TestDetectPaneState:
@@ -647,6 +758,7 @@ def make_ctx(**overrides):
         done_age=-1,
         last_done_ts=0,
         last_busy_age=-1,
+        jsonl_age=-1,
         now=now,
     )
     defaults.update(overrides)
@@ -797,6 +909,62 @@ class TestEvaluateRules:
         )
         assert rule.name == "default"
         assert state == "IDLE"
+
+    # --- JSONL session-log signal ---
+
+    def test_jsonl_fresh_overrides_idle_with_no_hook(self):
+        """raw=IDLE + no hook + JSONL fresh → BUSY (turn boundary just happened)."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", prev_state="BUSY", jsonl_age=2)
+        )
+        assert (rule.name, state) == ("jsonl_fresh_activity", "BUSY")
+
+    def test_jsonl_stale_does_not_fire(self):
+        """JSONL stale → rule does not match, fallback wins."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", prev_state="BUSY", jsonl_age=120)
+        )
+        assert rule.name == "fallback_busy_to_done"
+
+    def test_jsonl_missing_does_not_fire(self):
+        """No JSONL file → rule does not match."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", prev_state="BUSY", jsonl_age=-1)
+        )
+        assert rule.name == "fallback_busy_to_done"
+
+    def test_jsonl_does_not_override_hook_done(self):
+        """hook=DONE within DONE_TIMEOUT wins even when JSONL is fresh.
+
+        Stop fired and the assistant message was just recorded — both
+        signals are consistent with DONE. The hook is the more
+        authoritative finalisation signal.
+        """
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE", hook_state="DONE", hook_age=2,
+                prev_state="IDLE", jsonl_age=1,
+            )
+        )
+        assert (rule.name, state) == ("hook_done_genuine", "DONE")
+
+    def test_jsonl_does_not_override_hook_busy(self):
+        """hook=BUSY already wins via hook_busy_idle; JSONL has nothing to add."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE", hook_state="BUSY", hook_age=10,
+                prev_state="BUSY", jsonl_age=1,
+            )
+        )
+        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
+
+    def test_jsonl_only_overrides_when_raw_idle(self):
+        """If raw is already BUSY/PERMIT, the JSONL rule must not interfere."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="BUSY", jsonl_age=1)
+        )
+        assert rule.name == "raw_not_idle_clear"
+        assert state == "BUSY"
 
     # --- fallback (no hooks) ---
 

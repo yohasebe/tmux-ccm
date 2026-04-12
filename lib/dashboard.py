@@ -22,7 +22,7 @@ from ccm_core import (
     STATE_PRIORITY, STATE_ICONS, CLAUDE_CMD,
     tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
     read_cache_file, build_project_list, format_elapsed, format_dir,
-    hooks_configured, save_tmux_conf_setting,
+    hooks_configured, hooks_log_warning, save_tmux_conf_setting,
     cmd_add, cmd_remove, cmd_unregister, cmd_register,
     cmd_snapshot_save, cmd_snapshot_load,
     CCMError, raise_on_die,
@@ -406,6 +406,12 @@ class Dashboard:
             if not self.hooks_on:
                 banner = "⚠ Hooks not installed — run 'ccm setup-hooks' for accurate state detection"
                 self._addstr(stdscr, row, 2, banner, curses.color_pair(C_YELLOW))
+                row += 1
+
+            # Hooks log canary — only shown if size crosses threshold
+            log_warning = hooks_log_warning()
+            if log_warning:
+                self._addstr(stdscr, row, 2, "⚠ " + log_warning, curses.color_pair(C_YELLOW))
                 row += 1
 
             # Project list

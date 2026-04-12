@@ -36,6 +36,12 @@ DONE_TIMEOUT = int(os.environ.get("CCM_DONE_TIMEOUT", "30"))
 # and trusted unconditionally — bypasses the slower pipeline when multiple
 # projects contend for evaluation time.
 HOOK_FRESH_THRESHOLD = 2
+# JSONL session-log freshness threshold. If the project's newest .jsonl
+# file was touched within this many seconds, treat it as positive
+# evidence of activity (Claude wrote a record at a turn boundary).
+# Used as a hook-independent BUSY signal when the visible pane suggests
+# IDLE but Claude has just exchanged a record.
+JSONL_FRESH_THRESHOLD = int(os.environ.get("CCM_JSONL_FRESH_THRESHOLD", "5"))
 # Minimum seconds before showing DONE after Stop hook fires.
 # Suppresses false DONE at multi-turn boundaries where Stop fires
 # between tool executions and the next turn starts within seconds.
@@ -211,6 +217,136 @@ def read_hook_signal(project_dir):
     return None
 
 
+# ─── Claude Code session log (JSONL) ───
+# Independent activity heartbeat that survives hook outages.
+# Claude Code writes one JSONL file per session under
+# `~/.claude/projects/<slug>/<sessionId>.jsonl`. Records are appended
+# at conversation turn boundaries (user prompt, assistant message,
+# tool_use, tool_result). The file mtime is therefore a reliable
+# "session activity" signal — when fresh, Claude is alive and
+# exchanging records, regardless of whether hooks are firing.
+#
+# Limitation: pure thinking / token streaming phases do NOT update
+# the file (records are written at message completion, not during
+# generation). So a stale mtime does not imply IDLE — only fresh
+# mtime is actionable. We use this as a positive BUSY signal only.
+#
+# Slug rule (verified empirically against ~/.claude/projects/):
+#   `/Users/.../speechdock` → `-Users-...-speechdock`
+# Claude Code uses the *literal* cwd at session start (no realpath
+# resolution), so we must NOT resolve symlinks here.
+
+CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+JSONL_CACHE_TTL = int(os.environ.get("CCM_JSONL_CACHE_TTL", "60"))
+
+# In-process cache: project_dir → (newest_jsonl_path, expiry_unixtime).
+# Path is re-discovered on cache expiry or when the cached file is gone.
+_jsonl_path_cache: dict = {}
+
+
+def _project_slug(project_dir: str) -> str:
+    """Convert a project directory to its Claude Code JSONL slug.
+
+    Uses the literal path with `/` → `-`. Tilde is expanded but
+    symlinks are NOT resolved (Claude Code records the cwd as-given).
+    """
+    expanded = os.path.expanduser(project_dir)
+    return expanded.replace("/", "-")
+
+
+def _find_newest_jsonl(project_dir: str):
+    """Return the path to the newest *.jsonl file for this project,
+    or None if there is none. Result is cached for JSONL_CACHE_TTL
+    seconds; the file's mtime is read live each call.
+    """
+    now = time.time()
+    cached = _jsonl_path_cache.get(project_dir)
+    if cached and now < cached[1]:
+        path = cached[0]
+        if path is None:
+            return None
+        if os.path.exists(path):
+            return path
+        # cached path vanished — fall through to re-scan
+
+    slug = _project_slug(project_dir)
+    session_dir = os.path.join(CLAUDE_PROJECTS_DIR, slug)
+    try:
+        entries = os.listdir(session_dir)
+    except OSError:
+        _jsonl_path_cache[project_dir] = (None, now + JSONL_CACHE_TTL)
+        return None
+
+    newest = None
+    newest_mtime = -1.0
+    for entry in entries:
+        if not entry.endswith(".jsonl"):
+            continue
+        full = os.path.join(session_dir, entry)
+        try:
+            mt = os.path.getmtime(full)
+        except OSError:
+            continue
+        if mt > newest_mtime:
+            newest_mtime = mt
+            newest = full
+
+    _jsonl_path_cache[project_dir] = (newest, now + JSONL_CACHE_TTL)
+    return newest
+
+
+def read_jsonl_age(project_dir: str) -> int:
+    """Return seconds since the project's newest JSONL file was last
+    written, or -1 if no JSONL exists for this project.
+    """
+    if not project_dir:
+        return -1
+    newest = _find_newest_jsonl(project_dir)
+    if newest is None:
+        return -1
+    try:
+        return int(time.time() - os.path.getmtime(newest))
+    except OSError:
+        return -1
+
+
+# ─── Claude Code hooks.log canary ───
+# Per anthropics/claude-code#16047, an unrotated `~/.claude/hooks.log`
+# can grow to many GB and silently disable all hook firing (every
+# hook write fails). Claude Code does not rotate or cap this file.
+# We surface a warning in `ccm status` and the dashboard footer when
+# the size crosses a threshold so the user can `: > ~/.claude/hooks.log`
+# and recover hook delivery.
+
+CLAUDE_HOOKS_LOG = os.path.expanduser("~/.claude/hooks.log")
+HOOKS_LOG_WARN_BYTES = int(
+    os.environ.get("CCM_HOOKS_LOG_WARN_BYTES", str(100 * 1024 * 1024))  # 100 MB
+)
+
+
+def hooks_log_size() -> int:
+    """Return the byte size of `~/.claude/hooks.log`, or -1 if absent."""
+    try:
+        return os.path.getsize(CLAUDE_HOOKS_LOG)
+    except OSError:
+        return -1
+
+
+def hooks_log_warning() -> str:
+    """Return a one-line warning string when hooks.log is bloated past
+    the threshold, or "" if everything is fine. The message tells the
+    user the exact remediation command — this is a self-service fix.
+    """
+    size = hooks_log_size()
+    if size < HOOKS_LOG_WARN_BYTES:
+        return ""
+    mb = size / (1024 * 1024)
+    return (
+        f"Claude hooks.log is {mb:.0f} MB — hooks may be silently failing. "
+        f"Run `: > ~/.claude/hooks.log` to restore hook delivery (#16047)."
+    )
+
+
 # ─── State detection ───
 
 def find_claude_pid(parent_pid, ps_lines):
@@ -376,6 +512,7 @@ class DetectionContext:
     done_age: int         # now - int(done_flag) (-1 if missing/invalid)
     last_done_ts: int     # @ccm_last_done value
     last_busy_age: int    # now - .busy file mtime (-1 if missing)
+    jsonl_age: int        # now - newest JSONL mtime (-1 if missing)
     now: int              # current unix timestamp
 
 
@@ -431,6 +568,7 @@ class Rule:
     prev_in: Optional[Tuple[str, ...]] = None
     hook_age_lt: Optional[int] = None
     busy_age_lt: Optional[int] = None
+    jsonl_age_lt: Optional[int] = None
     done_valid: Optional[bool] = None
 
     def matches(self, ctx: "DetectionContext") -> bool:
@@ -446,6 +584,9 @@ class Rule:
                 return False
         if self.busy_age_lt is not None:
             if ctx.last_busy_age < 0 or ctx.last_busy_age >= self.busy_age_lt:
+                return False
+        if self.jsonl_age_lt is not None:
+            if ctx.jsonl_age < 0 or ctx.jsonl_age >= self.jsonl_age_lt:
                 return False
         if self.done_valid is True:
             if not ctx.done_flag or ctx.done_age < 0 or ctx.done_age >= DONE_TIMEOUT:
@@ -546,6 +687,22 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         name="hook_busy_idle",
         hook_in=("BUSY",),
         raw_in=("IDLE",),
+        result="BUSY",
+    ),
+    Rule(
+        # JSONL session log shows fresh activity. Independent of hooks
+        # — Claude Code writes records at every conversation turn
+        # boundary (user prompt, assistant message, tool_use,
+        # tool_result), so a fresh mtime is definitive evidence that
+        # something just happened in this session. Used as a positive
+        # BUSY override when raw=IDLE (the v2.1+ UI shows the empty
+        # `❯ ` line above an active turn) and no relevant hook
+        # signal has won above. Pure thinking phases do not update
+        # the file, so this is a positive-only signal — stale JSONL
+        # never implies IDLE.
+        name="jsonl_fresh_activity",
+        raw_in=("IDLE",),
+        jsonl_age_lt=JSONL_FRESH_THRESHOLD,
         result="BUSY",
     ),
     Rule(
@@ -684,6 +841,8 @@ def build_fast_context(prev_state, done_flag, project_dir,
         except ValueError:
             done_age = -1
 
+    jsonl_age = read_jsonl_age(project_dir) if project_dir else -1
+
     return DetectionContext(
         raw=raw,
         hook_state=hook_state,
@@ -694,6 +853,7 @@ def build_fast_context(prev_state, done_flag, project_dir,
         done_age=done_age,
         last_done_ts=0,
         last_busy_age=-1,
+        jsonl_age=jsonl_age,
         now=now,
     )
 
@@ -754,6 +914,8 @@ def build_detection_context(win_target, project_dir, prev_state, done_flag,
         except ValueError:
             done_age = -1
 
+    jsonl_age = read_jsonl_age(project_dir) if project_dir else -1
+
     return DetectionContext(
         raw=raw,
         hook_state=hook_state,
@@ -764,6 +926,7 @@ def build_detection_context(win_target, project_dir, prev_state, done_flag,
         done_age=done_age,
         last_done_ts=last_done_ts,
         last_busy_age=last_busy_age,
+        jsonl_age=jsonl_age,
         now=now,
     )
 
@@ -1269,6 +1432,9 @@ def print_status():
         print(f"{_C_DIM}Hooks: ON{_C_RESET}")
     else:
         print(f"{_C_DIM}Hooks: OFF (run 'ccm setup-hooks' for improved detection){_C_RESET}")
+    warning = hooks_log_warning()
+    if warning:
+        print(f"\033[33m⚠ {warning}\033[0m")
     print()
 
     # Header
