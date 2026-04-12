@@ -161,7 +161,8 @@ This adds hooks to `~/.claude/settings.json`:
 | `PreToolUse` | BUSY | Tool execution starting (solves multi-turn detection gap) |
 | `PostToolUse` | BUSY | Tool execution completed — keeps BUSY held across post-permission gaps |
 | `PostToolUseFailure` | BUSY | Tool execution failed (Claude Code v2.1.101+ split from `PostToolUse`) |
-| `SubagentStart` | BUSY | Subagent spawned (Agent tool) |
+| `SubagentStart` / `SubagentStop` | BUSY | Subagent execution start/end (parent agent still working) |
+| `PreCompact` / `PostCompact` | BUSY | Context compaction is busy work |
 | `Stop` / `StopFailure` | DONE | Claude finished responding |
 | `PermissionRequest` | PERMIT | Tool requires user permission |
 | `Notification` | PERMIT / DONE | Permission prompt shown / idle notification |
@@ -180,7 +181,7 @@ To remove: `ccm remove-hooks`
 | State | Method | Details |
 |-------|--------|---------|
 | **SHELL** | Process check | No `claude` process found among window's child processes |
-| **BUSY** | Hook / Process tree | Hooks: UserPromptSubmit, PreToolUse, SubagentStart. Fallbacks: `claude` has a grandchild process (e.g. `bash → xcodebuild` from the Bash tool) → BUSY even when the v2.1+ UI shows an empty `❯ ` prompt above the running tool. Otherwise: `claude` has any non-MCP child |
+| **BUSY** | Hook / JSONL / Process tree | Primary: UserPromptSubmit / PreToolUse / SubagentStart hooks. Fallbacks (any one wins): (a) the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` was touched within `JSONL_FRESH_THRESHOLD` (5s) — Claude Code appends a record at every conversation turn boundary, so this is positive evidence the session is alive even when hooks are silent ([#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)); (b) `claude` has a grandchild process (e.g. `bash → xcodebuild` from the Bash tool) — works around the v2.1+ UI showing an empty `❯ ` prompt above an active tool; (c) any non-MCP direct child of `claude` |
 | **IDLE** | Process tree | `claude` exists with only direct children (MCP / language servers) and a visible input prompt, with no fresh BUSY hook |
 | **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the v2.1.101+ footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
 | **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |

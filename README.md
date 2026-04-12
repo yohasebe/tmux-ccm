@@ -276,14 +276,20 @@ ccm setup-hooks
 This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **UserPromptSubmit** → BUSY when you submit a prompt (detects text generation)
 - **PreToolUse / PostToolUse / PostToolUseFailure** → BUSY across tool execution (PostToolUseFailure is a Claude Code v2.1.101+ event for tool errors)
-- **SubagentStart** → BUSY when a subagent is spawned
+- **SubagentStart / SubagentStop** → BUSY around subagent execution (the parent agent is still working)
+- **PreCompact / PostCompact** → BUSY (context compaction is busy work)
 - **Stop / StopFailure** → DONE when Claude finishes responding
 - **PermissionRequest** → PERMIT when a tool requires permission
 - **Notification** → PERMIT (permission_prompt) or DONE (idle_prompt)
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
-Without hooks, ccm uses process tree inspection which cannot detect text generation reliably. PERMIT still has a fallback: ccm matches the Claude Code v2.1.101+ permission footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) directly from the visible pane, so permission prompts are caught even when Claude Code stops firing hooks mid-session ([anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047)). Hooks remain recommended for best accuracy.
+ccm has multiple hook-independent fallbacks so detection still works when Claude Code stops firing hooks mid-session ([anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)):
+
+- **JSONL session log heartbeat**: ccm polls the mtime of the newest `~/.claude/projects/<slug>/<sessionId>.jsonl` file. Claude Code appends a record at every conversation turn boundary, so a fresh mtime is positive evidence the session is active.
+- **Process grandchild detection**: A grandchild process under `claude` (e.g. `claude → bash → xcodebuild`) is unambiguous evidence that a foreground tool is running, even if the input prompt is visible (the v2.1+ "ctrl+b ctrl+b to background" UI).
+- **Permission dialog footer match**: ccm recognizes the v2.1.101+ permission footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) directly from the visible pane.
+- **`~/.claude/hooks.log` size canary**: ccm warns in `ccm status` and the dashboard footer when this file exceeds 100 MB — the documented root cause of #16047 is silent hook failure due to log bloat. The fix is `: > ~/.claude/hooks.log`.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 

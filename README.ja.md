@@ -278,14 +278,20 @@ ccm setup-hooks
 `~/.claude/settings.json` にフックが追加され、状態変化を通知します：
 - **UserPromptSubmit** → プロンプト送信時にBUSY（テキスト生成を検出）
 - **PreToolUse / PostToolUse / PostToolUseFailure** → ツール実行中にBUSY（PostToolUseFailure は Claude Code v2.1.101+ のツール失敗イベント）
-- **SubagentStart** → サブエージェント起動時にBUSY
+- **SubagentStart / SubagentStop** → サブエージェント実行中にBUSY（親エージェントは作業継続中）
+- **PreCompact / PostCompact** → コンテキスト圧縮中にBUSY
 - **Stop / StopFailure** → Claude応答完了時にDONE
 - **PermissionRequest** → ツールの許可が必要な時にPERMIT
 - **Notification** → 許可プロンプト表示時にPERMIT（permission_prompt）、アイドル通知時にDONE（idle_prompt）
 - **SessionEnd** → セッション終了時にSHELL（/exit、Ctrl+D等）
 - **PermissionDenied** → autoモードで拒否時にPERMIT（`/permissions`で再試行）
 
-フックなしの場合、ccmはプロセスツリー検査にフォールバックしますが、テキスト生成を確実に検出できません。PERMIT は例外で、ccm は Claude Code v2.1.101+ の許可ダイアログのフッター（`Esc to cancel · Tab to amend · ctrl+e to explain`）をペインから直接検出するため、Claude Code がセッション途中でフック発火を停止しても許可プロンプトは捕捉されます（[anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047)）。検出精度を最大化するにはフックの導入を推奨します。
+ccm は Claude Code がセッション途中でフック発火を停止する既知の不具合（[anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）に備えて、複数のフック非依存フォールバックを実装しています:
+
+- **JSONL セッションログ心拍**: `~/.claude/projects/<slug>/<sessionId>.jsonl` の mtime を監視。Claude Code は会話のターン境界ごとにレコードを追記するため、新鮮な mtime はセッションがアクティブな証拠
+- **プロセス孫検出**: `claude` の孫プロセス（例: `claude → bash → xcodebuild`）が存在すれば、入力プロンプトが見えていてもフォアグラウンドツール実行中とみなして BUSY 判定（v2.1+ の「ctrl+b ctrl+b で background」UI 対応）
+- **許可ダイアログのフッター検出**: v2.1.101+ の許可フッター（`Esc to cancel · Tab to amend · ctrl+e to explain`）をペインから直接検出
+- **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えるとフック書き込みが silent fail するため、`ccm status` とダッシュボードに警告表示。修復: `: > ~/.claude/hooks.log`
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
