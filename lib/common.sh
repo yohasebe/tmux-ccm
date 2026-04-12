@@ -249,6 +249,18 @@ _ccm_strip_hooks() {
                 .hooks.SubagentStart[]? |
                 select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
             ] |
+            .hooks.SubagentStop = [
+                .hooks.SubagentStop[]? |
+                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
+            ] |
+            .hooks.PreCompact = [
+                .hooks.PreCompact[]? |
+                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
+            ] |
+            .hooks.PostCompact = [
+                .hooks.PostCompact[]? |
+                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
+            ] |
             .hooks.PermissionRequest = [
                 .hooks.PermissionRequest[]? |
                 select(.hooks | any(.command | test("on-permission-request\\.sh")) | not)
@@ -272,6 +284,9 @@ _ccm_strip_hooks() {
             if (.hooks.PostToolUse | length) == 0 then del(.hooks.PostToolUse) else . end |
             if (.hooks.PostToolUseFailure | length) == 0 then del(.hooks.PostToolUseFailure) else . end |
             if (.hooks.SubagentStart | length) == 0 then del(.hooks.SubagentStart) else . end |
+            if (.hooks.SubagentStop | length) == 0 then del(.hooks.SubagentStop) else . end |
+            if (.hooks.PreCompact | length) == 0 then del(.hooks.PreCompact) else . end |
+            if (.hooks.PostCompact | length) == 0 then del(.hooks.PostCompact) else . end |
             if (.hooks.PermissionRequest | length) == 0 then del(.hooks.PermissionRequest) else . end |
             if (.hooks.PermissionDenied | length) == 0 then del(.hooks.PermissionDenied) else . end |
             if (.hooks.Notification | length) == 0 then del(.hooks.Notification) else . end |
@@ -302,10 +317,14 @@ ccm_hooks_configured() {
     grep -q 'on-permission-request\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-permission-denied\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-session-end\.sh' "$settings_file" 2>/dev/null || return 1
-    # Event-level check: PostToolUseFailure was added in v2.1.101. If
-    # settings.json pre-dates that addition, force a reinstall so the
-    # new event gets registered.
+    # Event-level checks: PostToolUseFailure (v2.1.101), SubagentStop,
+    # PreCompact, and PostCompact were registered after the initial
+    # script-path layout. If settings.json pre-dates these additions,
+    # force a reinstall so the new events get registered.
     grep -q 'PostToolUseFailure' "$settings_file" 2>/dev/null || return 1
+    grep -q 'SubagentStop' "$settings_file" 2>/dev/null || return 1
+    grep -q 'PreCompact' "$settings_file" 2>/dev/null || return 1
+    grep -q 'PostCompact' "$settings_file" 2>/dev/null || return 1
 }
 
 # Install Claude Code hooks for improved state detection
@@ -364,6 +383,9 @@ ccm_setup_hooks() {
         .hooks.PostToolUse //= [] |
         .hooks.PostToolUseFailure //= [] |
         .hooks.SubagentStart //= [] |
+        .hooks.SubagentStop //= [] |
+        .hooks.PreCompact //= [] |
+        .hooks.PostCompact //= [] |
         .hooks.PermissionRequest //= [] |
         .hooks.PermissionDenied //= [] |
         .hooks.Notification //= [] |
@@ -375,6 +397,9 @@ ccm_setup_hooks() {
         .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.PostToolUseFailure += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.SubagentStart += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
+        .hooks.SubagentStop += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
+        .hooks.PreCompact += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
+        .hooks.PostCompact += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionRequest += [{"hooks": [{"type": "command", "command": $perm_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionDenied += [{"hooks": [{"type": "command", "command": $perm_denied_cmd, "timeout": $timeout}]}] |
         .hooks.Notification += [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
@@ -386,7 +411,8 @@ ccm_setup_hooks() {
     ccm_info "Claude Code hooks installed successfully."
     echo "  Settings: ${settings_file}"
     echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, PostToolUse → BUSY"
-    echo "         PostToolUseFailure → BUSY, SubagentStart → BUSY, Stop/StopFailure → DONE"
+    echo "         PostToolUseFailure → BUSY, SubagentStart/Stop → BUSY, Stop/StopFailure → DONE"
+    echo "         PreCompact/PostCompact → BUSY (compaction is busy work)"
     echo "         Notification → PERMIT/IDLE, PermissionDenied → PERMIT"
     echo "         SessionEnd → SHELL"
     echo ""

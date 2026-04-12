@@ -187,6 +187,45 @@ teardown() {
     [[ "$hook_count" -eq 1 ]]
 }
 
+@test "setup-hooks: registers SubagentStop / PreCompact / PostCompact" {
+    ccm_setup_hooks >/dev/null 2>&1
+    local n
+    for ev in SubagentStop PreCompact PostCompact; do
+        n=$(jq ".hooks.${ev} | length" "${MOCK_DIR}/.claude/settings.json")
+        [[ "$n" -eq 1 ]] || { echo "missing event: $ev"; return 1; }
+    done
+}
+
+@test "hooks-configured: returns false when SubagentStop missing" {
+    ccm_setup_hooks >/dev/null 2>&1
+    jq 'del(.hooks.SubagentStop)' "${MOCK_DIR}/.claude/settings.json" \
+        > "${MOCK_DIR}/.claude/settings.json.tmp"
+    mv "${MOCK_DIR}/.claude/settings.json.tmp" "${MOCK_DIR}/.claude/settings.json"
+    run ccm_hooks_configured
+    [[ "$status" -ne 0 ]]
+}
+
+@test "hooks-configured: returns false when PreCompact missing" {
+    ccm_setup_hooks >/dev/null 2>&1
+    jq 'del(.hooks.PreCompact)' "${MOCK_DIR}/.claude/settings.json" \
+        > "${MOCK_DIR}/.claude/settings.json.tmp"
+    mv "${MOCK_DIR}/.claude/settings.json.tmp" "${MOCK_DIR}/.claude/settings.json"
+    run ccm_hooks_configured
+    [[ "$status" -ne 0 ]]
+}
+
+@test "remove-hooks: strips SubagentStop / PreCompact / PostCompact" {
+    ccm_setup_hooks >/dev/null 2>&1
+    ccm_remove_hooks >/dev/null 2>&1
+    # All ccm-added events should be gone
+    for ev in SubagentStop PreCompact PostCompact PostToolUseFailure; do
+        local present
+        present=$(jq -r "has(\"hooks\") and (.hooks | has(\"${ev}\"))" \
+            "${MOCK_DIR}/.claude/settings.json")
+        [[ "$present" == "false" ]] || { echo "leftover: $ev"; return 1; }
+    done
+}
+
 @test "setup-hooks: skips when already installed" {
     ccm_setup_hooks >/dev/null 2>&1
     run ccm_setup_hooks
