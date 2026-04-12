@@ -366,23 +366,25 @@ class TestDetectPaneState:
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
-    def test_busy_when_grandchild_overrides_visible_prompt(self, mock_tmux):
-        """Tool running (claude → bash → xcodebuild) + visible `❯ ` prompt
-        from the v2.1+ background-tool UI → BUSY (grandchild signal wins)."""
+    def test_idle_when_grandchild_exists_but_prompt_visible(self, mock_tmux):
+        """Leftover server (claude → zsh → ruby) + visible `❯ ` prompt
+        → IDLE at the pane level. The v2.1+ case where `❯ ` appears
+        above a STILL-ACTIVE tool is handled at the window level by
+        hook_busy_idle / jsonl_fresh_activity, not here."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"),
             (200, 100, 100, "claude"),
-            (300, 200, 200, "bash"),               # Bash tool
-            (400, 300, 300, "xcodebuild"),         # subprocess
+            (300, 200, 200, "/bin/zsh"),            # leftover shell
+            (400, 300, 300, "ruby"),                # dev server
         )
         mock_tmux.return_value = (
-            "✳ Doodling… (1m 57s · ↓ 646 tokens)\n"
+            "Task completed.\n"
             "─────\n"
             "❯ \n"
             "─────\n"
             "  ⏵⏵ accept edits on (shift+tab to cycle)"
         )
-        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
     def test_idle_when_only_mcp_children_and_prompt_visible(self, mock_tmux):

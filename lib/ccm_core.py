@@ -436,15 +436,12 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid):
             return "PERMIT"
 
     if has_child:
-        # Foreground tool execution (claude → bash → cmd) leaves a
-        # grandchild in the process tree. When that is the case, the
-        # input-prompt IDLE heuristic does not apply — newer Claude
-        # Code UIs render the empty `❯ ` line above a still-running
-        # tool to advertise ctrl+b ctrl+b backgrounding.
-        if has_grandchildren(claude_pid, ps_lines, own_pgid):
-            return "BUSY"
-        # Otherwise: only direct children → MCP / language servers.
-        # Visible input prompt means user is being asked for input.
+        # Input prompt visible → Claude is waiting for user input.
+        # Even if grandchildren exist (e.g. a dev server started by
+        # a previous Bash tool that is still running), Claude itself
+        # is idle. The v2.1+ case where `❯ ` appears above a STILL-
+        # ACTIVE tool is handled at the window level by hook_busy_idle
+        # and jsonl_fresh_activity rules, not here.
         for line in bottom:
             if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
                 return "IDLE"
