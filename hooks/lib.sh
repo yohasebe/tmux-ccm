@@ -70,6 +70,26 @@ _ccm_instant_permit_icon() {
 _ccm_instant_notify() {
     local state="$1" project="$2" detail="${3:-}"
 
+    local tmp_dir="${TMPDIR:-/tmp}/ccm-${UID}"
+    local marker="${tmp_dir}/hook-notified"
+
+    # Dedup: skip if the same state was already notified within 10 seconds.
+    # Stop and Notification(idle_prompt) both fire DONE a few seconds apart;
+    # without this check the user gets a duplicate notification.
+    if [[ -f "$marker" ]]; then
+        local content prev_ts prev_state now_ts
+        content=$(cat "$marker" 2>/dev/null) || true
+        prev_ts="${content%% *}"
+        prev_state="${content##* }"
+        now_ts=$(date +%s)
+        if [[ "$prev_state" == "$state" ]] && (( now_ts - prev_ts < 10 )) 2>/dev/null; then
+            return 0
+        fi
+    fi
+
+    # Write marker BEFORE sending so a concurrent invocation sees it.
+    printf '%s %s' "$(date +%s)" "$state" > "${marker}" 2>/dev/null
+
     # Check notification setting
     local notify_setting
     notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null)
@@ -84,9 +104,7 @@ _ccm_instant_notify() {
         *) return ;;
     esac
 
-    # Write marker to prevent inject-status from sending duplicate notification
-    local tmp_dir="${TMPDIR:-/tmp}/ccm-${UID}"
-    printf '%s %s' "$(date +%s)" "$state" > "${tmp_dir}/hook-notified" 2>/dev/null
+    # (Marker already written above for both hook-vs-hook and hook-vs-inject dedup.)
 
     # Sound setting
     local sound_setting
