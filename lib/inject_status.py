@@ -13,7 +13,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ccm_core import (
     CCM_ROOT, CCM_TMP_DIR, CCM_SNAPSHOT_DIR,
-    STATE_ICONS, STATE_PRIORITY,
+    DONE_TIMEOUT, STATE_ICONS, STATE_PRIORITY,
     tmux_cmd, tmux_batch, build_project_list, update_window_names,
     auto_exit_idle, periodic_autosave, notify, read_hook_signal,
 )
@@ -284,8 +284,14 @@ def _inject_status_impl():
                 f.write(f"{p.win_target}\t{p.state}\n")
                 prev = prev_states.get(p.win_target, "")
                 if p.state != prev and p.state in ("PERMIT", "DONE"):
-                    # Skip if hook already sent this notification within 5 seconds
-                    if p.state == hook_notified_state and (now - hook_notified_ts) < 5:
+                    # Skip if hook already sent this notification recently.
+                    # The window must be generous enough to cover the worst-
+                    # case gap between hook firing and inject-status running
+                    # (status-interval + build_project_list latency).
+                    # DONE_TIMEOUT (30s) is a safe upper bound: a second
+                    # legitimate DONE for the same project within 30s would
+                    # be suppressed, but rapid-fire DONEs are noise anyway.
+                    if p.state == hook_notified_state and (now - hook_notified_ts) < DONE_TIMEOUT:
                         continue
                     # Read detail from hook signal for PERMIT notifications
                     detail = ""
