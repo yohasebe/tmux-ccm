@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Mode 1 / mode 2 status bar incorrectly bolded multiple windows when projects across different tmux sessions shared the same window index (e.g. window `2` in two sessions both rendered as bold/active). The active-window comparison now uses the full `session:index` target instead of the bare index
+
 ### Added
 - **JSONL session-log activity heartbeat** — A new hook-independent BUSY signal: `read_jsonl_age()` polls the mtime of the newest `~/.claude/projects/<slug>/<sessionId>.jsonl` file. Claude Code appends one record at every conversation turn boundary (user prompt, assistant message, tool_use, tool_result), so a fresh mtime is unambiguous evidence that the session is alive and exchanging records — even when hooks have stopped firing (anthropics/claude-code#16047, #25655). Used as a positive-only signal: a fresh JSONL overrides raw=IDLE to BUSY when no hook signal has won. Pure thinking phases do not update the file, so stale JSONL never implies IDLE. Slug rule matches Claude Code's literal cwd convention (no realpath resolution); verified empirically against active sessions
 - **`~/.claude/hooks.log` bloat canary** — `hooks_log_warning()` surfaces a warning in `ccm status` and the dashboard footer when Claude Code's unrotated hooks log exceeds 100 MB. This is the documented root cause of anthropics/claude-code#16047 — bloated logs silently disable all hook firing, and the only remediation (still missing upstream) is `: > ~/.claude/hooks.log`. The threshold is configurable via `CCM_HOOKS_LOG_WARN_BYTES`

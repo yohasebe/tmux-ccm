@@ -141,15 +141,18 @@ def priority_icon(projects):
     return "≡"
 
 
-def build_detail_entries(projects, with_extras=False, current_win_idx=""):
+def build_detail_entries(projects, with_extras=False, current_win_target=""):
     """Build status bar entries for mode 1/2.
-    current_win_idx: highlight the active window entry.
+    current_win_target: full `session:window_index` of the active
+    window. Compared against `Project.win_target`, not just the
+    index, so that two windows sharing an index across sessions are
+    not both highlighted as active.
     """
     entries = []
     for p in projects:
         color = TMUX_COLORS.get(p.state, TMUX_COLORS["SHELL"])
         icon = STATE_ICONS.get(p.state, "○")
-        is_current = (p.win_idx == current_win_idx)
+        is_current = (p.win_target == current_win_target)
 
         if with_extras:
             # Mode 2: idx:name (branch) [:port]:icon
@@ -316,8 +319,12 @@ def _inject_status_impl():
     ccm_bin = os.path.join(CCM_ROOT, "ccm")
     refresh = f"#({ccm_bin} inject-status 2>/dev/null)"
 
-    # Current window index for highlighting active project in mode 1/2
-    current_win_idx = tmux_cmd("display-message", "-p", "#{window_index}")
+    # Current window target (session:index) for highlighting the active
+    # project in mode 1/2. Indices alone are not unique across sessions,
+    # so we must compare the full target.
+    current_win_target = tmux_cmd(
+        "display-message", "-p", "#{session_name}:#{window_index}"
+    )
 
     if mode == "1":
         # Mode 1: ccm-style window list in status-right (fit as many as possible)
@@ -331,7 +338,7 @@ def _inject_status_impl():
             ("set", "-g", "window-status-current-format", ""),
         )
 
-        entries = build_detail_entries(all_projects, current_win_idx=current_win_idx)
+        entries = build_detail_entries(all_projects, current_win_target=current_win_target)
 
         if not entries:
             new_status = f"#[fg=#666666]≡#[default] {original}{refresh}"
@@ -384,7 +391,7 @@ def _inject_status_impl():
         )
 
         all_projects = scan_active_windows(projects, include_all=True)
-        entries = build_detail_entries(all_projects, with_extras=True, current_win_idx=current_win_idx)
+        entries = build_detail_entries(all_projects, with_extras=True, current_win_target=current_win_target)
 
         if not entries:
             fmt = "#[fill=#3a3a3a]#[fg=#666666,bg=#3a3a3a] ≡ ccm: no projects  "
