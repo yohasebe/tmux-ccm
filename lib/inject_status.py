@@ -276,7 +276,14 @@ def _inject_status_impl():
         pass
     now = int(time.time())
 
-    # Write current states and check for transitions
+    # Write current states and check for transitions.
+    # Polling notifications are only a SAFETY NET for the hook-
+    # triggered instant notification path: they fire when the project's
+    # own hook signal corroborates the state. This prevents late /
+    # spurious notifications that would otherwise fire whenever a
+    # fallback detection rule (jsonl_holds_busy releasing, capture-
+    # pane footer match, etc.) derives a PERMIT/DONE transition
+    # long after the actual event — timings that never match reality.
     try:
         tmp = notify_cache + ".tmp"
         with open(tmp, "w") as f:
@@ -284,21 +291,24 @@ def _inject_status_impl():
                 f.write(f"{p.win_target}\t{p.state}\n")
                 prev = prev_states.get(p.win_target, "")
                 if p.state != prev and p.state in ("PERMIT", "DONE"):
-                    # Skip if hook already sent this notification recently.
-                    # The window must be generous enough to cover the worst-
-                    # case gap between hook firing and inject-status running
-                    # (status-interval + build_project_list latency).
-                    # DONE_TIMEOUT (30s) is a safe upper bound: a second
-                    # legitimate DONE for the same project within 30s would
-                    # be suppressed, but rapid-fire DONEs are noise anyway.
+                    # Global dedup: if the hook instant-notify path already
+                    # sent this state recently, skip.
                     if p.state == hook_notified_state and (now - hook_notified_ts) < DONE_TIMEOUT:
                         continue
-                    # Read detail from hook signal for PERMIT notifications
-                    detail = ""
-                    if p.state == "PERMIT" and p.dir:
-                        hook = read_hook_signal(p.dir)
-                        if hook and hook[1] == "PERMIT":
-                            detail = hook[2]
+                    # Per-project corroboration: only fire if the hook
+                    # signal for THIS project matches the state and is
+                    # recent. Without this, fallback-derived transitions
+                    # would produce notifications at lag-adjusted times
+                    # that do not match any real event.
+                    hook = read_hook_signal(p.dir) if p.dir else None
+                    if not hook:
+                        continue
+                    hook_ts, hook_st, hook_detail = hook
+                    if hook_st != p.state:
+                        continue
+                    if (now - hook_ts) >= DONE_TIMEOUT:
+                        continue
+                    detail = hook_detail if p.state == "PERMIT" else ""
                     notify(p.state, p.name, detail)
         os.replace(tmp, notify_cache)
     except OSError:
