@@ -37,7 +37,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 - [TPM](https://github.com/tmux-plugins/tpm)（プラグインインストール用。手動インストールも可）
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.101 以上** — それより古いバージョンは未知のフックイベント名を含む `settings.json` 全体をサイレントに無視する仕様のため、Claude Code がフック名を削除/変更した場合に ccm のフックがすべて無効化される可能性があります
 
 ## インストール
 

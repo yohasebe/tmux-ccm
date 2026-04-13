@@ -37,7 +37,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 - [TPM](https://github.com/tmux-plugins/tpm) (for plugin installation; or use manual install)
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.101 or later** — earlier versions silently reject the entire `settings.json` when any hook event name is unknown, which can disable all ccm hooks if Claude Code drops a hook name ccm has registered
 
 ## Installation
 
