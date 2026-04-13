@@ -238,6 +238,134 @@ class TestHooksLogWarning:
         assert ": > ~/.claude/hooks.log" in msg
 
 
+# ─── disableAllHooks canary ───
+
+class TestDisableAllHooksWarning:
+    def test_no_settings_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(tmp_path / "missing.json"))
+        assert ccm_core.disable_all_hooks_warning() == ""
+
+    def test_setting_absent(self, tmp_path, monkeypatch):
+        f = tmp_path / "settings.json"
+        f.write_text('{"other": "value"}')
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        assert ccm_core.disable_all_hooks_warning() == ""
+
+    def test_setting_false(self, tmp_path, monkeypatch):
+        f = tmp_path / "settings.json"
+        f.write_text('{"disableAllHooks": false}')
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        assert ccm_core.disable_all_hooks_warning() == ""
+
+    def test_setting_true_returns_warning(self, tmp_path, monkeypatch):
+        f = tmp_path / "settings.json"
+        f.write_text('{"disableAllHooks": true}')
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        msg = ccm_core.disable_all_hooks_warning()
+        assert "disableAllHooks" in msg
+        assert "settings.json" in msg
+
+    def test_malformed_json(self, tmp_path, monkeypatch):
+        f = tmp_path / "settings.json"
+        f.write_text("not json")
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        assert ccm_core.disable_all_hooks_warning() == ""
+
+
+# ─── Runtime session info (~/.claude/sessions/<pid>.json) ───
+
+class TestReadSessionInfo:
+    def test_none_when_no_pid(self):
+        assert ccm_core.read_session_info("") is None
+        assert ccm_core.read_session_info(None) is None
+
+    def test_reads_session_json(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        (tmp_path / "12345.json").write_text(
+            '{"pid":12345,"sessionId":"abc-def","cwd":"/tmp/proj",'
+            '"startedAt":1776048000000,"kind":"interactive","entrypoint":"cli"}'
+        )
+        info = ccm_core.read_session_info("12345")
+        assert info["sessionId"] == "abc-def"
+        assert info["cwd"] == "/tmp/proj"
+        assert info["kind"] == "interactive"
+
+    def test_none_when_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        assert ccm_core.read_session_info("99999") is None
+
+    def test_none_on_malformed_json(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        (tmp_path / "1.json").write_text("not json")
+        assert ccm_core.read_session_info("1") is None
+
+
+class TestJsonlFromSessionInfo:
+    def test_resolves_exact_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
+        (tmp_path / "sessions").mkdir()
+        (tmp_path / "sessions" / "500.json").write_text(
+            '{"pid":500,"sessionId":"s-1","cwd":"/x/y","kind":"interactive"}'
+        )
+        slug_dir = tmp_path / "projects" / "-x-y"
+        slug_dir.mkdir(parents=True)
+        expected = slug_dir / "s-1.jsonl"
+        expected.write_text("{}\n")
+
+        path = ccm_core._jsonl_from_session_info("500")
+        assert path == str(expected)
+
+    def test_returns_none_for_headless_session(self, tmp_path, monkeypatch):
+        """kind='cli' (headless -p mode) should be skipped — ccm tracks
+        only interactive sessions."""
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        (tmp_path / "600.json").write_text(
+            '{"pid":600,"sessionId":"s-2","cwd":"/a/b","kind":"cli"}'
+        )
+        assert ccm_core._jsonl_from_session_info("600") is None
+
+    def test_returns_none_when_jsonl_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
+        (tmp_path / "sessions").mkdir()
+        (tmp_path / "sessions" / "700.json").write_text(
+            '{"pid":700,"sessionId":"s-3","cwd":"/p/q","kind":"interactive"}'
+        )
+        # projects dir empty — no matching jsonl
+        assert ccm_core._jsonl_from_session_info("700") is None
+
+    def test_age_uses_session_info_path(self, tmp_path, monkeypatch):
+        """read_jsonl_age prefers the session-info resolution when
+        claude_pid is provided, even if the slug-based lookup would
+        find a different newest file."""
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
+        ccm_core._jsonl_path_cache.clear()
+        (tmp_path / "sessions").mkdir()
+        (tmp_path / "sessions" / "800.json").write_text(
+            '{"pid":800,"sessionId":"active","cwd":"/w/x","kind":"interactive"}'
+        )
+        slug_dir = tmp_path / "projects" / "-w-x"
+        slug_dir.mkdir(parents=True)
+        active = slug_dir / "active.jsonl"
+        other = slug_dir / "other.jsonl"
+        active.write_text("{}\n")
+        other.write_text("{}\n")
+        now = time.time()
+        os.utime(active, (now - 10, now - 10))
+        os.utime(other, (now - 1, now - 1))  # "newer" by mtime but wrong session
+
+        # With pid: picks active.jsonl, age ≈10
+        age = ccm_core.read_jsonl_age("/w/x", claude_pid="800")
+        assert 9 <= age <= 12
+
+        ccm_core._jsonl_path_cache.clear()
+        # Without pid: slug-based scan picks the newest by mtime (other.jsonl)
+        age2 = ccm_core.read_jsonl_age("/w/x")
+        assert age2 <= 2
+
+
 # ─── detect_pane_state ───
 
 class TestDetectPaneState:

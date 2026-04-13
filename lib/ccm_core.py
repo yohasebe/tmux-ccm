@@ -245,11 +245,39 @@ def read_hook_signal(project_dir):
 # resolution), so we must NOT resolve symlinks here.
 
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+CLAUDE_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 JSONL_CACHE_TTL = int(os.environ.get("CCM_JSONL_CACHE_TTL", "60"))
 
 # In-process cache: project_dir → (newest_jsonl_path, expiry_unixtime).
 # Path is re-discovered on cache expiry or when the cached file is gone.
 _jsonl_path_cache: dict = {}
+
+
+def read_session_info(claude_pid):
+    """Read the Claude Code runtime session file for a pid.
+
+    Claude Code writes `~/.claude/sessions/{pid}.json` at session start
+    with fields: pid, sessionId, cwd, startedAt, kind, entrypoint.
+    This is the authoritative source for mapping a running Claude
+    process to its session id and recorded cwd — no slug guessing,
+    no symlink / worktree edge cases.
+
+    Returns a dict on success, or None if the file is missing or
+    malformed. Callers should gracefully fall back to slug-based
+    discovery when this returns None (older Claude Code versions,
+    sandboxed execution, etc.).
+    """
+    if not claude_pid:
+        return None
+    path = os.path.join(CLAUDE_SESSIONS_DIR, f"{claude_pid}.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 def _project_slug(project_dir: str) -> str:
@@ -262,12 +290,49 @@ def _project_slug(project_dir: str) -> str:
     return expanded.replace("/", "-")
 
 
-def _find_newest_jsonl(project_dir: str):
+def _jsonl_from_session_info(claude_pid):
+    """Resolve the exact JSONL path via ~/.claude/sessions/{pid}.json.
+
+    Returns the path to the session's JSONL file, or None if the
+    runtime session file is missing or does not point at an existing
+    JSONL. Skips non-interactive sessions (e.g. `claude -p` headless
+    runs) — they are not user-facing and ccm should ignore them.
+    """
+    info = read_session_info(claude_pid)
+    if not info:
+        return None
+    if info.get("kind") != "interactive":
+        return None
+    session_id = info.get("sessionId")
+    cwd = info.get("cwd")
+    if not session_id or not cwd:
+        return None
+    slug = cwd.replace("/", "-")
+    path = os.path.join(CLAUDE_PROJECTS_DIR, slug, f"{session_id}.jsonl")
+    return path if os.path.exists(path) else None
+
+
+def _find_newest_jsonl(project_dir: str, claude_pid=None):
     """Return the path to the newest *.jsonl file for this project,
-    or None if there is none. Result is cached for JSONL_CACHE_TTL
-    seconds; the file's mtime is read live each call.
+    or None if there is none.
+
+    Prefers the authoritative mapping via `~/.claude/sessions/{pid}.json`
+    when claude_pid is provided and the runtime session file exists.
+    Falls back to slug-based directory scanning for older Claude Code
+    versions or when the pid mapping cannot be resolved.
+
+    Result is cached for JSONL_CACHE_TTL seconds; the file's mtime is
+    read live each call.
     """
     now = time.time()
+
+    # Fast path: runtime session file gives us the exact JSONL.
+    if claude_pid:
+        exact = _jsonl_from_session_info(claude_pid)
+        if exact:
+            _jsonl_path_cache[project_dir] = (exact, now + JSONL_CACHE_TTL)
+            return exact
+
     cached = _jsonl_path_cache.get(project_dir)
     if cached and now < cached[1]:
         path = cached[0]
@@ -303,13 +368,16 @@ def _find_newest_jsonl(project_dir: str):
     return newest
 
 
-def read_jsonl_age(project_dir: str) -> int:
+def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
     """Return seconds since the project's newest JSONL file was last
     written, or -1 if no JSONL exists for this project.
+
+    When claude_pid is provided, the exact session file is resolved
+    via `~/.claude/sessions/{pid}.json` (authoritative, no slug guess).
     """
     if not project_dir:
         return -1
-    newest = _find_newest_jsonl(project_dir)
+    newest = _find_newest_jsonl(project_dir, claude_pid=claude_pid)
     if newest is None:
         return -1
     try:
@@ -353,6 +421,46 @@ def hooks_log_warning() -> str:
         f"Claude hooks.log is {mb:.0f} MB — hooks may be silently failing. "
         f"Run `: > ~/.claude/hooks.log` to restore hook delivery (#16047)."
     )
+
+
+# ─── Claude Code global settings canary ───
+# Detect configuration flags in ~/.claude/settings.json that silently
+# disable ccm's fast-path signals. If the user sets these, state
+# detection degrades without any obvious error — we surface a warning
+# so the cause is discoverable.
+
+CLAUDE_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")
+
+
+def _read_claude_settings():
+    try:
+        with open(CLAUDE_SETTINGS_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def disable_all_hooks_warning() -> str:
+    """Return a warning string if `disableAllHooks: true` is set in
+    ~/.claude/settings.json, otherwise "".
+
+    Per Claude Code v2.1.104 docs, this setting disables ALL hooks AND
+    any custom statusLine — ccm's entire fast-path signal goes dark
+    with no error. Same class of silent failure as the hooks.log
+    bloat canary.
+    """
+    data = _read_claude_settings()
+    if not data:
+        return ""
+    if data.get("disableAllHooks") is True:
+        return (
+            "Claude Code `disableAllHooks: true` is set in "
+            "~/.claude/settings.json — ccm state detection will fall "
+            "back to JSONL polling and process tree only. "
+            "Remove the setting to restore real-time hook signals."
+        )
+    return ""
 
 
 # ─── State detection ───
@@ -903,6 +1011,18 @@ def build_detection_context(win_target, project_dir, prev_state, done_flag,
     now = int(time.time())
     raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid)
 
+    # Find the window's primary claude_pid (first pane that hosts one).
+    # Used to resolve the exact JSONL path via the runtime session file
+    # at ~/.claude/sessions/{pid}.json.
+    claude_pid = None
+    for wt, pane_pid, _pane_id in panes_cache:
+        if wt != win_target:
+            continue
+        cp = find_claude_pid(pane_pid, ps_lines)
+        if cp:
+            claude_pid = cp
+            break
+
     hook_state = ""
     hook_ts = 0
     hook_age = -1
@@ -935,7 +1055,7 @@ def build_detection_context(win_target, project_dir, prev_state, done_flag,
         except ValueError:
             done_age = -1
 
-    jsonl_age = read_jsonl_age(project_dir) if project_dir else -1
+    jsonl_age = read_jsonl_age(project_dir, claude_pid=claude_pid) if project_dir else -1
 
     return DetectionContext(
         raw=raw,
@@ -1456,6 +1576,9 @@ def print_status():
     warning = hooks_log_warning()
     if warning:
         print(f"\033[33m⚠ {warning}\033[0m")
+    disable_warning = disable_all_hooks_warning()
+    if disable_warning:
+        print(f"\033[33m⚠ {disable_warning}\033[0m")
     print()
 
     # Header
