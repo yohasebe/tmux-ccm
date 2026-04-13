@@ -42,6 +42,14 @@ HOOK_FRESH_THRESHOLD = 2
 # Used as a hook-independent BUSY signal when the visible pane suggests
 # IDLE but Claude has just exchanged a record.
 JSONL_FRESH_THRESHOLD = int(os.environ.get("CCM_JSONL_FRESH_THRESHOLD", "5"))
+# Longer JSONL window used to HOLD an already-BUSY state during a
+# long thinking phase. Claude writes a record at every tool turn
+# boundary, so a project that last wrote within this window is most
+# likely still mid-turn (thinking or tool execution). Prevents
+# fallback_busy_to_done from demoting the state to DONE during
+# silent hook outages (anthropics/claude-code#25655) — the pure
+# thinking case the fresh-activity rule cannot cover.
+JSONL_ACTIVE_THRESHOLD = int(os.environ.get("CCM_JSONL_ACTIVE_THRESHOLD", "120"))
 # Minimum seconds before showing DONE after Stop hook fires.
 # Suppresses false DONE at multi-turn boundaries where Stop fires
 # between tool executions and the next turn starts within seconds.
@@ -700,6 +708,22 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         name="jsonl_fresh_activity",
         raw_in=("IDLE",),
         jsonl_age_lt=JSONL_FRESH_THRESHOLD,
+        result="BUSY",
+    ),
+    Rule(
+        # Longer JSONL window used to HOLD an already-BUSY state
+        # through long thinking phases when hooks have gone silent
+        # (anthropics/claude-code#25655). If the session last wrote
+        # a record within JSONL_ACTIVE_THRESHOLD (default 120s) AND
+        # we were previously tracking BUSY, trust that we are still
+        # mid-turn and do not let fallback_busy_to_done demote to
+        # DONE. Distinct from jsonl_fresh_activity because it only
+        # suppresses a BUSY→DONE transition; it does not promote
+        # IDLE to BUSY on its own.
+        name="jsonl_holds_busy",
+        raw_in=("IDLE",),
+        prev_in=("BUSY",),
+        jsonl_age_lt=JSONL_ACTIVE_THRESHOLD,
         result="BUSY",
     ),
     Rule(

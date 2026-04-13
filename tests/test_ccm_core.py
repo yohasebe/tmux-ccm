@@ -968,6 +968,46 @@ class TestEvaluateRules:
         assert rule.name == "raw_not_idle_clear"
         assert state == "BUSY"
 
+    def test_jsonl_holds_busy_through_thinking_gap(self):
+        """Long thinking phase + hook silent + JSONL within active window
+        + prev=BUSY → hold BUSY, do not fall through to fallback_busy_to_done.
+
+        Covers the teaching-project scenario: Claude is thinking for ~30-60s,
+        no tool calls in that gap, hooks stopped firing after an earlier
+        PermissionRequest (#25655), but the session JSONL was written
+        within the last couple of minutes when the last tool returned.
+        """
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                prev_state="BUSY",
+                jsonl_age=45,  # past the 5s fresh threshold
+            )
+        )
+        assert (rule.name, state) == ("jsonl_holds_busy", "BUSY")
+
+    def test_jsonl_hold_stops_at_threshold(self):
+        """Beyond JSONL_ACTIVE_THRESHOLD, the hold rule releases and
+        fallback_busy_to_done fires normally."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                prev_state="BUSY",
+                jsonl_age=ccm_core.JSONL_ACTIVE_THRESHOLD + 10,
+            )
+        )
+        assert (rule.name, state) == ("fallback_busy_to_done", "DONE")
+
+    def test_jsonl_hold_requires_prev_busy(self):
+        """The hold is scoped to BUSY continuation only — it should not
+        promote an IDLE session to BUSY just because a record was
+        written a minute ago."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", prev_state="IDLE", jsonl_age=60)
+        )
+        # Should NOT match jsonl_holds_busy (prev != BUSY)
+        assert rule.name != "jsonl_holds_busy"
+
     # --- fallback (no hooks) ---
 
     def test_fallback_busy_to_done(self):
