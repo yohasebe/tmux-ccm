@@ -23,7 +23,7 @@ from ccm_core import (
     tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
     read_cache_file, build_project_list, format_elapsed, format_dir,
     hooks_configured, hooks_log_warning, disable_all_hooks_warning,
-    save_tmux_conf_setting,
+    managed_hooks_only_warning, save_tmux_conf_setting,
     cmd_add, cmd_remove, cmd_unregister, cmd_register,
     cmd_snapshot_save, cmd_snapshot_load,
     CCMError, raise_on_die,
@@ -419,6 +419,12 @@ class Dashboard:
             disable_warning = disable_all_hooks_warning()
             if disable_warning:
                 self._addstr(stdscr, row, 2, "⚠ " + disable_warning, curses.color_pair(C_YELLOW))
+                row += 1
+
+            # allowManagedHooksOnly canary — blocks all user hooks
+            managed_warning = managed_hooks_only_warning()
+            if managed_warning:
+                self._addstr(stdscr, row, 2, "⚠ " + managed_warning, curses.color_pair(C_YELLOW))
                 row += 1
 
             # Project list

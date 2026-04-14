@@ -272,6 +272,42 @@ class TestDisableAllHooksWarning:
         assert ccm_core.disable_all_hooks_warning() == ""
 
 
+# ─── allowManagedHooksOnly canary (Claude Code v2.1.107) ───
+
+class TestManagedHooksOnlyWarning:
+    def test_no_settings_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(tmp_path / "missing.json"))
+        assert ccm_core.managed_hooks_only_warning() == ""
+
+    def test_setting_absent(self, tmp_path, monkeypatch):
+        f = tmp_path / "settings.json"
+        f.write_text('{"other": "value"}')
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        assert ccm_core.managed_hooks_only_warning() == ""
+
+    def test_setting_false(self, tmp_path, monkeypatch):
+        f = tmp_path / "settings.json"
+        f.write_text('{"allowManagedHooksOnly": false}')
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        assert ccm_core.managed_hooks_only_warning() == ""
+
+    def test_setting_true_returns_warning(self, tmp_path, monkeypatch):
+        f = tmp_path / "settings.json"
+        f.write_text('{"allowManagedHooksOnly": true}')
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        msg = ccm_core.managed_hooks_only_warning()
+        assert "allowManagedHooksOnly" in msg
+        assert "user-scope hooks" in msg
+
+    def test_independent_from_disable_all_hooks(self, tmp_path, monkeypatch):
+        """Both canaries can fire independently or together."""
+        f = tmp_path / "settings.json"
+        f.write_text('{"allowManagedHooksOnly": true, "disableAllHooks": true}')
+        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        assert ccm_core.managed_hooks_only_warning() != ""
+        assert ccm_core.disable_all_hooks_warning() != ""
+
+
 # ─── Runtime session info (~/.claude/sessions/<pid>.json) ───
 
 class TestReadSessionInfo:

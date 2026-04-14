@@ -463,6 +463,35 @@ def disable_all_hooks_warning() -> str:
     return ""
 
 
+def managed_hooks_only_warning() -> str:
+    """Return a warning string if `allowManagedHooksOnly: true` is set
+    in ~/.claude/settings.json, otherwise "".
+
+    Per Claude Code v2.1.107 docs, when this is set in *managed*
+    settings, every user-scope hook (which is exactly where ccm
+    installs all 14 of its hooks) is silently blocked with no error.
+    The result looks identical to a broken Claude Code install from
+    ccm's perspective: no hooks fire, ever.
+
+    We check the user-level settings file for symmetry with the
+    `disableAllHooks` canary — if a user accidentally sets this in
+    their own file (or a managed file is symlinked there), we want
+    to surface it. Detecting a separate enterprise/managed-policy
+    file path is out of scope for this canary.
+    """
+    data = _read_claude_settings()
+    if not data:
+        return ""
+    if data.get("allowManagedHooksOnly") is True:
+        return (
+            "Claude Code `allowManagedHooksOnly: true` is set — all "
+            "user-scope hooks (including every ccm hook) are blocked. "
+            "Remove the setting or move ccm hooks to managed scope to "
+            "restore real-time signals."
+        )
+    return ""
+
+
 # ─── State detection ───
 
 def find_claude_pid(parent_pid, ps_lines):
@@ -1579,6 +1608,9 @@ def print_status():
     disable_warning = disable_all_hooks_warning()
     if disable_warning:
         print(f"\033[33m⚠ {disable_warning}\033[0m")
+    managed_warning = managed_hooks_only_warning()
+    if managed_warning:
+        print(f"\033[33m⚠ {managed_warning}\033[0m")
     print()
 
     # Header
