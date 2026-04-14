@@ -264,6 +264,10 @@ class TestDisableAllHooksWarning:
         msg = ccm_core.disable_all_hooks_warning()
         assert "disableAllHooks" in msg
         assert "settings.json" in msg
+        # v2.1.108 docs clarified that disableAllHooks also kills the
+        # custom statusLine. The warning must tell the user so they
+        # can correlate a missing embedded statusLine with this flag.
+        assert "statusLine" in msg
 
     def test_malformed_json(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.json"

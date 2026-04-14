@@ -466,8 +466,10 @@ def disable_all_hooks_warning() -> str:
     if data.get("disableAllHooks") is True:
         return (
             "Claude Code `disableAllHooks: true` is set in "
-            "~/.claude/settings.json — ccm state detection will fall "
-            "back to JSONL polling and process tree only. "
+            "~/.claude/settings.json — this disables ALL hooks AND any "
+            "custom `statusLine` command. ccm state detection falls "
+            "back to JSONL polling and process tree only, and any "
+            "embedded statusLine you configured will stop rendering. "
             "Remove the setting to restore real-time hook signals."
         )
     return ""
