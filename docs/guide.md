@@ -165,7 +165,7 @@ This adds hooks to `~/.claude/settings.json`:
 | `PreCompact` / `PostCompact` | BUSY | Context compaction is busy work |
 | `Stop` / `StopFailure` | DONE | Claude finished responding |
 | `PermissionRequest` | PERMIT | Tool requires user permission |
-| `Notification` | PERMIT / DONE | Permission prompt shown / idle notification |
+| `Notification` | PERMIT / DONE | Permission prompt or MCP elicitation dialog shown / idle notification (matchers: `permission_prompt`, `elicitation_dialog`, `idle_prompt`) |
 | `SessionEnd` | SHELL | Claude Code session ended (/exit, Ctrl+D, etc.) |
 | `PermissionDenied` | PERMIT | Auto mode denied an action (check `/permissions` to retry) |
 

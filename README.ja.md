@@ -282,7 +282,7 @@ ccm setup-hooks
 - **PreCompact / PostCompact** → コンテキスト圧縮中にBUSY
 - **Stop / StopFailure** → Claude応答完了時にDONE
 - **PermissionRequest** → ツールの許可が必要な時にPERMIT
-- **Notification** → 許可プロンプト表示時にPERMIT（permission_prompt）、アイドル通知時にDONE（idle_prompt）
+- **Notification** → 許可プロンプト/MCP elicitation 表示時にPERMIT（permission_prompt / elicitation_dialog）、アイドル通知時にDONE（idle_prompt）
 - **SessionEnd** → セッション終了時にSHELL（/exit、Ctrl+D等）
 - **PermissionDenied** → autoモードで拒否時にPERMIT（`/permissions`で再試行）
 

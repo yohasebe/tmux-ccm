@@ -165,7 +165,7 @@ ccm setup-hooks
 | `PreCompact` / `PostCompact` | BUSY | コンテキスト圧縮はビジー作業 |
 | `Stop` / `StopFailure` | DONE | Claude応答完了 |
 | `PermissionRequest` | PERMIT | ツールがユーザーの許可を要求 |
-| `Notification` | PERMIT / DONE | 許可プロンプト表示 / アイドル通知 |
+| `Notification` | PERMIT / DONE | 許可プロンプトまたは MCP elicitation ダイアログ表示 / アイドル通知（matcher: `permission_prompt`, `elicitation_dialog`, `idle_prompt`）|
 | `SessionEnd` | SHELL | セッション終了（/exit、Ctrl+D等） |
 | `PermissionDenied` | PERMIT | autoモードでの拒否（`/permissions`で再試行） |
 

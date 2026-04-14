@@ -280,7 +280,7 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **PreCompact / PostCompact** → BUSY (context compaction is busy work)
 - **Stop / StopFailure** → DONE when Claude finishes responding
 - **PermissionRequest** → PERMIT when a tool requires permission
-- **Notification** → PERMIT (permission_prompt) or DONE (idle_prompt)
+- **Notification** → PERMIT (permission_prompt / elicitation_dialog) or DONE (idle_prompt)
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
