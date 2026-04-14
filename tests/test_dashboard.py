@@ -6,7 +6,22 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+import dashboard  # noqa: E402 — verify module imports cleanly
 from dashboard import Dashboard
+
+
+# ─── Module imports ───
+
+class TestDashboardImports:
+    """Smoke test: dashboard.py must import all the canary helpers
+    it surfaces in the footer. Catches typos in the `from ccm_core
+    import ...` block."""
+
+    def test_canary_helpers_imported(self):
+        assert hasattr(dashboard, "hooks_log_warning")
+        assert hasattr(dashboard, "disable_all_hooks_warning")
+        assert hasattr(dashboard, "managed_hooks_only_warning")
+        assert hasattr(dashboard, "hooks_configured")
 
 
 # ─── _strip_last_grapheme ───

@@ -449,6 +449,16 @@ def disable_all_hooks_warning() -> str:
     any custom statusLine — ccm's entire fast-path signal goes dark
     with no error. Same class of silent failure as the hooks.log
     bloat canary.
+
+    Scope: only the user-level file `~/.claude/settings.json` is
+    checked. Project-scope settings (`<project>/.claude/settings.json`)
+    and enterprise managed settings (e.g.
+    `/Library/Application Support/ClaudeCode/managed-settings.json`
+    on macOS) are NOT inspected. The setting is also valid in those
+    locations, so a managed-policy or per-project disable will not
+    surface a warning here. Adding cross-scope checks would require
+    walking Claude Code's full settings precedence chain, which is
+    out of scope for this canary.
     """
     data = _read_claude_settings()
     if not data:
@@ -473,11 +483,21 @@ def managed_hooks_only_warning() -> str:
     The result looks identical to a broken Claude Code install from
     ccm's perspective: no hooks fire, ever.
 
-    We check the user-level settings file for symmetry with the
-    `disableAllHooks` canary — if a user accidentally sets this in
-    their own file (or a managed file is symlinked there), we want
-    to surface it. Detecting a separate enterprise/managed-policy
-    file path is out of scope for this canary.
+    Scope (important caveat): only the user-level file
+    `~/.claude/settings.json` is checked. The setting is most
+    commonly placed in an enterprise-managed settings file (e.g.
+    `/Library/Application Support/ClaudeCode/managed-settings.json`
+    on macOS), which is the actual deployment scenario this flag
+    targets. ccm does NOT walk Claude Code's settings precedence
+    chain — that path varies by OS and is not stably documented.
+
+    This canary therefore catches:
+      - a user who set the flag in their own file by mistake or test
+      - a managed file symlinked to the user-scope path
+    But it does NOT catch the typical enterprise deployment where
+    the flag lives in a separate managed file. Users in managed
+    enterprise environments should not expect a warning here even
+    when ccm hooks are silently disabled.
     """
     data = _read_claude_settings()
     if not data:

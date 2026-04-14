@@ -325,8 +325,13 @@ ccm_hooks_configured() {
     grep -q 'SubagentStop' "$settings_file" 2>/dev/null || return 1
     grep -q 'PreCompact' "$settings_file" 2>/dev/null || return 1
     grep -q 'PostCompact' "$settings_file" 2>/dev/null || return 1
-    # v2.1.107 added the elicitation_dialog Notification matcher
-    grep -q 'elicitation_dialog' "$settings_file" 2>/dev/null || return 1
+    # v2.1.107 added the elicitation_dialog Notification matcher.
+    # Scope the check to a `"matcher": "elicitation_dialog"` literal
+    # rather than a bare string so we cannot false-positive on the
+    # word appearing elsewhere in the file (in a comment-like field
+    # description, in someone else's hook payload, etc.).
+    grep -qE '"matcher"[[:space:]]*:[[:space:]]*"elicitation_dialog"' \
+        "$settings_file" 2>/dev/null || return 1
 }
 
 # Install Claude Code hooks for improved state detection

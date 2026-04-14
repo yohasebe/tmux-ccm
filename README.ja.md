@@ -37,7 +37,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 - [TPM](https://github.com/tmux-plugins/tpm)（プラグインインストール用。手動インストールも可）
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.101 以上** — それより古いバージョンは未知のフックイベント名を含む `settings.json` 全体をサイレントに無視する仕様のため、Claude Code がフック名を削除/変更した場合に ccm のフックがすべて無効化される可能性があります
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107 以上** — ccm は v2.1.107 で追加された `elicitation_dialog` Notification matcher(MCP elicitation 用)を登録します。v2.1.101–v2.1.106 は未知のマッチャー値を含むフックセクション全体を拒否する可能性があり、ccm のフックが無効化される恐れがあります(v2.1.101 の "settings resilience" は未知のフック*イベント名*に対する安全性のみ確認されており、既知のイベント内の未知のマッチャー*値*には保証がありません)
 
 ## インストール
 

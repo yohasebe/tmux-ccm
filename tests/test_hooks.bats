@@ -243,6 +243,46 @@ teardown() {
     [[ "$status" -ne 0 ]]
 }
 
+@test "on-notification.sh: elicitation_dialog writes PERMIT signal" {
+    # End-to-end: feed the actual hook script the JSON Claude Code would
+    # send for an elicitation event, and verify the signal file content.
+    local hook_dir="${MOCK_DIR}/hooks-tap"
+    mkdir -p "$hook_dir"
+    TMPDIR="${MOCK_DIR}" \
+        bash -c "cd '${CCM_ROOT}' && \
+                 export TMPDIR='${MOCK_DIR}' && \
+                 mkdir -p \"\$TMPDIR/ccm-\$UID/hooks\" && \
+                 echo '{\"cwd\":\"/tmp/test-proj\",\"notification_type\":\"elicitation_dialog\"}' \
+                     | hooks/on-notification.sh"
+
+    # Compute the expected signal file path
+    local cwd="/tmp/test-proj"
+    local key
+    key=$(printf '%s' "$cwd" | md5)
+    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${key}"
+    [[ -f "$signal_file" ]] || { echo "signal file not written: $signal_file"; return 1; }
+    grep -q ' PERMIT' "$signal_file" || { echo "expected PERMIT in signal file"; cat "$signal_file"; return 1; }
+}
+
+@test "on-notification.sh: permission_prompt writes PERMIT signal" {
+    # Regression: ensure the existing matcher path still works after
+    # the elicitation_dialog addition.
+    local hook_dir="${MOCK_DIR}/hooks-tap2"
+    mkdir -p "$hook_dir"
+    TMPDIR="${MOCK_DIR}" \
+        bash -c "cd '${CCM_ROOT}' && \
+                 export TMPDIR='${MOCK_DIR}' && \
+                 mkdir -p \"\$TMPDIR/ccm-\$UID/hooks\" && \
+                 echo '{\"cwd\":\"/tmp/test-proj2\",\"notification_type\":\"permission_prompt\"}' \
+                     | hooks/on-notification.sh"
+
+    local key
+    key=$(printf '%s' "/tmp/test-proj2" | md5)
+    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${key}"
+    [[ -f "$signal_file" ]] || { echo "signal file not written"; return 1; }
+    grep -q ' PERMIT' "$signal_file" || { echo "expected PERMIT"; return 1; }
+}
+
 @test "setup-hooks: skips when already installed" {
     ccm_setup_hooks >/dev/null 2>&1
     run ccm_setup_hooks
