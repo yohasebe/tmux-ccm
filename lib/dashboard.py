@@ -708,6 +708,12 @@ class Dashboard:
         if p.dir and not os.path.isdir(os.path.expanduser(p.dir)):
             self._show_message(stdscr, f"Directory not found: {p.dir}", 3)
             return ""
+        # Ensure the target pane is not stuck in copy-mode / view-mode.
+        # If it is, any subsequent send-keys would be interpreted as
+        # copy-mode bindings (e.g. the user could land in a search
+        # prompt instead of the shell). `-X cancel` is a safe no-op
+        # when the pane is already in normal input mode.
+        tmux_cmd("send-keys", "-t", p.win_target, "-X", "cancel")
         # Auto-start if SHELL
         if p.state == "SHELL":
             tmux_cmd("send-keys", "-t", p.win_target, CLAUDE_CMD, "Enter")
@@ -854,6 +860,9 @@ class Dashboard:
         for p in targets:
             if p.state == "SHELL":
                 continue
+            # Exit any tmux mode (copy/view) first so /exit reaches the
+            # pane's foreground process instead of a copy-mode binding.
+            tmux_cmd("send-keys", "-t", p.win_target, "-X", "cancel")
             tmux_cmd("send-keys", "-t", p.win_target, "Escape")
             time.sleep(0.05)
             tmux_cmd("send-keys", "-t", p.win_target, "/exit", "Enter")
@@ -1288,6 +1297,9 @@ class Dashboard:
                 idx = self.tree_selectable[self.tree_selected]
                 _, _, _, wt = self.tree_lines[idx]
                 if wt:
+                    # Defensively exit any stuck tmux copy/view mode on
+                    # the target pane before sending keys to it.
+                    tmux_cmd("send-keys", "-t", wt, "-X", "cancel")
                     # Auto-start Claude for ccm SHELL windows
                     with self.lock:
                         for p in self.projects:
