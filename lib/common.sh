@@ -306,6 +306,38 @@ _ccm_write_settings() {
     mv -f "$tmp_file" "$settings_file" || { rm -f "$tmp_file"; ccm_die "Failed to replace settings file"; }
 }
 
+# ─── Claude Code version detection ───
+
+# Return the installed Claude Code version as an `X.Y.Z` string,
+# or an empty string if `claude` is not on PATH or the output
+# cannot be parsed. Format: `2.1.108 (Claude Code)`.
+_ccm_claude_version() {
+    local out
+    out=$(claude --version 2>/dev/null) || return 0
+    printf '%s' "$out" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+# Return 0 (true) if version $1 is >= version $2. Handles only
+# `MAJOR.MINOR.PATCH` strings. An empty first argument means
+# "unknown version" and always returns 1 (too old / safer default).
+_ccm_version_ge() {
+    local a="$1" b="$2"
+    [[ -z "$a" ]] && return 1
+    [[ "$a" == "$b" ]] && return 0
+    local smallest
+    smallest=$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)
+    [[ "$smallest" == "$b" ]]
+}
+
+# Does the running Claude Code support the elicitation_dialog
+# Notification matcher? Added in v2.1.107. Returns 0 (true) only
+# when we can positively confirm the version meets the bar.
+_ccm_supports_elicitation_dialog() {
+    local v
+    v=$(_ccm_claude_version)
+    _ccm_version_ge "$v" "2.1.107"
+}
+
 # Check if ccm hooks are installed in Claude Code settings
 ccm_hooks_configured() {
     local settings_file="${HOME}/.claude/settings.json"
@@ -330,8 +362,15 @@ ccm_hooks_configured() {
     # rather than a bare string so we cannot false-positive on the
     # word appearing elsewhere in the file (in a comment-like field
     # description, in someone else's hook payload, etc.).
-    grep -qE '"matcher"[[:space:]]*:[[:space:]]*"elicitation_dialog"' \
-        "$settings_file" 2>/dev/null || return 1
+    #
+    # Only require the matcher when the running Claude Code actually
+    # supports it. Users on v2.1.101–v2.1.106 must not be forced into
+    # an infinite reinstall loop over a matcher ccm refuses to write
+    # for their version.
+    if _ccm_supports_elicitation_dialog; then
+        grep -qE '"matcher"[[:space:]]*:[[:space:]]*"elicitation_dialog"' \
+            "$settings_file" 2>/dev/null || return 1
+    fi
 }
 
 # Install Claude Code hooks for improved state detection
@@ -372,6 +411,30 @@ ccm_setup_hooks() {
     local session_end_hook="${hooks_dir}/on-session-end.sh"
     local timeout="${CCM_HOOK_CMD_TIMEOUT:-5000}"
 
+    # Build the Notification matchers array. elicitation_dialog is
+    # only valid on Claude Code v2.1.107+ — older clients may reject
+    # an unknown matcher value within a known event, taking down the
+    # whole Notification hook section. We skip it for older versions
+    # and re-emit it once the client upgrades (ccm_hooks_configured
+    # gates the re-install check on the same version predicate).
+    local claude_ver
+    claude_ver=$(_ccm_claude_version)
+    local notification_matchers
+    if _ccm_supports_elicitation_dialog; then
+        notification_matchers=$(jq -nc \
+            --arg cmd "$notify_hook" --argjson timeout "$timeout" '[
+                {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $cmd, "timeout": $timeout}]},
+                {"matcher": "idle_prompt",       "hooks": [{"type": "command", "command": $cmd, "timeout": $timeout}]},
+                {"matcher": "elicitation_dialog", "hooks": [{"type": "command", "command": $cmd, "timeout": $timeout}]}
+            ]')
+    else
+        notification_matchers=$(jq -nc \
+            --arg cmd "$notify_hook" --argjson timeout "$timeout" '[
+                {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $cmd, "timeout": $timeout}]},
+                {"matcher": "idle_prompt",       "hooks": [{"type": "command", "command": $cmd, "timeout": $timeout}]}
+            ]')
+    fi
+
     local new_settings
     new_settings=$(echo "$existing" | _ccm_strip_hooks | jq \
         --arg prompt_cmd "$prompt_hook" \
@@ -381,6 +444,7 @@ ccm_setup_hooks() {
         --arg perm_cmd "$perm_hook" \
         --arg perm_denied_cmd "$perm_denied_hook" \
         --arg session_end_cmd "$session_end_hook" \
+        --argjson notification_matchers "$notification_matchers" \
         --argjson timeout "$timeout" '
         .hooks //= {} |
         .hooks.UserPromptSubmit //= [] |
@@ -409,20 +473,27 @@ ccm_setup_hooks() {
         .hooks.PostCompact += [{"hooks": [{"type": "command", "command": $pre_tool_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionRequest += [{"hooks": [{"type": "command", "command": $perm_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionDenied += [{"hooks": [{"type": "command", "command": $perm_denied_cmd, "timeout": $timeout}]}] |
-        .hooks.Notification += [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
-                                {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
-                                {"matcher": "elicitation_dialog", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]}] |
+        .hooks.Notification += $notification_matchers |
         .hooks.SessionEnd += [{"hooks": [{"type": "command", "command": $session_end_cmd, "timeout": $timeout}]}]
     ') || ccm_die "Failed to update settings JSON"
 
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "Claude Code hooks installed successfully."
     echo "  Settings: ${settings_file}"
+    if [[ -n "$claude_ver" ]]; then
+        echo "  Claude Code: ${claude_ver}"
+    else
+        echo "  Claude Code: version unknown (claude CLI not found)"
+    fi
     echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, PostToolUse → BUSY"
     echo "         PostToolUseFailure → BUSY, SubagentStart/Stop → BUSY, Stop/StopFailure → DONE"
     echo "         PreCompact/PostCompact → BUSY (compaction is busy work)"
-    echo "         Notification → PERMIT/IDLE, PermissionDenied → PERMIT"
-    echo "         SessionEnd → SHELL"
+    if _ccm_supports_elicitation_dialog; then
+        echo "         Notification → PERMIT (permission/idle/elicitation) / DONE (idle)"
+    else
+        echo "         Notification → PERMIT/IDLE (elicitation_dialog skipped: requires Claude Code v2.1.107+)"
+    fi
+    echo "         PermissionDenied → PERMIT, SessionEnd → SHELL"
     echo ""
     echo "  Restart Claude Code to activate the hooks."
     echo "  To remove: ccm remove-hooks"

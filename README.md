@@ -37,7 +37,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 - [TPM](https://github.com/tmux-plugins/tpm) (for plugin installation; or use manual install)
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107 or later** — ccm registers the `elicitation_dialog` Notification matcher (added in v2.1.107) for MCP elicitation prompts. Earlier v2.1.101–v2.1.106 versions may not gracefully accept this matcher and could drop the entire hook section. v2.1.101+ "settings resilience" only confirmed safe for unknown hook *event* names, not unknown matcher *values* within a known event
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 or later recommended**. ccm registers the `elicitation_dialog` Notification matcher (added in v2.1.107) for MCP elicitation prompts; on older releases this matcher is automatically skipped at install time (detected via `claude --version`), so v2.1.101–v2.1.106 clients still work with the remaining 13 hook events — you just do not get MCP elicitation detection until you update. v2.1.100 and earlier are not supported because ccm requires the `PostToolUseFailure` event that landed in v2.1.101
 
 ## Installation
 

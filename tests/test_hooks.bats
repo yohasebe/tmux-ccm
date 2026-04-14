@@ -243,6 +243,73 @@ teardown() {
     [[ "$status" -ne 0 ]]
 }
 
+@test "version: _ccm_version_ge semver comparison" {
+    _ccm_version_ge "2.1.107" "2.1.107"
+    _ccm_version_ge "2.1.108" "2.1.107"
+    _ccm_version_ge "2.2.0"   "2.1.107"
+    _ccm_version_ge "3.0.0"   "2.1.107"
+    ! _ccm_version_ge "2.1.106" "2.1.107"
+    ! _ccm_version_ge "2.1.99"  "2.1.107"
+    ! _ccm_version_ge "2.0.200" "2.1.107"
+    # Empty version = unknown = too old (safer default)
+    ! _ccm_version_ge "" "2.1.107"
+}
+
+@test "setup-hooks: skips elicitation_dialog matcher when claude too old" {
+    # Stub claude --version to an older release
+    local bin="${MOCK_DIR}/bin"
+    mkdir -p "$bin"
+    cat > "$bin/claude" <<'STUB'
+#!/bin/bash
+echo "2.1.103 (Claude Code)"
+STUB
+    chmod +x "$bin/claude"
+    PATH="${bin}:${PATH}" ccm_setup_hooks >/dev/null 2>&1
+
+    local n_elicit
+    n_elicit=$(jq '[.hooks.Notification[] | select(.matcher == "elicitation_dialog")] | length' \
+        "${MOCK_DIR}/.claude/settings.json")
+    [[ "$n_elicit" -eq 0 ]] || { echo "expected 0 elicitation_dialog matchers, got $n_elicit"; return 1; }
+
+    # But the other two matchers must still be there
+    local n_other
+    n_other=$(jq '[.hooks.Notification[] | select(.matcher == "permission_prompt" or .matcher == "idle_prompt")] | length' \
+        "${MOCK_DIR}/.claude/settings.json")
+    [[ "$n_other" -eq 2 ]] || { echo "expected 2 other matchers, got $n_other"; return 1; }
+}
+
+@test "setup-hooks: installs elicitation_dialog matcher when claude is v2.1.107" {
+    local bin="${MOCK_DIR}/bin"
+    mkdir -p "$bin"
+    cat > "$bin/claude" <<'STUB'
+#!/bin/bash
+echo "2.1.107 (Claude Code)"
+STUB
+    chmod +x "$bin/claude"
+    PATH="${bin}:${PATH}" ccm_setup_hooks >/dev/null 2>&1
+
+    local n
+    n=$(jq '[.hooks.Notification[] | select(.matcher == "elicitation_dialog")] | length' \
+        "${MOCK_DIR}/.claude/settings.json")
+    [[ "$n" -eq 1 ]] || { echo "expected 1 elicitation_dialog matcher, got $n"; return 1; }
+}
+
+@test "hooks-configured: does NOT require elicitation_dialog on old claude" {
+    # Install under a stubbed old claude (no elicitation_dialog)
+    local bin="${MOCK_DIR}/bin"
+    mkdir -p "$bin"
+    cat > "$bin/claude" <<'STUB'
+#!/bin/bash
+echo "2.1.103 (Claude Code)"
+STUB
+    chmod +x "$bin/claude"
+    PATH="${bin}:${PATH}" ccm_setup_hooks >/dev/null 2>&1
+
+    # And verify hooks_configured is HAPPY with that install on same old claude
+    PATH="${bin}:${PATH}" run ccm_hooks_configured
+    [[ "$status" -eq 0 ]] || { echo "hooks_configured should pass on old claude with no elicitation_dialog"; return 1; }
+}
+
 @test "on-notification.sh: elicitation_dialog writes PERMIT signal" {
     # End-to-end: feed the actual hook script the JSON Claude Code would
     # send for an elicitation event, and verify the signal file content.
