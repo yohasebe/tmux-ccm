@@ -226,6 +226,23 @@ teardown() {
     done
 }
 
+@test "setup-hooks: registers Notification elicitation_dialog matcher" {
+    ccm_setup_hooks >/dev/null 2>&1
+    local n
+    n=$(jq '[.hooks.Notification[] | select(.matcher == "elicitation_dialog")] | length' \
+        "${MOCK_DIR}/.claude/settings.json")
+    [[ "$n" -eq 1 ]]
+}
+
+@test "hooks-configured: returns false when elicitation_dialog matcher missing" {
+    ccm_setup_hooks >/dev/null 2>&1
+    jq '.hooks.Notification = [.hooks.Notification[] | select(.matcher != "elicitation_dialog")]' \
+        "${MOCK_DIR}/.claude/settings.json" > "${MOCK_DIR}/.claude/settings.json.tmp"
+    mv "${MOCK_DIR}/.claude/settings.json.tmp" "${MOCK_DIR}/.claude/settings.json"
+    run ccm_hooks_configured
+    [[ "$status" -ne 0 ]]
+}
+
 @test "setup-hooks: skips when already installed" {
     ccm_setup_hooks >/dev/null 2>&1
     run ccm_setup_hooks

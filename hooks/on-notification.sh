@@ -36,6 +36,12 @@ case "$NOTIFY_TYPE" in
     permission_prompt)
         ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
         ;;
+    elicitation_dialog)
+        # MCP servers can request user input via elicitation dialogs
+        # (Claude Code v2.1.107+). Functionally identical to a
+        # permission prompt — Claude is paused waiting for the user.
+        ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
+        ;;
     idle_prompt)
         # Write DONE (may also be written by on-stop.sh — harmless, same effect)
         # Only write if not already BUSY (avoid overwriting active work signal)

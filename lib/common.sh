@@ -325,6 +325,8 @@ ccm_hooks_configured() {
     grep -q 'SubagentStop' "$settings_file" 2>/dev/null || return 1
     grep -q 'PreCompact' "$settings_file" 2>/dev/null || return 1
     grep -q 'PostCompact' "$settings_file" 2>/dev/null || return 1
+    # v2.1.107 added the elicitation_dialog Notification matcher
+    grep -q 'elicitation_dialog' "$settings_file" 2>/dev/null || return 1
 }
 
 # Install Claude Code hooks for improved state detection
@@ -403,7 +405,8 @@ ccm_setup_hooks() {
         .hooks.PermissionRequest += [{"hooks": [{"type": "command", "command": $perm_cmd, "timeout": $timeout}]}] |
         .hooks.PermissionDenied += [{"hooks": [{"type": "command", "command": $perm_denied_cmd, "timeout": $timeout}]}] |
         .hooks.Notification += [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
-                                {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]}] |
+                                {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]},
+                                {"matcher": "elicitation_dialog", "hooks": [{"type": "command", "command": $notify_cmd, "timeout": $timeout}]}] |
         .hooks.SessionEnd += [{"hooks": [{"type": "command", "command": $session_end_cmd, "timeout": $timeout}]}]
     ') || ccm_die "Failed to update settings JSON"
 
