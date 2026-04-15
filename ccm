@@ -44,7 +44,7 @@ Usage:
   ccm tree                          Show session/window/pane hierarchy
   ccm capture [--copy] <name|window_index>  Capture project window (--copy: to clipboard)
   ccm ports                          Show listening ports per project
-  ccm dashboard [--search]          Open interactive dashboard (popup). --search jumps straight to quick-search (type, Enter, jump to first match).
+  ccm dashboard [--search]          Open interactive dashboard (popup). --search jumps straight to live-filter search.
   ccm search                        Shorthand for `ccm dashboard --search`
   ccm statusline                    One-line status (for tmux status bar)
   ccm snapshot save [name]          Save current projects as snapshot

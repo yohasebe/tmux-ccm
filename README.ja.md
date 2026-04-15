@@ -115,8 +115,9 @@ ccm init
 ```tmux
 set -g @ccm-key-menu "C"        # 任意: prefix + C でメニュー
 set -g @ccm-key-tree "T"        # 任意: prefix + T でツリービュー
-set -g @ccm-key-search "/"      # 任意: prefix + / でダッシュボードを quick-search モードで開く
-                                 # (入力 → Enter で最初の一致プロジェクトにジャンプ)
+set -g @ccm-key-search "/"      # 任意: prefix + / でダッシュボードをライブフィルタ検索で開く
+                                 # (日本語対応、入力でリアルタイム絞り込み、
+                                 #  Enter でアタッチ、Esc でキャンセル)
 ```
 
 > [!TIP]

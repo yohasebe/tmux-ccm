@@ -41,7 +41,7 @@ fi
 if [[ -n "$CCM_KEY_SEARCH" ]]; then
     tmux bind-key "$CCM_KEY_SEARCH" \
         run-shell "$_session_cmd" \\\; \
-        display-popup -E -w 80% -h 60% -T " ccm Quick Search " "$CCM_BIN search"
+        display-popup -E -w 80% -h 60% -T " ccm Filter " "$CCM_BIN search"
 fi
 
 # Mouse click on ccm status icon → open dashboard
