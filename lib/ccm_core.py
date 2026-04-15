@@ -50,6 +50,17 @@ JSONL_FRESH_THRESHOLD = int(os.environ.get("CCM_JSONL_FRESH_THRESHOLD", "5"))
 # silent hook outages (anthropics/claude-code#25655) — the pure
 # thinking case the fresh-activity rule cannot cover.
 JSONL_ACTIVE_THRESHOLD = int(os.environ.get("CCM_JSONL_ACTIVE_THRESHOLD", "120"))
+# Window for trusting a BUSY hook signal without JSONL corroboration.
+# A BUSY hook older than this AND a JSONL that has been silent for
+# the same duration is almost certainly left over from a turn that
+# completed without a Stop hook firing (anthropics/claude-code#25655
+# class). Past this window, the rule table stops trusting the hook
+# and falls through to the raw=IDLE fallback path so the state can
+# eventually drop out of BUSY. Default 10 minutes — long enough to
+# cover real thinking phases that legitimately lack tool activity,
+# short enough that a missed Stop does not strand the project in
+# BUSY indefinitely.
+BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
 # Minimum seconds before showing DONE after Stop hook fires.
 # Suppresses false DONE at multi-turn boundaries where Stop fires
 # between tool executions and the next turn starts within seconds.
@@ -733,6 +744,10 @@ class Rule:
     hook_age_lt: Optional[int] = None
     busy_age_lt: Optional[int] = None
     jsonl_age_lt: Optional[int] = None
+    # True: ctx.jsonl_age must be < 0 (no JSONL file at all)
+    # False: ctx.jsonl_age must be >= 0 (JSONL file exists)
+    # None: not checked
+    jsonl_missing: Optional[bool] = None
     done_valid: Optional[bool] = None
 
     def matches(self, ctx: "DetectionContext") -> bool:
@@ -751,6 +766,12 @@ class Rule:
                 return False
         if self.jsonl_age_lt is not None:
             if ctx.jsonl_age < 0 or ctx.jsonl_age >= self.jsonl_age_lt:
+                return False
+        if self.jsonl_missing is True:
+            if ctx.jsonl_age >= 0:
+                return False
+        elif self.jsonl_missing is False:
+            if ctx.jsonl_age < 0:
                 return False
         if self.done_valid is True:
             if not ctx.done_flag or ctx.done_age < 0 or ctx.done_age >= DONE_TIMEOUT:
@@ -841,16 +862,37 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         action=Action.SET_DONE_HOOK,
     ),
     Rule(
-        # Slow path: trust any BUSY hook signal while raw=IDLE.
-        # No age limit — long-running tool executions and text generation
-        # phases can legitimately exceed 5+ minutes without any intervening
-        # hook refresh. If Claude Code crashes, rule 1/2 (raw=DOWN/SHELL)
-        # clears state authoritatively. If Stop hook fails to fire
-        # (Claude Code bug), we prefer showing stale BUSY over false IDLE —
-        # BUSY is closer to the truth and prompts user investigation.
+        # Slow path: trust a BUSY hook signal while raw=IDLE, as long as
+        # the session's JSONL has been written within BUSY_HOOK_JSONL_WINDOW.
+        # The JSONL is an independent heartbeat — it updates at every
+        # conversation turn boundary. A fresh-enough JSONL corroborates
+        # that the session is really working (tool calls, message
+        # completions, thinking-phase boundaries), so the BUSY hook is
+        # trustworthy.
+        #
+        # If instead the BUSY hook is ancient AND the JSONL has been
+        # silent for the same long interval, the BUSY is almost certainly
+        # left over from a turn that completed without a Stop hook firing
+        # (anthropics/claude-code#25655-class). This rule does NOT match,
+        # so evaluation falls through to fallback_busy_to_done and the
+        # state eventually leaves BUSY.
         name="hook_busy_idle",
         hook_in=("BUSY",),
         raw_in=("IDLE",),
+        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
+        jsonl_missing=False,
+        result="BUSY",
+    ),
+    Rule(
+        # Same BUSY-hook-trust path for the edge case where no JSONL
+        # exists for this project at all (older Claude Code, headless
+        # sessions that somehow slip through, or tests). Without a
+        # JSONL heartbeat we have no counterevidence, so fall back to
+        # the pre-JSONL behavior: trust the BUSY hook unconditionally.
+        name="hook_busy_idle_no_jsonl",
+        hook_in=("BUSY",),
+        raw_in=("IDLE",),
+        jsonl_missing=True,
         result="BUSY",
     ),
     Rule(

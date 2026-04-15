@@ -973,25 +973,47 @@ class TestEvaluateRules:
         assert (rule.name, state) == ("hook_fresh_busy", "BUSY")
 
     def test_hook_stale_busy_slow_path(self):
-        """Age >= 2 → slow path rule (hook_busy_idle)."""
+        """Age >= 2 → slow path rule (hook_busy_idle).
+
+        Requires a fresh JSONL so the staleness guard does not
+        release the rule — mirrors a real session mid-activity.
+        """
         rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=5)
+            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=5, jsonl_age=3)
         )
         assert (rule.name, state) == ("hook_busy_idle", "BUSY")
 
-    def test_hook_busy_trusted_regardless_of_age(self):
-        """Long-running tool / text generation: BUSY hook age >5 min still wins.
+    def test_hook_busy_trusted_when_jsonl_keeps_up(self):
+        """Long-running tool / text generation: BUSY hook stays trusted
+        as long as JSONL is also writing records — which Claude Code
+        does continuously across tool turn boundaries.
 
         Regression guard: previously HOOK_TIMEOUT=300 capped this rule,
         causing fallback_busy_to_done to fire false DONE on long tasks.
+        Now the rule is capped by BUSY_HOOK_JSONL_WINDOW — but with
+        JSONL kept fresh by ongoing tool activity, the effective hook
+        age is irrelevant.
         """
         for age in (60, 299, 400, 900, 3600, 86400):
             rule, state = ccm_core.evaluate_rules(
                 make_ctx(raw="IDLE", hook_state="BUSY", hook_age=age,
-                         prev_state="BUSY")
+                         prev_state="BUSY", jsonl_age=5)
             )
             assert (rule.name, state) == ("hook_busy_idle", "BUSY"), (
                 f"age={age} should still match hook_busy_idle"
+            )
+
+    def test_hook_busy_no_jsonl_trusted_regardless_of_age(self):
+        """When JSONL is absent entirely (edge case) there is no
+        counterevidence — the BUSY hook is trusted indefinitely via
+        the separate `hook_busy_idle_no_jsonl` rule."""
+        for age in (60, 299, 400, 900, 3600, 86400):
+            rule, state = ccm_core.evaluate_rules(
+                make_ctx(raw="IDLE", hook_state="BUSY", hook_age=age,
+                         prev_state="BUSY", jsonl_age=-1)
+            )
+            assert (rule.name, state) == ("hook_busy_idle_no_jsonl", "BUSY"), (
+                f"age={age} should match hook_busy_idle_no_jsonl"
             )
 
     # --- PERMIT ---
@@ -1175,6 +1197,74 @@ class TestEvaluateRules:
         )
         # Should NOT match jsonl_holds_busy (prev != BUSY)
         assert rule.name != "jsonl_holds_busy"
+
+    # --- hook_busy_idle staleness guard ---
+
+    def test_hook_busy_idle_fresh_jsonl_holds(self):
+        """hook=BUSY + JSONL fresh (well under window) → BUSY."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                hook_state="BUSY",
+                hook_age=200,
+                prev_state="BUSY",
+                jsonl_age=30,
+            )
+        )
+        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
+
+    def test_hook_busy_idle_releases_when_jsonl_stale(self):
+        """hook=BUSY for a long time + JSONL also stale past the
+        BUSY_HOOK_JSONL_WINDOW → stop trusting the hook.
+
+        Reproduces the rsyntaxtree scenario: Stop hook never fired
+        after a completed turn 16 minutes ago, the BUSY signal from
+        the last PreToolUse is ancient, and the session is actually
+        idle (visible `❯ ` prompt, no tool activity in JSONL).
+        """
+        stale = ccm_core.BUSY_HOOK_JSONL_WINDOW + 300
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                hook_state="BUSY",
+                hook_age=stale,
+                prev_state="BUSY",
+                jsonl_age=stale,
+            )
+        )
+        # Falls through to fallback_busy_to_done → DONE (then IDLE
+        # after DONE_TIMEOUT).
+        assert (rule.name, state) == ("fallback_busy_to_done", "DONE")
+
+    def test_hook_busy_idle_edge_just_under_window(self):
+        """Exactly 1 second under the window still counts as fresh."""
+        age = ccm_core.BUSY_HOOK_JSONL_WINDOW - 1
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                hook_state="BUSY",
+                hook_age=age,
+                prev_state="BUSY",
+                jsonl_age=age,
+            )
+        )
+        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
+
+    def test_hook_busy_idle_no_jsonl_always_trusts_hook(self):
+        """If there is no JSONL file at all (jsonl_age=-1), we have
+        no counterevidence and must trust the BUSY hook regardless
+        of how old it is. Covers projects without a Claude Code
+        session log (e.g. older Claude Code or edge cases)."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(
+                raw="IDLE",
+                hook_state="BUSY",
+                hook_age=9999,       # ancient
+                prev_state="BUSY",
+                jsonl_age=-1,        # no file
+            )
+        )
+        assert (rule.name, state) == ("hook_busy_idle_no_jsonl", "BUSY")
 
     # --- fallback (no hooks) ---
 
@@ -1485,9 +1575,13 @@ class TestLifecycleSequences:
         assert self._eval(
             raw="IDLE", prev_state="IDLE", hook_state="BUSY", hook_age=0
         ) == ("hook_fresh_busy", "BUSY")
-        # Text generation continues, pipeline still sees IDLE
+        # Text generation continues, pipeline still sees IDLE.
+        # JSONL has a record from the user prompt, so hook_busy_idle
+        # matches (the staleness guard only releases when jsonl too
+        # has been silent for BUSY_HOOK_JSONL_WINDOW).
         assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="BUSY", hook_age=5
+            raw="IDLE", prev_state="BUSY", hook_state="BUSY", hook_age=5,
+            jsonl_age=3,
         ) == ("hook_busy_idle", "BUSY")
         # Stop fires DONE, no recent .busy → genuine completion
         assert self._eval(
@@ -1577,24 +1671,35 @@ class TestLifecycleSequences:
         Real incident (jwriter, 2026-04-10): a multi-minute tool chain
         produced no PreToolUse refresh for >5 min. With the old HOOK_TIMEOUT
         cap, the hook path failed and fallback_busy_to_done fired false DONE,
-        then fallback_done_expired → IDLE. Now rule hook_busy_idle has no
-        age limit so BUSY is maintained as long as the hook says BUSY.
+        then fallback_done_expired → IDLE.
+
+        In the real incident, Claude Code's JSONL session log is
+        updated at every conversation turn boundary independently of
+        the hook pipeline (#25655 kills hooks but not JSONL writes).
+        So while the hook ages, JSONL stays fresh as tool calls and
+        message records accumulate. hook_busy_idle remains matched
+        because the BUSY_HOOK_JSONL_WINDOW staleness guard is scoped
+        to JSONL age, not hook age.
         """
         # Tool starts: fresh BUSY
         assert self._eval(
             raw="IDLE", hook_state="BUSY", hook_age=0, prev_state="BUSY",
+            jsonl_age=0,
         ) == ("hook_fresh_busy", "BUSY")
-        # Still going at 1 min
+        # 1 min in — JSONL bumped by a recent tool turn boundary.
         assert self._eval(
             raw="IDLE", hook_state="BUSY", hook_age=60, prev_state="BUSY",
+            jsonl_age=10,
         ) == ("hook_busy_idle", "BUSY")
-        # Past old HOOK_TIMEOUT boundary (was the regression)
+        # Past old HOOK_TIMEOUT boundary (was the regression).
         assert self._eval(
             raw="IDLE", hook_state="BUSY", hook_age=301, prev_state="BUSY",
+            jsonl_age=20,
         ) == ("hook_busy_idle", "BUSY")
-        # 15 minutes in
+        # 15 minutes in, JSONL still being written by ongoing turns.
         assert self._eval(
             raw="IDLE", hook_state="BUSY", hook_age=900, prev_state="BUSY",
+            jsonl_age=15,
         ) == ("hook_busy_idle", "BUSY")
         # Finally Stop fires → DONE
         assert self._eval(
