@@ -247,6 +247,8 @@ ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
+ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
+                                  flags: --file --stdin --no-enter --force --start -y --
 ccm init                          Interactive setup wizard (hooks, restore, status bar)
 ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
 ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md

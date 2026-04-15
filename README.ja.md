@@ -247,6 +247,8 @@ ccm menu                          インタラクティブメニュー
 ccm snapshot save|load|list|delete  スナップショット管理
 ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
+ccm send <name> <msg> [flags]     他プロジェクトのClaude Codeセッションにプロンプト送信
+                                  flags: --file --stdin --no-enter --force --start -y --
 ccm init                          対話型セットアップウィザード（フック・復元・ステータスバー）
 ccm setup-hooks                   Claude Codeフックをインストール（検出精度向上）
 ccm remove-hooks                  Claude Codeフックをアンインストール

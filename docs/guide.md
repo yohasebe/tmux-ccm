@@ -151,6 +151,53 @@ Open with `prefix + T`. Shows the full tmux hierarchy:
 - Only windows (not sessions or panes) are selectable
 - Panes are shown only when a window has multiple panes
 
+## Sending Prompts Between Projects
+
+`ccm send` dispatches a prompt to another project's Claude Code session, so you can hand off work between projects without leaving your current pane.
+
+```bash
+# Simple positional message (confirmed interactively if run from a TTY)
+ccm send blog "Summarize the last review cycle."
+
+# From a file
+ccm send research --file /tmp/brief.md
+
+# From a pipe — perfect for wiring up an MCP server (Gmail, GitHub, etc.)
+echo "Please investigate issue #42 in rsyntaxtree" | ccm send fzf-workflow --stdin -y
+
+# Multi-line body — \n is converted to Claude's "newline without submit" key,
+# so the body lands as a single multi-line prompt
+printf 'context:\nbug: NPE on line 120\nplease fix' | ccm send api-server --stdin -y
+
+# Type text without submitting (user finishes editing in the target pane)
+ccm send blog --no-enter "TODO: "
+```
+
+### State policy
+
+| Target state | Default | `--force` | `--start` |
+|---|---|---|---|
+| **IDLE** / **DONE** | Send immediately | — | — |
+| **BUSY** | Refused (avoid mixing with active turn) | Queued into input buffer | — |
+| **SHELL** (Claude not running) | Refused | — | Launches Claude, waits 2s, then sends |
+| **PERMIT** (permission dialog open) | **Hard refused** | **Still refused** — typing into a permission dialog could accidentally approve/deny a tool call | — |
+
+### Flags
+
+| Flag | Purpose |
+|---|---|
+| `--file <path>` | Read message from a file |
+| `--stdin` (or bare `-`) | Read message from stdin |
+| `--no-enter` | Send the text without the final Enter (useful for prefilling a prompt) |
+| `--force` | Allow sending to a BUSY target (queues into Claude's input buffer) |
+| `--start` | Auto-launch Claude if the target is in SHELL state |
+| `-y`, `--yes` | Skip the interactive confirmation prompt |
+| `--` | End of flag parsing (for messages that start with `-`) |
+
+Confirmation is automatically skipped when stdin or stdout is not a TTY, so piped use (`echo "..." \| ccm send ...`) works without `-y`.
+
+Targets can be specified by project name, `#<idx>`, or a bare window index.
+
 ## State Detection
 
 ccm uses a hybrid approach: Claude Code hooks (recommended) combined with process tree inspection as fallback.

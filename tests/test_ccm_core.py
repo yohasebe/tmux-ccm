@@ -2276,3 +2276,250 @@ class TestRaiseOnDie:
             t.join()
         assert result.get("exited") is True
         assert "raised" not in result
+
+
+# ─── cmd_send ───
+
+class TestCmdSend:
+    """Unit tests for `ccm send` — the cross-project prompt injector."""
+
+    def _make_project(self, name="blog", state="IDLE", win_target="0:5"):
+        return ccm_core.Project(
+            win_target=win_target,
+            win_idx=win_target.split(":")[1],
+            name=name,
+            directory=f"/tmp/{name}",
+            state=state,
+        )
+
+    def _patch_resolution(self, monkeypatch, project=None, session="0"):
+        """Install stubs for get_session / find_window / build_project_list."""
+        if project is None:
+            project = self._make_project()
+        monkeypatch.setattr(ccm_core, "get_session", lambda: session)
+        monkeypatch.setattr(
+            ccm_core, "find_window",
+            lambda sess, name: project.win_idx if name == project.name else None,
+        )
+        monkeypatch.setattr(
+            ccm_core, "build_project_list", lambda fast=False: [project],
+        )
+        # Non-interactive by default so the confirmation prompt is skipped
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        return project
+
+    def _tmux_calls(self, mock_tmux):
+        """Return the positional args of every tmux_cmd call."""
+        return [tuple(c.args) for c in mock_tmux.call_args_list]
+
+    # --- happy path ---
+
+    def test_basic_send(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        # Cancel any stuck mode
+        assert ("send-keys", "-t", "0:5", "-X", "cancel") in calls
+        # Literal send of "hello"
+        assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
+        # Final Enter
+        assert ("send-keys", "-t", "0:5", "Enter") in calls
+        # Enter comes after the literal send
+        literal_i = calls.index(("send-keys", "-t", "0:5", "-l", "hello"))
+        enter_i = calls.index(("send-keys", "-t", "0:5", "Enter"))
+        assert enter_i > literal_i
+
+    def test_send_concatenates_multiple_positional_args(self, monkeypatch):
+        """`ccm send blog hello world` joins the remaining argv into a
+        single message, matching how the shell passes unquoted words."""
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "hello", "world"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "hello world") in calls
+
+    def test_send_no_enter(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "--no-enter", "hi"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "hi") in calls
+        assert ("send-keys", "-t", "0:5", "Enter") not in calls
+
+    def test_send_multiline_uses_m_enter_between_lines(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        message = "line1\nline2\nline3"
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", message])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "line1") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "line2") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "line3") in calls
+        # Two M-Enter separators, one final Enter
+        m_enter_count = sum(
+            1 for c in calls
+            if c == ("send-keys", "-t", "0:5", "M-Enter")
+        )
+        enter_count = sum(
+            1 for c in calls
+            if c == ("send-keys", "-t", "0:5", "Enter")
+        )
+        assert m_enter_count == 2
+        assert enter_count == 1
+
+    def test_send_from_file(self, monkeypatch, tmp_path):
+        self._patch_resolution(monkeypatch)
+        f = tmp_path / "msg.txt"
+        f.write_text("from file")
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "--file", str(f)])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "from file") in calls
+
+    def test_send_from_stdin(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        import io
+        monkeypatch.setattr("sys.stdin", io.StringIO("piped"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "--stdin"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "piped") in calls
+
+    def test_send_dash_alias_for_stdin(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        import io
+        monkeypatch.setattr("sys.stdin", io.StringIO("piped2"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "-"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "piped2") in calls
+
+    def test_send_double_dash_ends_flag_parsing(self, monkeypatch):
+        """`--` makes subsequent args positional even if they start with `-`."""
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "--", "--force-looking-message"])
+        calls = self._tmux_calls(mock_tmux)
+        assert (
+            "send-keys", "-t", "0:5", "-l", "--force-looking-message"
+        ) in calls
+
+    def test_send_resolves_numeric_index(self, monkeypatch):
+        project = self._make_project(win_target="0:7")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["7", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert any("0:7" in c for c in calls)
+
+    def test_send_resolves_hash_index(self, monkeypatch):
+        project = self._make_project(win_target="0:7")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["#7", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert any("0:7" in c for c in calls)
+
+    # --- state gating ---
+
+    def test_send_permit_rejected(self, monkeypatch):
+        """PERMIT state is a hard guard — refuse unconditionally."""
+        project = self._make_project(state="PERMIT")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["blog", "hello"])
+
+    def test_send_permit_rejected_even_with_force(self, monkeypatch):
+        """Even --force cannot override a PERMIT guard."""
+        project = self._make_project(state="PERMIT")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["blog", "--force", "hello"])
+
+    def test_send_busy_rejected_without_force(self, monkeypatch):
+        project = self._make_project(state="BUSY")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["blog", "hello"])
+
+    def test_send_busy_allowed_with_force(self, monkeypatch):
+        project = self._make_project(state="BUSY")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "--force", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
+
+    def test_send_shell_rejected_without_start(self, monkeypatch):
+        project = self._make_project(state="SHELL")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["blog", "hello"])
+
+    def test_send_shell_with_start_launches_claude_first(self, monkeypatch):
+        project = self._make_project(state="SHELL")
+        self._patch_resolution(monkeypatch, project=project)
+        monkeypatch.setattr("time.sleep", lambda _s: None)  # skip the 2s wait
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        # Claude launch command appears before the message payload.
+        # The call tuple is ("send-keys", "-t", target, CLAUDE_CMD, "Enter")
+        claude_i = next(
+            (i for i, c in enumerate(calls) if ccm_core.CLAUDE_CMD in c),
+            None,
+        )
+        literal_i = next(
+            (i for i, c in enumerate(calls)
+             if c == ("send-keys", "-t", "0:5", "-l", "hello")),
+            None,
+        )
+        assert claude_i is not None, "Claude launch not issued"
+        assert literal_i is not None, "Message not sent"
+        assert claude_i < literal_i
+
+    def test_send_done_state_allowed(self, monkeypatch):
+        project = self._make_project(state="DONE")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "hi"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "hi") in calls
+
+    # --- error paths ---
+
+    def test_send_unknown_project_rejected(self, monkeypatch):
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "find_window", lambda s, n: None)
+        monkeypatch.setattr(ccm_core, "build_project_list", lambda fast=False: [])
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["nonexistent", "hi"])
+
+    def test_send_no_target_rejected(self, monkeypatch):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        with pytest.raises(SystemExit):
+            ccm_core.cmd_send([])
+
+    def test_send_empty_message_rejected(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["blog", "   "])
+
+    def test_send_dual_source_rejected(self, monkeypatch, tmp_path):
+        """Positional message + --file is an error (exactly one source)."""
+        self._patch_resolution(monkeypatch)
+        f = tmp_path / "m.txt"
+        f.write_text("from file")
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["blog", "positional", "--file", str(f)])
+
+    def test_send_unknown_flag_rejected(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["blog", "--nope", "hi"])
