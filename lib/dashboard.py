@@ -56,7 +56,7 @@ STATE_COLOR_PAIR = {
 # ─── Dashboard ───
 
 class Dashboard:
-    def __init__(self, initial_mode="dashboard"):
+    def __init__(self, initial_mode="dashboard", start_in_search=False):
         self.projects = []
         self.lock = threading.Lock()
         self.selected = 0
@@ -66,6 +66,7 @@ class Dashboard:
         self.hooks_on = hooks_configured()
         self.hooks_status = "Hooks: ON" if self.hooks_on else "Hooks: OFF"
         self.mode = initial_mode  # "dashboard", "tree", "menu"
+        self.start_in_search = start_in_search
         # Tree mode state
         self.tree_lines = []     # (indent, text, attr, win_target_or_none)
         self.tree_selected = 0
@@ -111,6 +112,13 @@ class Dashboard:
         # Start background refresh
         bg = threading.Thread(target=self._refresh_loop, daemon=True)
         bg.start()
+
+        # If launched with --search, jump straight into the search prompt.
+        # Only meaningful in dashboard mode (tree and menu have their own
+        # navigation keys, not the same Search action).
+        if self.start_in_search and self.mode == "dashboard":
+            self._do_search(stdscr)
+            self._render_current(stdscr)
 
         # Main event loop
         while self.running:
@@ -1567,19 +1575,20 @@ def acquire_pidfile():
 
 
 def main():
-    # Parse --mode argument
+    # Parse --mode and --search arguments
     mode = "dashboard"
+    start_in_search = False
     for i, arg in enumerate(sys.argv[1:], 1):
         if arg == "--mode" and i < len(sys.argv):
             mode = sys.argv[i + 1]
-            break
         elif arg.startswith("--mode="):
             mode = arg.split("=", 1)[1]
-            break
+        elif arg == "--search":
+            start_in_search = True
 
     pidfile = acquire_pidfile()
     try:
-        dashboard = Dashboard(initial_mode=mode)
+        dashboard = Dashboard(initial_mode=mode, start_in_search=start_in_search)
         curses.wrapper(dashboard.run)
     except Exception:
         # Log errors for debugging

@@ -115,6 +115,7 @@ ccm init
 ```tmux
 set -g @ccm-key-menu "C"        # 任意: prefix + C でメニュー
 set -g @ccm-key-tree "T"        # 任意: prefix + T でツリービュー
+set -g @ccm-key-search "/"      # 任意: prefix + / でダッシュボードを直接検索モードで開く
 ```
 
 > [!TIP]

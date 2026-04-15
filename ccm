@@ -17,7 +17,7 @@ CCM_ROOT="$(_ccm_resolve "$0")"
 
 # Background commands must not fail on errors
 case "${1:-}" in
-    inject-status|clear-done|dashboard|dash|d|tree-interactive|ti|init) set +e ;;
+    inject-status|clear-done|dashboard|dash|d|search|tree-interactive|ti|init) set +e ;;
     *) set -euo pipefail ;;
 esac
 
@@ -44,7 +44,8 @@ Usage:
   ccm tree                          Show session/window/pane hierarchy
   ccm capture [--copy] <name|window_index>  Capture project window (--copy: to clipboard)
   ccm ports                          Show listening ports per project
-  ccm dashboard                     Open interactive dashboard (popup)
+  ccm dashboard [--search]          Open interactive dashboard (popup). --search jumps straight to incremental search.
+  ccm search                        Shorthand for `ccm dashboard --search`
   ccm statusline                    One-line status (for tmux status bar)
   ccm snapshot save [name]          Save current projects as snapshot
   ccm snapshot load [name]          Load and restore a snapshot
@@ -109,7 +110,13 @@ case "${1:-help}" in
         ;;
     dashboard|dash|d)
         ccm_check_deps
-        python3 "$CCM_ROOT/lib/dashboard.py"
+        shift
+        python3 "$CCM_ROOT/lib/dashboard.py" "$@"
+        ;;
+    search)
+        # Shorthand: open the dashboard directly in search mode.
+        ccm_check_deps
+        python3 "$CCM_ROOT/lib/dashboard.py" --search
         ;;
     statusline|sl)
         python3 "$CCM_ROOT/lib/ccm_core.py" statusline

@@ -12,6 +12,7 @@ tmux set -g @ccm-plugin-root "$CCM_BIN" 2>/dev/null
 CCM_KEY_DASHBOARD=$(tmux show-option -gqv @ccm-key-dashboard 2>/dev/null)
 CCM_KEY_MENU=$(tmux show-option -gqv @ccm-key-menu 2>/dev/null)
 CCM_KEY_TREE=$(tmux show-option -gqv @ccm-key-tree 2>/dev/null)
+CCM_KEY_SEARCH=$(tmux show-option -gqv @ccm-key-search 2>/dev/null)
 
 CCM_KEY_DASHBOARD="${CCM_KEY_DASHBOARD:-Tab}"
 
@@ -35,6 +36,12 @@ if [[ -n "$CCM_KEY_TREE" ]]; then
     tmux bind-key "$CCM_KEY_TREE" \
         run-shell "$_session_cmd" \\\; \
         display-popup -E -w 80% -h 60% -T " ccm Tree " "$CCM_BIN tree-interactive"
+fi
+
+if [[ -n "$CCM_KEY_SEARCH" ]]; then
+    tmux bind-key "$CCM_KEY_SEARCH" \
+        run-shell "$_session_cmd" \\\; \
+        display-popup -E -w 80% -h 60% -T " ccm Search " "$CCM_BIN search"
 fi
 
 # Mouse click on ccm status icon → open dashboard
