@@ -2422,6 +2422,62 @@ class TestShellClusterDetection:
         history = ccm_core._read_shell_history("0:5")
         assert history == []  # no transition recorded
 
+    def test_apply_actions_ignores_empty_prev_state(self, monkeypatch):
+        """Regression guard: dashboard `_do_attach` and `clear_done`
+        explicitly reset `@ccm_prev_state` to empty string. The next
+        scan then sees prev_state="" and might briefly observe SHELL
+        before the new claude process is detected. Without filtering,
+        this would inflate the SHELL cluster count by 1 per attach.
+
+        The filter requires prev_state to be a known active state
+        (BUSY / IDLE / DONE / PERMIT) before counting a transition.
+        """
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+
+        # Empty prev_state (post-attach phantom)
+        ctx = make_ctx(raw="SHELL", prev_state="")
+        rule, state = ccm_core.evaluate_rules(ctx)
+        ccm_core.apply_actions("0:5", "", ctx, rule, state)
+
+        assert ccm_core._read_shell_history("0:5") == []
+
+    def test_apply_actions_ignores_down_to_shell(self, monkeypatch):
+        """DOWN → SHELL is not a session crash either. DOWN means
+        the window was momentarily without panes; the transition
+        is tmux housekeeping, not a Claude exit."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+
+        ctx = make_ctx(raw="SHELL", prev_state="DOWN")
+        rule, state = ccm_core.evaluate_rules(ctx)
+        ccm_core.apply_actions("0:5", "", ctx, rule, state)
+
+        assert ccm_core._read_shell_history("0:5") == []
+
+    def test_apply_actions_records_busy_to_shell(self, monkeypatch):
+        """The real-crash case: BUSY → SHELL is counted."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+
+        ctx = make_ctx(raw="SHELL", prev_state="BUSY")
+        rule, state = ccm_core.evaluate_rules(ctx)
+        ccm_core.apply_actions("0:5", "", ctx, rule, state)
+
+        assert len(ccm_core._read_shell_history("0:5")) == 1
+
+    def test_apply_actions_records_done_to_shell(self, monkeypatch):
+        """DONE → SHELL also counts (Claude finished a turn then
+        crashed before the user submitted the next prompt)."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+
+        ctx = make_ctx(raw="SHELL", prev_state="DONE")
+        rule, state = ccm_core.evaluate_rules(ctx)
+        ccm_core.apply_actions("0:5", "", ctx, rule, state)
+
+        assert len(ccm_core._read_shell_history("0:5")) == 1
+
 
 # ─── cmd_send ───
 

@@ -1281,10 +1281,17 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     action = rule.action
 
     # Record SHELL transitions for cluster-crash detection (#48069).
-    # A transition into SHELL from any non-SHELL state appends a
-    # timestamp to @ccm_shell_history, which shell_cluster_warning()
-    # then reads to decide whether to surface a warning.
-    if state == "SHELL" and ctx.prev_state != "SHELL":
+    # A transition into SHELL from a known *active* state (BUSY /
+    # IDLE / DONE / PERMIT) is a real session exit and gets pushed.
+    # Empty prev_state ("") happens after `_do_attach` and other
+    # paths that explicitly clear @ccm_prev_state — those are NOT
+    # real crashes, just a forced re-detection. DOWN means the
+    # window was momentarily without panes (rare), also not a crash.
+    # Without this filter, every dashboard attach would inflate the
+    # cluster count.
+    if state == "SHELL" and ctx.prev_state in (
+        "BUSY", "IDLE", "DONE", "PERMIT"
+    ):
         _push_shell_transition(win_target)
 
     if action == Action.HOLD_NO_WRITE:
