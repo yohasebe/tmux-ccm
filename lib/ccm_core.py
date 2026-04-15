@@ -61,6 +61,14 @@ JSONL_ACTIVE_THRESHOLD = int(os.environ.get("CCM_JSONL_ACTIVE_THRESHOLD", "120")
 # short enough that a missed Stop does not strand the project in
 # BUSY indefinitely.
 BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
+# Cluster-SHELL-transition detection: surface a warning when a project
+# drops back to SHELL too many times in a short window. The canonical
+# trigger is anthropics/claude-code#48069 (macOS silent exits in
+# v2.1.107+), where Claude Code dies every 1-5 minutes and ccm
+# observes SHELL → (user re-attaches) → BUSY → IDLE → SHELL loops.
+# Defaults: 3 transitions in 10 minutes.
+SHELL_CLUSTER_WINDOW = int(os.environ.get("CCM_SHELL_CLUSTER_WINDOW", "600"))
+SHELL_CLUSTER_COUNT = int(os.environ.get("CCM_SHELL_CLUSTER_COUNT", "3"))
 # Minimum seconds before showing DONE after Stop hook fires.
 # Suppresses false DONE at multi-turn boundaries where Stop fires
 # between tool executions and the next turn starts within seconds.
@@ -523,6 +531,104 @@ def managed_hooks_only_warning() -> str:
             "restore real-time signals."
         )
     return ""
+
+
+# ─── Cluster-SHELL-transition detection ───
+# When Claude Code dies repeatedly (most commonly the v2.1.107+ macOS
+# silent-exit regression, anthropics/claude-code#48069), ccm observes a
+# rapid SHELL → (user or ccm re-attach) → BUSY → IDLE → SHELL loop.
+# We record each SHELL transition timestamp in a per-window tmux
+# option `@ccm_shell_history` and surface a warning if the count in
+# the last SHELL_CLUSTER_WINDOW exceeds SHELL_CLUSTER_COUNT.
+
+_SHELL_HISTORY_OPT = "@ccm_shell_history"
+
+
+def _read_shell_history(win_target: str) -> list:
+    """Read the SHELL transition timestamp history for a window.
+
+    Returns a list of unix timestamps, newest first. Entries older
+    than SHELL_CLUSTER_WINDOW seconds are filtered out on read.
+    """
+    raw = tmux_cmd("show-option", "-wqv", "-t", win_target, _SHELL_HISTORY_OPT)
+    if not raw:
+        return []
+    now = int(time.time())
+    horizon = now - SHELL_CLUSTER_WINDOW
+    out = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            ts = int(item)
+        except ValueError:
+            continue
+        if ts >= horizon:
+            out.append(ts)
+    return out
+
+
+def _push_shell_transition(win_target: str) -> None:
+    """Record a new SHELL transition for a window.
+
+    Prepends the current timestamp to `@ccm_shell_history`, trims
+    entries older than SHELL_CLUSTER_WINDOW via `_read_shell_history`,
+    and caps the stored size at 2 × SHELL_CLUSTER_COUNT entries (or
+    a floor of 6) to prevent unbounded growth of the tmux option.
+    Every push writes back a capped, trimmed history so that even
+    pre-existing oversized values converge on the cap.
+    """
+    existing = _read_shell_history(win_target)
+    now = int(time.time())
+    max_entries = max(SHELL_CLUSTER_COUNT * 2, 6)
+
+    # Deduplicate same-second pushes so two code paths hitting
+    # apply_actions for the same scan cycle don't double-count one
+    # transition. We still write back the capped history though,
+    # so pre-existing oversized values are normalised.
+    if existing and existing[0] == now:
+        updated = existing
+    else:
+        updated = [now] + existing
+
+    updated = updated[:max_entries]
+    tmux_cmd(
+        "set-option", "-wt", win_target, _SHELL_HISTORY_OPT,
+        ",".join(str(t) for t in updated),
+    )
+
+
+def shell_cluster_warning(win_target: str, project_name: str = "") -> str:
+    """Return a one-line warning if this window has hit the SHELL
+    cluster threshold, otherwise "".
+
+    The caller typically iterates over projects and collects the
+    non-empty warnings for display in the dashboard footer and
+    `ccm status` output.
+    """
+    history = _read_shell_history(win_target)
+    if len(history) < SHELL_CLUSTER_COUNT:
+        return ""
+    label = f"{project_name}: " if project_name else ""
+    return (
+        f"{label}Claude Code exited {len(history)}+ times in "
+        f"{SHELL_CLUSTER_WINDOW // 60} min — likely "
+        f"anthropics/claude-code#48069 (macOS silent-exit). "
+        f"The conversation auto-restores via `claude --continue`."
+    )
+
+
+def shell_cluster_warnings(projects) -> list:
+    """Return a list of warning strings, one per project that has
+    crossed the SHELL cluster threshold. Empty list if all quiet.
+    """
+    out = []
+    for p in projects:
+        msg = shell_cluster_warning(p.win_target, p.name)
+        if msg:
+            out.append(msg)
+    return out
 
 
 # ─── State detection ───
@@ -1174,6 +1280,13 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     """
     action = rule.action
 
+    # Record SHELL transitions for cluster-crash detection (#48069).
+    # A transition into SHELL from any non-SHELL state appends a
+    # timestamp to @ccm_shell_history, which shell_cluster_warning()
+    # then reads to decide whether to surface a warning.
+    if state == "SHELL" and ctx.prev_state != "SHELL":
+        _push_shell_transition(win_target)
+
     if action == Action.HOLD_NO_WRITE:
         # Preserve prior tmux state and prior done fields.
         return state, ctx.done_flag, ctx.last_done_ts
@@ -1675,6 +1788,8 @@ def print_status():
     managed_warning = managed_hooks_only_warning()
     if managed_warning:
         print(f"\033[33m⚠ {managed_warning}\033[0m")
+    for cluster_msg in shell_cluster_warnings(projects):
+        print(f"\033[33m⚠ {cluster_msg}\033[0m")
     print()
 
     # Header

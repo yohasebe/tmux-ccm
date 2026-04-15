@@ -2278,6 +2278,151 @@ class TestRaiseOnDie:
         assert "raised" not in result
 
 
+# ─── SHELL cluster detection (#48069 canary) ───
+
+class TestShellClusterDetection:
+    """Unit tests for the cluster-SHELL-transition canary that
+    surfaces anthropics/claude-code#48069 (silent-exit regression)."""
+
+    def _tmux_mock(self):
+        """Build a tmux_cmd mock that maintains a fake @ccm_shell_history
+        value in memory, so push and read round-trip correctly."""
+        store = {}  # win_target → csv string
+
+        def fake_tmux(*args):
+            # show-option -wqv -t <target> <name>
+            if len(args) >= 5 and args[0] == "show-option":
+                target = args[3]
+                return store.get(target, "")
+            # set-option -wt <target> <name> <value>
+            if len(args) >= 5 and args[0] == "set-option":
+                target = args[2]
+                value = args[4]
+                store[target] = value
+                return ""
+            return ""
+
+        return fake_tmux, store
+
+    def test_empty_history_no_warning(self, monkeypatch):
+        fake, _store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        assert ccm_core.shell_cluster_warning("0:1", "proj") == ""
+
+    def test_below_threshold_no_warning(self, monkeypatch):
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        now = int(time.time())
+        store["0:1"] = f"{now},{now - 10}"  # only 2 entries
+        assert ccm_core.shell_cluster_warning("0:1", "proj") == ""
+
+    def test_at_threshold_fires_warning(self, monkeypatch):
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        now = int(time.time())
+        store["0:1"] = f"{now},{now - 60},{now - 120}"  # 3 entries
+        msg = ccm_core.shell_cluster_warning("0:1", "proj")
+        assert "proj" in msg
+        assert "#48069" in msg
+        assert "3" in msg  # the count
+
+    def test_stale_entries_ignored(self, monkeypatch):
+        """Entries older than SHELL_CLUSTER_WINDOW are filtered out
+        on read so the count only reflects recent events."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        now = int(time.time())
+        # 2 recent + 2 ancient (past 10 min window by default 600s)
+        store["0:1"] = (
+            f"{now},{now - 60},"
+            f"{now - ccm_core.SHELL_CLUSTER_WINDOW - 100},"
+            f"{now - ccm_core.SHELL_CLUSTER_WINDOW - 200}"
+        )
+        # Only 2 recent entries — below 3 threshold
+        assert ccm_core.shell_cluster_warning("0:1", "proj") == ""
+
+    def test_push_prepends_and_trims_stale(self, monkeypatch):
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        now = int(time.time())
+        # Start with 1 stale + 1 recent
+        store["0:1"] = f"{now - 60},{now - ccm_core.SHELL_CLUSTER_WINDOW - 100}"
+        ccm_core._push_shell_transition("0:1")
+        history = ccm_core._read_shell_history("0:1")
+        # New timestamp prepended, stale filtered out (on READ)
+        assert len(history) == 2
+        assert history[0] >= now  # newly pushed is newest
+
+    def test_push_dedups_same_second(self, monkeypatch):
+        """A second push within the same second should be a no-op
+        so that two rule evaluations in the same cycle do not
+        double-count one transition."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        ccm_core._push_shell_transition("0:1")
+        ccm_core._push_shell_transition("0:1")
+        history = ccm_core._read_shell_history("0:1")
+        assert len(history) == 1
+
+    def test_push_caps_history_length(self, monkeypatch):
+        """History is capped at max(SHELL_CLUSTER_COUNT * 2, 6) to
+        avoid unbounded growth of the tmux option value."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        now = int(time.time())
+        # Seed with many entries (all recent, so none are trimmed by
+        # the time-horizon filter)
+        seed = [str(now - i) for i in range(20)]
+        store["0:1"] = ",".join(seed)
+        ccm_core._push_shell_transition("0:1")
+        history = ccm_core._read_shell_history("0:1")
+        cap = max(ccm_core.SHELL_CLUSTER_COUNT * 2, 6)
+        assert len(history) <= cap
+
+    def test_shell_cluster_warnings_iterates_projects(self, monkeypatch):
+        """The list helper returns one message per crossing project."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        now = int(time.time())
+        store["0:1"] = f"{now},{now - 60},{now - 120}"  # over threshold
+        store["0:2"] = f"{now}"  # below threshold
+        projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+            ccm_core.Project("0:2", "2", "beta",  "/tmp/b", "IDLE"),
+        ]
+        msgs = ccm_core.shell_cluster_warnings(projects)
+        assert len(msgs) == 1
+        assert "alpha" in msgs[0]
+        assert "beta" not in msgs[0]
+
+    def test_apply_actions_records_shell_transition(self, monkeypatch):
+        """A rule that resolves to SHELL with a non-SHELL prev_state
+        should trigger _push_shell_transition via apply_actions."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+
+        ctx = make_ctx(raw="SHELL", prev_state="IDLE")
+        rule, state = ccm_core.evaluate_rules(ctx)
+        assert state == "SHELL"  # process_shell fires
+        ccm_core.apply_actions("0:5", "", ctx, rule, state)
+
+        history = ccm_core._read_shell_history("0:5")
+        assert len(history) == 1  # one new transition recorded
+
+    def test_apply_actions_ignores_shell_to_shell(self, monkeypatch):
+        """A steady-state SHELL (prev=SHELL → new=SHELL) should not
+        push a new transition. Only transitions into SHELL count."""
+        fake, store = self._tmux_mock()
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+
+        ctx = make_ctx(raw="SHELL", prev_state="SHELL")
+        rule, state = ccm_core.evaluate_rules(ctx)
+        ccm_core.apply_actions("0:5", "", ctx, rule, state)
+
+        history = ccm_core._read_shell_history("0:5")
+        assert history == []  # no transition recorded
+
+
 # ─── cmd_send ───
 
 class TestCmdSend:

@@ -21,6 +21,7 @@ class TestDashboardImports:
         assert hasattr(dashboard, "hooks_log_warning")
         assert hasattr(dashboard, "disable_all_hooks_warning")
         assert hasattr(dashboard, "managed_hooks_only_warning")
+        assert hasattr(dashboard, "shell_cluster_warnings")
         assert hasattr(dashboard, "hooks_configured")
 
 
