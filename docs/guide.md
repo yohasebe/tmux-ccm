@@ -114,12 +114,22 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `g` | Register | Tag an existing tmux window as a ccm project |
 | `r` | Remove | Choose [u]nregister (keep window) or [d]elete (kill window) |
 | `x` | Exit all | Exit all idle Claude Code sessions to free resources |
-| `/` | Search | Filter projects by name |
+| `/` | Filter | Live incremental search: type to narrow, `↑↓`/`C-p`/`C-n` to select, `Enter` to attach, `C-u` to clear, `Esc` to cancel. Unicode-safe — Japanese project names match on Japanese substrings |
 | `t` | Tree | Switch to tree view |
 | `m` | Menu | Switch to interactive menu |
 | `q` / `Esc` | Quit | Close the dashboard |
 
 The dashboard auto-refreshes every 2 seconds to keep status icons up to date. Navigation keys (`↑↓/jk`) respond instantly without waiting for a refresh.
+
+### Direct-to-filter shortcut
+
+If you find yourself reaching for `/` right after opening the dashboard, bind `@ccm-key-search` in your `~/.tmux.conf` to open the dashboard already in live-filter mode:
+
+```tmux
+set -g @ccm-key-search "/"   # prefix + / → dashboard opens in filter mode
+```
+
+You can also run `ccm search` (or `ccm dashboard --search`) from a shell or another tmux binding for the same effect. This is handy when you have many projects — type a few characters to jump straight to the one you want, instead of hunting through the full list.
 
 ## The Tree View
 
