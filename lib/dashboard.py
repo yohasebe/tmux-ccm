@@ -113,9 +113,11 @@ class Dashboard:
         bg = threading.Thread(target=self._refresh_loop, daemon=True)
         bg.start()
 
-        # If launched with --search, jump straight into the search prompt.
-        # Only meaningful in dashboard mode (tree and menu have their own
-        # navigation keys, not the same Search action).
+        # If launched with --search, jump straight into the quick-search
+        # prompt. "Quick" (not incremental) because _do_search reads a
+        # full query with _prompt and jumps to the first match on Enter;
+        # it is not a live typing filter. Only meaningful in dashboard
+        # mode — tree and menu have their own navigation.
         if self.start_in_search and self.mode == "dashboard":
             self._do_search(stdscr)
             self._render_current(stdscr)

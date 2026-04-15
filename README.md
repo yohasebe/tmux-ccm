@@ -116,7 +116,8 @@ To additionally bind dedicated keys, add to `~/.tmux.conf`:
 set -g @ccm-key-menu "C"        # optional: enable prefix + C for menu
 set -g @ccm-key-tree "T"        # optional: enable prefix + T for tree view
 set -g @ccm-key-search "/"      # optional: enable prefix + / to open the dashboard
-                                 # directly in incremental search mode
+                                 # directly in quick-search mode (type, Enter to
+                                 # jump to the first matching project)
 ```
 
 > [!TIP]
