@@ -2616,6 +2616,12 @@ def cmd_send(args):
             ccm_die(f"Failed to read message file: {e}")
     elif use_stdin:
         message = sys.stdin.read()
+        # Once we have consumed stdin, the interactive confirmation
+        # prompt can no longer read from it (EOFError). Force-skip
+        # confirmation so a TTY user running `ccm send blog --stdin`
+        # and typing a body terminated by Ctrl-D is not silently
+        # cancelled.
+        skip_confirm = True
     else:
         message = positional_message
 

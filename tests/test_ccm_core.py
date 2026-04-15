@@ -2398,6 +2398,40 @@ class TestCmdSend:
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "piped2") in calls
 
+    def test_send_stdin_from_tty_skips_confirmation(self, monkeypatch):
+        """Regression guard for the silent-cancel bug:
+
+        A TTY user running `ccm send blog --stdin` and typing a
+        message terminated by Ctrl-D consumes stdin. The confirmation
+        prompt's `input()` call would then raise EOFError because
+        stdin is exhausted, and the `except EOFError` branch would
+        silently cancel — the user sees "Cancelled" and never gets
+        the preview, and the message is lost.
+
+        Fix: reading stdin force-sets skip_confirm. This test
+        simulates the scenario with isatty=True and a StringIO
+        stdin, and asserts the message is still sent.
+        """
+        self._patch_resolution(monkeypatch)
+        import io
+        monkeypatch.setattr("sys.stdin", io.StringIO("typed body"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)   # TTY
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)  # TTY
+        # Also patch builtins.input so that if the fix regressed
+        # we would raise a clear error instead of EOFError.
+        def _fail_input(*a, **k):
+            raise AssertionError(
+                "confirmation prompt should have been skipped after "
+                "consuming stdin"
+            )
+        monkeypatch.setattr("builtins.input", _fail_input)
+
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "--stdin"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "typed body") in calls
+        assert ("send-keys", "-t", "0:5", "Enter") in calls
+
     def test_send_double_dash_ends_flag_parsing(self, monkeypatch):
         """`--` makes subsequent args positional even if they start with `-`."""
         self._patch_resolution(monkeypatch)
