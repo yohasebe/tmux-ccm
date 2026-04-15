@@ -2478,6 +2478,46 @@ class TestShellClusterDetection:
 
         assert len(ccm_core._read_shell_history("0:5")) == 1
 
+    def test_clear_done_clears_shell_history(self, monkeypatch, tmp_path):
+        """clear_done() is the canonical post-attach reset, called
+        from cmd_attach. It should also wipe @ccm_shell_history so
+        the cluster canary acknowledges the user's attention.
+        """
+        # Stub tmux_cmd: track set-option calls and serve show-option
+        # for @ccm_dir / @ccm_shell_history.
+        store = {"0:5/@ccm_dir": "/tmp/proj", "0:5/@ccm_shell_history": "1,2,3"}
+        unset_calls = []
+
+        def fake(*args):
+            if len(args) >= 5 and args[0] == "show-option":
+                target = args[3]
+                opt = args[4]
+                return store.get(f"{target}/{opt}", "")
+            if args[0] == "set-option":
+                # Two real shapes used by clear_done():
+                #   set-option -wt TARGET -u OPT
+                #   set-option -wq -t TARGET OPT VALUE
+                target = None
+                if "-wt" in args:
+                    target = args[args.index("-wt") + 1]
+                elif "-t" in args:
+                    target = args[args.index("-t") + 1]
+                if "-u" in args:
+                    opt = args[-1]
+                    unset_calls.append((target, opt))
+                    store.pop(f"{target}/{opt}", None)
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        # Avoid touching the real CCM_HOOK_DIR
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(tmp_path))
+
+        ccm_core.clear_done("0:5")
+
+        # @ccm_shell_history should have been unset
+        assert ("0:5", "@ccm_shell_history") in unset_calls
+        assert "0:5/@ccm_shell_history" not in store
+
 
 # ─── cmd_send ───
 

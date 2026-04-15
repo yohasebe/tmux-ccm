@@ -2034,7 +2034,15 @@ def auto_start_claude(win_target):
 
 
 def clear_done(win_target):
-    """Clear DONE hook signal for a window."""
+    """Clear DONE hook signal and post-attach state for a window.
+
+    Despite the name, this function also resets @ccm_prev_state and
+    @ccm_shell_history. Both are intended as post-attach cleanups:
+    when the user attaches to a project, the previous detection
+    cache is wiped so the next scan computes state from scratch,
+    and the cluster-SHELL canary is acknowledged (the warning will
+    reappear only if NEW transitions cluster after the attach).
+    """
     proj_dir = tmux_cmd("show-option", "-wqv", "-t", win_target, "@ccm_dir")
     if not proj_dir:
         return
@@ -2048,6 +2056,7 @@ def clear_done(win_target):
     except OSError:
         pass
     tmux_cmd("set-option", "-wq", "-t", win_target, "@ccm_prev_state", "")
+    tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_shell_history")
 
 
 def init_dirs():

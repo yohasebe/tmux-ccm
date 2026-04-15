@@ -737,9 +737,14 @@ class Dashboard:
         # Auto-start if SHELL
         if p.state == "SHELL":
             tmux_cmd("send-keys", "-t", p.win_target, CLAUDE_CMD, "Enter")
-        # Clear DONE
+        # Clear DONE flag, prev state cache, and SHELL cluster history.
+        # The history clear acknowledges the #48069 canary: by attaching
+        # to the project, the user is taking action on it, so the count
+        # resets. New transitions after this point will start a fresh
+        # cluster.
         tmux_cmd("set-option", "-wt", p.win_target, "-u", "@ccm_done")
         tmux_cmd("set-option", "-wt", p.win_target, "-u", "@ccm_prev_state")
+        tmux_cmd("set-option", "-wt", p.win_target, "-u", "@ccm_shell_history")
         # Cross-session switch
         session = get_session()
         target_session = p.win_target.split(":")[0]
@@ -1506,6 +1511,9 @@ class Dashboard:
                             if p.win_target == wt and p.state == "SHELL":
                                 tmux_cmd("send-keys", "-t", wt, CLAUDE_CMD, "Enter")
                                 break
+                    # Acknowledge the #48069 cluster canary on attach
+                    # (parallel with _do_attach in dashboard mode).
+                    tmux_cmd("set-option", "-wt", wt, "-u", "@ccm_shell_history")
                     target_session = wt.split(":")[0]
                     session = get_session()
                     if target_session != session:
