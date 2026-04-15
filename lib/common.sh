@@ -530,11 +530,32 @@ _ccm_claude_md_section() {
 ## Multi-Project Environment
 
 This user manages multiple projects with ccm (Claude Code Manager for tmux).
-Use the following commands to discover and inspect other projects:
+Use the following commands to discover, inspect, and coordinate other projects:
 
 - `ccm list` — List all managed projects (names and directories)
-- `ccm status` — Show all project states (branch, port, Claude status)
+- `ccm status` — Show all project states (branch, port, Claude state)
 - `ccm capture <name>` — Capture visible terminal output from another project
+- `ccm send <name> <message>` — Send a prompt to another project's Claude
+  Code session. Accepts a positional message, `--file <path>`, `--stdin`,
+  or `-` as a stdin alias. Multi-line messages are converted to `M-Enter`
+  between lines so the body arrives as a single multi-line prompt.
+
+  State policy (important — do not try to override PERMIT):
+    - **IDLE / DONE** → send immediately
+    - **BUSY** → refused unless `--force` (message queues into the input
+      buffer and mixes with Claude's current turn)
+    - **SHELL** → refused unless `--start` (launches Claude first, waits
+      ~2s, then sends)
+    - **PERMIT** → **always refused, even with `--force`**. Typing into
+      a permission dialog could accidentally approve or deny a tool
+      call. Ask the user to respond to the dialog in the target pane
+      first, then retry the send.
+
+  Other flags: `--no-enter` (type without submitting), `-y` / `--yes`
+  (skip the interactive confirmation), `--` (end of flag parsing, for
+  messages that start with `-`). Confirmation is auto-skipped when
+  stdin or stdout is not a TTY, so `echo "..." | ccm send <name> --stdin`
+  works from shell pipelines and MCP server hooks.
 <!-- ccm:end -->
 SECTION
 }
