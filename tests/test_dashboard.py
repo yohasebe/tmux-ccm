@@ -25,6 +25,98 @@ class TestDashboardImports:
         assert hasattr(dashboard, "hooks_configured")
 
 
+# ─── render() smoke tests ───
+#
+# These tests instantiate a Dashboard with all external side-effect
+# helpers stubbed out, then call render() against a MagicMock stdscr.
+# They are not pixel-level rendering tests — they just verify that
+# render() executes to completion without raising on a few realistic
+# project-list shapes. Catches the class of bug where a code edit
+# references a local variable before it is bound (UnboundLocalError),
+# which the old test suite never exercised because dashboard.py was
+# untested at the function-body level.
+
+def _stub_dashboard_environment(monkeypatch):
+    """Mute every external call dashboard.render() reaches into so
+    Dashboard() can be constructed and render() can run in a pytest
+    process without curses, without tmux, and without filesystem
+    side effects."""
+    import curses as _curses
+
+    monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
+    monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
+    monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
+    monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda: "")
+    monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda: "")
+    monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
+    monkeypatch.setattr("dashboard.get_session", lambda: "0")
+    monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
+    monkeypatch.setattr("dashboard.read_hook_signal", lambda d: None)
+    monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
+    monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
+    monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
+    monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
+
+
+def _make_mock_stdscr(width=200, height=40):
+    from unittest.mock import MagicMock
+    stdscr = MagicMock()
+    stdscr.getmaxyx.return_value = (height, width)
+    return stdscr
+
+
+class TestRenderSmoke:
+    def test_render_empty_project_list(self, monkeypatch):
+        """The most basic render path: no projects at all."""
+        _stub_dashboard_environment(monkeypatch)
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = []
+        d.render(_make_mock_stdscr())  # must not raise
+
+    def test_render_with_projects(self, monkeypatch):
+        """Renders a list with several state variations to walk
+        more of the row-rendering code path."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+            ccm_core.Project("0:2", "2", "beta",  "/tmp/b", "BUSY"),
+            ccm_core.Project("0:3", "3", "gamma", "/tmp/c", "DONE"),
+            ccm_core.Project("0:4", "4", "delta", "/tmp/d", "PERMIT"),
+            ccm_core.Project("0:5", "5", "epsilon", "/tmp/e", "SHELL"),
+        ]
+        d.render(_make_mock_stdscr())
+
+    def test_render_with_canary_warnings_active(self, monkeypatch):
+        """Exercises every canary banner row at once. Catches off-by-one
+        layout bugs and references-before-assignment in the canary block.
+
+        Regression guard: a previous edit referenced `projects` in the
+        SHELL cluster canary loop before the variable was bound, raising
+        UnboundLocalError on every dashboard open. This test would have
+        caught it immediately.
+        """
+        _stub_dashboard_environment(monkeypatch)
+        # Re-stub three of the canaries to return non-empty messages
+        monkeypatch.setattr("dashboard.hooks_log_warning",
+                            lambda: "hooks.log too big — clear it")
+        monkeypatch.setattr("dashboard.disable_all_hooks_warning",
+                            lambda: "disableAllHooks set")
+        monkeypatch.setattr("dashboard.managed_hooks_only_warning",
+                            lambda: "managed hooks only")
+        monkeypatch.setattr("dashboard.shell_cluster_warnings",
+                            lambda p: ["alpha: silent exit cluster"])
+
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "SHELL"),
+        ]
+        d.hooks_on = False  # also exercises the "Hooks: OFF" banner
+        d.render(_make_mock_stdscr())
+
+
 # ─── _strip_last_grapheme ───
 
 class TestStripLastGrapheme:

@@ -415,6 +415,11 @@ class Dashboard:
                 self._addstr(stdscr, row, 2, header, curses.color_pair(C_DIM))
             row += 1
 
+            # Snapshot the project list once so the global banners and
+            # the per-project canary below see the same data.
+            with self.lock:
+                projects = list(self.projects)
+
             # Hooks: OFF banner (shown once above project list)
             if not self.hooks_on:
                 banner = "⚠ Hooks not installed — run 'ccm setup-hooks' for accurate state detection"
@@ -443,10 +448,6 @@ class Dashboard:
             for cluster_msg in shell_cluster_warnings(projects):
                 self._addstr(stdscr, row, 2, "⚠ " + cluster_msg, curses.color_pair(C_YELLOW))
                 row += 1
-
-            # Project list
-            with self.lock:
-                projects = list(self.projects)
 
             if not projects:
                 self._addstr(stdscr, row + 1, 4, "No active projects.", curses.color_pair(C_DIM))
