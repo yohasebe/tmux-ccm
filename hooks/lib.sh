@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # ccm hook library — shared functions for all hook scripts
 
+# State icon table lives in one place; pull it in here so the two
+# notification-path call sites (`ccm_write_signal`,
+# `_ccm_instant_notify`) no longer carry their own inline copy.
+# `BASH_SOURCE` resolves to hooks/lib.sh, so its sibling lib/
+# directory holds state_meta.sh via ../lib.
+_CCM_HOOK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/state_meta.sh
+source "${_CCM_HOOK_LIB_DIR}/../lib/state_meta.sh"
+
 # Run the boilerplate preamble common to every on-*.sh hook: sets up
 # HOOK_DIR, consumes Claude Code's JSON payload from stdin into
 # `INPUT`, extracts `CWD`, resolves symlinks when possible, and
@@ -115,10 +124,7 @@ ccm_write_signal() {
         # Update window name icon for instant status bar change
         if [[ -n "$project" ]]; then
             local icon
-            case "$state" in
-                PERMIT) icon="⚠" ;; BUSY) icon="◉" ;;
-                IDLE) icon="●" ;; SHELL) icon="■" ;; *) icon="●" ;;
-            esac
+            icon=$(ccm_state_icon "$state")
             tmux rename-window -t "$win_target" "${icon} ${project}" 2>/dev/null
         fi
 
@@ -266,10 +272,12 @@ _ccm_instant_notify() {
     sound_setting=$(tmux show-option -gqv @ccm-notify-sound 2>/dev/null)
     sound_setting="${sound_setting:-off}"
 
+    # Icon comes from the state-meta table; body text is notification-
+    # specific (not part of state metadata) so it stays inline.
     local icon title body
+    icon=$(ccm_state_icon "$state")
     case "$state" in
         PERMIT)
-            icon="⚠"
             if [[ -n "$detail" ]]; then
                 body="Permission required: ${detail}"
             else
@@ -277,11 +285,9 @@ _ccm_instant_notify() {
             fi
             ;;
         COMPLETED)
-            icon="✔"
             body="Response complete"
             ;;
         *)
-            icon="●"
             body="State changed to ${state}"
             ;;
     esac

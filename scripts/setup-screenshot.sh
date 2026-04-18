@@ -13,6 +13,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CCM_ROOT="$(dirname "$SCRIPT_DIR")"
+# Pull in the single-source state icon table so this mock stays in
+# sync with the live detection-path icons.
+# shellcheck source=../lib/state_meta.sh
+source "${CCM_ROOT}/lib/state_meta.sh"
 CCM_BIN="${CCM_ROOT}/ccm"
 SOCKET="ccm-ss"
 SESSION="work"
@@ -29,13 +33,10 @@ add_project() {
     # that just finished. It is shown as IDLE in @ccm_prev_state so
     # the detection rules agree with the marker.
     local icon prev_state
+    icon=$(ccm_state_icon "$state")
     case "$state" in
-        PERMIT)    icon="⚠" ; prev_state="PERMIT" ;;
-        BUSY)      icon="◉" ; prev_state="BUSY"   ;;
-        COMPLETED) icon="✔" ; prev_state="IDLE"   ;;
-        IDLE)      icon="●" ; prev_state="IDLE"   ;;
-        SHELL)     icon="■" ; prev_state="SHELL"  ;;
-        *)         icon="○" ; prev_state="$state" ;;
+        COMPLETED) prev_state="IDLE" ;;
+        *)         prev_state="$state" ;;
     esac
 
     local win_idx

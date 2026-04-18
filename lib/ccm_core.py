@@ -175,6 +175,12 @@ HOOK_SCRIPTS = [
 ]
 
 STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
+# Detection state icons. Keep in sync with `lib/state_meta.sh` —
+# bash hooks pay a ~50ms cost per Python cold start, so we cannot
+# just shell out to Python to resolve icons; the bash side has its
+# own copy in `ccm_state_icon`. Update BOTH when adding / changing
+# a state icon. The extra "COMPLETED" key used by notification
+# paths is bash-only (not a detection state).
 STATE_ICONS = {
     "PERMIT": "⚠", "BUSY": "◉", "IDLE": "●", "SHELL": "■", "DOWN": "○",
 }

@@ -482,6 +482,48 @@ EOF
     }
 }
 
+@test "state_meta: ccm_state_icon agrees with Python STATE_ICONS" {
+    # Single-source guard: bash lib/state_meta.sh and Python
+    # lib/ccm_core.py::STATE_ICONS must stay aligned. We pull the
+    # Python table at test time and compare every entry against
+    # ccm_state_icon's output so drift is caught automatically.
+    # COMPLETED is deliberately bash-only (notification-display
+    # marker, not a detection state) and excluded from this check.
+    source "${CCM_ROOT}/lib/state_meta.sh"
+
+    local mismatches=""
+    while IFS=$'\t' read -r state expected; do
+        [[ -z "$state" ]] && continue
+        local actual
+        actual=$(ccm_state_icon "$state")
+        if [[ "$actual" != "$expected" ]]; then
+            mismatches+="${state}: bash=${actual} python=${expected}"$'\n'
+        fi
+    done < <(python3 -c "
+import sys; sys.path.insert(0, '${CCM_ROOT}/lib')
+from ccm_core import STATE_ICONS
+for k, v in STATE_ICONS.items():
+    print(f'{k}\t{v}')
+")
+
+    if [[ -n "$mismatches" ]]; then
+        echo "STATE_ICONS drift between bash and Python:"
+        echo "$mismatches"
+        return 1
+    fi
+
+    # Unknown states fall back to IDLE's icon rather than erroring —
+    # hook scripts must never fail a tmux rename because a new
+    # upstream state name appeared.
+    [[ "$(ccm_state_icon WHATEVER)" == "●" ]] || {
+        echo "fallback mismatch: $(ccm_state_icon WHATEVER)"; return 1;
+    }
+    # Notification-only marker must also resolve.
+    [[ "$(ccm_state_icon COMPLETED)" == "✔" ]] || {
+        echo "COMPLETED missing: $(ccm_state_icon COMPLETED)"; return 1;
+    }
+}
+
 @test "on-prompt-submit.sh: cancels pending sentinel on new turn" {
     local tmp_home="${MOCK_DIR}/prompt-home"
     local cwd="/tmp/prompt-proj"
