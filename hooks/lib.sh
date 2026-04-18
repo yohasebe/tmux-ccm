@@ -1,6 +1,92 @@
 #!/usr/bin/env bash
 # ccm hook library — shared functions for all hook scripts
 
+# Run the boilerplate preamble common to every on-*.sh hook: sets up
+# HOOK_DIR, consumes Claude Code's JSON payload from stdin into
+# `INPUT`, extracts `CWD`, resolves symlinks when possible, and
+# computes the md5-of-cwd `KEY`. All four variables are set in the
+# caller's scope (bash function-local is opt-in via `local`, so the
+# plain assignments below propagate). Returns 0 on success and 1
+# when the payload lacks a cwd or no md5 implementation is available
+# — hook scripts should `ccm_hook_init || exit 0` to short-circuit.
+#
+# Reads stdin exactly once. If a script needs additional fields from
+# the payload, parse them from "$INPUT" after calling ccm_hook_init.
+ccm_hook_init() {
+    HOOK_DIR="${TMPDIR:-/tmp}/ccm-${UID}/hooks"
+    mkdir -p "$HOOK_DIR" 2>/dev/null || true
+
+    INPUT=$(cat)
+    CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || \
+        CWD=$(printf '%s' "$INPUT" | grep -o '"cwd" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    [[ -z "$CWD" ]] && return 1
+
+    if command -v realpath &>/dev/null && [[ -e "$CWD" ]]; then
+        CWD=$(realpath "$CWD" 2>/dev/null) || true
+    fi
+
+    if command -v md5 &>/dev/null; then
+        KEY=$(printf '%s' "$CWD" | md5)
+    elif command -v md5sum &>/dev/null; then
+        KEY=$(printf '%s' "$CWD" | md5sum | cut -d' ' -f1)
+    else
+        return 1
+    fi
+    return 0
+}
+
+# Build a human-readable tool detail string from Claude Code's hook
+# payload (the Permission* hooks use this to enrich their desktop
+# notification, e.g. "Bash: rm -rf ..." or "Edit: ~/src/main.rs").
+# Expects `INPUT` in scope (populated by ccm_hook_init). Writes the
+# formatted string to stdout; empty output means "no tool info".
+# Args: $1=OPTIONAL prefix (e.g. "Denied ") prepended to the result.
+ccm_hook_format_tool_detail() {
+    local prefix="${1:-}"
+    local tool_name tool_detail detail=""
+
+    tool_name=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || \
+        tool_name=$(printf '%s' "$INPUT" | grep -o '"tool_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+
+    if [[ -n "$tool_name" ]]; then
+        case "$tool_name" in
+            Bash|bash)
+                tool_detail=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null | head -c 60)
+                ;;
+            Edit|Write|Read)
+                tool_detail=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+                tool_detail="${tool_detail/#$HOME/\~}"
+                ;;
+        esac
+        if [[ -n "$tool_detail" ]]; then
+            detail="${tool_name}: ${tool_detail}"
+        else
+            detail="${tool_name}"
+        fi
+    fi
+
+    if [[ -n "$prefix" && -n "$detail" ]]; then
+        printf '%s%s' "$prefix" "$detail"
+    elif [[ -n "$prefix" ]]; then
+        # Drop trailing space when there is no tool info
+        printf '%s' "${prefix% }"
+    else
+        printf '%s' "$detail"
+    fi
+}
+
+# Look up the ccm project name for a given cwd by scanning tmux
+# windows with `@ccm_dir` set. Writes the project name to stdout
+# (empty if no matching window). on-stop.sh and on-notification.sh
+# share this so they can feed a meaningful name into the desktop
+# notification ("ccm ✔ my-project" rather than "ccm ✔ ").
+# Args: $1=CWD to match against `@ccm_dir`.
+ccm_hook_resolve_project() {
+    local cwd="$1"
+    tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
+        | awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}'
+}
+
 # Write signal to hook file AND directly update tmux window option
 # for instant status bar reflection (no polling delay).
 # Args: $1=HOOK_DIR, $2=KEY (md5), $3=STATE (BUSY/PERMIT/SHELL), $4=CWD, $5=DETAIL (optional)
