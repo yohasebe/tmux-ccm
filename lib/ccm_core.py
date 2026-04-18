@@ -281,6 +281,44 @@ def _hook_signal_path(project_dir):
     return os.path.join(CCM_HOOK_DIR, md5_hash(expanded))
 
 
+# Directory used for per-project "instant notification already
+# fired" markers. Each marker filename is the same md5-of-cwd key
+# used by the hook signal file, so ccm_core and the bash hook share
+# one naming scheme. Must stay in sync with the `marker_dir` resolver
+# in `hooks/lib.sh::_ccm_instant_notify`.
+CCM_NOTIFY_MARKER_DIR = os.path.join(CCM_TMP_DIR, "notified")
+
+
+def read_project_notify_marker(project_dir):
+    """Read the per-project instant-notify marker. Returns (ts, state)
+    or None if missing/unparseable.
+
+    Written by `hooks/lib.sh::_ccm_instant_notify` when the hook path
+    fires a desktop notification. Used by inject_status polling to
+    avoid firing a duplicate notification for a project whose hook
+    already notified — per-project scoping is required so that
+    project A's recent completion does not suppress project B's
+    notification (the symptom users see as "COMPLETED notifications
+    randomly delayed / missing when running multiple projects").
+    """
+    if not project_dir:
+        return None
+    expanded = _resolve_project_dir(project_dir)
+    marker_path = os.path.join(CCM_NOTIFY_MARKER_DIR, md5_hash(expanded))
+    try:
+        with open(marker_path) as f:
+            content = f.read().strip()
+    except OSError:
+        return None
+    parts = content.split(None, 1)
+    if len(parts) < 2:
+        return None
+    try:
+        return (int(parts[0]), parts[1])
+    except (ValueError, TypeError):
+        return None
+
+
 def read_hook_signal(project_dir):
     """Read hook signal file. Returns (timestamp, state, detail) or None.
     Detail is optional extra info (e.g., tool name for PERMIT).

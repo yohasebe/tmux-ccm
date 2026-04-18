@@ -64,7 +64,7 @@ case "$NOTIFY_TYPE" in
             project="${win_info##*	}"
         fi
         if [[ -n "$project" ]]; then
-            _ccm_instant_notify "COMPLETED" "$project" "" &
+            _ccm_instant_notify "COMPLETED" "$project" "" "$KEY" &
         fi
         ;;
 esac

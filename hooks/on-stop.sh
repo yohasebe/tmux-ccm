@@ -38,7 +38,10 @@ if [[ -n "$win_info" ]]; then
     project="${win_info##*	}"
 fi
 
-# Fire instant notification (if enabled)
+# Fire instant notification (if enabled). The key is passed so the
+# dedup marker is per-project — critical when running several ccm
+# projects concurrently, otherwise the first project's COMPLETED
+# notification silently blocks all others for 10 seconds.
 if [[ -n "$project" ]]; then
-    _ccm_instant_notify "COMPLETED" "$project" "" &
+    _ccm_instant_notify "COMPLETED" "$project" "" "$KEY" &
 fi

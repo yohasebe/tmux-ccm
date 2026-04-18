@@ -40,7 +40,7 @@ ccm_write_signal() {
         # (eliminates up to 3s polling delay for critical states)
         if [[ "$state" == "PERMIT" && -n "$project" ]]; then
             _ccm_instant_permit_icon "$win_target" "$project" &
-            _ccm_instant_notify "PERMIT" "$project" "$detail" &
+            _ccm_instant_notify "PERMIT" "$project" "$detail" "$key" &
         fi
     fi
 }
@@ -63,17 +63,36 @@ _ccm_instant_permit_icon() {
 }
 
 # Send desktop notification immediately for PERMIT or COMPLETED state.
-# Writes a marker so inject-status can skip the duplicate notification.
-# Args: $1=STATE (PERMIT/COMPLETED), $2=PROJECT_NAME, $3=DETAIL (optional)
+# Writes a per-project marker so inject-status can skip the duplicate
+# notification for the same project. The marker is keyed off the
+# project's hook-signal `key` (md5 of cwd) so concurrent ccm projects
+# do not dedup each other — a global marker would cause project B's
+# COMPLETED to be silently dropped whenever project A completed within
+# 10 seconds, which is the common case when running several projects
+# in parallel.
+# Args: $1=STATE (PERMIT/COMPLETED), $2=PROJECT_NAME, $3=DETAIL, $4=KEY
 _ccm_instant_notify() {
-    local state="$1" project="$2" detail="${3:-}"
+    local state="$1" project="$2" detail="${3:-}" key="${4:-}"
 
     local tmp_dir="${TMPDIR:-/tmp}/ccm-${UID}"
-    local marker="${tmp_dir}/hook-notified"
+    local marker_dir="${tmp_dir}/notified"
+    mkdir -p "$marker_dir" 2>/dev/null || true
+    # Per-project marker (keyed on md5-of-cwd). Fall back to the legacy
+    # global path if no key was supplied so older hook scripts continue
+    # to function during an in-place upgrade.
+    local marker
+    if [[ -n "$key" ]]; then
+        marker="${marker_dir}/${key}"
+    else
+        marker="${tmp_dir}/hook-notified"
+    fi
 
-    # Dedup: skip if the same state was already notified within 10 seconds.
-    # Stop and Notification(idle_prompt) both fire COMPLETED a few seconds apart;
-    # without this check the user gets a duplicate notification.
+    # Dedup: skip if the same state was already notified within 10 seconds
+    # FOR THIS PROJECT. Stop and Notification(idle_prompt) both fire
+    # COMPLETED a few seconds apart for the same completion event; this
+    # check avoids the duplicate. Cross-project dedup is intentionally
+    # NOT done here — separate projects must be able to fire their own
+    # notifications independently.
     if [[ -f "$marker" ]]; then
         local content prev_ts prev_state now_ts
         content=$(cat "$marker" 2>/dev/null) || true

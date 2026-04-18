@@ -16,6 +16,7 @@ from ccm_core import (
     COMPLETED_AT_TIMEOUT, STATE_ICONS, STATE_PRIORITY,
     tmux_cmd, tmux_batch, build_project_list, update_window_names,
     auto_exit_idle, periodic_autosave, notify, read_hook_signal,
+    read_project_notify_marker,
 )
 
 # tmux status bar color map
@@ -249,21 +250,13 @@ def _inject_status_impl():
     except OSError:
         pass
 
-    # Check if hook already sent a recent notification (avoid duplicate)
-    # Marker file format: "<timestamp> <STATE>"
-    hook_notified_file = os.path.join(CCM_TMP_DIR, "hook-notified")
-    hook_notified_ts = 0
-    hook_notified_state = ""
-    try:
-        if os.path.exists(hook_notified_file):
-            with open(hook_notified_file) as f:
-                parts = f.read().strip().split(None, 1)
-                if len(parts) >= 1:
-                    hook_notified_ts = int(parts[0])
-                if len(parts) >= 2:
-                    hook_notified_state = parts[1]
-    except (OSError, ValueError):
-        pass
+    # Per-project instant-notify marker is read inside the loop below
+    # via `read_project_notify_marker`. This replaces the previous
+    # global `${TMPDIR}/ccm-$UID/hook-notified` path, which suppressed
+    # one project's PERMIT / COMPLETED notification whenever a
+    # different project had fired within the last 30 seconds — a
+    # severe cross-project collision when running ccm with several
+    # concurrent Claude sessions.
     now = int(time.time())
 
     # Write current states and check for transitions.
@@ -292,8 +285,13 @@ def _inject_status_impl():
                 prev = prev_states.get(p.win_target, "")
                 # Notify on PERMIT transitions
                 if p.state != prev and p.state == "PERMIT":
-                    if p.state == hook_notified_state and (now - hook_notified_ts) < COMPLETED_AT_TIMEOUT:
-                        continue
+                    # Per-project dedup: if the hook already instant-
+                    # notified PERMIT for THIS project, skip.
+                    marker = read_project_notify_marker(p.dir) if p.dir else None
+                    if marker is not None:
+                        marker_ts, marker_state = marker
+                        if marker_state == p.state and (now - marker_ts) < COMPLETED_AT_TIMEOUT:
+                            continue
                     hook = read_hook_signal(p.dir) if p.dir else None
                     if not hook:
                         continue
