@@ -350,6 +350,57 @@ STUB
     grep -q ' PERMIT' "$signal_file" || { echo "expected PERMIT"; return 1; }
 }
 
+@test "on-notification.sh: idle_prompt clears signal but never notifies" {
+    # Regression for the "very late COMPLETED notification" bug.
+    # Claude Code's idle_prompt notification has a documented 10-60s+
+    # delay (anthropics/claude-code#5186). When this hook fired
+    # _ccm_instant_notify on idle_prompt, users got a phantom
+    # "Response complete" alert long after the response actually
+    # finished — on-stop.sh's grace-scheduled notification had
+    # already fired, and the late echo was outside the 10s dedup
+    # window so it leaked through. The fix is to drop the
+    # notification call from this branch entirely; the signal-file
+    # clear (which drives the IDLE state transition) must still happen.
+    #
+    # We can't reliably stub osascript here — the production code
+    # backgrounds both `_ccm_instant_notify ... &` and `osascript ... &`,
+    # and the bg subshells often die before a stub can write to the log
+    # under bats. Instead we observe the per-project notify *marker*
+    # that `_ccm_instant_notify` writes SYNCHRONOUSLY before any fork.
+    # If the marker exists after the hook runs, the function was
+    # called — the regression we're guarding against.
+    local cwd="/tmp/test-idle-${RANDOM}"
+    local key
+    key=$(printf '%s' "$cwd" | md5)
+
+    # Pre-populate the signal file as if a prior BUSY hook wrote it,
+    # so the test exercises the file-clear path. Use a stale ts so
+    # the "skip if BUSY-and-future" guard doesn't short-circuit.
+    mkdir -p "${MOCK_DIR}/ccm-${UID}/hooks"
+    printf '%s BUSY' "$(($(date +%s) - 60))" > "${MOCK_DIR}/ccm-${UID}/hooks/${key}"
+
+    TMPDIR="${MOCK_DIR}" \
+        bash -c "cd '${CCM_ROOT}' && \
+                 export TMPDIR='${MOCK_DIR}' && \
+                 echo '{\"cwd\":\"${cwd}\",\"notification_type\":\"idle_prompt\"}' \
+                     | hooks/on-notification.sh"
+
+    # Brief wait to let any backgrounded `_ccm_instant_notify ... &`
+    # write its marker (synchronous within the function).
+    sleep 0.2
+
+    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${key}"
+    [[ ! -f "$signal_file" ]] || { echo "signal file should be deleted: $signal_file"; cat "$signal_file"; return 1; }
+
+    local marker_file="${MOCK_DIR}/ccm-${UID}/notified/${key}"
+    [[ ! -f "$marker_file" ]] || {
+        echo "regression: idle_prompt path called _ccm_instant_notify"
+        echo "marker contents:"
+        cat "$marker_file"
+        return 1
+    }
+}
+
 @test "setup-hooks: skips when already installed" {
     ccm_setup_hooks >/dev/null 2>&1
     run ccm_setup_hooks
