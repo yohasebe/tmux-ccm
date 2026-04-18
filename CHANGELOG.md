@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Initial release.
+## [0.2.0] - 2026-04-18
+
+Initial public release.
 
 ### Added
 - Window-based project management (`ccm add/open/remove/attach/list/register/unregister/rename`)
