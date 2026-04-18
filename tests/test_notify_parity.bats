@@ -76,21 +76,18 @@ _invoke_both() {
     local state="$1" project="$2" detail="${3:-}"
     : > "$NOTIFY_LOG"
 
-    # _ccm_instant_notify returns non-zero when its decision is "skip"
-    # (the `return` statements in lib.sh inherit the preceding
-    # `[[ ]]` exit code). That is correct production behavior, but
-    # bats treats any non-zero in the test body as a failure — so we
-    # swallow it here and rely on the log assertion to judge the
-    # outcome.
+    # Both implementations must return 0 on either fire-or-skip; a
+    # non-zero here means they leaked an error exit code and the test
+    # should fail loudly rather than mask it with `|| true`.
     local bash_key="bash-${state}-$$-${RANDOM}"
-    _ccm_instant_notify "$state" "$project" "$detail" "$bash_key" || true
+    _ccm_instant_notify "$state" "$project" "$detail" "$bash_key"
 
     PYTHONDONTWRITEBYTECODE=1 python3 -c "
 import sys
 sys.path.insert(0, '${CCM_ROOT}/lib')
 import ccm_core
 ccm_core.notify('${state}', '${project}', '${detail}')
-" || true
+"
 
     # Poll the log briefly; stubs are fast but Popen/& are async.
     local i

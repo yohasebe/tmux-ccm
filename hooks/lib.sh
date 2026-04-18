@@ -253,7 +253,11 @@ _ccm_instant_notify() {
     local notify_setting
     notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null)
     notify_setting="${notify_setting:-permit,completed}"
-    [[ "$notify_setting" == "off" ]] && return
+    # Explicit `return 0` on every skip path. A bare `return` would
+    # inherit the preceding command's exit status (e.g. a failed `[[ ]]`
+    # test), making "we decided not to notify" indistinguishable from
+    # an error at the call site.
+    [[ "$notify_setting" == "off" ]] && return 0
 
     # Check if this state's notifications are enabled
     local state_lower="${state,,}"  # PERMIT→permit, COMPLETED→completed
@@ -261,8 +265,8 @@ _ccm_instant_notify() {
         all) ;;
         *"$state_lower"*) ;;
         # Backwards compat: "done" in setting also matches "completed"
-        *"done"*) [[ "$state_lower" == "completed" ]] || return ;;
-        *) return ;;
+        *"done"*) [[ "$state_lower" == "completed" ]] || return 0 ;;
+        *) return 0 ;;
     esac
 
     # (Marker already written above for both hook-vs-hook and hook-vs-inject dedup.)

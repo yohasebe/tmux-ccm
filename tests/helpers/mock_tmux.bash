@@ -45,7 +45,12 @@ _mock_show_option() {
     else
         file="${MOCK_STATE_DIR}/options/${safe_target}/${key}"
     fi
+    # Match real tmux `-q` semantics: unset options emit empty output
+    # with exit 0 rather than a non-zero failure. Returning 1 here
+    # leaks through `x=$(tmux show-option ...)` command substitutions
+    # and trips bats' implicit error checking in callers.
     [[ -f "$file" ]] && cat "$file"
+    return 0
 }
 
 _mock_set_option() {
