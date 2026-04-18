@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Refactor: hook scripts share boilerplate via new `ccm_hook_init` / `ccm_hook_format_tool_detail` / `ccm_hook_resolve_project` helpers in `hooks/lib.sh` (−184 lines across 7 scripts)
+- Refactor: state icon table centralised in `lib/state_meta.sh`; Python `STATE_ICONS` and the bash `ccm_state_icon` helper read from one source, with a bats parity test enforcing the single-source invariant
+- Refactor: state detection engine extracted into `lib/ccm_detection.py` (`DETECTION_RULES`, `Rule` / `DetectionContext` / `Action` types, slow- and fast-path context builders, `apply_actions`). `ccm_core.py` re-exports the detection API so existing callers are unaffected
+- Refactor: `cmd_*` subcommand handlers extracted into `lib/ccm_commands.py` (17 handlers, 849 lines). `ccm_core.py` shrinks from ~3000 to ~1750 lines of constants, tmux helpers, and the data model
+
+### Fixed
+- `_ccm_instant_notify` now returns 0 on deliberate skip decisions (`@ccm-notify=off`, state not in the configured list, etc.). Previously a bare `return` inherited a failed `[[ ]]` exit status and leaked 1, making "decided not to notify" indistinguishable from an error at the call site. Current hook call sites ignore the return value so production was unaffected, but the new contract is now enforced by the parity test
+- Circular-import latent bug: running `python3 lib/ccm_core.py <subcmd>` loaded the file as `__main__`, and the new submodule re-exports triggered a partially-initialized re-entry on `ccm_detection` / `ccm_commands`. Fixed with a `sys.modules.setdefault("ccm_core", ...)` alias at module top; normal `import ccm_core` callers are unaffected
+
+### Added
+- Drift guard: `tests/test_notify_parity.bats` (15 rows) verifies Python `notify()` and bash `_ccm_instant_notify` reach identical fire/skip decisions for every `@ccm-notify` × state combination. PATH-override sandboxing; no production code is touched
+
 ## [0.2.0] - 2026-04-18
 
 Initial public release.
