@@ -137,16 +137,18 @@ set -g @ccm-key-search "/"      # optional: enable prefix + / to open the dashbo
 ccm can send desktop notifications (macOS and Linux) when project states change:
 
 ```tmux
-set -g @ccm-notify "permit,done"     # notify on PERMIT and completion
+set -g @ccm-notify "permit,completed"     # notify on PERMIT and completion
 ```
 
 | Value | Behavior |
 |-------|----------|
-| `permit,done` (default) | Notify on permission prompt and completion ("done" is kept for backwards compatibility) |
+| `permit,completed` (default) | Notify on permission prompt and completion |
 | `permit` | Notify when permission is needed |
-| `done` | Notify on completion (Claude finished responding) |
+| `completed` | Notify on completion (Claude finished responding) |
 | `all` | All state changes |
 | `off` | No notifications |
+
+The legacy value `done` is accepted as a synonym for `completed`, so configurations written for ccm v0.1.0 continue to work without modification.
 
 Enable notification sound:
 

@@ -137,16 +137,18 @@ set -g @ccm-key-search "/"      # 任意: prefix + / でダッシュボードを
 プロジェクトの状態変化時にデスクトップ通知（macOS / Linux対応）を送信できます：
 
 ```tmux
-set -g @ccm-notify "permit,done"     # PERMITと完了時に通知
+set -g @ccm-notify "permit,completed"     # PERMITと完了時に通知
 ```
 
 | 値 | 動作 |
 |----|------|
-| `permit,done`（デフォルト） | 許可プロンプトと完了時に通知（"done"は後方互換のため維持） |
+| `permit,completed`（デフォルト） | 許可プロンプトと完了時に通知 |
 | `permit` | 許可が必要な時に通知 |
-| `done` | 完了時に通知（Claudeのレスポンス完了） |
+| `completed` | 完了時に通知（Claudeのレスポンス完了） |
 | `all` | 全ての状態変化 |
 | `off` | 通知なし |
+
+旧名 `done` は `completed` のエイリアスとして受理されるため、ccm v0.1.0 向けの設定ファイルをそのまま使い続けられます。
 
 通知音を有効化：
 

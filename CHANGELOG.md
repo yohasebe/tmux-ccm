@@ -26,7 +26,7 @@ Initial public release.
 - Interactive menu (`prefix + C`) for settings management
 - `ccm send` — cross-project prompt injection with state-gated safety (PERMIT hard guard)
 - Three status bar modes (`@ccm-status-line` 0/1/2) with theme compatibility
-- Desktop notifications (`@ccm-notify`) with instant hook delivery, sound options, and per-project dedup markers so concurrent projects never suppress each other's notifications
+- Desktop notifications (`@ccm-notify`) with instant hook delivery, sound options, per-project dedup markers (concurrent projects never suppress each other's notifications), and a grace window (`CCM_COMPLETION_GRACE_SEC`) that absorbs the Stop hooks Claude Code fires at multi-turn tool boundaries so the alert only arrives on a genuine completion
 - Snapshot save/load/list/delete with `_autosave` on `ccm stop --all`
 - Auto-start Claude Code on window switch; auto-exit idle sessions after 10 minutes
 - Git branch (with dirty indicator) and listening TCP port detection per project
