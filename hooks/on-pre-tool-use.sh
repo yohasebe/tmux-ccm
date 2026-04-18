@@ -26,4 +26,8 @@ else
     exit 0
 fi
 
+# Cancel any COMPLETED notification scheduled by a recent Stop at a
+# turn boundary — a new tool call means Claude is still working.
+_ccm_cancel_pending_completion "$HOOK_DIR" "$KEY"
+
 ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "$CWD"

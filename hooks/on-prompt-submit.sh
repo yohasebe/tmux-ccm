@@ -25,4 +25,8 @@ else
     exit 0
 fi
 
+# Cancel any COMPLETED notification scheduled by a recent Stop —
+# the user is starting a new turn, not waiting on a finished response.
+_ccm_cancel_pending_completion "$HOOK_DIR" "$KEY"
+
 ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "$CWD"

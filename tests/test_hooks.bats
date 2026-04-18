@@ -415,3 +415,87 @@ STUB
     count=$(echo "$result" | jq '.hooks.UserPromptSubmit | length')
     [[ "$count" -eq 1 ]]
 }
+
+# ============================================================
+# Multi-turn Stop delayed-notify (pending sentinel flow)
+# ============================================================
+#
+# These hooks cooperate to avoid firing a COMPLETED notification at
+# every Stop, which Claude Code raises at each tool-call boundary:
+#   - on-stop.sh writes `<key>.pending` and schedules a delayed check
+#   - on-pre-tool-use.sh / on-prompt-submit.sh delete the sentinel
+#     when new work begins, so the scheduled notify finds nothing
+#
+# The async timing (sleep 3) isn't exercised here — we only verify
+# the synchronous sentinel I/O that the two sides depend on.
+
+@test "on-stop.sh: writes .pending sentinel instead of immediate notify" {
+    # on-stop.sh queries tmux to resolve the project name; shim a
+    # minimal tmux so that list-windows returns a line for our
+    # synthetic cwd. Without this, on-stop.sh finds no project and
+    # skips the schedule step entirely.
+    local tmp_home="${MOCK_DIR}/stop-home"
+    local shim_dir="${MOCK_DIR}/stop-shim"
+    mkdir -p "$tmp_home" "$shim_dir"
+    local cwd="/tmp/stop-proj-a"
+    cat > "${shim_dir}/tmux" << EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "list-windows" ]]; then
+    printf '%s\t%s\t%s\n' 'main:1' '$cwd' 'stop-proj-a'
+fi
+exit 0
+EOF
+    chmod +x "${shim_dir}/tmux"
+
+    # CCM_COMPLETION_GRACE_SEC=99 keeps the detached subshell's
+    # delayed-check from firing during the test window — we only
+    # care that the sentinel was written synchronously.
+    PATH="${shim_dir}:$PATH" TMPDIR="$tmp_home" HOME="$tmp_home" \
+        CCM_COMPLETION_GRACE_SEC=99 \
+        bash -c "cd '${CCM_ROOT}' && \
+                 mkdir -p \"\$TMPDIR/ccm-\$UID/hooks\" && \
+                 echo '{\"cwd\":\"$cwd\"}' | hooks/on-stop.sh"
+
+    local key
+    key=$(printf '%s' "$cwd" | md5)
+    local pending="${tmp_home}/ccm-${UID}/hooks/${key}.pending"
+    [[ -f "$pending" ]] || { echo "pending sentinel not written: $pending"; return 1; }
+}
+
+@test "on-pre-tool-use.sh: cancels pending sentinel from prior Stop" {
+    local tmp_home="${MOCK_DIR}/pretool-home"
+    local cwd="/tmp/pretool-proj"
+    local key
+    key=$(printf '%s' "$cwd" | md5)
+    local hook_dir="${tmp_home}/ccm-${UID}/hooks"
+    mkdir -p "$hook_dir"
+    # Pre-seed the pending sentinel as if a Stop just fired
+    printf '%s' "$(date +%s)" > "${hook_dir}/${key}.pending"
+    [[ -f "${hook_dir}/${key}.pending" ]] || { echo "setup: pending missing"; return 1; }
+
+    TMPDIR="$tmp_home" HOME="$tmp_home" \
+        bash -c "cd '${CCM_ROOT}' && \
+                 echo '{\"cwd\":\"$cwd\"}' | hooks/on-pre-tool-use.sh"
+
+    [[ ! -f "${hook_dir}/${key}.pending" ]] || {
+        echo "pending should have been cancelled"; return 1;
+    }
+}
+
+@test "on-prompt-submit.sh: cancels pending sentinel on new turn" {
+    local tmp_home="${MOCK_DIR}/prompt-home"
+    local cwd="/tmp/prompt-proj"
+    local key
+    key=$(printf '%s' "$cwd" | md5)
+    local hook_dir="${tmp_home}/ccm-${UID}/hooks"
+    mkdir -p "$hook_dir"
+    printf '%s' "$(date +%s)" > "${hook_dir}/${key}.pending"
+
+    TMPDIR="$tmp_home" HOME="$tmp_home" \
+        bash -c "cd '${CCM_ROOT}' && \
+                 echo '{\"cwd\":\"$cwd\"}' | hooks/on-prompt-submit.sh"
+
+    [[ ! -f "${hook_dir}/${key}.pending" ]] || {
+        echo "pending should have been cancelled by UserPromptSubmit"; return 1;
+    }
+}

@@ -38,10 +38,11 @@ if [[ -n "$win_info" ]]; then
     project="${win_info##*	}"
 fi
 
-# Fire instant notification (if enabled). The key is passed so the
-# dedup marker is per-project — critical when running several ccm
-# projects concurrently, otherwise the first project's COMPLETED
-# notification silently blocks all others for 10 seconds.
+# Schedule a COMPLETED notification after a short grace period so
+# Stop events fired at multi-turn tool boundaries do not produce a
+# premature alert. If the next PreToolUse / UserPromptSubmit arrives
+# within the grace window, it cancels the pending notification. See
+# `_ccm_schedule_completed_notify` in lib.sh for the rationale.
 if [[ -n "$project" ]]; then
-    _ccm_instant_notify "COMPLETED" "$project" "" "$KEY" &
+    _ccm_schedule_completed_notify "$HOOK_DIR" "$KEY" "$project"
 fi

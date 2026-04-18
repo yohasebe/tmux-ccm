@@ -488,6 +488,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_BUSY_HOOK_JSONL_WINDOW` | `600`（秒） | JSONL も更新されている場合に BUSY フックを信頼する最大 age。これを超えると Stop フック取りこぼし (anthropics/claude-code#25655) とみなして BUSY を解除する |
 | `CCM_JSONL_HOOK_GAP_TOLERANCE` | `60`（秒） | recap phantom 判別。直前の実会話 activity から秒数以上後に発火した BUSY フックを phantom とみなして拒否（v2.1.108 の `away_summary` 等）。小さくするとより積極的に拒否 |
 | `CCM_COMPLETED_AT_TIMEOUT` | `30`（秒） | BUSY/PERMIT → IDLE 遷移後に ✔ 完了マーカーが表示される時間 |
+| `CCM_COMPLETION_GRACE_SEC` | `3`（秒） | Stop hook 発火から COMPLETED デスクトップ通知までの猶予時間。Claude Code は各ターン境界（ツール実行中も含む）で Stop を発火するため、ccm はこの秒数だけ待ってから通知する。その間に次の PreToolUse / UserPromptSubmit が発火すれば通知はキャンセルされる。小さくすると通知が早いがマルチターン会話中に誤発火するリスクが高まる。長時間のツール連鎖中に「完了」通知が早すぎると感じる場合は上げる |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600`（秒） | 安全網: フック信号で解消されない PERMIT 状態をこの秒数で自動クリア（permission ダイアログ表示中に Claude Code がクラッシュした場合など） |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600`（秒） | Claude Code セッションが IDLE 状態でいられる最大時間（`x` 一括終了の対象となる閾値、自動終了のトリガー） |
 

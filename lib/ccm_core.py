@@ -319,6 +319,43 @@ def read_project_notify_marker(project_dir):
         return None
 
 
+def cleanup_project_runtime_files(project_dir):
+    """Remove all runtime files keyed on a project's md5-of-cwd hash.
+
+    Called from `cmd_unregister` and `cmd_remove` so a project's
+    transient state does not leak into the next project created at
+    the same directory (or accumulate as long-term disk clutter on
+    heavy-rotation setups).
+
+    Covers:
+      - hook signal file (`$HOOK_DIR/<key>`) and its companions
+        (`.busy` from the pre-4-state era, `.pending` from the
+        multi-turn Stop delayed-notify mechanism)
+      - notification dedup marker (`$NOTIFY_MARKER_DIR/<key>`)
+      - git branch cache and listening-port cache
+
+    Each removal is independent and guarded against OSError so a
+    missing file (normal case for inactive projects) is a silent
+    no-op; one failure does not block the rest.
+    """
+    if not project_dir:
+        return
+    expanded = _resolve_project_dir(project_dir)
+    key = md5_hash(expanded)
+    for directory, suffixes in (
+        (CCM_HOOK_DIR, ("", ".busy", ".pending")),
+        (CCM_NOTIFY_MARKER_DIR, ("",)),
+        (CCM_GIT_CACHE_DIR, ("",)),
+        (CCM_PORT_CACHE_DIR, ("",)),
+    ):
+        for suffix in suffixes:
+            path = os.path.join(directory, key + suffix)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def read_hook_signal(project_dir):
     """Read hook signal file. Returns (timestamp, state, detail) or None.
     Detail is optional extra info (e.g., tool name for PERMIT).
@@ -2463,6 +2500,10 @@ def cmd_unregister(name):
 
     win_target = f"{session}:{idx}"
 
+    # Capture @ccm_dir BEFORE we clear it — needed for runtime-file
+    # cleanup below.
+    proj_dir = tmux_cmd("show-option", "-wt", win_target, "-qv", "@ccm_dir")
+
     # Restore original name
     orig_name = tmux_cmd("show-option", "-wt", win_target, "-qv", "@ccm_orig_name")
     if orig_name:
@@ -2478,6 +2519,8 @@ def cmd_unregister(name):
             "@ccm_done", "@ccm_last_done"]
     cmds = [("set-option", "-wt", win_target, "-u", tag) for tag in tags]
     tmux_batch(*cmds)
+
+    cleanup_project_runtime_files(proj_dir)
 
     ccm_info(f"Unregistered: {name} (window kept)")
     _autosave_trigger()
@@ -2522,7 +2565,14 @@ def cmd_remove(name):
     if idx is None:
         ccm_die(f"Project window not found: {name}")
 
-    tmux_cmd("kill-window", "-t", f"{session}:{idx}")
+    win_target = f"{session}:{idx}"
+    # Capture @ccm_dir BEFORE killing the window — kill-window removes
+    # the tmux options along with it.
+    proj_dir = tmux_cmd("show-option", "-wt", win_target, "-qv", "@ccm_dir")
+
+    tmux_cmd("kill-window", "-t", win_target)
+    cleanup_project_runtime_files(proj_dir)
+
     ccm_info(f"Removed project: {name}")
     _autosave_trigger()
 

@@ -2351,6 +2351,54 @@ class TestCmdUnregister:
         ccm_core.cmd_unregister("proj")
         mock_auto.assert_called_once()
 
+    @patch("ccm_core._autosave_trigger")
+    @patch("ccm_core.cleanup_project_runtime_files")
+    @patch("ccm_core.tmux_batch")
+    @patch("ccm_core.tmux_cmd", return_value="/x/proj-dir")
+    @patch("ccm_core.find_window", return_value="2")
+    @patch("ccm_core.get_session", return_value="main")
+    def test_unregister_cleans_runtime_files(
+        self, mock_session, mock_find, mock_tmux, mock_batch,
+        mock_cleanup, mock_auto,
+    ):
+        """Unregister must sweep the project's hook signal / notify
+        marker / caches — otherwise re-registering the same dir later
+        inherits stale state."""
+        ccm_core.cmd_unregister("proj")
+        mock_cleanup.assert_called_once_with("/x/proj-dir")
+
+
+# ─── cmd_remove ───
+
+class TestCmdRemove:
+    @patch("ccm_core._autosave_trigger")
+    @patch("ccm_core.cleanup_project_runtime_files")
+    @patch("ccm_core.tmux_cmd", return_value="/x/proj-dir")
+    @patch("ccm_core.find_window", return_value="3")
+    @patch("ccm_core.get_session", return_value="main")
+    def test_remove_kills_window_and_cleans(
+        self, mock_session, mock_find, mock_tmux, mock_cleanup, mock_auto,
+    ):
+        ccm_core.cmd_remove("proj")
+        # kill-window called on the resolved win_target
+        kill_calls = [c for c in mock_tmux.call_args_list
+                      if c[0][0] == "kill-window"]
+        assert len(kill_calls) == 1
+        assert kill_calls[0][0][-1] == "main:3"
+        # cleanup runs AFTER resolving @ccm_dir but before returning
+        mock_cleanup.assert_called_once_with("/x/proj-dir")
+        mock_auto.assert_called_once()
+
+    def test_remove_empty_name_exits(self):
+        with pytest.raises(SystemExit):
+            ccm_core.cmd_remove("")
+
+    @patch("ccm_core.find_window", return_value=None)
+    @patch("ccm_core.get_session", return_value="main")
+    def test_remove_not_found_exits(self, mock_session, mock_find):
+        with pytest.raises(SystemExit):
+            ccm_core.cmd_remove("nonexistent")
+
 
 # ─── cmd_rename ───
 
@@ -2403,6 +2451,142 @@ class TestCmdRename:
         mock_find.side_effect = lambda sess, name: "1" if name == "old" else None
         ccm_core.cmd_rename("old", "new")
         mock_auto.assert_called_once()
+
+
+# ─── Per-project notification marker (cross-project collision fix) ───
+#
+# Before v0.2.0 the hook instant-notify path wrote a SINGLE global
+# marker `${TMPDIR}/ccm-${UID}/hook-notified`, so any two ccm projects
+# completing within 10 seconds of each other would silently dedup —
+# the second project's COMPLETED notification was suppressed. The
+# marker is now keyed on md5-of-cwd; these tests lock in that
+# per-project isolation.
+
+class TestProjectNotifyMarker:
+    def _setup_tmp(self, tmp_path, monkeypatch):
+        marker_dir = tmp_path / "notified"
+        marker_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_NOTIFY_MARKER_DIR", str(marker_dir))
+        return marker_dir
+
+    def test_missing_marker_returns_none(self, tmp_path, monkeypatch):
+        self._setup_tmp(tmp_path, monkeypatch)
+        assert ccm_core.read_project_notify_marker("/no/such/project") is None
+
+    def test_empty_project_dir_returns_none(self, tmp_path, monkeypatch):
+        self._setup_tmp(tmp_path, monkeypatch)
+        assert ccm_core.read_project_notify_marker("") is None
+        assert ccm_core.read_project_notify_marker(None) is None
+
+    def test_valid_marker_parses_ts_and_state(self, tmp_path, monkeypatch):
+        marker_dir = self._setup_tmp(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        key = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        (marker_dir / key).write_text("1234567890 COMPLETED")
+        result = ccm_core.read_project_notify_marker(project)
+        assert result == (1234567890, "COMPLETED")
+
+    def test_malformed_marker_returns_none(self, tmp_path, monkeypatch):
+        marker_dir = self._setup_tmp(tmp_path, monkeypatch)
+        project = "/x/malformed"
+        key = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        # Missing state field
+        (marker_dir / key).write_text("1234567890")
+        assert ccm_core.read_project_notify_marker(project) is None
+
+    def test_non_integer_ts_returns_none(self, tmp_path, monkeypatch):
+        marker_dir = self._setup_tmp(tmp_path, monkeypatch)
+        project = "/x/bad-ts"
+        key = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        (marker_dir / key).write_text("not-a-number COMPLETED")
+        assert ccm_core.read_project_notify_marker(project) is None
+
+    def test_projects_are_isolated(self, tmp_path, monkeypatch):
+        """The whole point of the fix: project A's marker must not
+        appear when asking about project B, and vice versa."""
+        marker_dir = self._setup_tmp(tmp_path, monkeypatch)
+        project_a = "/x/proj-a"
+        project_b = "/x/proj-b"
+        key_a = ccm_core.md5_hash(ccm_core._resolve_project_dir(project_a))
+        key_b = ccm_core.md5_hash(ccm_core._resolve_project_dir(project_b))
+        (marker_dir / key_a).write_text("100 COMPLETED")
+        (marker_dir / key_b).write_text("200 PERMIT")
+        assert ccm_core.read_project_notify_marker(project_a) == (100, "COMPLETED")
+        assert ccm_core.read_project_notify_marker(project_b) == (200, "PERMIT")
+
+
+# ─── Project runtime-file cleanup (unregister / remove) ───
+
+class TestCleanupProjectRuntimeFiles:
+    def _setup_tmp(self, tmp_path, monkeypatch):
+        for name, attr in (
+            ("hooks", "CCM_HOOK_DIR"),
+            ("notified", "CCM_NOTIFY_MARKER_DIR"),
+            ("git-cache", "CCM_GIT_CACHE_DIR"),
+            ("port-cache", "CCM_PORT_CACHE_DIR"),
+        ):
+            d = tmp_path / name
+            d.mkdir()
+            monkeypatch.setattr(ccm_core, attr, str(d))
+
+    def _populate(self, tmp_path, project_dir):
+        """Create all runtime files for a project and return the md5 key."""
+        key = ccm_core.md5_hash(ccm_core._resolve_project_dir(project_dir))
+        (tmp_path / "hooks" / key).write_text("0 BUSY")
+        (tmp_path / "hooks" / f"{key}.busy").write_text("0")
+        (tmp_path / "hooks" / f"{key}.pending").write_text("0")
+        (tmp_path / "notified" / key).write_text("0 COMPLETED")
+        (tmp_path / "git-cache" / key).write_text("main")
+        (tmp_path / "port-cache" / key).write_text("3000")
+        return key
+
+    def test_removes_all_runtime_files(self, tmp_path, monkeypatch):
+        self._setup_tmp(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        key = self._populate(tmp_path, project)
+
+        ccm_core.cleanup_project_runtime_files(project)
+
+        for rel in (
+            f"hooks/{key}",
+            f"hooks/{key}.busy",
+            f"hooks/{key}.pending",
+            f"notified/{key}",
+            f"git-cache/{key}",
+            f"port-cache/{key}",
+        ):
+            assert not (tmp_path / rel).exists(), f"{rel} should be deleted"
+
+    def test_leaves_other_projects_alone(self, tmp_path, monkeypatch):
+        """Cleanup is keyed on md5-of-cwd; other projects' files
+        must survive unaffected."""
+        self._setup_tmp(tmp_path, monkeypatch)
+        project_a = "/x/proj-a"
+        project_b = "/x/proj-b"
+        key_a = self._populate(tmp_path, project_a)
+        key_b = self._populate(tmp_path, project_b)
+
+        ccm_core.cleanup_project_runtime_files(project_a)
+
+        # Project A files gone
+        assert not (tmp_path / "hooks" / key_a).exists()
+        assert not (tmp_path / "notified" / key_a).exists()
+        # Project B files intact
+        assert (tmp_path / "hooks" / key_b).exists()
+        assert (tmp_path / "notified" / key_b).exists()
+        assert (tmp_path / "git-cache" / key_b).exists()
+
+    def test_missing_files_silent_noop(self, tmp_path, monkeypatch):
+        """No files to delete (fresh project) must not raise — this
+        is the common case when unregistering an idle project."""
+        self._setup_tmp(tmp_path, monkeypatch)
+        # Should not raise
+        ccm_core.cleanup_project_runtime_files("/x/never-ran")
+
+    def test_empty_project_dir_noop(self, tmp_path, monkeypatch):
+        self._setup_tmp(tmp_path, monkeypatch)
+        ccm_core.cleanup_project_runtime_files("")
+        ccm_core.cleanup_project_runtime_files(None)
 
 
 # ─── raise_on_die / CCMError ───

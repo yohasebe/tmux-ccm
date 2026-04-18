@@ -62,6 +62,56 @@ _ccm_instant_permit_icon() {
     tmux refresh-client -S 2>/dev/null
 }
 
+# Schedule a COMPLETED notification after a short grace period.
+# Addresses the multi-turn Stop hook pattern: Claude Code fires Stop
+# at every turn boundary (including after a tool call, not just at the
+# true end of a response). A naive "notify on Stop" design sends an
+# alert at the FIRST turn boundary and then silently dedups all
+# subsequent completions, including the real one — users see a
+# premature notification during active work and no alert when Claude
+# actually finishes.
+#
+# Fix: write a `<key>.pending` sentinel and schedule the notification
+# asynchronously. If PreToolUse or UserPromptSubmit clears the
+# sentinel within `grace_sec`, we treat the Stop as a turn boundary
+# and cancel. If the sentinel survives, the Stop was genuine and the
+# notification fires. idle_prompt (on-notification.sh) still calls
+# `_ccm_instant_notify` directly — for a real completion its
+# notification arrives before this delayed check, and per-project
+# dedup suppresses the follow-up.
+#
+# Args: $1=HOOK_DIR, $2=KEY, $3=PROJECT_NAME, $4=GRACE_SEC
+#       (default: CCM_COMPLETION_GRACE_SEC env, or 3)
+_ccm_schedule_completed_notify() {
+    local hook_dir="$1" key="$2" project="$3"
+    local grace="${4:-${CCM_COMPLETION_GRACE_SEC:-3}}"
+    local pending="${hook_dir}/${key}.pending"
+
+    printf '%s' "$(date +%s)" > "$pending" 2>/dev/null
+
+    # Detach into its own process group so the sleep survives hook
+    # exit (Claude Code gives hooks a few-second timeout; the bg
+    # subshell must outlive that).
+    (
+        sleep "$grace"
+        if [[ -f "$pending" ]]; then
+            rm -f "$pending" 2>/dev/null
+            _ccm_instant_notify "COMPLETED" "$project" "" "$key"
+        fi
+    ) </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+}
+
+# Cancel any pending COMPLETED notification for a project — called
+# from hooks that indicate ongoing work (PreToolUse, UserPromptSubmit,
+# SubagentStart, PreCompact, etc.). If no pending sentinel exists,
+# this is a no-op.
+# Args: $1=HOOK_DIR, $2=KEY
+_ccm_cancel_pending_completion() {
+    local hook_dir="$1" key="$2"
+    rm -f "${hook_dir}/${key}.pending" 2>/dev/null || true
+}
+
 # Send desktop notification immediately for PERMIT or COMPLETED state.
 # Writes a per-project marker so inject-status can skip the duplicate
 # notification for the same project. The marker is keyed off the
