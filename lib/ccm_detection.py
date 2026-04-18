@@ -6,8 +6,8 @@ This module is the extracted core of ccm's state machine. It owns:
   - The declarative rule table (`DETECTION_RULES`) and its context /
     rule / action types
   - The slow- and fast-path context builders + evaluators
-  - `apply_actions`, which is the single writer of `@ccm_prev_state`
-    and `@ccm_completed_at` during detection
+  - `apply_actions`, the detection-pipeline writer of
+    `@ccm_prev_state` and `@ccm_completed_at`
 
 Everything else (constants, tmux helpers, hook signal I/O, JSONL
 parsing, SHELL cluster tracking) lives in `ccm_core`; this module
@@ -15,6 +15,38 @@ imports those dependencies at module load. `ccm_core` then
 re-exports the detection API below at the bottom of its file so
 existing callers (`build_project_list`, dashboard, inject_status,
 pytest) continue to do `from ccm_core import ...`.
+
+## `@ccm_prev_state` write sites (3, intentionally distributed)
+
+The window option `@ccm_prev_state` has three writers in the
+codebase. They look similar but serve different roles and are not
+merged on purpose — see `project_r4_r5_decision` memo.
+
+1. `apply_actions` → `_set_win_state` (this file)
+   Detection-pipeline write. Runs every slow-path scan
+   (inject_status poll, dashboard refresh) and records the
+   resolved state so the next scan can key transition-based
+   rules off `ctx.prev_state`.
+
+2. `ccm_write_signal` (`hooks/lib.sh`)
+   Hot-path write from Claude Code hook scripts. Bypasses the
+   Python detector so the statusline reflects BUSY / PERMIT /
+   SHELL with zero polling latency. Routing through Python
+   would add 30–80 ms of interpreter startup per hook event,
+   which defeats the purpose of instant status updates.
+
+3. `reset_window_after_attach` (`ccm_core.py`)
+   Attach-time reset. Writes the empty string `""` to wipe
+   transition history so the post-attach scan does not fire
+   display-only side effects tied to a stale prior state
+   (the ✔ completion marker, the SHELL cluster canary push).
+   `""` and `-u` produce the same `ctx.prev_state==""` for the
+   detector (no `DETECTION_RULES` entry matches `prev_state==""`
+   via `prev_in`; the write is about clearing history, not
+   triggering a rule). The explicit empty-value write is kept
+   for symmetry with site 1's write path.
+
+When changing state-transition semantics, audit all three sites.
 """
 
 import time

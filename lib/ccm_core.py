@@ -1609,6 +1609,11 @@ def reset_window_after_attach(win_target):
     1. Unset `@ccm_completed_at` so the ✔ marker disappears.
     2. Clear `@ccm_prev_state` so the next scan recomputes state
        from scratch (no stale carry-over from before the attach).
+       Value is `""`, not `-u` — behaviorally equivalent for the
+       detector (`ctx.prev_state==""` either way, no rule keys on
+       it), but matches the shape of the normal write path in
+       `_set_win_state`. See `ccm_detection` module docstring for
+       the full write-site inventory.
     3. Unset `@ccm_shell_history` so the cluster-SHELL canary
        (#48069) is acknowledged. The warning will reappear only if
        NEW transitions cluster after the attach.
