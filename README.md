@@ -21,7 +21,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 ## Features
 
 - **Resource Management** — Idle Claude Code sessions auto-exit after 10 minutes to free memory and CPU; auto-restart with `--continue` when you switch back
-- **Dashboard** — Interactive popup with real-time Claude Code status (BUSY/IDLE/PERMIT/DONE)
+- **Dashboard** — Interactive popup with real-time Claude Code status (BUSY/IDLE/PERMIT)
 - **Tree View** — Hierarchical session/window/pane display with navigation
 - **Git Integration** — Branch name and dirty status (`main*`) per project
 - **Port Detection** — Listening TCP ports per project (with caching)
@@ -137,14 +137,14 @@ set -g @ccm-key-search "/"      # optional: enable prefix + / to open the dashbo
 ccm can send desktop notifications (macOS and Linux) when project states change:
 
 ```tmux
-set -g @ccm-notify "permit,done"     # notify on PERMIT and DONE
+set -g @ccm-notify "permit,done"     # notify on PERMIT and completion
 ```
 
 | Value | Behavior |
 |-------|----------|
-| `permit,done` (default) | Notify on permission prompt and response completion |
+| `permit,done` (default) | Notify on permission prompt and completion ("done" is kept for backwards compatibility) |
 | `permit` | Notify when permission is needed |
-| `done` | Notify when response completes |
+| `done` | Notify on completion (Claude finished responding) |
 | `all` | All state changes |
 | `off` | No notifications |
 
@@ -179,7 +179,7 @@ Appends a priority icon with window indices to your existing status-right. Your 
 |----------|-----------|------|-------|
 | 1 (highest) | Any project has PERMIT | `⚠` | Yellow |
 | 2 | Any project has BUSY | `◉` | Orange |
-| 3 | Any project has DONE | `✔` | Green |
+| 3 | Any project recently completed | `✔` | Green |
 | 4 (lowest) | All projects are IDLE | `≡` | Gray |
 
 Click the icon to open the dashboard for full details.
@@ -200,8 +200,8 @@ Adds one or more tmux status lines below the main bar. Shows all projects includ
 |-------|------|-------|
 | PERMIT | `⚠` | Yellow |
 | BUSY | `◉` | Orange |
-| DONE | `✔` | Green |
 | IDLE | `●` | Blue |
+| IDLE (recently completed) | `✔` | Green |
 | SHELL | `■` | Dark gray |
 
 Lines auto-expand based on terminal width and project count.
@@ -265,8 +265,8 @@ ccm inject-status                 Update tmux status bar (called internally)
 |------|-------|-------------|
 | ⚠ | PERMIT | Waiting for user permission |
 | ◉ | BUSY | Claude is processing |
-| ✔ | DONE | Response complete (auto-clears after 30s) |
 | ● | IDLE | Waiting for input |
+| ✔ | IDLE (recently completed) | Transient marker shown for 30s after completion |
 | ■ | SHELL | Shell active, Claude not running |
 | ○ | DOWN | Window not available |
 
@@ -283,15 +283,15 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **PreToolUse / PostToolUse / PostToolUseFailure** → BUSY across tool execution (PostToolUseFailure is a Claude Code v2.1.101+ event for tool errors)
 - **SubagentStart / SubagentStop** → BUSY around subagent execution (the parent agent is still working)
 - **PreCompact / PostCompact** → BUSY (context compaction is busy work)
-- **Stop / StopFailure** → DONE when Claude finishes responding
+- **Stop / StopFailure** → clears BUSY signal when Claude finishes responding
 - **PermissionRequest** → PERMIT when a tool requires permission
-- **Notification** → PERMIT (permission_prompt / elicitation_dialog) or DONE (idle_prompt)
+- **Notification** → PERMIT (permission_prompt / elicitation_dialog) or clears signal (idle_prompt)
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
 ccm has multiple hook-independent fallbacks so detection still works when Claude Code stops firing hooks mid-session ([anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)):
 
-- **JSONL session log heartbeat**: ccm polls the mtime of the newest `~/.claude/projects/<slug>/<sessionId>.jsonl` file. Claude Code appends a record at every conversation turn boundary, so a fresh mtime is positive evidence the session is active.
+- **JSONL session log heartbeat**: ccm reads the timestamp of the most recent **user/assistant record** in the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` file. System metadata records (Claude Code v2.1.108+ recap / `system/away_summary`, `system/turn_duration`, `attachment/task_reminder`, etc.) are filtered out, so recap generation and other internal events do not register as fresh activity. A real user/assistant record within the freshness window is positive evidence the session is alive.
 - **Process grandchild detection**: A grandchild process under `claude` (e.g. `claude → bash → xcodebuild`) is unambiguous evidence that a foreground tool is running, even if the input prompt is visible (the v2.1+ "ctrl+b ctrl+b to background" UI).
 - **Permission dialog footer match**: ccm recognizes the v2.1.101+ permission footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) directly from the visible pane.
 - **`~/.claude/hooks.log` size canary**: ccm warns in `ccm status` and the dashboard footer when this file exceeds 100 MB — the documented root cause of #16047 is silent hook failure due to log bloat. The fix is `: > ~/.claude/hooks.log`.
@@ -408,7 +408,7 @@ tmux switch-client -t oss      # Standard tmux session switching
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`
 - Claude Code state is detected via hook signals + process tree inspection (with prompt pattern matching as supplement)
-- DONE state is auto-detected on BUSY/PERMIT → IDLE transitions (auto-clears after 30s)
+- Completion marker (✔) is shown for 30s after BUSY/PERMIT → IDLE transitions
 - Works with any tmux theme — ccm auto-detects theme changes to status-right
 - Git branch and port info are cached (30s) to minimize overhead
 - Popup session context is passed via temp file (`$TMPDIR/ccm-$UID/`)

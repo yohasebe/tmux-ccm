@@ -18,12 +18,13 @@ import unicodedata
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ccm_core import (
     CCM_ROOT, CCM_TMP_DIR, CCM_SNAPSHOT_DIR, CCM_GIT_CACHE_DIR, CCM_PORT_CACHE_DIR,
-    DONE_TIMEOUT, IDLE_EXIT_TIMEOUT,
+    COMPLETED_AT_TIMEOUT, IDLE_EXIT_TIMEOUT,
     STATE_PRIORITY, STATE_ICONS, CLAUDE_CMD,
     tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
     read_cache_file, build_project_list, format_elapsed, format_dir,
     hooks_configured, hooks_log_warning, disable_all_hooks_warning,
     managed_hooks_only_warning, shell_cluster_warnings,
+    reset_window_after_attach,
     save_tmux_conf_setting,
     cmd_add, cmd_remove, cmd_unregister, cmd_register,
     cmd_snapshot_save, cmd_snapshot_load,
@@ -40,7 +41,7 @@ _IS_MACOS = platform.system() == "Darwin"
 # Color pair IDs (curses-specific, stay in dashboard.py)
 C_PERMIT = 1
 C_BUSY = 2
-C_DONE = 3
+C_COMPLETED = 3
 C_IDLE = 4
 C_SHELL = 5
 C_DIM = 6
@@ -49,7 +50,7 @@ C_YELLOW = 8
 C_SYNCING = 9
 
 STATE_COLOR_PAIR = {
-    "PERMIT": C_PERMIT, "BUSY": C_BUSY, "DONE": C_DONE,
+    "PERMIT": C_PERMIT, "BUSY": C_BUSY,
     "IDLE": C_IDLE, "SHELL": C_SHELL, "DOWN": C_SHELL,
 }
 
@@ -169,7 +170,7 @@ class Dashboard:
             # Salmon for BUSY (matches Claude Code's "Choreographing..." text)
             curses.init_pair(C_PERMIT, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_BUSY, 216, -1)    # salmon (#ff9966, matches status bar #e8967d)
-            curses.init_pair(C_DONE, curses.COLOR_GREEN, -1)
+            curses.init_pair(C_COMPLETED, curses.COLOR_GREEN, -1)
             curses.init_pair(C_IDLE, 68, -1)      # blue
             curses.init_pair(C_SHELL, 245, -1)    # gray
             curses.init_pair(C_DIM, 242, -1)      # dim gray
@@ -179,7 +180,7 @@ class Dashboard:
         else:
             curses.init_pair(C_PERMIT, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_BUSY, curses.COLOR_RED, -1)
-            curses.init_pair(C_DONE, curses.COLOR_GREEN, -1)
+            curses.init_pair(C_COMPLETED, curses.COLOR_GREEN, -1)
             curses.init_pair(C_IDLE, curses.COLOR_BLUE, -1)
             curses.init_pair(C_SHELL, curses.COLOR_WHITE, -1)
             curses.init_pair(C_DIM, curses.COLOR_WHITE, -1)
@@ -510,13 +511,17 @@ class Dashboard:
                         self._addstr(stdscr, y, col + 1 + len(p.branch), ")", curses.color_pair(C_DIM))
                         col += len(p.branch) + 3
 
-                    # Elapsed time
-                    elapsed = format_elapsed(p.last_done_ts)
-                    if elapsed:
-                        self._addstr(stdscr, y, col, "✔ ", curses.color_pair(C_DONE))
-                        col += 2
-                        self._addstr(stdscr, y, col, elapsed, curses.color_pair(C_DIM))
-                        col += len(elapsed) + 1
+                    # Recently completed marker (✔ with elapsed time)
+                    if p.completed_at:
+                        now = int(time.time())
+                        comp_age = now - p.completed_at
+                        if 0 <= comp_age < COMPLETED_AT_TIMEOUT:
+                            elapsed = format_elapsed(p.completed_at)
+                            if elapsed:
+                                self._addstr(stdscr, y, col, "✔ ", curses.color_pair(C_COMPLETED))
+                                col += 2
+                                self._addstr(stdscr, y, col, elapsed, curses.color_pair(C_DIM))
+                                col += len(elapsed) + 1
 
                     # Directory (truncated to fit)
                     if p.dir:
@@ -584,7 +589,7 @@ class Dashboard:
             # Non-blocking message overlay
             if self._msg_text and time.monotonic() < self._msg_expires:
                 self._addstr(stdscr, height - 1, 2, self._msg_text,
-                             curses.color_pair(C_DONE) | curses.A_BOLD)
+                             curses.color_pair(C_COMPLETED) | curses.A_BOLD)
             elif self._msg_text:
                 self._msg_text = ""
 
@@ -737,14 +742,7 @@ class Dashboard:
         # Auto-start if SHELL
         if p.state == "SHELL":
             tmux_cmd("send-keys", "-t", p.win_target, CLAUDE_CMD, "Enter")
-        # Clear DONE flag, prev state cache, and SHELL cluster history.
-        # The history clear acknowledges the #48069 canary: by attaching
-        # to the project, the user is taking action on it, so the count
-        # resets. New transitions after this point will start a fresh
-        # cluster.
-        tmux_cmd("set-option", "-wt", p.win_target, "-u", "@ccm_done")
-        tmux_cmd("set-option", "-wt", p.win_target, "-u", "@ccm_prev_state")
-        tmux_cmd("set-option", "-wt", p.win_target, "-u", "@ccm_shell_history")
+        reset_window_after_attach(p.win_target)
         # Cross-session switch
         session = get_session()
         target_session = p.win_target.split(":")[0]
@@ -852,7 +850,7 @@ class Dashboard:
         if not projects:
             return
 
-        idle_targets = [p for p in projects if p.state in ("IDLE", "DONE")]
+        idle_targets = [p for p in projects if p.state == "IDLE"]
         active_targets = [p for p in projects if p.state in ("BUSY", "PERMIT")]
         # SHELL projects already exited, skip
 
@@ -1511,9 +1509,7 @@ class Dashboard:
                             if p.win_target == wt and p.state == "SHELL":
                                 tmux_cmd("send-keys", "-t", wt, CLAUDE_CMD, "Enter")
                                 break
-                    # Acknowledge the #48069 cluster canary on attach
-                    # (parallel with _do_attach in dashboard mode).
-                    tmux_cmd("set-option", "-wt", wt, "-u", "@ccm_shell_history")
+                    reset_window_after_attach(wt)
                     target_session = wt.split(":")[0]
                     session = get_session()
                     if target_session != session:

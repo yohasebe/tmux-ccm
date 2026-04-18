@@ -21,7 +21,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 ## 機能
 
 - **リソース管理** — アイドル状態のClaude Codeセッションを10分後に自動終了し、メモリとCPUを解放。ウィンドウに戻ると `--continue` で自動再起動
-- **ダッシュボード** — Claude Codeの状態（BUSY/IDLE/PERMIT/DONE）をリアルタイム表示するインタラクティブポップアップ
+- **ダッシュボード** — Claude Codeの状態（BUSY/IDLE/PERMIT）をリアルタイム表示するインタラクティブポップアップ
 - **ツリービュー** — セッション/ウィンドウ/ペインの階層表示とナビゲーション
 - **Git連携** — プロジェクトごとのブランチ名とdirty状態（`main*`）の表示
 - **ポート検出** — プロジェクトごとのリスニングTCPポートの自動検出（キャッシュ付き）
@@ -137,14 +137,14 @@ set -g @ccm-key-search "/"      # 任意: prefix + / でダッシュボードを
 プロジェクトの状態変化時にデスクトップ通知（macOS / Linux対応）を送信できます：
 
 ```tmux
-set -g @ccm-notify "permit,done"     # PERMITとDONEで通知
+set -g @ccm-notify "permit,done"     # PERMITと完了時に通知
 ```
 
 | 値 | 動作 |
 |----|------|
-| `permit,done`（デフォルト） | 許可プロンプトとレスポンス完了時に通知 |
+| `permit,done`（デフォルト） | 許可プロンプトと完了時に通知（"done"は後方互換のため維持） |
 | `permit` | 許可が必要な時に通知 |
-| `done` | レスポンス完了時に通知 |
+| `done` | 完了時に通知（Claudeのレスポンス完了） |
 | `all` | 全ての状態変化 |
 | `off` | 通知なし |
 
@@ -179,7 +179,7 @@ set -g @ccm-status-line 0     # デフォルト
 |--------|------|---------|-----|
 | 1（最高） | PERMITのプロジェクトあり | `⚠` | 黄 |
 | 2 | BUSYのプロジェクトあり | `◉` | オレンジ |
-| 3 | DONEのプロジェクトあり | `✔` | 緑 |
+| 3 | 最近完了したプロジェクトあり | `✔` | 緑 |
 | 4（最低） | 全てIDLE | `≡` | グレー |
 
 アイコンをクリックするとダッシュボードが開く。
@@ -200,8 +200,8 @@ tmux標準のウィンドウリストをccm形式の色付きエントリに置�
 |------|---------|-----|
 | PERMIT | `⚠` | 黄 |
 | BUSY | `◉` | オレンジ |
-| DONE | `✔` | 緑 |
 | IDLE | `●` | ブルー |
+| IDLE（最近完了） | `✔` | 緑 |
 | SHELL | `■` | 暗グレー |
 
 端末幅とプロジェクト数に応じて行数が自動拡張。
@@ -267,8 +267,8 @@ ccm inject-status                 tmuxステータスバー更新（内部使用
 |----------|------|------|
 | ⚠ | PERMIT | ユーザーの許可待ち |
 | ◉ | BUSY | Claude処理中 |
-| ✔ | DONE | レスポンス完了（30秒後に自動クリア） |
 | ● | IDLE | 入力待ち |
+| ✔ | IDLE（最近完了） | 完了後30秒間表示される一時的なマーカー |
 | ■ | SHELL | シェルのみ（Claude未起動） |
 | ○ | DOWN | ウィンドウ利用不可 |
 
@@ -285,15 +285,15 @@ ccm setup-hooks
 - **PreToolUse / PostToolUse / PostToolUseFailure** → ツール実行中にBUSY（PostToolUseFailure は Claude Code v2.1.101+ のツール失敗イベント）
 - **SubagentStart / SubagentStop** → サブエージェント実行中にBUSY（親エージェントは作業継続中）
 - **PreCompact / PostCompact** → コンテキスト圧縮中にBUSY
-- **Stop / StopFailure** → Claude応答完了時にDONE
+- **Stop / StopFailure** → Claude応答完了時にBUSY信号をクリア
 - **PermissionRequest** → ツールの許可が必要な時にPERMIT
-- **Notification** → 許可プロンプト/MCP elicitation 表示時にPERMIT（permission_prompt / elicitation_dialog）、アイドル通知時にDONE（idle_prompt）
+- **Notification** → 許可プロンプト/MCP elicitation 表示時にPERMIT（permission_prompt / elicitation_dialog）、アイドル通知時に信号クリア（idle_prompt）
 - **SessionEnd** → セッション終了時にSHELL（/exit、Ctrl+D等）
 - **PermissionDenied** → autoモードで拒否時にPERMIT（`/permissions`で再試行）
 
 ccm は Claude Code がセッション途中でフック発火を停止する既知の不具合（[anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）に備えて、複数のフック非依存フォールバックを実装しています:
 
-- **JSONL セッションログ心拍**: `~/.claude/projects/<slug>/<sessionId>.jsonl` の mtime を監視。Claude Code は会話のターン境界ごとにレコードを追記するため、新鮮な mtime はセッションがアクティブな証拠
+- **JSONL セッションログ心拍**: プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` ファイルから、最新の **user/assistant レコード** の timestamp を読み取る。システムメタデータレコード（Claude Code v2.1.108+ の recap / `system/away_summary`、`system/turn_duration`、`attachment/task_reminder` 等）はフィルタされるため、recap 生成等の内部イベントが偽の活動として検出されない。実 user/assistant レコードが freshness window 以内ならセッションがアクティブな証拠
 - **プロセス孫検出**: `claude` の孫プロセス（例: `claude → bash → xcodebuild`）が存在すれば、入力プロンプトが見えていてもフォアグラウンドツール実行中とみなして BUSY 判定（v2.1+ の「ctrl+b ctrl+b で background」UI 対応）
 - **許可ダイアログのフッター検出**: v2.1.101+ の許可フッター（`Esc to cancel · Tab to amend · ctrl+e to explain`）をペインから直接検出
 - **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えるとフック書き込みが silent fail するため、`ccm status` とダッシュボードに警告表示。修復: `: > ~/.claude/hooks.log`
@@ -410,7 +410,7 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
 
 - プロジェクトはtmuxウィンドウの `@ccm_project` / `@ccm_dir` タグで管理
 - Claude Codeの状態はフック信号＋プロセスツリー検査で検出（プロンプトパターンマッチも補助的に使用）
-- DONE状態はBUSY/PERMIT → IDLE遷移で自動検出（30秒後に自動クリア）
+- 完了マーカー（✔）はBUSY/PERMIT → IDLE遷移後に30秒間表示
 - tmuxテーマとの併用に対応（status-rightの変更を自動検出）
 - gitブランチとポート情報は30秒キャッシュで負荷軽減
 - ポップアップ内のセッション検出は一時ファイル（`$TMPDIR/ccm-$UID/`）経由

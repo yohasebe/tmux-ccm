@@ -113,7 +113,7 @@ ccm_init() {
 
     # Step 2: Claude Code hooks
     echo "  ${COLOR_BOLD}[2/4] Claude Code hooks${COLOR_RESET}"
-    echo "    Hooks improve state detection accuracy (BUSY/DONE)."
+    echo "    Hooks improve state detection accuracy (BUSY/PERMIT/IDLE)."
     if ccm_hooks_configured; then
         echo "    ${COLOR_GREEN}✔${COLOR_RESET} Already installed"
     else
@@ -486,10 +486,10 @@ ccm_setup_hooks() {
         echo "  Claude Code: version unknown (claude CLI not found)"
     fi
     echo "  Hooks: UserPromptSubmit → BUSY, PreToolUse → BUSY, PostToolUse → BUSY"
-    echo "         PostToolUseFailure → BUSY, SubagentStart/Stop → BUSY, Stop/StopFailure → DONE"
+    echo "         PostToolUseFailure → BUSY, SubagentStart/Stop → BUSY, Stop/StopFailure → clear signal"
     echo "         PreCompact/PostCompact → BUSY (compaction is busy work)"
     if _ccm_supports_elicitation_dialog; then
-        echo "         Notification → PERMIT (permission/idle/elicitation) / DONE (idle)"
+        echo "         Notification → PERMIT (permission/elicitation) / clear signal (idle)"
     else
         echo "         Notification → PERMIT/IDLE (elicitation_dialog skipped: requires Claude Code v2.1.107+)"
     fi
@@ -541,7 +541,7 @@ Use the following commands to discover, inspect, and coordinate other projects:
   between lines so the body arrives as a single multi-line prompt.
 
   State policy (important — do not try to override PERMIT):
-    - **IDLE / DONE** → send immediately
+    - **IDLE** → send immediately
     - **BUSY** → refused unless `--force` (message queues into the input
       buffer and mixes with Claude's current turn)
     - **SHELL** → refused unless `--start` (launches Claude first, waits

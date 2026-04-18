@@ -12,7 +12,9 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Optional, Tuple
 
@@ -31,7 +33,14 @@ CCM_SNAPSHOT_DIR = os.path.join(
 CCM_GIT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "git-cache")
 CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 
-DONE_TIMEOUT = int(os.environ.get("CCM_DONE_TIMEOUT", "30"))
+# Display-layer "recently completed" marker timeout. Canonical env
+# var is CCM_COMPLETED_AT_TIMEOUT; CCM_DONE_TIMEOUT is accepted as a
+# backwards-compatibility alias for v0.1.0 users whose shell config
+# still sets the old name.
+COMPLETED_AT_TIMEOUT = int(os.environ.get(
+    "CCM_COMPLETED_AT_TIMEOUT",
+    os.environ.get("CCM_DONE_TIMEOUT", "30"),
+))
 # Hook signal age (seconds) below which a BUSY signal is treated as "fresh"
 # and trusted unconditionally — bypasses the slower pipeline when multiple
 # projects contend for evaluation time.
@@ -42,14 +51,22 @@ HOOK_FRESH_THRESHOLD = 2
 # Used as a hook-independent BUSY signal when the visible pane suggests
 # IDLE but Claude has just exchanged a record.
 JSONL_FRESH_THRESHOLD = int(os.environ.get("CCM_JSONL_FRESH_THRESHOLD", "5"))
-# Longer JSONL window used to HOLD an already-BUSY state during a
-# long thinking phase. Claude writes a record at every tool turn
-# boundary, so a project that last wrote within this window is most
-# likely still mid-turn (thinking or tool execution). Prevents
-# fallback_busy_to_done from demoting the state to DONE during
-# silent hook outages (anthropics/claude-code#25655) — the pure
-# thinking case the fresh-activity rule cannot cover.
-JSONL_ACTIVE_THRESHOLD = int(os.environ.get("CCM_JSONL_ACTIVE_THRESHOLD", "120"))
+# Short JSONL window used to HOLD an already-BUSY state through brief
+# gaps where neither hook nor JSONL is fresh. Catches the couple of
+# seconds after `jsonl_fresh_activity` (5s) expires but the session
+# hasn't settled yet — e.g. Stop hook latency or a brief streaming
+# pause. Short by design: longer thinking phases with an active hook
+# are covered by `hook_busy_idle` (600s window + gap discriminator),
+# so this rule only needs to bridge the sub-minute gap between
+# "JSONL fresh" and "hook fresh" signals.
+#
+# Was 120s in the DONE-era design where it suppressed the BUSY→DONE
+# transition during long thinking — with DONE removed and Stop hooks
+# deleting the signal file, 120s produced a painful ~2-minute BUSY
+# lingering after visual completion (empirically measured).
+# Tuned to 15s: Stop-to-IDLE transition completes within ~15s in the
+# common case, and hook_busy_idle still covers long tool runs.
+JSONL_ACTIVE_THRESHOLD = int(os.environ.get("CCM_JSONL_ACTIVE_THRESHOLD", "15"))
 # Window for trusting a BUSY hook signal without JSONL corroboration.
 # A BUSY hook older than this AND a JSONL that has been silent for
 # the same duration is almost certainly left over from a turn that
@@ -61,6 +78,40 @@ JSONL_ACTIVE_THRESHOLD = int(os.environ.get("CCM_JSONL_ACTIVE_THRESHOLD", "120")
 # short enough that a missed Stop does not strand the project in
 # BUSY indefinitely.
 BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
+# JSONL real-activity filter (Claude Code v2.1.108+ recap interaction).
+# Records whose top-level `type` is in this set are treated as system
+# metadata, not real conversation activity. read_jsonl_age() walks the
+# tail of the JSONL file backwards and returns the timestamp of the
+# most recent record NOT in this set, so events like the v2.1.108
+# `system/away_summary` (recap), `system/turn_duration`,
+# `system/stop_hook_summary`, and `attachment/task_reminder` do not
+# falsely register as fresh activity. Without this filter, recap
+# generation makes ccm hold BUSY for up to BUSY_HOOK_JSONL_WINDOW
+# seconds because both the JSONL mtime and the simultaneous BUSY hook
+# signal corroborate "session is busy".
+JSONL_NON_ACTIVITY_TYPES = frozenset({"system", "attachment", "summary"})
+# Tail size (bytes) read from each JSONL when looking for the most
+# recent real activity record. Needs to accommodate a single large
+# tool_result record (Read of 2000 lines, long shell output, ...)
+# plus several trailing system records — any tool-result record alone
+# can easily exceed 8 KB, which at the previous cap could leave the
+# tail without a decodable real-activity line and force the mtime
+# fallback. 32 KB covers that comfortably while remaining trivially
+# cheap per detection cycle.
+JSONL_TAIL_BYTES = 32768
+# Safety cap on how many lines from the tail we will JSON-parse.
+JSONL_TAIL_MAX_LINES = 200
+# Hook-vs-real-activity gap discriminator (Phase 2 of the recap fix).
+# A BUSY hook signal fired more than this many seconds AFTER the last
+# real conversation activity is treated as a phantom hook (no
+# surrounding real work) — this is the v2.1.108 recap pattern, where
+# `away_summary` generation fires a BUSY-class hook with no
+# corresponding Stop. The `hook_busy_idle` rule uses this to release
+# stale BUSY without breaking long-thinking detection: in real
+# long-thinking, both hook_age and real_activity_age grow together
+# (the gap stays ~0), but in recap the hook is brand new while
+# real_activity is minutes old (gap >> threshold).
+JSONL_HOOK_GAP_TOLERANCE = int(os.environ.get("CCM_JSONL_HOOK_GAP_TOLERANCE", "60"))
 # Cluster-SHELL-transition detection: surface a warning when a project
 # drops back to SHELL too many times in a short window. The canonical
 # trigger is anthropics/claude-code#48069 (macOS silent exits in
@@ -69,10 +120,12 @@ BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600")
 # Defaults: 3 transitions in 10 minutes.
 SHELL_CLUSTER_WINDOW = int(os.environ.get("CCM_SHELL_CLUSTER_WINDOW", "600"))
 SHELL_CLUSTER_COUNT = int(os.environ.get("CCM_SHELL_CLUSTER_COUNT", "3"))
-# Minimum seconds before showing DONE after Stop hook fires.
-# Suppresses false DONE at multi-turn boundaries where Stop fires
-# between tool executions and the next turn starts within seconds.
-DONE_SETTLE_TIME = int(os.environ.get("CCM_DONE_SETTLE_TIME", "3"))
+# Upstream issue tag surfaced in the cluster-SHELL warning. Centralised
+# so future re-classification (different issue, root-cause PR, etc.)
+# only needs one edit. Update both halves when the upstream story
+# changes.
+SHELL_CLUSTER_ISSUE = "anthropics/claude-code#48069"
+SHELL_CLUSTER_ISSUE_NOTE = "macOS silent-exit"
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))  # 10 min safety net
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
@@ -121,9 +174,9 @@ HOOK_SCRIPTS = [
     "on-session-end.sh",
 ]
 
-STATE_PRIORITY = {"PERMIT": 0, "DONE": 1, "BUSY": 2, "IDLE": 3, "SHELL": 4, "DOWN": 5}
+STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
 STATE_ICONS = {
-    "PERMIT": "⚠", "BUSY": "◉", "DONE": "✔", "IDLE": "●", "SHELL": "■", "DOWN": "○",
+    "PERMIT": "⚠", "BUSY": "◉", "IDLE": "●", "SHELL": "■", "DOWN": "○",
 }
 
 
@@ -203,12 +256,13 @@ def touch_popup_session():
 # ─── Hook signal ───
 # Signal file format: "<unix_timestamp> <STATE> [extra_fields...]"
 # - Fields are space-separated; first two are required
-# - STATE: one of BUSY, DONE, PERMIT
+# - STATE: one of BUSY, PERMIT (Stop hook deletes the file instead of writing)
 # - Extra fields are reserved for future use and ignored by current code
 # Written by: hooks/on-prompt-submit.sh, hooks/on-pre-tool-use.sh,
-#             hooks/on-stop.sh, hooks/on-notification.sh
+#             hooks/on-notification.sh (PERMIT only)
+# Deleted by: hooks/on-stop.sh, hooks/on-notification.sh (idle_prompt)
 
-VALID_HOOK_STATES = {"BUSY", "DONE", "PERMIT", "SHELL"}
+VALID_HOOK_STATES = {"BUSY", "PERMIT", "SHELL"}
 
 
 def _resolve_project_dir(project_dir):
@@ -387,9 +441,135 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     return newest
 
 
+# Cache for _read_jsonl_real_activity_ts. Key: jsonl path. Value:
+# ((mtime_int, size_int), real_activity_ts_or_None). The cache hits
+# on every detection cycle as long as the JSONL file hasn't been
+# written, so the cost of tail-reading + JSON parsing is paid only
+# when the file actually changes.
+#
+# Why (mtime, size) and not just mtime: int(mtime) has 1-second
+# precision, so two writes within the same wall-clock second would
+# share the same int(mtime) and collide. JSONL files are append-only
+# during a session, so the size is monotonic and any new write
+# changes it — adding size to the key catches sub-second writes that
+# bare mtime would miss.
+#
+# OrderedDict + bounded eviction: a new JSONL file is created on every
+# `claude --continue` or `/compact`, so the cache would otherwise grow
+# without bound in long-running tmux sessions. On each lookup we move
+# the entry to the end (MRU); on insertion, we pop the oldest entry
+# if the cache exceeds JSONL_ACTIVITY_CACHE_MAX.
+JSONL_ACTIVITY_CACHE_MAX = 128
+_jsonl_activity_cache: "OrderedDict[str, Tuple[Tuple[int, int], Optional[int]]]" = OrderedDict()
+
+
+def _read_jsonl_real_activity_ts(
+    path: str, mtime: int, size: int
+) -> Optional[int]:
+    """Tail-read a JSONL file and return the unix timestamp of the most
+    recent real-conversation-activity record, or None if no such record
+    was found in the tail window. System metadata records (those whose
+    `type` is in JSONL_NON_ACTIVITY_TYPES) are skipped.
+
+    Cached by (path, mtime, size): the second call with an unchanged
+    mtime AND size returns the cached result without re-reading the
+    file. A new write changes the size (JSONL is append-only during
+    a session), so cache invalidation is reliable even within the
+    same wall-clock second.
+
+    On a "real activity record found but timestamp unparseable" edge
+    case (malformed Claude Code output, hypothetical schema drift),
+    falls back to the file mtime itself so the rule engine still has
+    a usable signal — better to err on the side of "fresh" than lose
+    detection entirely.
+    """
+    key = (mtime, size)
+    cached = _jsonl_activity_cache.get(path)
+    if cached is not None and cached[0] == key:
+        _jsonl_activity_cache.move_to_end(path)
+        return cached[1]
+
+    real_ts: Optional[int] = None
+    found_real_activity = False
+
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            actual_size = f.tell()
+            f.seek(max(0, actual_size - JSONL_TAIL_BYTES))
+            tail_bytes = f.read()
+    except OSError:
+        _cache_jsonl_activity(path, key, None)
+        return None
+
+    tail = tail_bytes.decode("utf-8", errors="ignore")
+    lines = tail.split("\n")
+    # When we read mid-file, the first chunk line is potentially partial.
+    # Drop it unless we read the entire file in one shot.
+    if size > JSONL_TAIL_BYTES and len(lines) > 1:
+        lines = lines[1:]
+
+    parsed = 0
+    for line in reversed(lines):
+        if parsed >= JSONL_TAIL_MAX_LINES:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        parsed += 1
+        try:
+            rec = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        rec_type = rec.get("type")
+        if not rec_type or rec_type in JSONL_NON_ACTIVITY_TYPES:
+            continue
+        # Found a real-activity record.
+        found_real_activity = True
+        ts_str = rec.get("timestamp")
+        if not ts_str or not isinstance(ts_str, str):
+            continue
+        try:
+            iso = ts_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(iso)
+            real_ts = int(dt.timestamp())
+            break
+        except (ValueError, TypeError):
+            continue
+
+    if real_ts is None and found_real_activity:
+        # Real activity records exist but none had a parseable timestamp.
+        # Fall back to file mtime as a safe approximation so detection
+        # rules still see a "fresh" signal.
+        real_ts = mtime
+
+    _cache_jsonl_activity(path, key, real_ts)
+    return real_ts
+
+
+def _cache_jsonl_activity(path: str, key: Tuple[int, int],
+                          real_ts: Optional[int]) -> None:
+    """Insert into _jsonl_activity_cache with LRU eviction."""
+    _jsonl_activity_cache[path] = (key, real_ts)
+    _jsonl_activity_cache.move_to_end(path)
+    while len(_jsonl_activity_cache) > JSONL_ACTIVITY_CACHE_MAX:
+        _jsonl_activity_cache.popitem(last=False)
+
+
 def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
-    """Return seconds since the project's newest JSONL file was last
-    written, or -1 if no JSONL exists for this project.
+    """Return seconds since the project's most recent real conversation
+    activity (`user`/`assistant`/etc.) in the newest JSONL file, or -1
+    if no JSONL exists or no real activity is present in the tail.
+
+    NOTE: this filters out system metadata records (Claude Code v2.1.108+
+    `system/away_summary` recap, `system/turn_duration`,
+    `system/stop_hook_summary`, `attachment/task_reminder`, ...) so
+    that the recap event does NOT register as fresh activity. Without
+    the filter, recap holds BUSY for up to BUSY_HOOK_JSONL_WINDOW
+    seconds because both the file mtime and the simultaneous BUSY
+    hook signal corroborate "session is busy".
 
     When claude_pid is provided, the exact session file is resolved
     via `~/.claude/sessions/{pid}.json` (authoritative, no slug guess).
@@ -400,9 +580,13 @@ def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
     if newest is None:
         return -1
     try:
-        return int(time.time() - os.path.getmtime(newest))
+        st = os.stat(newest)
     except OSError:
         return -1
+    real_ts = _read_jsonl_real_activity_ts(newest, int(st.st_mtime), st.st_size)
+    if real_ts is None:
+        return -1
+    return int(time.time() - real_ts)
 
 
 # ─── Claude Code hooks.log canary ───
@@ -614,7 +798,7 @@ def shell_cluster_warning(win_target: str, project_name: str = "") -> str:
     return (
         f"{label}Claude Code exited {len(history)}+ times in "
         f"{SHELL_CLUSTER_WINDOW // 60} min — likely "
-        f"anthropics/claude-code#48069 (macOS silent-exit). "
+        f"{SHELL_CLUSTER_ISSUE} ({SHELL_CLUSTER_ISSUE_NOTE}). "
         f"The conversation auto-restores via `claude --continue`."
     )
 
@@ -755,21 +939,14 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
     return best
 
 
-def _set_win_state(win_target, state, done=None, last_done=None, unset_done=False):
-    """Batch-write window state options in a single tmux call."""
-    cmds = [("set-option", "-wt", win_target, "@ccm_prev_state", state)]
-    if unset_done:
-        cmds.append(("set-option", "-wt", win_target, "-u", "@ccm_done"))
-    elif done is not None:
-        cmds.append(("set-option", "-wt", win_target, "@ccm_done", str(done)))
-    if last_done is not None:
-        cmds.append(("set-option", "-wt", win_target, "@ccm_last_done", str(last_done)))
-    tmux_batch(*cmds)
+def _set_win_state(win_target, state):
+    """Write @ccm_prev_state to the window."""
+    tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", state)
 
 
 # ─── Declarative state detection ───
 # detect_window_state is decomposed into:
-#   1. build_detection_context — gather raw, hook, busy, done inputs
+#   1. build_detection_context — gather raw, hook, jsonl inputs
 #   2. evaluate_rules          — pure priority-ordered rule match
 #   3. apply_actions           — execute tmux / busy-file side effects
 #
@@ -785,14 +962,10 @@ class DetectionContext:
     is a pure function of this context.
     """
     raw: str              # detect_window_raw result: DOWN/SHELL/BUSY/IDLE
-    hook_state: str       # hook signal state: BUSY/PERMIT/DONE/SHELL/""
+    hook_state: str       # hook signal state: BUSY/PERMIT/SHELL/""
     hook_ts: int          # hook signal timestamp (0 if no signal)
     hook_age: int         # now - hook_ts (-1 if no signal)
     prev_state: str       # previous detected state
-    done_flag: str        # @ccm_done raw value ("" if unset)
-    done_age: int         # now - int(done_flag) (-1 if missing/invalid)
-    last_done_ts: int     # @ccm_last_done value
-    last_busy_age: int    # now - .busy file mtime (-1 if missing)
     jsonl_age: int        # now - newest JSONL mtime (-1 if missing)
     now: int              # current unix timestamp
 
@@ -801,17 +974,9 @@ class Action(Enum):
     """Side effect to execute when a rule matches.
 
     DEFAULT         — set @ccm_prev_state to resolved state
-    CLEAR_DONE      — set state + unset @ccm_done
-    SET_DONE_NOW    — set state=DONE, @ccm_done=now, @ccm_last_done=now
-    SET_DONE_HOOK   — set state=DONE, @ccm_done=hook_ts, @ccm_last_done=hook_ts
-    WRITE_BUSY_FILE — write .busy file with now, then set state
     HOLD_NO_WRITE   — do not touch tmux state (preserve prior state)
     """
     DEFAULT = "default"
-    CLEAR_DONE = "clear_done"
-    SET_DONE_NOW = "set_done_now"
-    SET_DONE_HOOK = "set_done_hook"
-    WRITE_BUSY_FILE = "write_busy_file"
     HOLD_NO_WRITE = "hold_no_write"
 
 
@@ -836,9 +1001,6 @@ class Rule:
     - hook_in        — ctx.hook_state must be in this tuple (implies signal present)
     - prev_in        — ctx.prev_state must be in this tuple
     - hook_age_lt    — ctx.hook_age must satisfy 0 <= age < value
-    - busy_age_lt    — ctx.last_busy_age must satisfy 0 <= age < value
-    - done_valid     — True: done_flag present AND 0 <= done_age < DONE_TIMEOUT
-                       False: done_flag present AND NOT valid (expired/invalid)
     """
     name: str
     # str for concrete state (e.g. "BUSY"), or the USE_RAW sentinel
@@ -848,13 +1010,18 @@ class Rule:
     hook_in: Optional[Tuple[str, ...]] = None
     prev_in: Optional[Tuple[str, ...]] = None
     hook_age_lt: Optional[int] = None
-    busy_age_lt: Optional[int] = None
     jsonl_age_lt: Optional[int] = None
     # True: ctx.jsonl_age must be < 0 (no JSONL file at all)
     # False: ctx.jsonl_age must be >= 0 (JSONL file exists)
     # None: not checked
     jsonl_missing: Optional[bool] = None
-    done_valid: Optional[bool] = None
+    # Recap discriminator (Phase 2 of the v2.1.108 recap fix). When
+    # set, the rule matches only if the BUSY hook signal was fired
+    # within `value` seconds AFTER the last real conversation activity
+    # (`ctx.jsonl_age - ctx.hook_age < value`). Both hook_age and
+    # jsonl_age must be valid (>= 0); otherwise the rule does NOT
+    # match.
+    hook_after_real_activity_lt: Optional[int] = None
 
     def matches(self, ctx: "DetectionContext") -> bool:
         if self.raw_in is not None and ctx.raw not in self.raw_in:
@@ -867,9 +1034,6 @@ class Rule:
         if self.hook_age_lt is not None:
             if ctx.hook_age < 0 or ctx.hook_age >= self.hook_age_lt:
                 return False
-        if self.busy_age_lt is not None:
-            if ctx.last_busy_age < 0 or ctx.last_busy_age >= self.busy_age_lt:
-                return False
         if self.jsonl_age_lt is not None:
             if ctx.jsonl_age < 0 or ctx.jsonl_age >= self.jsonl_age_lt:
                 return False
@@ -879,49 +1043,37 @@ class Rule:
         elif self.jsonl_missing is False:
             if ctx.jsonl_age < 0:
                 return False
-        if self.done_valid is True:
-            if not ctx.done_flag or ctx.done_age < 0 or ctx.done_age >= DONE_TIMEOUT:
+        if self.hook_after_real_activity_lt is not None:
+            if ctx.hook_age < 0 or ctx.jsonl_age < 0:
                 return False
-        elif self.done_valid is False:
-            # "Invalid" means: flag present but NOT within valid window
-            if not ctx.done_flag:
-                return False
-            if 0 <= ctx.done_age < DONE_TIMEOUT:
+            if (ctx.jsonl_age - ctx.hook_age) >= self.hook_after_real_activity_lt:
                 return False
         return True
 
 
 # Priority-ordered rule table. First match wins.
 #
-# Priority rationale:
+# Priority rationale (4-state model: PERMIT/BUSY/IDLE/SHELL):
 #   1-2  process tree authoritative for SHELL/DOWN
 #   3    fresh BUSY hook beats stale pipeline (multi-project race)
 #   4    PERMIT blocks BUSY when dialog actually visible
-#   5-7  DONE hook variants: post-permit, multi-turn boundary, genuine
-#   8    BUSY hook overrides idle pipeline (text generation)
-#   9-12 fallback transitions when hooks are absent or irrelevant
-#   13   clear stale @ccm_done when leaving IDLE
-#   14   default: trust raw state
+#   5-6  BUSY hook overrides idle pipeline (text generation)
+#   7-8  JSONL freshness signals
+#   9    BUSY → IDLE fallback (direct, no DONE intermediate)
+#   10   PERMIT hold (brief IDLE gap after user approves)
+#   11   raw BUSY/PERMIT passthrough
+#   12   default: trust raw state
 DETECTION_RULES: Tuple[Rule, ...] = (
-    Rule(
-        name="process_down",
-        raw_in=("DOWN",),
-        result="DOWN",
-        action=Action.CLEAR_DONE,
-    ),
-    Rule(
-        name="process_shell",
-        raw_in=("SHELL",),
-        result="SHELL",
-        action=Action.CLEAR_DONE,
-    ),
+    Rule(name="process_down", raw_in=("DOWN",), result="DOWN"),
+    Rule(name="process_shell", raw_in=("SHELL",), result="SHELL"),
     Rule(
         # Fast path: very fresh BUSY hook is trusted over any raw state.
-        # Resolves races where the pipeline lags behind rapid BUSY
-        # transitions across multiple projects.
+        # The recap discriminator (hook_after_real_activity_lt) rejects
+        # phantom hooks from v2.1.108+ recap events.
         name="hook_fresh_busy",
         hook_in=("BUSY",),
         hook_age_lt=HOOK_FRESH_THRESHOLD,
+        hook_after_real_activity_lt=JSONL_HOOK_GAP_TOLERANCE,
         result="BUSY",
     ),
     Rule(
@@ -934,67 +1086,23 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         result="PERMIT",
     ),
     Rule(
-        # Post-PERMIT tool execution: after user grants permission the
-        # tool runs but PreToolUse does NOT re-fire. Stop fires DONE
-        # almost immediately. Within settle time, show BUSY and write
-        # the .busy file so subsequent cycles keep the BUSY lock.
-        name="hook_post_permit_tool",
-        hook_in=("DONE",),
-        hook_age_lt=DONE_SETTLE_TIME,
-        prev_in=("PERMIT",),
-        raw_in=("IDLE",),
-        result="BUSY",
-        action=Action.WRITE_BUSY_FILE,
-    ),
-    Rule(
-        # Multi-turn boundary: Stop fired DONE between tool turns.
-        # .busy file was touched within settle time by the previous
-        # PreToolUse, so this DONE is a false positive.
-        name="hook_multiturn_boundary",
-        hook_in=("DONE",),
-        hook_age_lt=DONE_TIMEOUT,
-        prev_in=("BUSY",),
-        raw_in=("IDLE",),
-        busy_age_lt=DONE_SETTLE_TIME,
-        result="BUSY",
-    ),
-    Rule(
-        # Genuine DONE: Stop fired, not a multi-turn/post-permit case.
-        name="hook_done_genuine",
-        hook_in=("DONE",),
-        hook_age_lt=DONE_TIMEOUT,
-        raw_in=("IDLE",),
-        result="DONE",
-        action=Action.SET_DONE_HOOK,
-    ),
-    Rule(
         # Slow path: trust a BUSY hook signal while raw=IDLE, as long as
-        # the session's JSONL has been written within BUSY_HOOK_JSONL_WINDOW.
-        # The JSONL is an independent heartbeat — it updates at every
-        # conversation turn boundary. A fresh-enough JSONL corroborates
-        # that the session is really working (tool calls, message
-        # completions, thinking-phase boundaries), so the BUSY hook is
-        # trustworthy.
-        #
-        # If instead the BUSY hook is ancient AND the JSONL has been
-        # silent for the same long interval, the BUSY is almost certainly
-        # left over from a turn that completed without a Stop hook firing
-        # (anthropics/claude-code#25655-class). This rule does NOT match,
-        # so evaluation falls through to fallback_busy_to_done and the
-        # state eventually leaves BUSY.
+        # the session's JSONL has been written within BUSY_HOOK_JSONL_WINDOW
+        # AND the BUSY hook fired within JSONL_HOOK_GAP_TOLERANCE of the
+        # last real conversation activity. Stale BUSY hooks (no JSONL
+        # corroboration) fall through to fallback_busy_to_idle.
         name="hook_busy_idle",
         hook_in=("BUSY",),
         raw_in=("IDLE",),
         jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
         jsonl_missing=False,
+        hook_after_real_activity_lt=JSONL_HOOK_GAP_TOLERANCE,
         result="BUSY",
     ),
     Rule(
         # Same BUSY-hook-trust path for the edge case where no JSONL
-        # exists for this project at all (older Claude Code, headless
-        # sessions that somehow slip through, or tests). Without a
-        # JSONL heartbeat we have no counterevidence, so fall back to
-        # the pre-JSONL behavior: trust the BUSY hook unconditionally.
+        # exists for this project at all. Trust the BUSY hook
+        # unconditionally without JSONL corroboration.
         name="hook_busy_idle_no_jsonl",
         hook_in=("BUSY",),
         raw_in=("IDLE",),
@@ -1002,16 +1110,11 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         result="BUSY",
     ),
     Rule(
-        # JSONL session log shows fresh activity. Independent of hooks
-        # — Claude Code writes records at every conversation turn
-        # boundary (user prompt, assistant message, tool_use,
-        # tool_result), so a fresh mtime is definitive evidence that
-        # something just happened in this session. Used as a positive
-        # BUSY override when raw=IDLE (the v2.1+ UI shows the empty
-        # `❯ ` line above an active turn) and no relevant hook
-        # signal has won above. Pure thinking phases do not update
-        # the file, so this is a positive-only signal — stale JSONL
-        # never implies IDLE.
+        # JSONL session log shows fresh activity (within 5s). Independent
+        # of hooks — Claude Code writes records at conversation turn
+        # boundaries. Also serves as the natural multi-turn bridge: when
+        # Stop deletes the signal file, JSONL freshness keeps BUSY for
+        # a few seconds until the next PreToolUse fires.
         name="jsonl_fresh_activity",
         raw_in=("IDLE",),
         jsonl_age_lt=JSONL_FRESH_THRESHOLD,
@@ -1019,14 +1122,8 @@ DETECTION_RULES: Tuple[Rule, ...] = (
     ),
     Rule(
         # Longer JSONL window used to HOLD an already-BUSY state
-        # through long thinking phases when hooks have gone silent
-        # (anthropics/claude-code#25655). If the session last wrote
-        # a record within JSONL_ACTIVE_THRESHOLD (default 120s) AND
-        # we were previously tracking BUSY, trust that we are still
-        # mid-turn and do not let fallback_busy_to_done demote to
-        # DONE. Distinct from jsonl_fresh_activity because it only
-        # suppresses a BUSY→DONE transition; it does not promote
-        # IDLE to BUSY on its own.
+        # through long thinking phases when hooks have gone silent.
+        # Prevents premature BUSY → IDLE during silent thinking.
         name="jsonl_holds_busy",
         raw_in=("IDLE",),
         prev_in=("BUSY",),
@@ -1034,23 +1131,18 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         result="BUSY",
     ),
     Rule(
-        # Fallback (no hooks): BUSY → IDLE transition means DONE.
-        name="fallback_busy_to_done",
+        # Fallback: BUSY → IDLE direct transition (no DONE intermediate).
+        # Fires when all BUSY evidence has aged out.
+        name="fallback_busy_to_idle",
         raw_in=("IDLE",),
         prev_in=("BUSY",),
-        result="DONE",
-        action=Action.SET_DONE_NOW,
+        result="IDLE",
     ),
     Rule(
-        # Fallback: keep PERMIT until a hook signal (BUSY/DONE) arrives.
+        # Fallback: keep PERMIT until a hook signal (BUSY) arrives.
         # After user responds, there's a brief IDLE gap before the tool
-        # starts; don't let the fallback turn that into DONE.
+        # starts; don't let the fallback turn that into IDLE.
         # HOLD_NO_WRITE: do not touch tmux state — preserve prior PERMIT.
-        #
-        # Safety net: require the PERMIT hook signal to still be present
-        # and within PERMIT_MAX_TIMEOUT. Without this, a crashed Claude
-        # during a permission dialog would leave PERMIT stuck forever
-        # (no hook signal would ever clear prev_state=PERMIT).
         name="fallback_permit_hold",
         raw_in=("IDLE",),
         prev_in=("PERMIT",),
@@ -1060,26 +1152,10 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         action=Action.HOLD_NO_WRITE,
     ),
     Rule(
-        # Fallback: done_flag still within DONE_TIMEOUT → keep showing DONE.
-        name="fallback_done_active",
-        raw_in=("IDLE",),
-        done_valid=True,
-        result="DONE",
-    ),
-    Rule(
-        # Fallback: done_flag expired or invalid → clear and trust raw.
-        name="fallback_done_expired",
-        raw_in=("IDLE",),
-        done_valid=False,
-        result=USE_RAW,
-        action=Action.CLEAR_DONE,
-    ),
-    Rule(
-        # Leaving IDLE: clear any stale @ccm_done.
-        name="raw_not_idle_clear",
+        # raw BUSY/PERMIT passthrough: trust raw state.
+        name="raw_not_idle",
         raw_in=("BUSY", "PERMIT"),
         result=USE_RAW,
-        action=Action.CLEAR_DONE,
     ),
     Rule(
         # Default: trust raw state. Always matches (terminal rule).
@@ -1104,45 +1180,27 @@ def evaluate_rules(ctx: DetectionContext,
     raise RuntimeError("DETECTION_RULES has no terminal default rule")
 
 
-def _read_busy_ts(project_dir: str) -> int:
-    """Read the .busy file timestamp. Returns 0 if missing/invalid."""
-    if not project_dir:
-        return 0
-    busy_file = _hook_signal_path(project_dir) + ".busy"
-    try:
-        with open(busy_file) as f:
-            return int(f.read().strip())
-    except (OSError, ValueError):
-        return 0
-
-
 # prev_state → synthetic raw mapping for the fast path.
 # The fast path (statusline) skips the ps/capture-pane pipeline, so it
 # has no real `raw` value. It derives one from prev_state under the
 # assumption that Claude is still in the same lifecycle phase as the
-# last authoritative slow-path evaluation. DONE is not a raw value —
-# it's a derived state, so we map it back to IDLE and let rule 11
-# (fallback_done_active) re-derive DONE from done_flag.
+# last authoritative slow-path evaluation.
 _FAST_PREV_TO_RAW = {
     "DOWN": "DOWN",
     "SHELL": "SHELL",
     "BUSY": "BUSY",
     "PERMIT": "PERMIT",
     "IDLE": "IDLE",
-    "DONE": "IDLE",
     "": "IDLE",
 }
 
 
-def build_fast_context(prev_state, done_flag, project_dir,
+def build_fast_context(prev_state, project_dir,
                        now=None) -> DetectionContext:
     """Build a DetectionContext for the read-only statusline path.
 
     Does not call ps/capture-pane/tmux queries for process tree info.
-    Derives `raw` from prev_state, reads hook signal + done_flag only.
-    Skips the .busy file read — multi-turn boundary suppression is a
-    slow-path concern; the fast path may briefly flash DONE which the
-    next slow-path cycle will correct.
+    Derives `raw` from prev_state, reads hook signal only.
     """
     if now is None:
         now = int(time.time())
@@ -1162,13 +1220,6 @@ def build_fast_context(prev_state, done_flag, project_dir,
             else:
                 hook_age = now - hook_ts
 
-    done_age = -1
-    if done_flag:
-        try:
-            done_age = now - int(done_flag)
-        except ValueError:
-            done_age = -1
-
     jsonl_age = read_jsonl_age(project_dir) if project_dir else -1
 
     return DetectionContext(
@@ -1177,30 +1228,25 @@ def build_fast_context(prev_state, done_flag, project_dir,
         hook_ts=hook_ts,
         hook_age=hook_age,
         prev_state=prev_state,
-        done_flag=done_flag,
-        done_age=done_age,
-        last_done_ts=0,
-        last_busy_age=-1,
         jsonl_age=jsonl_age,
         now=now,
     )
 
 
-def evaluate_fast(prev_state, done_flag, project_dir, now=None) -> str:
+def evaluate_fast(prev_state, project_dir, now=None) -> str:
     """Read-only state evaluation for statusline-speed contexts.
 
     Runs the same DETECTION_RULES table as the slow path, so there is
     one source of truth for state transitions. Does not write to tmux
-    or touch .busy files — the slow-path run next cycle is authoritative
-    for persisting state.
+    — the slow-path run next cycle is authoritative for persisting state.
     """
-    ctx = build_fast_context(prev_state, done_flag, project_dir, now)
+    ctx = build_fast_context(prev_state, project_dir, now)
     _rule, state = evaluate_rules(ctx)
     return state
 
 
-def build_detection_context(win_target, project_dir, prev_state, done_flag,
-                            last_done_ts, panes_cache, ps_lines, own_pgid
+def build_detection_context(win_target, project_dir, prev_state,
+                            panes_cache, ps_lines, own_pgid
                             ) -> DetectionContext:
     """Gather all inputs needed for rule evaluation.
 
@@ -1229,30 +1275,14 @@ def build_detection_context(win_target, project_dir, prev_state, done_flag,
         sig = read_hook_signal(project_dir)
         if sig is not None:
             hook_ts, hook_state, _detail = sig
-            # SHELL hook signal is ignored (see comment in old detect_window_state):
-            # process tree is authoritative for SHELL; trusting a stale SHELL
-            # signal while raw=IDLE causes false SHELL after Claude restarts.
+            # SHELL hook signal is ignored: process tree is authoritative
+            # for SHELL; trusting a stale SHELL signal while raw=IDLE
+            # causes false SHELL after Claude restarts.
             if hook_state == "SHELL":
                 hook_state = ""
                 hook_ts = 0
             else:
                 hook_age = now - hook_ts
-
-    # .busy file is only consulted by the hook_multiturn_boundary rule,
-    # which requires hook=DONE and prev=BUSY. Skip the filesystem read
-    # in all other cases to keep per-project overhead minimal.
-    last_busy_age = -1
-    if hook_state == "DONE" and prev_state == "BUSY":
-        last_busy_ts = _read_busy_ts(project_dir)
-        if last_busy_ts:
-            last_busy_age = now - last_busy_ts
-
-    done_age = -1
-    if done_flag:
-        try:
-            done_age = now - int(done_flag)
-        except ValueError:
-            done_age = -1
 
     jsonl_age = read_jsonl_age(project_dir, claude_pid=claude_pid) if project_dir else -1
 
@@ -1262,73 +1292,45 @@ def build_detection_context(win_target, project_dir, prev_state, done_flag,
         hook_ts=hook_ts,
         hook_age=hook_age,
         prev_state=prev_state,
-        done_flag=done_flag,
-        done_age=done_age,
-        last_done_ts=last_done_ts,
-        last_busy_age=last_busy_age,
         jsonl_age=jsonl_age,
         now=now,
     )
 
 
 def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
-                  state: str) -> Tuple[str, str, int]:
+                  state: str) -> str:
     """Execute the side effects declared by a matched rule.
 
-    Returns (state, done_flag, last_done_ts) tuple in the same format as
-    detect_window_state's contract.
+    Returns the resolved state string.
     """
     action = rule.action
 
     # Record SHELL transitions for cluster-crash detection (#48069).
     # A transition into SHELL from a known *active* state (BUSY /
-    # IDLE / DONE / PERMIT) is a real session exit and gets pushed.
-    # Empty prev_state ("") happens after `_do_attach` and other
-    # paths that explicitly clear @ccm_prev_state — those are NOT
-    # real crashes, just a forced re-detection. DOWN means the
-    # window was momentarily without panes (rare), also not a crash.
-    # Without this filter, every dashboard attach would inflate the
-    # cluster count.
+    # IDLE / PERMIT) is a real session exit and gets pushed.
     if state == "SHELL" and ctx.prev_state in (
-        "BUSY", "IDLE", "DONE", "PERMIT"
+        "BUSY", "IDLE", "PERMIT"
     ):
         _push_shell_transition(win_target)
 
     if action == Action.HOLD_NO_WRITE:
-        # Preserve prior tmux state and prior done fields.
-        return state, ctx.done_flag, ctx.last_done_ts
+        return state
 
-    if action == Action.CLEAR_DONE:
-        _set_win_state(win_target, state, unset_done=True)
-        return state, "", ctx.last_done_ts
-
-    if action == Action.SET_DONE_NOW:
-        _set_win_state(win_target, "DONE", done=ctx.now, last_done=ctx.now)
-        return "DONE", str(ctx.now), ctx.now
-
-    if action == Action.SET_DONE_HOOK:
-        _set_win_state(win_target, "DONE", done=ctx.hook_ts, last_done=ctx.hook_ts)
-        return "DONE", str(ctx.hook_ts), ctx.hook_ts
-
-    if action == Action.WRITE_BUSY_FILE:
-        if project_dir:
-            busy_file = _hook_signal_path(project_dir) + ".busy"
-            try:
-                with open(busy_file, "w") as f:
-                    f.write(str(ctx.now))
-            except OSError:
-                pass
-        _set_win_state(win_target, state)
-        return state, ctx.done_flag, ctx.last_done_ts
-
-    # Action.DEFAULT
+    # Action.DEFAULT — set @ccm_prev_state
     _set_win_state(win_target, state)
-    return state, ctx.done_flag, ctx.last_done_ts
+
+    # Set @ccm_completed_at when transitioning from BUSY/PERMIT to IDLE.
+    # This is a display-layer marker — the ✔ icon shows for
+    # COMPLETED_AT_TIMEOUT seconds after the transition.
+    if state == "IDLE" and ctx.prev_state in ("BUSY", "PERMIT"):
+        tmux_cmd("set-option", "-wt", win_target, "@ccm_completed_at", str(ctx.now))
+
+    return state
 
 
-def detect_window_state(win_target, project_dir, prev_state, done_flag, last_done_ts,
+def detect_window_state(win_target, project_dir, prev_state,
                         panes_cache, ps_lines, own_pgid):
-    """Full detection pipeline. Returns (state, new_done_flag, new_last_done).
+    """Full detection pipeline. Returns the resolved state string.
 
     Thin orchestration layer:
       1. build_detection_context — gather inputs
@@ -1339,7 +1341,7 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
     or change a case, edit the rule table rather than this function.
     """
     ctx = build_detection_context(
-        win_target, project_dir, prev_state, done_flag, last_done_ts,
+        win_target, project_dir, prev_state,
         panes_cache, ps_lines, own_pgid,
     )
     rule, state = evaluate_rules(ctx)
@@ -1351,11 +1353,11 @@ def detect_window_state(win_target, project_dir, prev_state, done_flag, last_don
 class Project:
     __slots__ = (
         "win_target", "win_idx", "name", "dir", "state",
-        "branch", "ports", "last_done_ts", "sort_key",
+        "branch", "ports", "completed_at", "sort_key",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
-                 branch="", ports="", last_done_ts=0):
+                 branch="", ports="", completed_at=0):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -1363,8 +1365,8 @@ class Project:
         self.state = state
         self.branch = branch
         self.ports = ports
-        self.last_done_ts = last_done_ts
-        self.sort_key = (STATE_PRIORITY.get(state, 5), -(last_done_ts or 0))
+        self.completed_at = completed_at
+        self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
 def read_cache_file(cache_dir, directory):
@@ -1397,7 +1399,7 @@ def build_project_list(fast=False):
     raw = tmux_cmd(
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
-        "#{@ccm_prev_state}\t#{@ccm_done}\t#{@ccm_last_done}\t#{window_activity}"
+        "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}"
     )
     if not raw:
         return []
@@ -1418,11 +1420,11 @@ def build_project_list(fast=False):
 
     for line in raw.split("\n"):
         parts = line.split("\t")
-        if len(parts) < 7:
+        if len(parts) < 6:
             continue
         win_target, project, proj_dir = parts[0], parts[1], parts[2]
-        prev_state, done_flag, last_done_str, win_activity_str = (
-            parts[3], parts[4], parts[5], parts[6]
+        prev_state, completed_at_str, win_activity_str = (
+            parts[3], parts[4], parts[5]
         )
 
         if not project:
@@ -1438,10 +1440,10 @@ def build_project_list(fast=False):
 
         win_idx = win_target.split(":")[-1]
 
-        last_done_ts = 0
-        if last_done_str and last_done_str != "0":
+        completed_at = 0
+        if completed_at_str and completed_at_str != "0":
             try:
-                last_done_ts = int(last_done_str)
+                completed_at = int(completed_at_str)
             except ValueError:
                 pass
 
@@ -1453,18 +1455,15 @@ def build_project_list(fast=False):
                 pass
 
         if fast:
-            # Unified with slow path via DETECTION_RULES. Read-only:
-            # does not touch tmux state or .busy files.
-            state = evaluate_fast(prev_state, done_flag, proj_dir)
+            # Unified with slow path via DETECTION_RULES. Read-only.
+            state = evaluate_fast(prev_state, proj_dir)
         else:
-            state, done_flag, last_done_ts_new = detect_window_state(
-                win_target, proj_dir, prev_state, done_flag, last_done_ts,
+            state = detect_window_state(
+                win_target, proj_dir, prev_state,
                 panes_cache, ps_lines, own_pgid
             )
-            if last_done_ts_new:
-                last_done_ts = last_done_ts_new if isinstance(last_done_ts_new, int) else last_done_ts
 
-        sort_ts = max(last_done_ts, win_activity) if win_activity else last_done_ts
+        sort_ts = max(completed_at, win_activity) if win_activity else completed_at
 
         branch = read_cache_file(CCM_GIT_CACHE_DIR, proj_dir) if proj_dir else ""
         ports = read_cache_file(CCM_PORT_CACHE_DIR, proj_dir) if proj_dir else ""
@@ -1472,7 +1471,7 @@ def build_project_list(fast=False):
         projects.append(Project(
             win_target=win_target, win_idx=win_idx, name=project,
             directory=proj_dir, state=state, branch=branch, ports=ports,
-            last_done_ts=sort_ts,
+            completed_at=sort_ts,
         ))
 
     projects.sort(key=lambda p: p.sort_key)
@@ -1562,16 +1561,18 @@ def save_tmux_conf_setting(setting):
 
 def notify(state, project, detail=""):
     """Send desktop notification for state changes.
-    Controlled by @ccm-notify tmux option: off, permit, done, permit,done, all.
+    Controlled by @ccm-notify tmux option: off, permit, completed, permit,completed, all.
     detail: optional context (e.g., "Bash: rm -rf ..." for PERMIT).
     """
-    setting = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,done"
+    setting = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,completed"
     if setting == "off":
         return
 
     state_lower = state.lower()
-    if setting != "all" and state_lower not in setting:
-        return
+    # Backwards compatibility: "done" in setting also matches "completed"
+    if setting != "all":
+        if state_lower not in setting and not (state_lower == "completed" and "done" in setting):
+            return
 
     sound_setting = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
     sound_name = (tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass") if sound_setting == "on" else ""
@@ -1582,9 +1583,9 @@ def notify(state, project, detail=""):
         "PERMIT": (f"ccm ⚠ {project}",
                    permit_body,
                    sound_name),
-        "DONE":   (f"ccm ✔ {project}",
-                   "Claude has finished responding — review the output when ready",
-                   sound_name),
+        "COMPLETED": (f"ccm ✔ {project}",
+                      "Claude has finished responding — review the output when ready",
+                      sound_name),
         "BUSY":   (f"ccm ◉ {project}",
                    "Claude is now processing your request",
                    ""),
@@ -1667,7 +1668,7 @@ def auto_exit_idle(projects):
     # Get window activity for all windows
     activity_raw = tmux_cmd(
         "list-windows", "-a", "-F",
-        "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}\t#{@ccm_last_done}\t#{window_activity}"
+        "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}"
     )
     if not activity_raw:
         return
@@ -1676,7 +1677,7 @@ def auto_exit_idle(projects):
         parts = line.split("\t")
         while len(parts) < 5:
             parts.append("")
-        win_target, project, prev_state, last_done_str, win_activity_str = parts[:5]
+        win_target, project, prev_state, completed_at_str, win_activity_str = parts[:5]
 
         if not project or prev_state != "IDLE":
             continue
@@ -1684,10 +1685,10 @@ def auto_exit_idle(projects):
             continue
 
         # Parse timestamps
-        last_done = 0
-        if last_done_str and last_done_str != "0":
+        completed_at = 0
+        if completed_at_str and completed_at_str != "0":
             try:
-                last_done = int(last_done_str)
+                completed_at = int(completed_at_str)
             except ValueError:
                 pass
 
@@ -1698,10 +1699,10 @@ def auto_exit_idle(projects):
             except ValueError:
                 pass
 
-        idle_since = max(last_done, win_activity)
+        idle_since = max(completed_at, win_activity)
 
         if idle_since == 0:
-            tmux_cmd("set-option", "-wt", win_target, "@ccm_last_done", str(now))
+            tmux_cmd("set-option", "-wt", win_target, "@ccm_completed_at", str(now))
             continue
 
         idle_duration = now - idle_since
@@ -1713,7 +1714,7 @@ def auto_exit_idle(projects):
             time.sleep(0.5)
             # Clear the pane so auto-restart shows a clean screen
             tmux_cmd("send-keys", "-t", win_target, "clear", "Enter")
-            _set_win_state(win_target, "SHELL", unset_done=True)
+            _set_win_state(win_target, "SHELL")
             # Force autosave after auto-exit to preserve project in snapshot
             _force_autosave()
 
@@ -1766,7 +1767,6 @@ _C_DIM = "\033[2m"
 _C_STATE = {
     "PERMIT": "\033[1;33m",      # bold yellow
     "BUSY": "\033[38;5;209m",    # salmon
-    "DONE": "\033[0;32m",        # green
     "IDLE": "\033[0;34m",        # blue
     "SHELL": "\033[38;5;245m",   # gray
     "DOWN": "\033[2m",           # dim
@@ -1897,7 +1897,7 @@ def print_tree():
 def print_statusline():
     """Print one-line status for tmux status bar (for `ccm statusline`)."""
     projects = build_project_list(fast=True)
-    active = [p for p in projects if p.state in ("BUSY", "PERMIT", "DONE")]
+    active = [p for p in projects if p.state in ("BUSY", "PERMIT")]
     if not active:
         return
 
@@ -2033,28 +2033,28 @@ def auto_start_claude(win_target):
     tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
 
 
-def clear_done(win_target):
-    """Clear DONE hook signal and post-attach state for a window.
+def reset_window_after_attach(win_target):
+    """Run the post-attach reset bundle for a project window.
 
-    Despite the name, this function also resets @ccm_prev_state and
-    @ccm_shell_history. Both are intended as post-attach cleanups:
-    when the user attaches to a project, the previous detection
-    cache is wiped so the next scan computes state from scratch,
-    and the cluster-SHELL canary is acknowledged (the warning will
-    reappear only if NEW transitions cluster after the attach).
+    Called whenever the user attaches to a project (CLI `cmd_attach`,
+    dashboard `_do_attach`, dashboard tree-mode attach). All side
+    effects are keyed off `@ccm_dir`; on a non-ccm window this is a
+    no-op:
+
+    1. Unset `@ccm_completed_at` so the ✔ marker disappears.
+    2. Clear `@ccm_prev_state` so the next scan recomputes state
+       from scratch (no stale carry-over from before the attach).
+    3. Unset `@ccm_shell_history` so the cluster-SHELL canary
+       (#48069) is acknowledged. The warning will reappear only if
+       NEW transitions cluster after the attach.
+
+    Symmetric across all attach paths — do not duplicate these
+    set-option calls inline elsewhere.
     """
     proj_dir = tmux_cmd("show-option", "-wqv", "-t", win_target, "@ccm_dir")
     if not proj_dir:
         return
-    resolved = _resolve_project_dir(proj_dir)
-    hook_file = os.path.join(CCM_HOOK_DIR, md5_hash(resolved))
-    try:
-        if os.path.exists(hook_file):
-            with open(hook_file) as f:
-                if "DONE" in f.read():
-                    os.unlink(hook_file)
-    except OSError:
-        pass
+    tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_completed_at")
     tmux_cmd("set-option", "-wq", "-t", win_target, "@ccm_prev_state", "")
     tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_shell_history")
 
@@ -2430,10 +2430,14 @@ def cmd_unregister(name):
     if orig_name:
         tmux_cmd("rename-window", "-t", win_target, orig_name)
 
-    # Remove all ccm tags
+    # Remove all ccm tags. Legacy tags (`@ccm_done`, `@ccm_last_done`)
+    # from the pre-4-state model are included so v0.1.0 installs that
+    # have lingering tmux options get a clean unregister after upgrade.
     tags = ["automatic-rename", "@ccm_project", "@ccm_dir", "@ccm_orig_name",
-            "@ccm_prev_state", "@ccm_done", "@ccm_last_done",
-            "@ccm_state_icon", "@ccm_state_color"]
+            "@ccm_prev_state", "@ccm_completed_at",
+            "@ccm_state_icon", "@ccm_state_color",
+            "@ccm_shell_history",
+            "@ccm_done", "@ccm_last_done"]
     cmds = [("set-option", "-wt", win_target, "-u", tag) for tag in tags]
     tmux_batch(*cmds)
 
@@ -2566,7 +2570,7 @@ def cmd_attach(target):
         if not has_claude:
             auto_start_claude(win_target)
 
-    clear_done(win_target)
+    reset_window_after_attach(win_target)
     tmux_cmd("select-window", "-t", f"{session}:{idx}")
 
 
@@ -2664,7 +2668,7 @@ def cmd_send(args):
       ccm send <name> -- "--literal"       `--` ends flag parsing
 
     State policy:
-      IDLE / DONE  → send immediately
+      IDLE         → send immediately
       BUSY         → refuse without --force; queue into buffer with --force
       PERMIT       → ALWAYS refuse (hard guard — typing into a permission
                      dialog could accidentally approve or deny a tool call)
@@ -2858,12 +2862,15 @@ def cmd_send(args):
     ccm_info(f"Sent to {project_name}")
 
 
-def cmd_clear_done():
-    """Clear DONE flag for the current window."""
+def cmd_reset_window():
+    """CLI handler for `ccm reset-window` — runs the post-attach reset
+    on the current window. Internal plumbing used by the bash wrapper
+    for attach paths that cannot call `reset_window_after_attach`
+    directly; not user-facing."""
     session_name = tmux_cmd("display-message", "-p", "#{session_name}")
     win_idx = tmux_cmd("display-message", "-p", "#{window_index}")
     if session_name and win_idx:
-        clear_done(f"{session_name}:{win_idx}")
+        reset_window_after_attach(f"{session_name}:{win_idx}")
 
 
 # ─── CLI entry point ───
@@ -2910,8 +2917,8 @@ if __name__ == "__main__":
         cmd_snapshot_list()
     elif cmd == "snapshot-delete":
         cmd_snapshot_delete(args[0] if args else "")
-    elif cmd == "clear-done":
-        cmd_clear_done()
+    elif cmd == "reset-window":
+        cmd_reset_window()
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

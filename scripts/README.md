@@ -82,7 +82,7 @@ cp ~/Desktop/statusbar-mode-2.png assets/statusbar-mode2.png
 - `@ccm-mock-state 1` tmuxオプションで `inject-status` の実プロセス検出をバイパス
 - `CCM_MOCK_STATE=1` 環境変数で `ccm dashboard` の状態検出もバイパス
 - `@ccm_prev_state` ウィンドウオプションに設定した値がそのまま表示される
-- 6つの架空プロジェクトが各状態（PERMIT, DONE, BUSY, IDLE, IDLE, SHELL）で作成される
+- 6つの架空プロジェクトが各状態（PERMIT, BUSY, IDLE, IDLE+完了マーカー, IDLE, SHELL）で作成される
 
 ## Ghostty Tips
 

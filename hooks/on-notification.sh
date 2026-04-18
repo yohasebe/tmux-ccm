@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# ccm hook: Claude Code Notification → write PERMIT/DONE signal
-# Matches: permission_prompt → PERMIT, idle_prompt → DONE
+# ccm hook: Claude Code Notification → write PERMIT signal / clear signal
+# Matches: permission_prompt → PERMIT, idle_prompt → clear signal
 # Installed by: ccm setup-hooks
 set -euo pipefail
 
@@ -30,8 +30,6 @@ else
     exit 0
 fi
 
-NOW=$(date +%s)
-
 case "$NOTIFY_TYPE" in
     permission_prompt)
         ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
@@ -43,9 +41,11 @@ case "$NOTIFY_TYPE" in
         ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
         ;;
     idle_prompt)
-        # Write DONE (may also be written by on-stop.sh — harmless, same effect)
-        # Only write if not already BUSY (avoid overwriting active work signal)
+        # Delete the signal file to clear the BUSY state.
+        # Only delete if not already BUSY (avoid clearing active work signal
+        # that was just written by a concurrent PreToolUse).
         SIGNAL_FILE="${HOOK_DIR}/${KEY}"
+        NOW=$(date +%s)
         if [[ -f "$SIGNAL_FILE" ]]; then
             EXISTING=$(cat "$SIGNAL_FILE" 2>/dev/null)
             EXISTING_STATE="${EXISTING##* }"
@@ -54,6 +54,17 @@ case "$NOTIFY_TYPE" in
                 exit 0
             fi
         fi
-        ccm_write_signal "$HOOK_DIR" "$KEY" "DONE" "$CWD"
+        rm -f "$SIGNAL_FILE" "$SIGNAL_FILE.busy"
+
+        # Resolve project name for notification
+        project=""
+        win_info=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
+            | awk -F'\t' -v d="$CWD" '$2==d {print $1"\t"$3; exit}')
+        if [[ -n "$win_info" ]]; then
+            project="${win_info##*	}"
+        fi
+        if [[ -n "$project" ]]; then
+            _ccm_instant_notify "COMPLETED" "$project" "" &
+        fi
         ;;
 esac

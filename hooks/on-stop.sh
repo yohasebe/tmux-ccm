@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# ccm hook: Claude Code Stop / StopFailure → write DONE signal
+# ccm hook: Claude Code Stop / StopFailure → clear BUSY signal
+# Deletes the signal file so detection transitions to IDLE.
 # Installed by: ccm setup-hooks
 set -euo pipefail
 
@@ -25,17 +26,19 @@ else
     exit 0
 fi
 
-SIGNAL_FILE="${HOOK_DIR}/${KEY}"
-NOW=$(date +%s)
+# Delete the BUSY signal file (and .busy file) to clear the BUSY state.
+# The detection layer will transition to IDLE on the next scan.
+rm -f "$HOOK_DIR/$KEY" "$HOOK_DIR/$KEY.busy"
 
-# Safety: don't overwrite a newer BUSY signal (race condition protection)
-if [[ -f "$SIGNAL_FILE" ]]; then
-    EXISTING=$(cat "$SIGNAL_FILE" 2>/dev/null)
-    EXISTING_TS="${EXISTING%% *}"
-    EXISTING_STATE="${EXISTING##* }"
-    if [[ "$EXISTING_STATE" == "BUSY" && "$EXISTING_TS" -ge "$NOW" ]] 2>/dev/null; then
-        exit 0
-    fi
+# Resolve project name for notification
+project=""
+win_info=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
+    | awk -F'\t' -v d="$CWD" '$2==d {print $1"\t"$3; exit}')
+if [[ -n "$win_info" ]]; then
+    project="${win_info##*	}"
 fi
 
-ccm_write_signal "$HOOK_DIR" "$KEY" "DONE" "$CWD"
+# Fire instant notification (if enabled)
+if [[ -n "$project" ]]; then
+    _ccm_instant_notify "COMPLETED" "$project" "" &
+fi

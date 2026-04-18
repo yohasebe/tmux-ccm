@@ -23,10 +23,19 @@ T() { tmux -L "$SOCKET" "$@"; }
 
 add_project() {
     local name="$1" dir="$2" state="$3" branch="$4" ports="${5:-}"
-    local icon
+    # 4-state model (PERMIT/BUSY/IDLE/SHELL). The historical DONE
+    # state has been replaced by a cosmetic ✔ marker driven off
+    # @ccm_completed_at — pass "COMPLETED" here to simulate a window
+    # that just finished. It is shown as IDLE in @ccm_prev_state so
+    # the detection rules agree with the marker.
+    local icon prev_state
     case "$state" in
-        PERMIT) icon="⚠" ;; BUSY) icon="◉" ;; DONE) icon="✔" ;;
-        IDLE)   icon="●" ;; SHELL) icon="■" ;; *) icon="○" ;;
+        PERMIT)    icon="⚠" ; prev_state="PERMIT" ;;
+        BUSY)      icon="◉" ; prev_state="BUSY"   ;;
+        COMPLETED) icon="✔" ; prev_state="IDLE"   ;;
+        IDLE)      icon="●" ; prev_state="IDLE"   ;;
+        SHELL)     icon="■" ; prev_state="SHELL"  ;;
+        *)         icon="○" ; prev_state="$state" ;;
     esac
 
     local win_idx
@@ -36,20 +45,26 @@ add_project() {
     T set-option -wt "$win" @ccm_project "$name"
     T set-option -wt "$win" @ccm_dir "$dir"
     T set-option -wt "$win" @ccm_orig_name "$name"
-    T set-option -wt "$win" @ccm_prev_state "$state"
+    T set-option -wt "$win" @ccm_prev_state "$prev_state"
     T set-option -wt "$win" automatic-rename off
 
-    if [[ "$state" == "DONE" ]]; then
-        T set-option -wt "$win" @ccm_done "$(date +%s)"
-        T set-option -wt "$win" @ccm_last_done "$(date +%s)"
+    if [[ "$state" == "COMPLETED" ]]; then
+        T set-option -wt "$win" @ccm_completed_at "$(date +%s)"
     fi
 
-    # Hook signal file
+    # Hook signal file. Only states that correspond to a real hook
+    # signal get a file (BUSY / PERMIT); IDLE and the cosmetic
+    # COMPLETED have no signal because the Stop hook deletes the
+    # file on completion.
     local hook_dir="${TMPDIR:-/tmp}/ccm-$(id -u)/hooks"
     mkdir -p "$hook_dir"
     local dir_hash
     dir_hash=$(printf '%s' "$dir" | md5 -q 2>/dev/null || printf '%s' "$dir" | md5sum | cut -d' ' -f1)
-    printf '%s %s' "$(date +%s)" "$state" > "${hook_dir}/${dir_hash}"
+    if [[ "$state" == "BUSY" || "$state" == "PERMIT" ]]; then
+        printf '%s %s' "$(date +%s)" "$state" > "${hook_dir}/${dir_hash}"
+    else
+        rm -f "${hook_dir}/${dir_hash}"
+    fi
 
     # Git branch cache
     local git_cache_dir="${TMPDIR:-/tmp}/ccm-$(id -u)/git-cache"
@@ -97,12 +112,12 @@ sleep 0.5
 echo "Creating mock projects..."
 echo ""
 
-add_project "api-gateway"    "$HOME/code/api-gateway"    "BUSY"    "feat/rate-limiting"  "8080"
-add_project "web-dashboard"  "$HOME/code/web-dashboard"  "IDLE"    "main"                "3000"
-add_project "auth-service"   "$HOME/code/auth-service"   "DONE"    "fix/token-refresh"   "9090"
-add_project "ml-pipeline"    "$HOME/code/ml-pipeline"    "PERMIT"  "main*"               ""
-add_project "mobile-app"     "$HOME/code/mobile-app"     "IDLE"    "release/2.1"         "8081"
-add_project "docs-site"      "$HOME/code/docs-site"      "SHELL"   "main"                "4321"
+add_project "api-gateway"    "$HOME/code/api-gateway"    "BUSY"      "feat/rate-limiting"  "8080"
+add_project "web-dashboard"  "$HOME/code/web-dashboard"  "IDLE"      "main"                "3000"
+add_project "auth-service"   "$HOME/code/auth-service"   "COMPLETED" "fix/token-refresh"   "9090"
+add_project "ml-pipeline"    "$HOME/code/ml-pipeline"    "PERMIT"    "main*"               ""
+add_project "mobile-app"     "$HOME/code/mobile-app"     "IDLE"      "release/2.1"         "8081"
+add_project "docs-site"      "$HOME/code/docs-site"      "SHELL"     "main"                "4321"
 
 T select-window -t "${SESSION}:1"
 

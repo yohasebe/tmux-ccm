@@ -82,7 +82,7 @@ class TestRenderSmoke:
         d.projects = [
             ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
             ccm_core.Project("0:2", "2", "beta",  "/tmp/b", "BUSY"),
-            ccm_core.Project("0:3", "3", "gamma", "/tmp/c", "DONE"),
+            ccm_core.Project("0:3", "3", "gamma", "/tmp/c", "IDLE"),
             ccm_core.Project("0:4", "4", "delta", "/tmp/d", "PERMIT"),
             ccm_core.Project("0:5", "5", "epsilon", "/tmp/e", "SHELL"),
         ]

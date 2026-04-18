@@ -95,7 +95,7 @@ class SVG:
 PROJ = [
     dict(i=2, ic="◉", st="BUSY",   sc=ORANGE, n="api-gateway",   br="feat/rate-limiting", t="6s",  d="~/code/api-gateway",   pt="8080"),
     dict(i=5, ic="⚠", st="PERMIT", sc=YELLOW, n="ml-pipeline",   br="main*",              t="20s", d="~/code/ml-pipeline",   pt=""),
-    dict(i=4, ic="✔", st="DONE",   sc=GREEN,  n="auth-service",  br="fix/token-refresh",  t="2s",  d="~/code/auth-service",  pt="9090"),
+    dict(i=4, ic="●", st="IDLE",   sc=BLUE,   n="auth-service",  br="fix/token-refresh",  t="2s",  d="~/code/auth-service",  pt="9090", completed=True),
     dict(i=3, ic="●", st="IDLE",   sc=BLUE,   n="web-dashboard", br="main",               t="1m",  d="~/code/web-dashboard", pt="3000"),
     dict(i=6, ic="●", st="IDLE",   sc=BLUE,   n="mobile-app",    br="release/2.1",        t="5m",  d="~/code/mobile-app",    pt="8081"),
     dict(i=7, ic="■", st="SHELL",  sc=DIM,    n="docs-site",     br="main",               t="1d",  d="~/code/docs-site",     pt="4321"),
@@ -113,6 +113,9 @@ def gen_dashboard():
     # Project rows
     #     ▶ #2  ◉BUSY   api-gateway      (feat/rate-limiting) ✔6s  ~/code/api-gateway
     # Cols: 1   3  6 7    14               32                  49   54
+    # ✔ (col 50) is shown only on rows that just completed (within
+    # COMPLETED_AT_TIMEOUT) — it is a display-layer marker, not a
+    # detection state. Other rows show the elapsed time without ✔.
     for ri, p in enumerate(PROJ):
         r = ri + 3
         if ri == 0:
@@ -123,8 +126,11 @@ def gen_dashboard():
         s.t(7, r, p["st"], p["sc"])       # icon + state adjacent
         s.t(14, r, p["n"], WHITE, bold=True)
         s.t(30, r, f"({p['br']})", MAGENTA)
-        s.t(50, r, "✔", GREEN)
-        s.t(51, r, p["t"], DIM)
+        if p.get("completed"):
+            s.t(50, r, "✔", GREEN)
+            s.t(51, r, p["t"], DIM)
+        else:
+            s.t(51, r, p["t"], DIM)
         s.t(55, r, p["d"], DIM)
 
     # Help line
@@ -154,7 +160,7 @@ def gen_mode0():
 
     # Window list (standard tmux, but window names include ccm icons)
     items = ["1:zsh", "2:◉ api-gateway*", "3:● web-dashboard",
-             "4:✔ auth-service", "5:⚠ ml-pipeline", "6:● mobile-app"]
+             "4:● auth-service", "5:⚠ ml-pipeline", "6:● mobile-app"]
     c = 8
     for item in items:
         bold = "*" in item
@@ -185,7 +191,7 @@ def gen_mode1():
     entries = [
         ("api-gateway:◉",   ORANGE, True),
         ("ml-pipeline:⚠",   YELLOW, False),
-        ("auth-service:✔",  GREEN,  False),
+        ("auth-service:●",  BLUE,   False),
         ("web-dashboard:●", BLUE,   False),
         ("mobile-app:●",    BLUE,   False),
         ("docs-site:■",     DIM,    False),
@@ -222,7 +228,7 @@ def gen_mode2():
 
     entries1 = [
         ("2:api-gateway:◉",  ORANGE), ("5:ml-pipeline:⚠",  YELLOW),
-        ("4:auth-service:✔", GREEN),  ("3:web-dashboard:●", BLUE),
+        ("4:auth-service:●", BLUE),   ("3:web-dashboard:●", BLUE),
     ]
     entries2 = [
         ("6:mobile-app:●",   BLUE),   ("7:docs-site:■",    DIM),

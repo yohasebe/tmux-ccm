@@ -90,7 +90,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 >   6 project(s)
 >
 > ▶ #5  ⚠PERMIT  ml-pipeline    ✔20s ~/code/ml-pipeline
->   #4  ✔DONE    auth-service   ✔2s  ~/code/auth-service
+>   #4  ✔IDLE    auth-service   ✔2s  ~/code/auth-service
 >   #2  ◉BUSY    api-gateway    ✔6s  ~/code/api-gateway
 >   #3  ●IDLE    web-dashboard  ✔1m  ~/code/web-dashboard
 >   #6  ●IDLE    mobile-app     ✔5m  ~/code/mobile-app
@@ -177,7 +177,7 @@ ccm send blog --no-enter "TODO: "
 
 | Target state | Default | `--force` | `--start` |
 |---|---|---|---|
-| **IDLE** / **DONE** | Send immediately | — | — |
+| **IDLE** | Send immediately | — | — |
 | **BUSY** | Refused (avoid mixing with active turn) | Queued into input buffer | — |
 | **SHELL** (Claude not running) | Refused | — | Launches Claude, waits 2s, then sends |
 | **PERMIT** (permission dialog open) | **Hard refused** | **Still refused** — typing into a permission dialog could accidentally approve/deny a tool call | — |
@@ -220,14 +220,14 @@ This adds hooks to `~/.claude/settings.json`:
 | `PostToolUseFailure` | BUSY | Tool execution failed (Claude Code v2.1.101+ split from `PostToolUse`) |
 | `SubagentStart` / `SubagentStop` | BUSY | Subagent execution start/end (parent agent still working) |
 | `PreCompact` / `PostCompact` | BUSY | Context compaction is busy work |
-| `Stop` / `StopFailure` | DONE | Claude finished responding |
+| `Stop` / `StopFailure` | clears BUSY | Claude finished responding (signal file deleted) |
 | `PermissionRequest` | PERMIT | Tool requires user permission |
-| `Notification` | PERMIT / DONE | Permission prompt or MCP elicitation dialog shown / idle notification (matchers: `permission_prompt`, `elicitation_dialog`, `idle_prompt`) |
+| `Notification` | PERMIT / clears signal | Permission prompt or MCP elicitation dialog shown / idle notification (matchers: `permission_prompt`, `elicitation_dialog`, `idle_prompt`) |
 | `SessionEnd` | SHELL | Claude Code session ended (/exit, Ctrl+D, etc.) |
 | `PermissionDenied` | PERMIT | Auto mode denied an action (check `/permissions` to retry) |
 
 > [!NOTE]
-> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/`. BUSY is trusted as long as the Claude Code process is alive (cleared by `Stop`/`SessionEnd` or by process exit); DONE auto-clears after 30 s; PERMIT auto-clears after 10 min as a safety net.
+> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/`. BUSY is trusted as long as the Claude Code process is alive (cleared by `Stop`/`SessionEnd` or by process exit); PERMIT auto-clears after 10 min as a safety net.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
@@ -238,28 +238,28 @@ To remove: `ccm remove-hooks`
 | State | Method | Details |
 |-------|--------|---------|
 | **SHELL** | Process check | No `claude` process found among window's child processes |
-| **BUSY** | Hook / JSONL / Process tree | Primary: UserPromptSubmit / PreToolUse / SubagentStart hooks. Fallbacks (any one wins): (a) the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` was touched within `JSONL_FRESH_THRESHOLD` (5s) — Claude Code appends a record at every conversation turn boundary, so this is positive evidence the session is alive even when hooks are silent ([#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)); (b) `claude` has a grandchild process (e.g. `bash → xcodebuild` from the Bash tool) — works around the v2.1+ UI showing an empty `❯ ` prompt above an active tool; (c) any non-MCP direct child of `claude` |
+| **BUSY** | Hook / JSONL / Process tree | Primary: UserPromptSubmit / PreToolUse / SubagentStart hooks. Fallbacks (any one wins): (a) the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` has a **user/assistant record** newer than `JSONL_FRESH_THRESHOLD` (5s) — Claude Code appends a record at every conversation turn boundary, so this is positive evidence the session is alive even when hooks are silent ([#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)). System metadata records (v2.1.108+ recap / `system/away_summary`, `turn_duration`, `attachment/task_reminder`, ...) are filtered out so recap generation does not register as fresh activity; (b) `claude` has a grandchild process (e.g. `bash → xcodebuild` from the Bash tool) — works around the v2.1+ UI showing an empty `❯ ` prompt above an active tool; (c) any non-MCP direct child of `claude` |
 | **IDLE** | Process tree | `claude` exists with only direct children (MCP / language servers) and a visible input prompt, with no fresh BUSY hook |
 | **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the v2.1.101+ footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
-| **DONE** | Hook signal / State transition | Hook: Stop fired. Fallback: BUSY/PERMIT → IDLE transition |
+| **Completion (✔)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears |
 
 ### Detection without hooks
 
 Without hooks, ccm falls back to process tree inspection with prompt pattern matching. This means:
 - Text generation (no tool use) appears as IDLE, not BUSY
-- DONE detection relies on BUSY→IDLE transition heuristics
+- Completion detection relies on BUSY→IDLE transition heuristics
 
-### DONE tracking
+### Completion tracking
 
 When Claude Code finishes processing, ccm:
-1. Sets the state to DONE
-2. Shows `✔` in the window name and status bar
+1. Records a completion timestamp (the project transitions to IDLE)
+2. Shows `✔` in the window name and status bar as a "recently completed" marker
 3. Sends a desktop notification (if configured)
 
-The DONE flag clears when:
+The `✔` marker clears when:
 - 30 seconds elapse (auto-clear)
 - You switch to the window (via dashboard, tree, or `ccm attach`)
-- You send a new prompt (Claude goes BUSY, clearing the flag)
+- You send a new prompt (Claude goes BUSY, clearing the marker)
 
 ## Status Bar Modes
 
@@ -273,7 +273,7 @@ Appends one icon to your existing status-right. The icon shows the highest-prior
 > 0:◉ my-project  1:⚠ api*  2:✔ web  3:● docs      07:30  ⚠ PERMIT
 > ```
 
-Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (orange) > `✔` DONE (green) > `≡` all idle (gray)
+Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (orange) > `✔` recently completed (green) > `≡` all idle (gray)
 
 - Best for: users who want minimal status bar impact
 - Trade-off: no per-project detail (use dashboard for that)
@@ -302,11 +302,11 @@ Adds a second status bar line below the main bar, showing all projects including
 |------|-------|-------|
 | `⚠` | PERMIT | Yellow |
 | `◉` | BUSY | Orange |
-| `✔` | DONE | Green |
 | `●` | IDLE | Blue |
+| `✔` | IDLE (recently completed) | Green |
 | `■` | SHELL | Dark gray |
 
-- DONE auto-clears after 30 seconds and reverts to IDLE
+- The `✔` marker appears for 30 seconds after completion, then reverts to `●` IDLE
 - Best for: users who want full visibility without losing their status-right
 - Trade-off: uses one extra screen line (auto-expands to more if needed)
 
@@ -474,6 +474,53 @@ This means ccm's dashboard and status bar give you visibility into Agent Teams a
 4. Agent Teams splits the window into panes for each teammate
 5. ccm's dashboard shows the aggregated state of all teammates
 6. Switch to another project with `prefix + Tab` while the team works
+
+## Environment Variables
+
+ccm exposes several tuning knobs via environment variables. Defaults are chosen to work well for most users; adjust only if you observe a specific problem. Set them in your shell rc file (e.g. `~/.zshrc`) before tmux starts.
+
+### Detection timing
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CCM_JSONL_FRESH_THRESHOLD` | `5` (seconds) | JSONL write age under which `jsonl_fresh_activity` promotes raw=IDLE to BUSY. Lower = faster settle after a turn, but risk of flashing IDLE during multi-turn gaps |
+| `CCM_JSONL_ACTIVE_THRESHOLD` | `15` (seconds) | Post-Stop BUSY hold window (`jsonl_holds_busy`). Bridges the gap between the fresh window expiring and the final IDLE transition. Raise if you see BUSY flashing to IDLE and back during multi-step tool use |
+| `CCM_BUSY_HOOK_JSONL_WINDOW` | `600` (seconds) | Maximum age of a BUSY hook signal that ccm will trust when the project's JSONL is also being written. Beyond this, ccm assumes the Stop hook was missed (anthropics/claude-code#25655) and releases BUSY |
+| `CCM_JSONL_HOOK_GAP_TOLERANCE` | `60` (seconds) | Recap-phantom discriminator. A BUSY hook that fired more than this many seconds AFTER the last real conversation activity is rejected as phantom (e.g. v2.1.108 `away_summary`). Lower = more aggressive rejection |
+| `CCM_COMPLETED_AT_TIMEOUT` | `30` (seconds) | How long the ✔ "recently completed" marker stays visible after a BUSY/PERMIT → IDLE transition |
+| `CCM_PERMIT_MAX_TIMEOUT` | `600` (seconds) | Safety net: PERMIT state auto-clears after this if no hook signal resolves it (e.g. if Claude Code crashed while a permission dialog was open) |
+| `CCM_IDLE_EXIT_TIMEOUT` | `600` (seconds) | How long a Claude Code session can be IDLE before `x` (exit all) targets it, and how long before auto-exit triggers |
+
+### Canary thresholds
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CCM_HOOKS_LOG_WARN_BYTES` | `104857600` (100 MB) | Size threshold for the `~/.claude/hooks.log` bloat canary. Claude Code does not rotate this file and bloated logs silently disable hook firing (anthropics/claude-code#16047) |
+| `CCM_SHELL_CLUSTER_COUNT` | `3` | How many SHELL transitions within the window triggers the silent-exit canary (anthropics/claude-code#48069) |
+| `CCM_SHELL_CLUSTER_WINDOW` | `600` (seconds) | Time window for counting SHELL transitions |
+
+### Cache TTLs
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CCM_CACHE_TTL` | `30` (seconds) | Git branch / port detection cache lifetime |
+| `CCM_JSONL_CACHE_TTL` | `30` (seconds) | JSONL path resolution cache lifetime |
+
+### Tuning examples
+
+```bash
+# Snappier post-Stop transition (shorter BUSY lingering)
+export CCM_JSONL_ACTIVE_THRESHOLD=10
+
+# Longer ✔ marker visibility after completion
+export CCM_COMPLETED_AT_TIMEOUT=60
+
+# More aggressive recap-phantom rejection
+export CCM_JSONL_HOOK_GAP_TOLERANCE=30
+
+# Earlier hooks.log bloat warning (10 MB)
+export CCM_HOOKS_LOG_WARN_BYTES=10485760
+```
 
 ## Known Limitations
 

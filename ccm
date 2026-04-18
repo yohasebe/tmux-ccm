@@ -17,7 +17,7 @@ CCM_ROOT="$(_ccm_resolve "$0")"
 
 # Background commands must not fail on errors
 case "${1:-}" in
-    inject-status|clear-done|dashboard|dash|d|search|tree-interactive|ti|init) set +e ;;
+    inject-status|reset-window|dashboard|dash|d|search|tree-interactive|ti|init) set +e ;;
     *) set -euo pipefail ;;
 esac
 
@@ -127,8 +127,8 @@ case "${1:-help}" in
     inject-status)
         python3 "$CCM_ROOT/lib/inject_status.py" || true
         ;;
-    clear-done)
-        python3 "$CCM_ROOT/lib/ccm_core.py" clear-done || true
+    reset-window)
+        python3 "$CCM_ROOT/lib/ccm_core.py" reset-window || true
         ;;
     snapshot|snap)
         ccm_check_deps

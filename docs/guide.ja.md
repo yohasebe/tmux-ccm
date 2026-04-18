@@ -90,7 +90,7 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 >   6 project(s)
 >
 > ▶ #5  ⚠PERMIT  ml-pipeline    ✔20s ~/code/ml-pipeline
->   #4  ✔DONE    auth-service   ✔2s  ~/code/auth-service
+>   #4  ✔IDLE    auth-service   ✔2s  ~/code/auth-service
 >   #2  ◉BUSY    api-gateway    ✔6s  ~/code/api-gateway
 >   #3  ●IDLE    web-dashboard  ✔1m  ~/code/web-dashboard
 >   #6  ●IDLE    mobile-app     ✔5m  ~/code/mobile-app
@@ -177,7 +177,7 @@ ccm send blog --no-enter "TODO: "
 
 | ターゲット状態 | デフォルト | `--force` | `--start` |
 |---|---|---|---|
-| **IDLE** / **DONE** | 即送信 | — | — |
+| **IDLE** | 即送信 | — | — |
 | **BUSY** | 拒否(進行中のターンと混線するため) | 入力バッファにキューして送信 | — |
 | **SHELL**(Claude 未起動) | 拒否 | — | Claude を起動して 2 秒待機後に送信 |
 | **PERMIT**(許可ダイアログ表示中) | **強拒否** | **`--force` でも拒否** — permission ダイアログに文字を送ると誤ってツール実行を承認/拒否する危険 | — |
@@ -220,14 +220,14 @@ ccm setup-hooks
 | `PostToolUseFailure` | BUSY | ツール実行失敗（Claude Code v2.1.101+ で `PostToolUse` から分離） |
 | `SubagentStart` / `SubagentStop` | BUSY | サブエージェント実行中（親エージェントは作業継続中） |
 | `PreCompact` / `PostCompact` | BUSY | コンテキスト圧縮はビジー作業 |
-| `Stop` / `StopFailure` | DONE | Claude応答完了 |
+| `Stop` / `StopFailure` | BUSY信号クリア | Claude応答完了（信号ファイルを削除） |
 | `PermissionRequest` | PERMIT | ツールがユーザーの許可を要求 |
-| `Notification` | PERMIT / DONE | 許可プロンプトまたは MCP elicitation ダイアログ表示 / アイドル通知（matcher: `permission_prompt`, `elicitation_dialog`, `idle_prompt`）|
+| `Notification` | PERMIT / 信号クリア | 許可プロンプトまたは MCP elicitation ダイアログ表示 / アイドル通知（matcher: `permission_prompt`, `elicitation_dialog`, `idle_prompt`）|
 | `SessionEnd` | SHELL | セッション終了（/exit、Ctrl+D等） |
 | `PermissionDenied` | PERMIT | autoモードでの拒否（`/permissions`で再試行） |
 
 > [!NOTE]
-> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれます。BUSY は Claude Code プロセスが生存している限り信頼されます（`Stop`/`SessionEnd` フックまたはプロセス終了でクリア）。DONE は30秒後、PERMIT は安全網として10分後に自動クリアされます。
+> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれます。BUSY は Claude Code プロセスが生存している限り信頼されます（`Stop`/`SessionEnd` フックまたはプロセス終了でクリア）。PERMIT は安全網として10分後に自動クリアされます。
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
@@ -238,28 +238,28 @@ ccm setup-hooks
 | 状態 | 検出方法 | 詳細 |
 |------|----------|------|
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
-| **BUSY** | フック / JSONL / プロセスツリー | 主経路: UserPromptSubmit / PreToolUse / SubagentStart フック。フォールバック（いずれか1つでマッチ）: (a) プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` の mtime が `JSONL_FRESH_THRESHOLD`（5秒）以内 — Claude Code は会話のターン境界ごとにレコードを追記するため、フックが沈黙していてもセッション活動の証拠になる（[#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）。(b) `claude` の孫プロセス（Bashツール実行中の `bash → xcodebuild` 等）— v2.1+ UI が末尾に `❯ ` を表示していても BUSY 判定。(c) `claude` が非MCP の直接の子プロセスを持つ場合 |
+| **BUSY** | フック / JSONL / プロセスツリー | 主経路: UserPromptSubmit / PreToolUse / SubagentStart フック。フォールバック（いずれか1つでマッチ）: (a) プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` に **user/assistant レコード**が `JSONL_FRESH_THRESHOLD`（5秒）以内に書き込まれている — Claude Code は会話のターン境界ごとにレコードを追記するため、フックが沈黙していてもセッション活動の証拠になる（[#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）。システムメタデータレコード（v2.1.108+ recap / `system/away_summary`、`turn_duration`、`attachment/task_reminder` 等）はフィルタされるため、recap 生成が偽の活動として検出されない。(b) `claude` の孫プロセス（Bashツール実行中の `bash → xcodebuild` 等）— v2.1+ UI が末尾に `❯ ` を表示していても BUSY 判定。(c) `claude` が非MCP の直接の子プロセスを持つ場合 |
 | **IDLE** | プロセスツリー | `claude` が直接の子（MCP / 言語サーバー）のみを持ち、入力プロンプトが見え、新鮮な BUSY フック信号がない |
 | **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: v2.1.101+ のフッター `Esc to cancel · Tab to amend · ctrl+e to explain` をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能（[#16047](https://github.com/anthropics/claude-code/issues/16047)） |
-| **DONE** | フック信号 / 状態遷移 | フック: Stop発火。フォールバック: BUSY/PERMIT → IDLE遷移を検出 |
+| **完了（✔）** | 表示レイヤー | 一時的マーカー: BUSY/PERMIT → IDLE遷移後に30秒間表示、その後クリア |
 
 ### フックなしでの検出
 
 フックなしの場合、ccmはプロセスツリー検査とプロンプトパターンマッチにフォールバックします。この場合：
 - テキスト生成中（ツール未使用）はBUSYではなくIDLEと表示される
-- DONE検出はBUSY→IDLE遷移のヒューリスティクスに依存する
+- 完了検出はBUSY→IDLE遷移のヒューリスティクスに依存する
 
-### DONE追跡
+### 完了追跡
 
 Claude Codeが処理を完了すると、ccmは：
-1. 状態をDONEに設定
-2. ウィンドウ名とステータスバーに `✔` を表示
+1. 完了タイムスタンプを記録（プロジェクトはIDLEに遷移）
+2. ウィンドウ名とステータスバーに「最近完了」マーカーとして `✔` を表示
 3. デスクトップ通知を送信（設定時）
 
-DONEフラグは以下の場合にクリアされます：
+`✔` マーカーは以下の場合にクリアされます：
 - 30秒経過（自動クリア）
 - そのウィンドウに切り替えた時（ダッシュボード、ツリー、`ccm attach` 経由）
-- 新しいプロンプトを送信した時（Claudeが BUSY になりフラグがクリア）
+- 新しいプロンプトを送信した時（ClaudeがBUSYになりマーカーがクリア）
 
 ## ステータスバーモード
 
@@ -273,7 +273,7 @@ DONEフラグは以下の場合にクリアされます：
 > 0:◉ my-project  1:⚠ api*  2:✔ web  3:● docs      07:30  ⚠ PERMIT
 > ```
 
-優先順: `⚠` PERMIT（黄） > `◉` BUSY（オレンジ） > `✔` DONE（緑） > `≡` 全IDLE（グレー）
+優先順: `⚠` PERMIT（黄） > `◉` BUSY（オレンジ） > `✔` 最近完了（緑） > `≡` 全IDLE（グレー）
 
 - 向いている人: ステータスバーへの影響を最小限にしたい人
 - 注意: プロジェクトごとの詳細はダッシュボードで確認
@@ -302,11 +302,11 @@ tmux標準のウィンドウリストをccm形式の色付きエントリに置�
 |----------|------|-----|
 | `⚠` | PERMIT | 黄 |
 | `◉` | BUSY | オレンジ |
-| `✔` | DONE | 緑 |
 | `●` | IDLE | ブルー |
+| `✔` | IDLE（最近完了） | 緑 |
 | `■` | SHELL | 暗グレー |
 
-- DONEは30秒後に自動クリアされIDLEに戻る
+- `✔` マーカーは完了後30秒間表示され、その後 `●` IDLEに戻る
 - 向いている人: status-rightを維持しつつ全プロジェクトを常時確認したい人
 - 注意: 画面が1行狭くなる（プロジェクト数に応じて自動拡張）
 
@@ -474,6 +474,53 @@ ccmのダッシュボードやステータスバーで、追加設定なしにAg
 4. Agent Teamsがウィンドウを各チームメイト用にペイン分割
 5. ccmのダッシュボードに全チームメイトの集約状態が表示される
 6. チームが作業中に `prefix + Tab` で別プロジェクトに切替可能
+
+## 環境変数
+
+ccmはいくつかのチューニング用環境変数を公開しています。デフォルト値は多くのユーザーにとって適切に動作するよう選ばれており、特定の問題が観察された場合にのみ調整してください。tmuxを起動する前にシェルの rc ファイル（例: `~/.zshrc`）で設定します。
+
+### 検出タイミング
+
+| 変数 | デフォルト | 用途 |
+|------|-----------|------|
+| `CCM_JSONL_FRESH_THRESHOLD` | `5`（秒） | `jsonl_fresh_activity` が raw=IDLE を BUSY に昇格させる JSONL 書き込み age の閾値。小さくするとターン完了後のIDLE遷移が速くなるが、マルチターン間の一瞬IDLE表示のリスクがある |
+| `CCM_JSONL_ACTIVE_THRESHOLD` | `15`（秒） | Stop後の BUSY 保持窓（`jsonl_holds_busy`）。fresh 窓切れと最終 IDLE 遷移の間をブリッジ。マルチステップツール使用中に BUSY→IDLE→BUSY がちらつく場合は大きくする |
+| `CCM_BUSY_HOOK_JSONL_WINDOW` | `600`（秒） | JSONL も更新されている場合に BUSY フックを信頼する最大 age。これを超えると Stop フック取りこぼし (anthropics/claude-code#25655) とみなして BUSY を解除する |
+| `CCM_JSONL_HOOK_GAP_TOLERANCE` | `60`（秒） | recap phantom 判別。直前の実会話 activity から秒数以上後に発火した BUSY フックを phantom とみなして拒否（v2.1.108 の `away_summary` 等）。小さくするとより積極的に拒否 |
+| `CCM_COMPLETED_AT_TIMEOUT` | `30`（秒） | BUSY/PERMIT → IDLE 遷移後に ✔ 完了マーカーが表示される時間 |
+| `CCM_PERMIT_MAX_TIMEOUT` | `600`（秒） | 安全網: フック信号で解消されない PERMIT 状態をこの秒数で自動クリア（permission ダイアログ表示中に Claude Code がクラッシュした場合など） |
+| `CCM_IDLE_EXIT_TIMEOUT` | `600`（秒） | Claude Code セッションが IDLE 状態でいられる最大時間（`x` 一括終了の対象となる閾値、自動終了のトリガー） |
+
+### カナリア閾値
+
+| 変数 | デフォルト | 用途 |
+|------|-----------|------|
+| `CCM_HOOKS_LOG_WARN_BYTES` | `104857600`（100 MB） | `~/.claude/hooks.log` 肥大化カナリアのサイズ閾値。Claude Code はこのファイルをローテートせず、肥大化するとフック発火が silent fail する（anthropics/claude-code#16047） |
+| `CCM_SHELL_CLUSTER_COUNT` | `3` | silent-exit カナリア (anthropics/claude-code#48069) を発動させる SHELL 遷移回数 |
+| `CCM_SHELL_CLUSTER_WINDOW` | `600`（秒） | SHELL 遷移カウントの時間窓 |
+
+### キャッシュ TTL
+
+| 変数 | デフォルト | 用途 |
+|------|-----------|------|
+| `CCM_CACHE_TTL` | `30`（秒） | Git ブランチ / ポート検出キャッシュの寿命 |
+| `CCM_JSONL_CACHE_TTL` | `30`（秒） | JSONL パス解決キャッシュの寿命 |
+
+### チューニング例
+
+```bash
+# Stop後の遷移をより素早く（BUSY余韻を短く）
+export CCM_JSONL_ACTIVE_THRESHOLD=10
+
+# 完了後の ✔ マーカー表示時間を延長
+export CCM_COMPLETED_AT_TIMEOUT=60
+
+# recap phantom をより積極的に拒否
+export CCM_JSONL_HOOK_GAP_TOLERANCE=30
+
+# hooks.log 肥大化警告を早めに（10 MB）
+export CCM_HOOKS_LOG_WARN_BYTES=10485760
+```
 
 ## 既知の制限
 

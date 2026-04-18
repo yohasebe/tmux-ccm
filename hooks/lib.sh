@@ -3,7 +3,7 @@
 
 # Write signal to hook file AND directly update tmux window option
 # for instant status bar reflection (no polling delay).
-# Args: $1=HOOK_DIR, $2=KEY (md5), $3=STATE (BUSY/DONE/PERMIT/SHELL), $4=CWD, $5=DETAIL (optional)
+# Args: $1=HOOK_DIR, $2=KEY (md5), $3=STATE (BUSY/PERMIT/SHELL), $4=CWD, $5=DETAIL (optional)
 ccm_write_signal() {
     local hook_dir="$1" key="$2" state="$3" cwd="$4" detail="${5:-}"
 
@@ -30,19 +30,17 @@ ccm_write_signal() {
         if [[ -n "$project" ]]; then
             local icon
             case "$state" in
-                PERMIT) icon="⚠" ;; BUSY) icon="◉" ;; DONE) icon="✔" ;;
+                PERMIT) icon="⚠" ;; BUSY) icon="◉" ;;
                 IDLE) icon="●" ;; SHELL) icon="■" ;; *) icon="●" ;;
             esac
             tmux rename-window -t "$win_target" "${icon} ${project}" 2>/dev/null
         fi
 
-        # Instant desktop notification for PERMIT and DONE
+        # Instant desktop notification for PERMIT
         # (eliminates up to 3s polling delay for critical states)
         if [[ "$state" == "PERMIT" && -n "$project" ]]; then
             _ccm_instant_permit_icon "$win_target" "$project" &
             _ccm_instant_notify "PERMIT" "$project" "$detail" &
-        elif [[ "$state" == "DONE" && -n "$project" ]]; then
-            _ccm_instant_notify "DONE" "$project" "" &
         fi
     fi
 }
@@ -64,9 +62,9 @@ _ccm_instant_permit_icon() {
     tmux refresh-client -S 2>/dev/null
 }
 
-# Send desktop notification immediately for PERMIT or DONE state.
+# Send desktop notification immediately for PERMIT or COMPLETED state.
 # Writes a marker so inject-status can skip the duplicate notification.
-# Args: $1=STATE (PERMIT/DONE), $2=PROJECT_NAME, $3=DETAIL (optional)
+# Args: $1=STATE (PERMIT/COMPLETED), $2=PROJECT_NAME, $3=DETAIL (optional)
 _ccm_instant_notify() {
     local state="$1" project="$2" detail="${3:-}"
 
@@ -74,7 +72,7 @@ _ccm_instant_notify() {
     local marker="${tmp_dir}/hook-notified"
 
     # Dedup: skip if the same state was already notified within 10 seconds.
-    # Stop and Notification(idle_prompt) both fire DONE a few seconds apart;
+    # Stop and Notification(idle_prompt) both fire COMPLETED a few seconds apart;
     # without this check the user gets a duplicate notification.
     if [[ -f "$marker" ]]; then
         local content prev_ts prev_state now_ts
@@ -93,14 +91,16 @@ _ccm_instant_notify() {
     # Check notification setting
     local notify_setting
     notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null)
-    notify_setting="${notify_setting:-permit,done}"
+    notify_setting="${notify_setting:-permit,completed}"
     [[ "$notify_setting" == "off" ]] && return
 
     # Check if this state's notifications are enabled
-    local state_lower="${state,,}"  # PERMIT→permit, DONE→done
+    local state_lower="${state,,}"  # PERMIT→permit, COMPLETED→completed
     case "$notify_setting" in
         all) ;;
         *"$state_lower"*) ;;
+        # Backwards compat: "done" in setting also matches "completed"
+        *"done"*) [[ "$state_lower" == "completed" ]] || return ;;
         *) return ;;
     esac
 
@@ -121,7 +121,7 @@ _ccm_instant_notify() {
                 body="Action required — respond to the permission prompt"
             fi
             ;;
-        DONE)
+        COMPLETED)
             icon="✔"
             body="Response complete"
             ;;

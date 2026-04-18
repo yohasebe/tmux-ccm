@@ -13,7 +13,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ccm_core import (
     CCM_ROOT, CCM_TMP_DIR, CCM_SNAPSHOT_DIR,
-    DONE_TIMEOUT, STATE_ICONS, STATE_PRIORITY,
+    COMPLETED_AT_TIMEOUT, STATE_ICONS, STATE_PRIORITY,
     tmux_cmd, tmux_batch, build_project_list, update_window_names,
     auto_exit_idle, periodic_autosave, notify, read_hook_signal,
 )
@@ -22,7 +22,6 @@ from ccm_core import (
 TMUX_COLORS = {
     "PERMIT": "yellow",
     "BUSY": "#e8967d",
-    "DONE": "green",
     "IDLE": "#5f87af",
     "SHELL": "#8a8a8a",
     "DOWN": "#8a8a8a",
@@ -101,21 +100,17 @@ def sanitize_orig_status():
 
 def priority_color(projects):
     """Determine highest priority color from project states."""
-    has_permit = has_busy = has_done = False
+    has_permit = has_busy = False
     for p in projects:
         if p.state == "PERMIT":
             has_permit = True
         elif p.state == "BUSY":
             has_busy = True
-        elif p.state == "DONE":
-            has_done = True
 
     if has_permit:
         return TMUX_COLORS["PERMIT"]
     elif has_busy:
         return TMUX_COLORS["BUSY"]
-    elif has_done:
-        return TMUX_COLORS["DONE"]
     return TMUX_COLORS["IDLE"]
 
 
@@ -123,21 +118,16 @@ def priority_icon(projects):
     """Determine highest priority icon with window indices."""
     permit_wins = []
     busy_wins = []
-    done_wins = []
     for p in projects:
         if p.state == "PERMIT":
             permit_wins.append(p.win_idx)
         elif p.state == "BUSY":
             busy_wins.append(p.win_idx)
-        elif p.state == "DONE":
-            done_wins.append(p.win_idx)
 
     if permit_wins:
         return f"{','.join(permit_wins)}: PERMIT ⚠"
     elif busy_wins:
         return f"{','.join(busy_wins)}: BUSY ◉"
-    elif done_wins:
-        return f"{','.join(done_wins)}: DONE ✔"
     return "≡"
 
 
@@ -185,7 +175,7 @@ def scan_active_windows(projects, include_all=False):
     """Filter projects for status bar display."""
     if include_all:
         return projects
-    return [p for p in projects if p.state in ("BUSY", "PERMIT", "DONE")]
+    return [p for p in projects if p.state in ("BUSY", "PERMIT")]
 
 
 def inject_status():
@@ -282,31 +272,35 @@ def _inject_status_impl():
     # own hook signal corroborates the state. This prevents late /
     # spurious notifications that would otherwise fire whenever a
     # fallback detection rule (jsonl_holds_busy releasing, capture-
-    # pane footer match, etc.) derives a PERMIT/DONE transition
-    # long after the actual event — timings that never match reality.
+    # pane footer match, etc.) derives a state transition long after
+    # the actual event — timings that never match reality.
+    #
+    # COMPLETED: the Stop hook DELETES the signal file, so there is
+    # no hook signal to corroborate a BUSY→IDLE transition after the
+    # fact. We therefore rely exclusively on the instant path
+    # (`_ccm_instant_notify` called from `on-stop.sh` /
+    # `on-notification.sh idle_prompt`) to deliver completion
+    # notifications. If Stop / idle_prompt never fires (hooks.log
+    # bloat, upstream silent-exit, ...), the fallback detection will
+    # still transition the project to IDLE, but deliberately WITHOUT
+    # a notification — we prefer silence to a late, misleading ping.
     try:
         tmp = notify_cache + ".tmp"
         with open(tmp, "w") as f:
             for p in projects:
                 f.write(f"{p.win_target}\t{p.state}\n")
                 prev = prev_states.get(p.win_target, "")
-                if p.state != prev and p.state in ("PERMIT", "DONE"):
-                    # Global dedup: if the hook instant-notify path already
-                    # sent this state recently, skip.
-                    if p.state == hook_notified_state and (now - hook_notified_ts) < DONE_TIMEOUT:
+                # Notify on PERMIT transitions
+                if p.state != prev and p.state == "PERMIT":
+                    if p.state == hook_notified_state and (now - hook_notified_ts) < COMPLETED_AT_TIMEOUT:
                         continue
-                    # Per-project corroboration: only fire if the hook
-                    # signal for THIS project matches the state and is
-                    # recent. Without this, fallback-derived transitions
-                    # would produce notifications at lag-adjusted times
-                    # that do not match any real event.
                     hook = read_hook_signal(p.dir) if p.dir else None
                     if not hook:
                         continue
                     hook_ts, hook_st, hook_detail = hook
                     if hook_st != p.state:
                         continue
-                    if (now - hook_ts) >= DONE_TIMEOUT:
+                    if (now - hook_ts) >= COMPLETED_AT_TIMEOUT:
                         continue
                     detail = hook_detail if p.state == "PERMIT" else ""
                     notify(p.state, p.name, detail)
