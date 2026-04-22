@@ -523,6 +523,21 @@ export CCM_JSONL_HOOK_GAP_TOLERANCE=30
 export CCM_HOOKS_LOG_WARN_BYTES=10485760
 ```
 
+### Interactions with Claude Code's own environment variables
+
+A few undocumented Claude Code env vars overlap with ccm's behavior. If you set both, be aware of the interaction:
+
+| Claude Code env | Interaction with ccm |
+|-----------------|----------------------|
+| `CLAUDE_CODE_EXIT_AFTER_STOP_DELAY` | Makes Claude Code exit itself some seconds after a Stop event. This duplicates `CCM_IDLE_EXIT_TIMEOUT` — pick one path. If both are set, whichever fires first wins, and the other becomes a no-op on a SHELL-state window |
+| `CLAUDE_CODE_IDLE_THRESHOLD_MINUTES`, `CLAUDE_CODE_IDLE_TOKEN_THRESHOLD` | Claude Code's own idle detection. When it fires, your SessionEnd hook runs and ccm observes the window transition to SHELL (no conflict, just additional auto-exit paths you may not expect) |
+| `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` | Upper bound Claude Code gives the SessionEnd hook (ccm's `on-session-end.sh`). The ccm hook is trivial (one signal-file write) and completes well within any reasonable value; listed here only so you know ccm's hook is not the bottleneck if you tune it |
+| `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` | Emits authoritative `session_state_changed` events (states: `idle` / `running` / `requires_action`) but only via `--print --output-format=stream-json` stdout. ccm cannot consume them in interactive mode; they are listed here because you may see ccm adopt them in the future if Claude Code exposes a file or hook channel |
+| `CLAUDE_CODE_NO_FLICKER` | Already handled by ccm. Preview capture falls back to `tmux capture-pane -a` when the pane uses the alternate screen buffer |
+| `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` | No conflict. If you dislike Claude Code rewriting your tmux window title, set this to `1` in your shell rc — ccm's own window naming (state icons) takes precedence either way |
+
+These are not required for ccm to work. They are listed only so that users who customize Claude Code can predict overlaps.
+
 ## Known Limitations
 
 ### tmux-resurrect / tmux-continuum

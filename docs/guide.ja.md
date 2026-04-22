@@ -523,6 +523,21 @@ export CCM_JSONL_HOOK_GAP_TOLERANCE=30
 export CCM_HOOKS_LOG_WARN_BYTES=10485760
 ```
 
+### Claude Code 自身の環境変数との相互作用
+
+Claude Code には ccm と機能的に重なる非公開の環境変数がいくつかあります。両方を設定する場合は挙動の重なりに注意してください:
+
+| Claude Code env | ccm との相互作用 |
+|-----------------|------------------|
+| `CLAUDE_CODE_EXIT_AFTER_STOP_DELAY` | Stop イベントから指定秒後に Claude Code 自身が exit する。`CCM_IDLE_EXIT_TIMEOUT` と機能が重複するので片方に統一すべき。両方設定すると先に発火した方が勝ち、もう一方は SHELL 状態となったウィンドウで no-op になる |
+| `CLAUDE_CODE_IDLE_THRESHOLD_MINUTES`, `CLAUDE_CODE_IDLE_TOKEN_THRESHOLD` | Claude Code 独自の idle 判定。発火すると SessionEnd hook が走って ccm はウィンドウを SHELL と認識する（競合はしないが意図せぬ auto-exit 経路が増える） |
+| `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` | Claude Code が SessionEnd hook (ccm の `on-session-end.sh`) に与える実行時間上限。ccm のフックはシグナルファイル 1 つを書くだけで軽量なので、どんな値でも余裕で収まる。ここに記載するのは「ccm のフックがボトルネックではない」と把握しておくため |
+| `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` | authoritative な `session_state_changed` イベント（状態値は `idle` / `running` / `requires_action`）を emit するが、`--print --output-format=stream-json` の stdout のみ。ccm は interactive mode なので現状取得不可。将来 Claude Code 側がファイル / hook 経由の配信を追加すれば、ccm の検出ヒューリスティックを統合できる可能性があるため監視対象として記載 |
+| `CLAUDE_CODE_NO_FLICKER` | ccm 対応済。alternate screen buffer を使うペインのプレビューキャプチャで自動的に `tmux capture-pane -a` にフォールバック |
+| `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` | 競合なし。Claude Code による tmux ウィンドウタイトル書き換えが嫌な場合はシェル rc で `1` に設定するとよい。ccm 側のウィンドウ名 (state アイコン) の命名はどちらの場合も優先される |
+
+これらは ccm の動作に必須ではありません。Claude Code をカスタマイズしているユーザーが機能の重なりを事前に把握できるようにするための記載です。
+
 ## 既知の制限
 
 ### tmux-resurrect / tmux-continuum
