@@ -140,6 +140,14 @@ SHELL_CLUSTER_ISSUE_NOTE = "macOS silent-exit"
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))  # 10 min safety net
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
+# How long after the `claude` process starts a `raw=BUSY` reading is
+# treated as MCP-loading startup rather than real work, when no hook
+# signal has been written yet. MCP server initialization typically
+# finishes within 10–30 s, so 60 s is a conservative cap. After the
+# grace expires the startup_transient rule stops firing and detection
+# falls back to the normal BUSY passthrough (`raw_not_idle`) — so a
+# Claude that actually hangs during startup will surface as BUSY.
+STARTUP_GRACE_SEC = int(os.environ.get("CCM_STARTUP_GRACE_SEC", "60"))
 
 # ─── Claude Code UI patterns (update when Claude Code UI changes) ───
 # These are the ONLY place where Claude Code's terminal output is matched.
@@ -228,15 +236,67 @@ def tmux_batch(*commands):
 
 
 def ps_snapshot():
-    """Single ps call for scan cycle."""
+    """Single ps call for scan cycle.
+
+    Output columns: pid ppid pgid comm etime. `etime` is appended at
+    the end so the existing `parts[0..3]` positions for pid / ppid /
+    pgid / comm are unchanged — all process-tree helpers
+    (find_claude_pid, has_children, has_grandchildren) continue to
+    parse by index without modification. `etime` is consumed only by
+    `find_process_age` below, which is used to distinguish Claude's
+    startup window from steady-state operation.
+    """
     try:
         r = subprocess.run(
-            ["ps", "-eo", "pid,ppid,pgid,comm"],
+            ["ps", "-eo", "pid,ppid,pgid,comm,etime"],
             capture_output=True, text=True, timeout=5,
         )
         return r.stdout if r.returncode == 0 else ""
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
+
+
+def _parse_etime(etime: str) -> int:
+    """Parse a BSD/GNU `ps etime` field to seconds.
+
+    Supported formats (as emitted by macOS / Linux ps):
+      - "SS"              single field, seconds only
+      - "MM:SS"
+      - "HH:MM:SS"
+      - "DD-HH:MM:SS"     days separated by '-'
+    Returns -1 on any parse error so detection rules using
+    claude_pid_age_lt cleanly skip the match when the runtime
+    couldn't be determined.
+    """
+    if not etime:
+        return -1
+    try:
+        days = 0
+        if "-" in etime:
+            ds, etime = etime.split("-", 1)
+            days = int(ds)
+        parts = [int(p) for p in etime.split(":")]
+        if len(parts) == 1:
+            return days * 86400 + parts[0]
+        if len(parts) == 2:
+            return days * 86400 + parts[0] * 60 + parts[1]
+        if len(parts) == 3:
+            return days * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+    except (ValueError, TypeError):
+        pass
+    return -1
+
+
+def find_process_age(pid, ps_lines):
+    """Return seconds since the process `pid` started, or -1 if the
+    pid is not in the ps snapshot or its etime column is absent /
+    unparseable. Reads the `etime` column from the ps output
+    produced by `ps_snapshot` (position `parts[4]`)."""
+    for line in ps_lines:
+        parts = line.split()
+        if len(parts) >= 5 and parts[0] == str(pid):
+            return _parse_etime(parts[4])
+    return -1
 
 
 def md5_hash(s):

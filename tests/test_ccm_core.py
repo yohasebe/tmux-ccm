@@ -411,6 +411,62 @@ def assistant_record(unix_ts, stop_reason=None):
     }
 
 
+class TestParseEtime:
+    """Unit tests for the ps `etime` parser that feeds claude_pid_age
+    into the detection context. Malformed input must return -1 so
+    detection rules keyed on `claude_pid_age_lt` cleanly skip rather
+    than false-match."""
+
+    def test_seconds_only(self):
+        assert ccm_core._parse_etime("45") == 45
+
+    def test_minutes_seconds(self):
+        assert ccm_core._parse_etime("01:30") == 90
+        assert ccm_core._parse_etime("2:15") == 135
+
+    def test_hours_minutes_seconds(self):
+        assert ccm_core._parse_etime("01:02:03") == 3723
+
+    def test_days_prefix(self):
+        # "1-02:03:04" → 1 day + 2h + 3m + 4s
+        assert ccm_core._parse_etime("1-02:03:04") == 86400 + 2*3600 + 3*60 + 4
+
+    def test_empty(self):
+        assert ccm_core._parse_etime("") == -1
+
+    def test_malformed(self):
+        assert ccm_core._parse_etime("not-a-time") == -1
+        assert ccm_core._parse_etime("abc:def") == -1
+
+
+class TestFindProcessAge:
+    """Regression test for `find_process_age` reading the etime column
+    from `ps_snapshot` output. The key is column position: etime is
+    `parts[4]` in the `pid ppid pgid comm etime` format."""
+
+    def test_returns_age_for_matching_pid(self):
+        ps_lines = [
+            "  PID  PPID  PGID COMM              ELAPSED",
+            "  100     1     1 claude             01:30",
+            "  200   100   100 node               00:45",
+        ]
+        assert ccm_core.find_process_age(100, ps_lines) == 90
+        assert ccm_core.find_process_age(200, ps_lines) == 45
+
+    def test_returns_minus_one_for_missing_pid(self):
+        ps_lines = ["  100     1     1 claude             01:30"]
+        assert ccm_core.find_process_age(999, ps_lines) == -1
+
+    def test_returns_minus_one_when_etime_missing(self):
+        # Old ps_snapshot format (pre-etime); parts[4] doesn't exist.
+        ps_lines = ["  100     1     1 claude"]
+        assert ccm_core.find_process_age(100, ps_lines) == -1
+
+    def test_returns_minus_one_when_etime_unparseable(self):
+        ps_lines = ["  100     1     1 claude   garbage"]
+        assert ccm_core.find_process_age(100, ps_lines) == -1
+
+
 class TestJsonlTailStopReason:
     def setup_method(self):
         ccm_core._jsonl_path_cache.clear()
@@ -1287,7 +1343,13 @@ class TestDetectWindowStateHooks:
 
 
 def make_ctx(**overrides):
-    """Build a DetectionContext with sensible defaults for rule testing."""
+    """Build a DetectionContext with sensible defaults for rule testing.
+
+    New optional fields on DetectionContext (`jsonl_last_stop_reason`,
+    `claude_pid_age`) are NOT included in the defaults so tests that
+    set them explicitly can do so via `overrides`, and tests that do
+    not care inherit the dataclass-level defaults.
+    """
     now = int(time.time())
     defaults = dict(
         raw="IDLE",
@@ -2117,47 +2179,69 @@ class TestLifecycleSequences:
         assert rule == "default"
         assert state == "IDLE"
 
-    def test_startup_transient_from_shell_shows_idle(self):
+    def test_startup_transient_young_claude_shows_idle(self):
         """Real scenario: user `ccm attach`es to a SHELL window;
         auto-start fires `claude --continue`; MCP servers start up
         before the `❯` prompt is rendered. `detect_pane_state` sees
         `has_child=True + no prompt` and returns raw=BUSY — this
         signature looked identical to a streaming response, producing
-        10 s of false BUSY on every attach. The new rule keys on
-        `hook_missing=True` + `prev_state ∈ ("", "SHELL")` to
-        distinguish startup authoritatively (no UserPromptSubmit has
-        fired yet, and the window just came off SHELL)."""
-        # Directly post-SHELL attach: prev_state="SHELL" because
-        # reset_window_after_attach no longer wipes it.
+        10+ s of false BUSY on every attach.
+
+        The authoritative discriminator is the `claude` process's own
+        age: real work cannot have started without a hook firing, so
+        raw=BUSY + hook_missing + claude_pid_age < STARTUP_GRACE_SEC
+        uniquely identifies MCP-loading startup."""
+        # Claude has been running for 5 s, no hook signal, no prior
+        # prev_state (fresh window). MCP servers are still connecting.
         rule, state = self._eval(
             raw="BUSY", prev_state="SHELL", hook_state="",
-            jsonl_age=-1,  # no JSONL yet for a fresh --continue
+            jsonl_age=-1, claude_pid_age=5,
         )
         assert rule == "startup_transient_raw_busy"
         assert state == "IDLE"
 
-    def test_startup_transient_from_empty_prev_also_idle(self):
-        """Brand-new window never scanned before (prev_state='') is
-        also caught by the rule — e.g. `ccm add` creates a window and
-        the first scan runs before any state has been written."""
+    def test_startup_transient_applies_regardless_of_prev_state(self):
+        """The scan sequence during startup is
+            SHELL (prev) → IDLE (brief, claude with no MCP yet)
+                        → BUSY (MCP appearing, no prompt yet)
+        so by the time raw flips to BUSY, prev_state has already been
+        written to IDLE by the `default` rule firing on the scan
+        before. The rule must still fire on prev_state=IDLE so the
+        dashboard doesn't revert to BUSY mid-startup. Process age is
+        monotonic and authoritative — prev_state is not."""
+        for prev in ("", "SHELL", "IDLE"):
+            rule, state = self._eval(
+                raw="BUSY", prev_state=prev, hook_state="",
+                jsonl_age=-1, claude_pid_age=10,
+            )
+            assert rule == "startup_transient_raw_busy", \
+                f"startup rule should fire for prev={prev!r}"
+            assert state == "IDLE"
+
+    def test_startup_transient_expires_after_grace(self):
+        """After STARTUP_GRACE_SEC the rule no longer matches; raw=BUSY
+        with no hook evidence falls back through `raw_not_idle` → BUSY.
+        This is the right outcome: if Claude is genuinely hung during
+        startup (e.g. a malfunctioning MCP server keeps blocking the
+        prompt render past 60 s), the user should see BUSY rather than
+        a false IDLE."""
         rule, state = self._eval(
-            raw="BUSY", prev_state="", hook_state="", jsonl_age=-1,
+            raw="BUSY", prev_state="IDLE", hook_state="",
+            jsonl_age=-1,
+            claude_pid_age=ccm_core.STARTUP_GRACE_SEC + 10,
         )
-        assert rule == "startup_transient_raw_busy"
-        assert state == "IDLE"
+        assert rule != "startup_transient_raw_busy"
+        assert state == "BUSY"
 
     def test_startup_transient_holds_no_write(self):
-        """The rule uses action=HOLD_NO_WRITE so prev_state is NOT
-        overwritten to IDLE mid-startup. If it were, the very next
-        scan would see prev_state=IDLE and the rule would no longer
-        match (prev_in=("", "SHELL")), flipping raw=BUSY back through
-        `raw_not_idle` → BUSY. Hold-no-write keeps prev_state stable
-        at "" / "SHELL" until the prompt renders and raw flips to
-        IDLE, at which point the terminal `default` rule writes
-        prev=IDLE cleanly."""
-        import lib.ccm_detection as det  # noqa: F401 (import check)
-        ctx = make_ctx(raw="BUSY", prev_state="SHELL", hook_state="",
-                       jsonl_age=-1)
+        """The rule uses action=HOLD_NO_WRITE so the pipeline does not
+        commit IDLE to @ccm_prev_state while Claude is still loading.
+        Whatever prev_state was before the rule matched (SHELL, "",
+        or a transient IDLE from a prior scan) is preserved."""
+        ctx = make_ctx(
+            raw="BUSY", prev_state="SHELL", hook_state="",
+            jsonl_age=-1, claude_pid_age=5,
+        )
         rule, state = ccm_core.evaluate_rules(ctx)
         assert rule.name == "startup_transient_raw_busy"
         assert rule.action == ccm_core.Action.HOLD_NO_WRITE
@@ -2171,22 +2255,21 @@ class TestLifecycleSequences:
         rule, state = self._eval(
             raw="BUSY", prev_state="SHELL",
             hook_state="BUSY", hook_age=0, jsonl_age=0,
+            claude_pid_age=5,
         )
         assert rule == "hook_fresh_busy"
         assert state == "BUSY"
 
-    def test_startup_transient_does_not_match_attached_busy_session(self):
-        """User attaches to a session that is already actively working.
-        `reset_window_after_attach` leaves prev_state at whatever
-        apply_actions last wrote (e.g. 'BUSY'), so the new rule does
-        NOT misclassify this as startup. The `raw_not_idle` passthrough
-        preserves the BUSY display."""
-        # Hook signal is momentarily absent (between tools, post-Stop).
+    def test_startup_transient_requires_known_pid_age(self):
+        """claude_pid_age=-1 (the ps snapshot had no etime column, or
+        the claude pid was not in the snapshot) must NOT match the
+        rule. Without a known process age we cannot distinguish
+        startup from real work, and BUSY passthrough is the safer
+        default."""
         rule, state = self._eval(
-            raw="BUSY", prev_state="BUSY", hook_state="",
-            jsonl_age=10,
+            raw="BUSY", prev_state="SHELL", hook_state="",
+            jsonl_age=-1, claude_pid_age=-1,
         )
-        # Must NOT be startup_transient — prev_state='BUSY' excludes it.
         assert rule != "startup_transient_raw_busy"
         assert state == "BUSY"
 
@@ -2198,6 +2281,7 @@ class TestLifecycleSequences:
         From the next scan onward, we are in the normal lifecycle."""
         rule, state = self._eval(
             raw="IDLE", prev_state="SHELL", hook_state="", jsonl_age=-1,
+            claude_pid_age=20,
         )
         assert rule == "default"
         assert state == "IDLE"

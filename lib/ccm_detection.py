@@ -74,6 +74,7 @@ from ccm_core import (
     JSONL_FRESH_THRESHOLD,
     JSONL_HOOK_GAP_TOLERANCE,
     PERMIT_MAX_TIMEOUT,
+    STARTUP_GRACE_SEC,
 )
 
 
@@ -230,6 +231,11 @@ class DetectionContext:
     prev_state: str       # previous detected state
     jsonl_age: int        # now - newest JSONL real-activity ts (-1 if missing)
     now: int              # current unix timestamp
+    # Seconds since the `claude` process in this window started, or -1
+    # if no claude pid was found (SHELL state) or the ps snapshot had
+    # no etime column. Used by `startup_transient_raw_busy` to
+    # distinguish MCP-loading startup from steady-state operation.
+    claude_pid_age: int = -1
     # stop_reason of the most recent `assistant` record in the JSONL
     # tail. "tool_use" is the authoritative signal that Claude has
     # paused mid-response to await a tool result; "end_turn" /
@@ -282,6 +288,11 @@ class Rule:
     hook_in: Optional[Tuple[str, ...]] = None
     prev_in: Optional[Tuple[str, ...]] = None
     hook_age_lt: Optional[int] = None
+    # Match only while the `claude` process started less than this
+    # many seconds ago. Requires `0 <= ctx.claude_pid_age < value` —
+    # an unknown age (-1) does NOT match, so rules using this axis
+    # are inactive when the ps snapshot lacks an etime column.
+    claude_pid_age_lt: Optional[int] = None
     jsonl_age_lt: Optional[int] = None
     # True:  ctx.hook_state must be "" (no hook signal present)
     # False: ctx.hook_state must be non-empty (some signal present)
@@ -319,6 +330,9 @@ class Rule:
             return False
         if self.hook_age_lt is not None:
             if ctx.hook_age < 0 or ctx.hook_age >= self.hook_age_lt:
+                return False
+        if self.claude_pid_age_lt is not None:
+            if ctx.claude_pid_age < 0 or ctx.claude_pid_age >= self.claude_pid_age_lt:
                 return False
         if self.hook_missing is True:
             if ctx.hook_state != "":
@@ -488,28 +502,34 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         # identical to an in-flight streaming response, so the pane-
         # tree heuristic returns BUSY either way.
         #
-        # We can distinguish the two cases authoritatively:
-        #   - startup: prev_state ∈ ("", "SHELL") AND no hook signal
-        #     has been written yet (no UserPromptSubmit / PreToolUse
-        #     ever fired for this session)
-        #   - mid-response: hook_state == "BUSY" (UserPromptSubmit /
-        #     PreToolUse is live) OR prev_state is "BUSY" / "IDLE"
-        #     (the window has already been in an active state since
-        #     Claude came up)
+        # Authoritative discriminator: the `claude` process's own age
+        # from the kernel. If the pid started less than
+        # STARTUP_GRACE_SEC seconds ago and no hook signal has been
+        # written yet (no UserPromptSubmit / PreToolUse for this
+        # session), we are still in MCP-loading startup — real work
+        # cannot have begun without a hook firing. An earlier version
+        # of this rule keyed on prev_state, but during startup
+        # prev_state briefly transitions SHELL → IDLE → BUSY as raw
+        # flips (claude with no children → IDLE → MCP children
+        # appear → BUSY), making prev_state an unstable
+        # discriminator. The process age is monotonic.
         #
-        # When all three startup conditions match, override the raw
-        # BUSY to IDLE so the dashboard doesn't show 10 s of false
-        # BUSY after every attach. Use HOLD_NO_WRITE so prev_state
-        # stays at "" / "SHELL" across the startup window — rewriting
-        # to IDLE would invalidate our own match criterion on the
-        # next scan and produce a BUSY/IDLE flicker as `❯` finishes
-        # rendering. Once the pane shows the prompt, raw flips to
-        # IDLE and the terminal `default` rule writes prev=IDLE
-        # cleanly.
+        # When the two conditions match, override the raw BUSY to
+        # IDLE so the dashboard doesn't show 10 s of false BUSY after
+        # every attach. Use HOLD_NO_WRITE so prev_state stays at
+        # whatever the detection pipeline last wrote — rewriting to
+        # IDLE here is not strictly required (the claude_pid_age
+        # check doesn't depend on prev_state) but keeps the write
+        # pattern consistent with other "this rule asserts the UI
+        # state without committing it" cases.
+        #
+        # After STARTUP_GRACE_SEC the rule stops firing; if Claude is
+        # genuinely hung during startup the state will fall back to
+        # BUSY via `raw_not_idle`, which is the right outcome.
         name="startup_transient_raw_busy",
         raw_in=("BUSY",),
-        prev_in=("", "SHELL"),
         hook_missing=True,
+        claude_pid_age_lt=STARTUP_GRACE_SEC,
         result="IDLE",
         action=Action.HOLD_NO_WRITE,
     ),
@@ -624,14 +644,17 @@ def build_detection_context(win_target, project_dir, prev_state,
 
     # Find the window's primary claude_pid (first pane that hosts one).
     # Used to resolve the exact JSONL path via the runtime session file
-    # at ~/.claude/sessions/{pid}.json.
+    # at ~/.claude/sessions/{pid}.json AND to measure how long Claude
+    # has been running (input to the startup-transient rule).
     claude_pid = None
+    claude_pid_age = -1
     for wt, pane_pid, _pane_id in panes_cache:
         if wt != win_target:
             continue
         cp = find_claude_pid(pane_pid, ps_lines)
         if cp:
             claude_pid = cp
+            claude_pid_age = ccm_core.find_process_age(cp, ps_lines)
             break
 
     hook_state = ""
@@ -665,6 +688,7 @@ def build_detection_context(win_target, project_dir, prev_state,
         prev_state=prev_state,
         jsonl_age=jsonl_age,
         jsonl_last_stop_reason=jsonl_last_stop_reason,
+        claude_pid_age=claude_pid_age,
         now=now,
     )
 
