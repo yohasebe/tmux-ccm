@@ -2117,6 +2117,91 @@ class TestLifecycleSequences:
         assert rule == "default"
         assert state == "IDLE"
 
+    def test_startup_transient_from_shell_shows_idle(self):
+        """Real scenario: user `ccm attach`es to a SHELL window;
+        auto-start fires `claude --continue`; MCP servers start up
+        before the `❯` prompt is rendered. `detect_pane_state` sees
+        `has_child=True + no prompt` and returns raw=BUSY — this
+        signature looked identical to a streaming response, producing
+        10 s of false BUSY on every attach. The new rule keys on
+        `hook_missing=True` + `prev_state ∈ ("", "SHELL")` to
+        distinguish startup authoritatively (no UserPromptSubmit has
+        fired yet, and the window just came off SHELL)."""
+        # Directly post-SHELL attach: prev_state="SHELL" because
+        # reset_window_after_attach no longer wipes it.
+        rule, state = self._eval(
+            raw="BUSY", prev_state="SHELL", hook_state="",
+            jsonl_age=-1,  # no JSONL yet for a fresh --continue
+        )
+        assert rule == "startup_transient_raw_busy"
+        assert state == "IDLE"
+
+    def test_startup_transient_from_empty_prev_also_idle(self):
+        """Brand-new window never scanned before (prev_state='') is
+        also caught by the rule — e.g. `ccm add` creates a window and
+        the first scan runs before any state has been written."""
+        rule, state = self._eval(
+            raw="BUSY", prev_state="", hook_state="", jsonl_age=-1,
+        )
+        assert rule == "startup_transient_raw_busy"
+        assert state == "IDLE"
+
+    def test_startup_transient_holds_no_write(self):
+        """The rule uses action=HOLD_NO_WRITE so prev_state is NOT
+        overwritten to IDLE mid-startup. If it were, the very next
+        scan would see prev_state=IDLE and the rule would no longer
+        match (prev_in=("", "SHELL")), flipping raw=BUSY back through
+        `raw_not_idle` → BUSY. Hold-no-write keeps prev_state stable
+        at "" / "SHELL" until the prompt renders and raw flips to
+        IDLE, at which point the terminal `default` rule writes
+        prev=IDLE cleanly."""
+        import lib.ccm_detection as det  # noqa: F401 (import check)
+        ctx = make_ctx(raw="BUSY", prev_state="SHELL", hook_state="",
+                       jsonl_age=-1)
+        rule, state = ccm_core.evaluate_rules(ctx)
+        assert rule.name == "startup_transient_raw_busy"
+        assert rule.action == ccm_core.Action.HOLD_NO_WRITE
+
+    def test_startup_transient_does_not_override_fresh_hook(self):
+        """Once UserPromptSubmit fires (hook_state='BUSY'), the window
+        is in real work and hook_fresh_busy wins. This preserves the
+        "user typed a prompt right after attaching" lifecycle —
+        startup_transient must NOT suppress a legitimate BUSY that
+        the hook pipeline already proved."""
+        rule, state = self._eval(
+            raw="BUSY", prev_state="SHELL",
+            hook_state="BUSY", hook_age=0, jsonl_age=0,
+        )
+        assert rule == "hook_fresh_busy"
+        assert state == "BUSY"
+
+    def test_startup_transient_does_not_match_attached_busy_session(self):
+        """User attaches to a session that is already actively working.
+        `reset_window_after_attach` leaves prev_state at whatever
+        apply_actions last wrote (e.g. 'BUSY'), so the new rule does
+        NOT misclassify this as startup. The `raw_not_idle` passthrough
+        preserves the BUSY display."""
+        # Hook signal is momentarily absent (between tools, post-Stop).
+        rule, state = self._eval(
+            raw="BUSY", prev_state="BUSY", hook_state="",
+            jsonl_age=10,
+        )
+        # Must NOT be startup_transient — prev_state='BUSY' excludes it.
+        assert rule != "startup_transient_raw_busy"
+        assert state == "BUSY"
+
+    def test_startup_transient_clears_once_prompt_renders(self):
+        """When Claude finishes loading MCP and `❯` becomes visible,
+        raw flips to IDLE. The startup rule no longer matches
+        (raw_in=("BUSY",)); the terminal `default` rule fires
+        USE_RAW → IDLE with DEFAULT action, writing prev_state=IDLE.
+        From the next scan onward, we are in the normal lifecycle."""
+        rule, state = self._eval(
+            raw="IDLE", prev_state="SHELL", hook_state="", jsonl_age=-1,
+        )
+        assert rule == "default"
+        assert state == "IDLE"
+
 
 # ─── Formatting helpers ───
 
@@ -3106,6 +3191,55 @@ class TestShellClusterDetection:
         # @ccm_shell_history should have been unset
         assert ("0:5", "@ccm_shell_history") in unset_calls
         assert "0:5/@ccm_shell_history" not in store
+
+    def test_reset_window_after_attach_preserves_prev_state(
+        self, monkeypatch, tmp_path
+    ):
+        """Regression guard for the startup_transient_raw_busy rule.
+        The rule identifies MCP-loading transients by requiring
+        `prev_state ∈ ("", "SHELL")`. If reset_window_after_attach
+        wiped prev_state to "" (as it did before 2026-04-22), the
+        distinguisher would break: attaching to an already-BUSY
+        session would also produce prev_state="", and the rule would
+        misclassify real work as startup and flash IDLE.
+
+        So: reset_window_after_attach MUST NOT touch @ccm_prev_state.
+        The detection pipeline updates it every scan via
+        apply_actions — that is the correct owner of the value.
+        """
+        store = {
+            "0:5/@ccm_dir": "/tmp/proj",
+            "0:5/@ccm_prev_state": "BUSY",
+        }
+        set_calls = []
+
+        def fake(*args):
+            if len(args) >= 5 and args[0] == "show-option":
+                return store.get(f"{args[3]}/{args[4]}", "")
+            if args[0] == "set-option":
+                target = None
+                if "-wt" in args:
+                    target = args[args.index("-wt") + 1]
+                elif "-t" in args:
+                    target = args[args.index("-t") + 1]
+                set_calls.append((args, target))
+                if "-u" in args:
+                    store.pop(f"{target}/{args[-1]}", None)
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(tmp_path))
+
+        ccm_core.reset_window_after_attach("0:5")
+
+        # No set-option call (unset or write) should have touched
+        # @ccm_prev_state — the detection layer owns it.
+        for args, _target in set_calls:
+            assert "@ccm_prev_state" not in args, (
+                f"reset_window_after_attach touched @ccm_prev_state: {args}"
+            )
+        # And the stored value must still be BUSY (pre-attach state).
+        assert store["0:5/@ccm_prev_state"] == "BUSY"
 
     def test_reset_window_after_attach_unsets_completed_at(
         self, monkeypatch, tmp_path

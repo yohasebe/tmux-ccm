@@ -16,9 +16,9 @@ re-exports the detection API below at the bottom of its file so
 existing callers (`build_project_list`, dashboard, inject_status,
 pytest) continue to do `from ccm_core import ...`.
 
-## `@ccm_prev_state` write sites (3, intentionally distributed)
+## `@ccm_prev_state` write sites (2, intentionally distributed)
 
-The window option `@ccm_prev_state` has three writers in the
+The window option `@ccm_prev_state` has two writers in the
 codebase. They look similar but serve different roles and are not
 merged on purpose — see `project_r4_r5_decision` memo.
 
@@ -35,18 +35,16 @@ merged on purpose — see `project_r4_r5_decision` memo.
    would add 30–80 ms of interpreter startup per hook event,
    which defeats the purpose of instant status updates.
 
-3. `reset_window_after_attach` (`ccm_core.py`)
-   Attach-time reset. Writes the empty string `""` to wipe
-   transition history so the post-attach scan does not fire
-   display-only side effects tied to a stale prior state
-   (the ✔ completion marker, the SHELL cluster canary push).
-   `""` and `-u` produce the same `ctx.prev_state==""` for the
-   detector (no `DETECTION_RULES` entry matches `prev_state==""`
-   via `prev_in`; the write is about clearing history, not
-   triggering a rule). The explicit empty-value write is kept
-   for symmetry with site 1's write path.
+Historical note: `reset_window_after_attach` used to be a third
+writer (wiping prev_state to "") but that made the startup-after-
+attach signature indistinguishable from an in-flight response.
+The wipe was removed so the new `startup_transient_raw_busy` rule
+can key on `prev_state ∈ ("", "SHELL")` to identify MCP-loading
+transients authoritatively. See the docstring of
+`reset_window_after_attach` in `ccm_core.py` for the full
+rationale.
 
-When changing state-transition semantics, audit all three sites.
+When changing state-transition semantics, audit both sites.
 """
 
 import time
@@ -285,6 +283,13 @@ class Rule:
     prev_in: Optional[Tuple[str, ...]] = None
     hook_age_lt: Optional[int] = None
     jsonl_age_lt: Optional[int] = None
+    # True:  ctx.hook_state must be "" (no hook signal present)
+    # False: ctx.hook_state must be non-empty (some signal present)
+    # None:  not checked
+    # Distinct from hook_in, which requires a specific signal state.
+    # hook_missing=True is the way to assert "no UserPromptSubmit /
+    # PreToolUse / PermissionRequest has fired recently".
+    hook_missing: Optional[bool] = None
     # True: ctx.jsonl_age must be < 0 (no JSONL file at all)
     # False: ctx.jsonl_age must be >= 0 (JSONL file exists)
     # None: not checked
@@ -314,6 +319,12 @@ class Rule:
             return False
         if self.hook_age_lt is not None:
             if ctx.hook_age < 0 or ctx.hook_age >= self.hook_age_lt:
+                return False
+        if self.hook_missing is True:
+            if ctx.hook_state != "":
+                return False
+        elif self.hook_missing is False:
+            if ctx.hook_state == "":
                 return False
         if self.jsonl_age_lt is not None:
             if ctx.jsonl_age < 0 or ctx.jsonl_age >= self.jsonl_age_lt:
@@ -348,8 +359,9 @@ class Rule:
 #   8-9   JSONL freshness signals (5 s fresh, 15 s safety net)
 #   10    BUSY → IDLE fallback (direct, no DONE intermediate)
 #   11    PERMIT hold (brief IDLE gap after user approves)
-#   12    raw BUSY/PERMIT passthrough
-#   13    default: trust raw state
+#   12    startup transient: demote raw=BUSY during MCP loading
+#   13    raw BUSY/PERMIT passthrough
+#   14    default: trust raw state
 DETECTION_RULES: Tuple[Rule, ...] = (
     Rule(name="process_down", raw_in=("DOWN",), result="DOWN"),
     Rule(name="process_shell", raw_in=("SHELL",), result="SHELL"),
@@ -466,6 +478,39 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         hook_in=("PERMIT",),
         hook_age_lt=PERMIT_MAX_TIMEOUT,
         result="PERMIT",
+        action=Action.HOLD_NO_WRITE,
+    ),
+    Rule(
+        # Startup transient: `detect_pane_state` reports raw=BUSY when
+        # the `claude` process has children (MCP servers, LSP, etc.)
+        # and the `❯` prompt has not yet been rendered. During
+        # Claude's 5–30 s startup window this signature looks
+        # identical to an in-flight streaming response, so the pane-
+        # tree heuristic returns BUSY either way.
+        #
+        # We can distinguish the two cases authoritatively:
+        #   - startup: prev_state ∈ ("", "SHELL") AND no hook signal
+        #     has been written yet (no UserPromptSubmit / PreToolUse
+        #     ever fired for this session)
+        #   - mid-response: hook_state == "BUSY" (UserPromptSubmit /
+        #     PreToolUse is live) OR prev_state is "BUSY" / "IDLE"
+        #     (the window has already been in an active state since
+        #     Claude came up)
+        #
+        # When all three startup conditions match, override the raw
+        # BUSY to IDLE so the dashboard doesn't show 10 s of false
+        # BUSY after every attach. Use HOLD_NO_WRITE so prev_state
+        # stays at "" / "SHELL" across the startup window — rewriting
+        # to IDLE would invalidate our own match criterion on the
+        # next scan and produce a BUSY/IDLE flicker as `❯` finishes
+        # rendering. Once the pane shows the prompt, raw flips to
+        # IDLE and the terminal `default` rule writes prev=IDLE
+        # cleanly.
+        name="startup_transient_raw_busy",
+        raw_in=("BUSY",),
+        prev_in=("", "SHELL"),
+        hook_missing=True,
+        result="IDLE",
         action=Action.HOLD_NO_WRITE,
     ),
     Rule(

@@ -1645,17 +1645,26 @@ def reset_window_after_attach(win_target):
     effects are keyed off `@ccm_dir`; on a non-ccm window this is a
     no-op:
 
-    1. Unset `@ccm_completed_at` so the ✔ marker disappears.
-    2. Clear `@ccm_prev_state` so the next scan recomputes state
-       from scratch (no stale carry-over from before the attach).
-       Value is `""`, not `-u` — behaviorally equivalent for the
-       detector (`ctx.prev_state==""` either way, no rule keys on
-       it), but matches the shape of the normal write path in
-       `_set_win_state`. See `ccm_detection` module docstring for
-       the full write-site inventory.
-    3. Unset `@ccm_shell_history` so the cluster-SHELL canary
+    1. Unset `@ccm_completed_at` so the ✔ marker disappears (stale
+       completion markers from before the user attached should not
+       appear to follow the attach).
+    2. Unset `@ccm_shell_history` so the cluster-SHELL canary
        (#48069) is acknowledged. The warning will reappear only if
        NEW transitions cluster after the attach.
+
+    Notably, `@ccm_prev_state` is NOT wiped. Earlier versions cleared
+    it to force "fresh" detection, but that created a bug: attaching
+    to a SHELL window auto-starts Claude, MCP servers spawn before
+    the `❯` prompt renders, and the pane-tree heuristic reports
+    raw=BUSY for the 5–30 s startup window. Wiping prev_state to ""
+    made that transient indistinguishable from a real in-flight
+    response (both had raw=BUSY + prev=""), producing 10 s+ of
+    false BUSY on every attach. The `startup_transient_raw_busy`
+    rule in `DETECTION_RULES` relies on prev_state ∈ ("", "SHELL")
+    to identify startup authoritatively — keeping prev_state as the
+    apply_actions-written value preserves that discriminator. The
+    other wipes are cosmetic (completed_at) or per-canary
+    (shell_history); they do not participate in rule evaluation.
 
     Symmetric across all attach paths — do not duplicate these
     set-option calls inline elsewhere.
@@ -1664,7 +1673,6 @@ def reset_window_after_attach(win_target):
     if not proj_dir:
         return
     tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_completed_at")
-    tmux_cmd("set-option", "-wq", "-t", win_target, "@ccm_prev_state", "")
     tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_shell_history")
 
 
