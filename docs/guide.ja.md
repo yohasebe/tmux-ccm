@@ -491,6 +491,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_COMPLETION_GRACE_SEC` | `3`（秒） | Stop hook 発火から COMPLETED デスクトップ通知までの猶予時間。Claude Code は各ターン境界（ツール実行中も含む）で Stop を発火するため、ccm はこの秒数だけ待ってから通知する。その間に次の PreToolUse / UserPromptSubmit が発火すれば通知はキャンセルされる。小さくすると通知が早いがマルチターン会話中に誤発火するリスクが高まる。長時間のツール連鎖中に「完了」通知が早すぎると感じる場合は上げる |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600`（秒） | 安全網: フック信号で解消されない PERMIT 状態をこの秒数で自動クリア（permission ダイアログ表示中に Claude Code がクラッシュした場合など） |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600`（秒） | Claude Code セッションが IDLE 状態でいられる最大時間（`x` 一括終了の対象となる閾値、自動終了のトリガー） |
+| `CCM_STARTUP_GRACE_SEC` | `60`（秒） | `startup_transient_raw_busy` ルールが hook signal 未着の raw=BUSY を IDLE に降格させる claude プロセス年齢の窓。`claude --continue` 起動時の MCP ロード (通常 10-30 秒) をカバー。MCP 接続がこれより長くかかる構成なら上げる、起動ハングを早めに BUSY として可視化したいなら下げる |
 
 ### カナリア閾値
 
@@ -499,6 +500,13 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_HOOKS_LOG_WARN_BYTES` | `104857600`（100 MB） | `~/.claude/hooks.log` 肥大化カナリアのサイズ閾値。Claude Code はこのファイルをローテートせず、肥大化するとフック発火が silent fail する（anthropics/claude-code#16047） |
 | `CCM_SHELL_CLUSTER_COUNT` | `3` | silent-exit カナリア (anthropics/claude-code#48069) を発動させる SHELL 遷移回数 |
 | `CCM_SHELL_CLUSTER_WINDOW` | `600`（秒） | SHELL 遷移カウントの時間窓 |
+
+### デバッグトレース
+
+| 変数 | デフォルト | 用途 |
+|------|-----------|------|
+| `CCM_DEBUG_TRACE` | (未設定) | JSONL トレースファイルのパス。設定すると slow-path 検出スキャン (`inject-status`、dashboard、`ccm status`) が各スキャンで `DetectionContext` 全体 + マッチルール + 解決された state を 1 行追記する。[状態検出の挙動デバッグ](#状態検出の挙動デバッグ) 参照。tmux 起動後の設定は `tmux set-environment -g CCM_DEBUG_TRACE <path>` で行う（シェルの `export` では tmux サブプロセスに届かない） |
+| `CCM_TRACE_MAX_BYTES` | `104857600`（100 MB） | `CCM_DEBUG_TRACE` ログファイルのサイズ上限。超過時は `{"event":"trace_cap_reached", ...}` の sentinel 行を 1 回だけ書いて以降の追記を停止し、解除忘れでディスクを食い尽くすのを防ぐ |
 
 ### キャッシュ TTL
 

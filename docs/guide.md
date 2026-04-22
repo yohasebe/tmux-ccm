@@ -491,6 +491,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_COMPLETION_GRACE_SEC` | `3` (seconds) | Grace period between a Stop hook firing and the COMPLETED desktop notification. Claude Code fires Stop at every turn boundary (including mid-tool-use); ccm waits this long before alerting so a subsequent PreToolUse / UserPromptSubmit can cancel the pending notification. Lower = faster alerts but higher risk of notifying mid-conversation; raise if you frequently see premature "completion" notifications during long multi-turn work |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600` (seconds) | Safety net: PERMIT state auto-clears after this if no hook signal resolves it (e.g. if Claude Code crashed while a permission dialog was open) |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600` (seconds) | How long a Claude Code session can be IDLE before `x` (exit all) targets it, and how long before auto-exit triggers |
+| `CCM_STARTUP_GRACE_SEC` | `60` (seconds) | Window during which the `startup_transient_raw_busy` rule demotes raw=BUSY to IDLE when no hook signal is present — covers Claude's MCP-loading phase after `claude --continue`, which typically completes in 10–30 s. Raise if your MCP setup takes longer to come up than 60 s, lower if you want a genuinely hung startup to surface as BUSY sooner |
 
 ### Canary thresholds
 
@@ -499,6 +500,13 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_HOOKS_LOG_WARN_BYTES` | `104857600` (100 MB) | Size threshold for the `~/.claude/hooks.log` bloat canary. Claude Code does not rotate this file and bloated logs silently disable hook firing (anthropics/claude-code#16047) |
 | `CCM_SHELL_CLUSTER_COUNT` | `3` | How many SHELL transitions within the window triggers the silent-exit canary (anthropics/claude-code#48069) |
 | `CCM_SHELL_CLUSTER_WINDOW` | `600` (seconds) | Time window for counting SHELL transitions |
+
+### Debug tracing
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CCM_DEBUG_TRACE` | (unset) | Path to a JSONL trace file. When set, every slow-path detection scan (`inject-status`, dashboard, `ccm status`) appends a record with the full `DetectionContext`, matched rule, and resolved state. See [Detection-behaviour debugging](#detection-behaviour-debugging). Remember to set it via `tmux set-environment -g`, not shell `export`, so the tmux-spawned subprocesses see it |
+| `CCM_TRACE_MAX_BYTES` | `104857600` (100 MB) | Size cap for the `CCM_DEBUG_TRACE` log. Once exceeded, a single `{"event":"trace_cap_reached", ...}` sentinel is written and subsequent appends are skipped, so a forgotten trace cannot fill the disk |
 
 ### Cache TTLs
 
