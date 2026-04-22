@@ -847,3 +847,128 @@ def cmd_reset_window():
     win_idx = ccm_core.tmux_cmd("display-message", "-p", "#{window_index}")
     if session_name and win_idx:
         ccm_core.reset_window_after_attach(f"{session_name}:{win_idx}")
+
+
+def cmd_debug_trace(project_match, interval=0.3):
+    """Print one line per scan showing every DetectionContext input,
+    the rule that would match, and the resolved state. Read-only — this
+    does NOT mutate @ccm_prev_state or any runtime file, so it can be
+    run alongside the live ccm dashboard without interfering.
+
+    Useful for answering "why did this project flicker to BUSY for 10
+    seconds after attach?" by correlating the rule-firing sequence
+    with the user's observed event timeline. See
+    `.claude/projects/.../memory/feedback_detection_debug_playbook.md`
+    for the full usage recipe.
+
+    project_match: substring match against @ccm_project or @ccm_dir
+    (basename). The first matching ccm window wins.
+
+    interval: seconds between scans. Smaller values catch faster
+    transients but cost more CPU; 0.3 s is enough to observe the
+    sub-second ordering that matters for detection bugs.
+    """
+    import signal as _signal
+    import time as _time
+
+    session = ccm_core.get_session()
+    if not session:
+        ccm_core.ccm_die("No tmux session detected — run inside tmux")
+
+    # Resolve the project. Accept an exact @ccm_project match first,
+    # then fall back to substring on project name or dir basename.
+    raw = ccm_core.tmux_cmd(
+        "list-windows", "-a", "-F",
+        "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}",
+    )
+    win_target = None
+    proj_name = None
+    proj_dir = None
+    if raw:
+        rows = []
+        for line in raw.split("\n"):
+            parts = line.split("\t")
+            if len(parts) >= 3 and parts[1]:
+                rows.append((parts[0], parts[1], parts[2]))
+        # Exact match on name first
+        for wt, name, d in rows:
+            if name == project_match:
+                win_target, proj_name, proj_dir = wt, name, d
+                break
+        if win_target is None:
+            # Substring match on name or dir basename
+            needle = project_match.lower()
+            for wt, name, d in rows:
+                basename = os.path.basename(d) if d else ""
+                if needle in name.lower() or needle in basename.lower():
+                    win_target, proj_name, proj_dir = wt, name, d
+                    break
+    if win_target is None:
+        ccm_core.ccm_die(f"No ccm project matches: {project_match!r}")
+
+    # Graceful Ctrl-C.
+    stop = {"flag": False}
+    def _sigint(_sig, _frame):
+        stop["flag"] = True
+    _signal.signal(_signal.SIGINT, _sigint)
+
+    sys.stderr.write(
+        f"# ccm debug trace: {proj_name} ({win_target}) — {proj_dir}\n"
+        f"# interval={interval}s  Ctrl-C to stop\n"
+        f"# columns: time  raw  prev  hook(state,age)  pid_age  jsonl(age,stop)  rule  →  state[action]\n"
+    )
+    sys.stderr.flush()
+
+    while not stop["flag"]:
+        t0 = _time.monotonic()
+
+        # Fresh ps + pane snapshots each tick. No caching — we want to
+        # observe real kernel/tmux state, not anything ccm has
+        # memoized.
+        ps_lines = ccm_core.ps_snapshot().split("\n")
+        panes_raw = ccm_core.tmux_cmd(
+            "list-panes", "-a", "-F",
+            "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}",
+        )
+        panes_cache = []
+        for line in panes_raw.split("\n"):
+            parts = line.split("\t")
+            if len(parts) == 3:
+                panes_cache.append(tuple(parts))
+        own_pgid = str(os.getpgrp())
+
+        prev_state = ccm_core.tmux_cmd(
+            "show-option", "-wqv", "-t", win_target, "@ccm_prev_state",
+        ) or ""
+
+        # Invalidate the JSONL activity cache so each tick is a fresh
+        # read — without this, trace would show stale ages across
+        # successive ticks while the JSONL file actually changes.
+        ccm_core._jsonl_activity_cache.clear()
+
+        ctx = ccm_core.build_detection_context(
+            win_target, proj_dir, prev_state,
+            panes_cache, ps_lines, own_pgid,
+        )
+        rule, state = ccm_core.evaluate_rules(ctx)
+
+        hook_str = f"{ctx.hook_state or '-'},{ctx.hook_age if ctx.hook_age >= 0 else '-'}"
+        pid_age = ctx.claude_pid_age if ctx.claude_pid_age >= 0 else "-"
+        jsonl_str = f"{ctx.jsonl_age if ctx.jsonl_age >= 0 else '-'},{ctx.jsonl_last_stop_reason or '-'}"
+        action_short = "WRITE" if rule.action == ccm_core.Action.DEFAULT else "HOLD"
+
+        sys.stdout.write(
+            f"{_time.strftime('%H:%M:%S')}  "
+            f"raw={ctx.raw:5}  prev={prev_state or '-':5}  "
+            f"hook={hook_str:10}  pid_age={str(pid_age):4}  "
+            f"jsonl={jsonl_str:20}  "
+            f"{rule.name:28} → {state:5} [{action_short}]\n"
+        )
+        sys.stdout.flush()
+
+        # Sleep the remaining budget so the loop runs at a steady
+        # cadence even when a scan takes varying time.
+        elapsed = _time.monotonic() - t0
+        remaining = interval - elapsed
+        if remaining > 0:
+            _time.sleep(remaining)

@@ -47,6 +47,8 @@ rationale.
 When changing state-transition semantics, audit both sites.
 """
 
+import json
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -701,6 +703,16 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     """
     action = rule.action
 
+    # Optional trace log — useful for debugging false-BUSY / false-IDLE
+    # reports without requiring a second ccm process. Activated by
+    # setting CCM_DEBUG_TRACE to a file path in the environment of the
+    # process that runs detection (inject_status, dashboard, etc.).
+    # Each scan cycle appends one JSON-per-line record with every
+    # DetectionContext input plus the matched rule + resolved state.
+    # Writing happens here (after the rule is known, before side
+    # effects) so a malformed trace never corrupts real state.
+    _trace_scan(win_target, ctx, rule, state)
+
     # Record SHELL transitions for cluster-crash detection (#48069).
     # A transition into SHELL from a known *active* state (BUSY /
     # IDLE / PERMIT) is a real session exit and gets pushed.
@@ -745,3 +757,46 @@ def detect_window_state(win_target, project_dir, prev_state,
     )
     rule, state = evaluate_rules(ctx)
     return apply_actions(win_target, project_dir, ctx, rule, state)
+
+
+# ─── Debug trace (CCM_DEBUG_TRACE env var) ───
+# When CCM_DEBUG_TRACE is set to a file path, every detection cycle
+# emits a JSON line capturing the full DetectionContext, matched
+# rule, and resolved state. This gives us one-shot visibility into
+# why a given project is in a given state without needing to spin up
+# `ccm debug trace` in a second pane — useful when the report is
+# "it happened once last week" rather than "it's happening right
+# now".
+#
+# Writing is best-effort (swallows I/O errors) so a broken trace
+# file never blocks real detection. The writer uses line-buffered
+# append so multi-project scans interleave correctly.
+
+def _trace_scan(win_target, ctx, rule, state):
+    """Append one JSON record per detection cycle when CCM_DEBUG_TRACE
+    is set. Records include every DetectionContext field plus the
+    rule name and resolved state. Failure to open/write the trace
+    file is silently ignored — this path must never break detection.
+    """
+    path = os.environ.get("CCM_DEBUG_TRACE")
+    if not path:
+        return
+    try:
+        record = {
+            "t": ctx.now,
+            "target": win_target,
+            "raw": ctx.raw,
+            "prev": ctx.prev_state,
+            "hook_state": ctx.hook_state,
+            "hook_age": ctx.hook_age,
+            "jsonl_age": ctx.jsonl_age,
+            "jsonl_stop": ctx.jsonl_last_stop_reason,
+            "claude_pid_age": ctx.claude_pid_age,
+            "rule": rule.name,
+            "state": state,
+            "action": rule.action.value,
+        }
+        with open(path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass

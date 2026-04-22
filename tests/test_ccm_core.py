@@ -3074,6 +3074,70 @@ class TestRaiseOnDie:
         assert "raised" not in result
 
 
+# ─── CCM_DEBUG_TRACE env-var trace hook ───
+
+class TestDebugTraceHook:
+    """The CCM_DEBUG_TRACE env var routes every scan cycle into a
+    JSONL trace file. Used as a post-hoc debugging tool for
+    false-BUSY / false-IDLE reports — the trace captures the full
+    DetectionContext + matched rule + action at the time of each
+    scan, without having to reproduce the issue while `ccm debug
+    trace` is running.
+    """
+
+    def _basic_ctx(self):
+        return make_ctx(
+            raw="BUSY", hook_state="", hook_ts=0, hook_age=-1,
+            prev_state="SHELL", jsonl_age=-1, claude_pid_age=5,
+        )
+
+    def test_writes_one_line_per_scan(self, tmp_path, monkeypatch):
+        trace = tmp_path / "trace.log"
+        monkeypatch.setenv("CCM_DEBUG_TRACE", str(trace))
+        ctx = self._basic_ctx()
+        rule, state = ccm_core.evaluate_rules(ctx)
+        with patch.object(ccm_core, "_set_win_state"), \
+             patch.object(ccm_core, "tmux_cmd"):
+            ccm_core.apply_actions("0:5", "/p", ctx, rule, state)
+            ccm_core.apply_actions("0:5", "/p", ctx, rule, state)
+
+        lines = trace.read_text().strip().split("\n")
+        assert len(lines) == 2
+        # Each line is valid JSON with expected keys.
+        for line in lines:
+            rec = json.loads(line)
+            assert rec["target"] == "0:5"
+            assert rec["raw"] == "BUSY"
+            assert rec["prev"] == "SHELL"
+            assert rec["rule"] == "startup_transient_raw_busy"
+            assert rec["state"] == "IDLE"
+            assert rec["action"] == "hold_no_write"
+
+    def test_no_env_var_no_write(self, tmp_path, monkeypatch):
+        trace = tmp_path / "trace.log"
+        # Do NOT set CCM_DEBUG_TRACE. The file must stay absent.
+        monkeypatch.delenv("CCM_DEBUG_TRACE", raising=False)
+        ctx = self._basic_ctx()
+        rule, state = ccm_core.evaluate_rules(ctx)
+        with patch.object(ccm_core, "_set_win_state"), \
+             patch.object(ccm_core, "tmux_cmd"):
+            ccm_core.apply_actions("0:5", "/p", ctx, rule, state)
+        assert not trace.exists()
+
+    def test_unwritable_path_does_not_raise(self, tmp_path, monkeypatch):
+        # Point at a path inside a nonexistent directory. open() will
+        # raise FileNotFoundError; the trace hook must swallow it so
+        # detection is never disrupted by a broken trace target.
+        bad = tmp_path / "does-not-exist" / "trace.log"
+        monkeypatch.setenv("CCM_DEBUG_TRACE", str(bad))
+        ctx = self._basic_ctx()
+        rule, state = ccm_core.evaluate_rules(ctx)
+        with patch.object(ccm_core, "_set_win_state"), \
+             patch.object(ccm_core, "tmux_cmd"):
+            # Must not raise.
+            ccm_core.apply_actions("0:5", "/p", ctx, rule, state)
+
+
 # ─── SHELL cluster detection (#48069 canary) ───
 
 class TestShellClusterDetection:

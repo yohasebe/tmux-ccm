@@ -62,6 +62,7 @@ Usage:
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
   ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
+  ccm debug trace <name> [interval]  Live state-detection trace (read-only; Ctrl-C to stop)
   ccm help                          Show this help
 USAGE
 }
@@ -129,6 +130,11 @@ case "${1:-help}" in
         ;;
     reset-window)
         python3 "$CCM_ROOT/lib/ccm_core.py" reset-window || true
+        ;;
+    debug)
+        # `ccm debug trace <project> [interval]` — live state-detection trace.
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" debug "$@"
         ;;
     snapshot|snap)
         ccm_check_deps

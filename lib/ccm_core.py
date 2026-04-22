@@ -1810,6 +1810,7 @@ from ccm_commands import (  # noqa: E402
     cmd_add,
     cmd_attach,
     cmd_capture,
+    cmd_debug_trace,
     cmd_list,
     cmd_open,
     cmd_register,
@@ -1872,6 +1873,25 @@ if __name__ == "__main__":
         cmd_snapshot_delete(args[0] if args else "")
     elif cmd == "reset-window":
         cmd_reset_window()
+    elif cmd == "debug":
+        # `ccm debug trace <project> [interval]`
+        sub = args[0] if args else ""
+        if sub == "trace":
+            proj = args[1] if len(args) > 1 else ""
+            if not proj:
+                print("Usage: ccm debug trace <project-name-or-substring> [interval-seconds]",
+                      file=sys.stderr)
+                sys.exit(2)
+            try:
+                interval = float(args[2]) if len(args) > 2 else 0.3
+            except ValueError:
+                print(f"Invalid interval: {args[2]!r}", file=sys.stderr)
+                sys.exit(2)
+            cmd_debug_trace(proj, interval=interval)
+        else:
+            print(f"Unknown debug subcommand: {sub!r}", file=sys.stderr)
+            print("Available: trace", file=sys.stderr)
+            sys.exit(2)
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

@@ -565,6 +565,39 @@ tmux show-option -gv status-right   # inspect status-right content
 tmux show-option -gqv @ccm-status-line  # current mode (0/1/2)
 ```
 
+#### Detection-behaviour debugging
+
+If a project shows BUSY when you expect IDLE (or vice-versa), use one of the two tracers:
+
+**Live, per-project trace** — read-only, does not modify state:
+
+```bash
+# In a separate pane, then reproduce the problematic event in the main pane
+ccm debug trace <project-name>           # default 0.3 s interval
+ccm debug trace <project-name> 0.5       # or specify interval
+```
+
+Each line shows the full detection context, the rule that matched, and the resolved state:
+
+```
+19:48:55  raw=IDLE  prev=IDLE  hook=-,-  pid_age=653  jsonl=6883,end_turn  default → IDLE [WRITE]
+```
+
+Ctrl-C to stop. Safe to run alongside the live dashboard.
+
+**Whole-pipeline trace** — env var, captures every detection scan across all projects:
+
+```bash
+export CCM_DEBUG_TRACE=/tmp/ccm-trace.jsonl
+# reload tmux status to pick up the env var, then reproduce the event
+# slice with jq by window target or state
+jq -c 'select(.target=="0:20")' /tmp/ccm-trace.jsonl | tail -50
+jq -c 'select(.state=="BUSY")' /tmp/ccm-trace.jsonl | tail -20
+unset CCM_DEBUG_TRACE    # remove when finished — the file grows with every scan
+```
+
+Both tracers record the same fields so output is interchangeable between them.
+
 To reset ccm state completely:
 
 ```bash

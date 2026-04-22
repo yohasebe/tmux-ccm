@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Circular-import latent bug: running `python3 lib/ccm_core.py <subcmd>` loaded the file as `__main__`, and the new submodule re-exports triggered a partially-initialized re-entry on `ccm_detection` / `ccm_commands`. Fixed with a `sys.modules.setdefault("ccm_core", ...)` alias at module top; normal `import ccm_core` callers are unaffected
 
 ### Added
+- `ccm debug trace <project> [interval]` — live, read-only tracer for state detection. Prints one line per scan showing every `DetectionContext` input, the matched rule, and the resolved state, so that "why did this flash BUSY for 10 s after attach?" bugs can be correlated with the rule-firing sequence without spinning up instrumentation. Does not write to `@ccm_prev_state`, so it can run alongside the normal detection pipeline. Defaults to 0.3 s interval, Ctrl-C to stop
+- `CCM_DEBUG_TRACE=/path/to/log` env var — when set, the main detection pipeline (`inject_status`, dashboard, `ccm status`, ...) appends a JSON-per-line record per scan cycle with every context field plus the matched rule and resolved state. Useful for post-hoc debugging of "it happened once yesterday"-type reports. Pair with `jq -c 'select(.target=="0:N")'` to slice by project. Writing is best-effort; a broken trace file never blocks detection
 - Drift guard: `tests/test_notify_parity.bats` (15 rows) verifies Python `notify()` and bash `_ccm_instant_notify` reach identical fire/skip decisions for every `@ccm-notify` × state combination. PATH-override sandboxing; no production code is touched
 
 ## [0.2.0] - 2026-04-18

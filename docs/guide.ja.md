@@ -565,6 +565,39 @@ tmux show-option -gv status-right   # status-rightの内容を確認
 tmux show-option -gqv @ccm-status-line  # 現在のモード（0/1/2）
 ```
 
+#### 状態検出の挙動デバッグ
+
+プロジェクトが意図せず BUSY / IDLE 表示になるとき、以下のライブトレーサーで原因を切り分けられます。
+
+**プロジェクト単位のライブトレース** (読み取り専用、状態を書き換えない):
+
+```bash
+# 別ペインで実行してから、メインペインで問題の操作を再現する
+ccm debug trace <project-name>           # デフォルト 0.3 秒間隔
+ccm debug trace <project-name> 0.5       # 間隔指定
+```
+
+1 行につき 1 スキャンで、検出コンテキストとマッチしたルール、解決された状態を表示します:
+
+```
+19:48:55  raw=IDLE  prev=IDLE  hook=-,-  pid_age=653  jsonl=6883,end_turn  default → IDLE [WRITE]
+```
+
+Ctrl-C で停止。ダッシュボードと並行実行しても干渉しません。
+
+**パイプライン全体のトレース** (環境変数で有効化、全プロジェクトの全スキャンを記録):
+
+```bash
+export CCM_DEBUG_TRACE=/tmp/ccm-trace.jsonl
+# tmux status を再読込してから問題を再現
+# jq で特定ウィンドウや state に絞る
+jq -c 'select(.target=="0:20")' /tmp/ccm-trace.jsonl | tail -50
+jq -c 'select(.state=="BUSY")' /tmp/ccm-trace.jsonl | tail -20
+unset CCM_DEBUG_TRACE    # 作業が終わったら必ず解除 (ファイルが肥大化します)
+```
+
+両方のトレーサーは同じフィールドを記録するため、出力は相互に読み替え可能です。
+
 ccmの状態を完全にリセットするには：
 
 ```bash
