@@ -3137,6 +3137,42 @@ class TestDebugTraceHook:
             # Must not raise.
             ccm_core.apply_actions("0:5", "/p", ctx, rule, state)
 
+    def test_stops_appending_past_size_cap(self, tmp_path, monkeypatch):
+        """When the trace file exceeds TRACE_MAX_BYTES, _trace_scan
+        writes one sentinel line and stops appending. Guard against
+        a forgotten CCM_DEBUG_TRACE filling the disk."""
+        import ccm_detection as det
+
+        trace = tmp_path / "trace.log"
+        # Pre-fill the trace file past the (lowered-for-test) cap so
+        # the very next apply_actions hits the sentinel path. Use a
+        # newline-terminated prefix so the sentinel lands on its own
+        # line and can be recovered via split("\n")[-1] below.
+        monkeypatch.setattr(det, "TRACE_MAX_BYTES", 100)
+        trace.write_text(("x" * 200) + "\n")
+        monkeypatch.setenv("CCM_DEBUG_TRACE", str(trace))
+
+        ctx = self._basic_ctx()
+        rule, state = ccm_core.evaluate_rules(ctx)
+        with patch.object(ccm_core, "_set_win_state"), \
+             patch.object(ccm_core, "tmux_cmd"):
+            # Two scans: the first trips the cap and writes the sentinel
+            # (pushing size past cap+200); the second sees size >= that
+            # and writes nothing.
+            ccm_core.apply_actions("0:5", "/p", ctx, rule, state)
+            size_after_first = trace.stat().st_size
+            ccm_core.apply_actions("0:5", "/p", ctx, rule, state)
+            size_after_second = trace.stat().st_size
+
+        # Exactly one sentinel appended; the second call is a no-op.
+        assert size_after_second == size_after_first
+        # Last line must be the sentinel, identifiable by the
+        # `event` field.
+        last_line = trace.read_text().rstrip("\n").split("\n")[-1]
+        rec = json.loads(last_line)
+        assert rec.get("event") == "trace_cap_reached"
+        assert rec.get("cap_bytes") == 100
+
 
 # ─── SHELL cluster detection (#48069 canary) ───
 

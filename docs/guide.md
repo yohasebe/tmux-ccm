@@ -588,15 +588,21 @@ Ctrl-C to stop. Safe to run alongside the live dashboard.
 **Whole-pipeline trace** — env var, captures every detection scan across all projects:
 
 ```bash
-export CCM_DEBUG_TRACE=/tmp/ccm-trace.jsonl
-# reload tmux status to pick up the env var, then reproduce the event
-# slice with jq by window target or state
+# Set on the tmux SERVER (not just your shell). inject-status runs as
+# a subprocess of tmux and inherits environment from the server at
+# its start — plain `export` in your shell won't reach it.
+tmux set-environment -g CCM_DEBUG_TRACE /tmp/ccm-trace.jsonl
+# Wait one status-interval tick, then reproduce the event.
+# Slice with jq by window target or state:
 jq -c 'select(.target=="0:20")' /tmp/ccm-trace.jsonl | tail -50
 jq -c 'select(.state=="BUSY")' /tmp/ccm-trace.jsonl | tail -20
-unset CCM_DEBUG_TRACE    # remove when finished — the file grows with every scan
+# Remove the env var when done — the file grows with every scan.
+# (The log also auto-suspends at 100 MB; override with
+#  CCM_TRACE_MAX_BYTES if you need a larger cap.)
+tmux set-environment -gu CCM_DEBUG_TRACE
 ```
 
-Both tracers record the same fields so output is interchangeable between them.
+Both tracers record the same fields so output is interchangeable between them. Note that `CCM_DEBUG_TRACE` captures only the slow path (the decisions that actually write `@ccm_prev_state`); the statusline fast path is read-only and not traced.
 
 To reset ccm state completely:
 

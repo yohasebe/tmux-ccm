@@ -588,15 +588,20 @@ Ctrl-C で停止。ダッシュボードと並行実行しても干渉しませ�
 **パイプライン全体のトレース** (環境変数で有効化、全プロジェクトの全スキャンを記録):
 
 ```bash
-export CCM_DEBUG_TRACE=/tmp/ccm-trace.jsonl
-# tmux status を再読込してから問題を再現
-# jq で特定ウィンドウや state に絞る
+# tmux サーバー側に設定すること。inject-status は tmux のサブプロセス
+# として起動し、サーバー起動時の環境を継承するため、シェル側の export
+# だけでは届きません。
+tmux set-environment -g CCM_DEBUG_TRACE /tmp/ccm-trace.jsonl
+# status-interval 1 回分待ってから問題を再現。
+# jq で特定ウィンドウや state に絞る：
 jq -c 'select(.target=="0:20")' /tmp/ccm-trace.jsonl | tail -50
 jq -c 'select(.state=="BUSY")' /tmp/ccm-trace.jsonl | tail -20
-unset CCM_DEBUG_TRACE    # 作業が終わったら必ず解除 (ファイルが肥大化します)
+# 作業が終わったら必ず解除 (ファイルが肥大化するため)。
+# 100 MB で自動的に追記停止します (上限は CCM_TRACE_MAX_BYTES で変更可)。
+tmux set-environment -gu CCM_DEBUG_TRACE
 ```
 
-両方のトレーサーは同じフィールドを記録するため、出力は相互に読み替え可能です。
+両方のトレーサーは同じフィールドを記録するため、出力は相互に読み替え可能です。`CCM_DEBUG_TRACE` は slow-path (実際に `@ccm_prev_state` に書き込む判断) のみを記録します。statusline fast-path は read-only で書き込みをしないため記録対象外です。
 
 ccmの状態を完全にリセットするには：
 

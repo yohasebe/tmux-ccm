@@ -771,17 +771,58 @@ def detect_window_state(win_target, project_dir, prev_state,
 # Writing is best-effort (swallows I/O errors) so a broken trace
 # file never blocks real detection. The writer uses line-buffered
 # append so multi-project scans interleave correctly.
+#
+# Safety cap: at TRACE_MAX_BYTES the writer silently stops appending
+# to prevent a forgotten CCM_DEBUG_TRACE from exhausting disk. One
+# sentinel line is written at the threshold so a user returning to
+# the log finds the reason writes stopped. The cap is resolved from
+# CCM_TRACE_MAX_BYTES (default 100 MB) at module load; tuning it
+# requires restarting the tmux server that launches inject-status.
+TRACE_MAX_BYTES = int(
+    os.environ.get("CCM_TRACE_MAX_BYTES", str(100 * 1024 * 1024))
+)
+
 
 def _trace_scan(win_target, ctx, rule, state):
     """Append one JSON record per detection cycle when CCM_DEBUG_TRACE
     is set. Records include every DetectionContext field plus the
     rule name and resolved state. Failure to open/write the trace
     file is silently ignored — this path must never break detection.
+
+    Above `TRACE_MAX_BYTES` the writer emits a single sentinel line
+    (so the reason for the gap is visible in the log) and stops
+    appending. The stat + writes stay best-effort; a missing file
+    or permission error is swallowed.
     """
     path = os.environ.get("CCM_DEBUG_TRACE")
     if not path:
         return
     try:
+        size = -1
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            # File does not exist yet — treat as size 0 and proceed.
+            size = 0
+        if size >= TRACE_MAX_BYTES:
+            # Write one sentinel line for the user then stop. Once the
+            # sentinel itself is past the cap we no longer need to
+            # write anything — the next append would just grow the
+            # file past the cap again. Use a size delta check (any
+            # bytes past the cap) so the sentinel is emitted exactly
+            # once per process.
+            if size < TRACE_MAX_BYTES + 200:
+                try:
+                    with open(path, "a") as f:
+                        f.write(json.dumps({
+                            "t": ctx.now,
+                            "event": "trace_cap_reached",
+                            "cap_bytes": TRACE_MAX_BYTES,
+                            "note": "writes suspended; unset CCM_DEBUG_TRACE or set CCM_TRACE_MAX_BYTES higher",
+                        }) + "\n")
+                except OSError:
+                    pass
+            return
         record = {
             "t": ctx.now,
             "target": win_target,
