@@ -230,8 +230,18 @@ class DetectionContext:
     hook_ts: int          # hook signal timestamp (0 if no signal)
     hook_age: int         # now - hook_ts (-1 if no signal)
     prev_state: str       # previous detected state
-    jsonl_age: int        # now - newest JSONL mtime (-1 if missing)
+    jsonl_age: int        # now - newest JSONL real-activity ts (-1 if missing)
     now: int              # current unix timestamp
+    # stop_reason of the most recent `assistant` record in the JSONL
+    # tail. "tool_use" is the authoritative signal that Claude has
+    # paused mid-response to await a tool result; "end_turn" /
+    # "max_tokens" / "stop_sequence" mean the response truly ended.
+    # None when no assistant record was in the tail window. Defaulted
+    # so existing rule-unit tests that construct a Context directly
+    # without this field continue to match the wildcard behavior they
+    # expected (rules that do not specify `jsonl_last_stop_reason_in`
+    # ignore this field entirely).
+    jsonl_last_stop_reason: Optional[str] = None
 
 
 class Action(Enum):
@@ -279,6 +289,13 @@ class Rule:
     # False: ctx.jsonl_age must be >= 0 (JSONL file exists)
     # None: not checked
     jsonl_missing: Optional[bool] = None
+    # Authoritative BUSY-hold discriminator: the stop_reason of the most
+    # recent assistant record in the JSONL tail must be in this tuple.
+    # `"tool_use"` means Claude paused mid-response to await a tool
+    # result, so raw=IDLE in that window is a between-tools gap rather
+    # than a true completion. Other stop_reasons (`end_turn`,
+    # `max_tokens`, `stop_sequence`) indicate the response truly ended.
+    jsonl_last_stop_reason_in: Optional[Tuple[str, ...]] = None
     # Recap discriminator (Phase 2 of the v2.1.108 recap fix). When
     # set, the rule matches only if the BUSY hook signal was fired
     # within `value` seconds AFTER the last real conversation activity
@@ -307,6 +324,11 @@ class Rule:
         elif self.jsonl_missing is False:
             if ctx.jsonl_age < 0:
                 return False
+        if self.jsonl_last_stop_reason_in is not None:
+            if ctx.jsonl_last_stop_reason is None:
+                return False
+            if ctx.jsonl_last_stop_reason not in self.jsonl_last_stop_reason_in:
+                return False
         if self.hook_after_real_activity_lt is not None:
             if ctx.hook_age < 0 or ctx.jsonl_age < 0:
                 return False
@@ -318,15 +340,16 @@ class Rule:
 # Priority-ordered rule table. First match wins.
 #
 # Priority rationale (4-state model: PERMIT/BUSY/IDLE/SHELL):
-#   1-2  process tree authoritative for SHELL/DOWN
-#   3    fresh BUSY hook beats stale pipeline (multi-project race)
-#   4    PERMIT blocks BUSY when dialog actually visible
-#   5-6  BUSY hook overrides idle pipeline (text generation)
-#   7-8  JSONL freshness signals
-#   9    BUSY → IDLE fallback (direct, no DONE intermediate)
-#   10   PERMIT hold (brief IDLE gap after user approves)
-#   11   raw BUSY/PERMIT passthrough
-#   12   default: trust raw state
+#   1-2   process tree authoritative for SHELL/DOWN
+#   3     fresh BUSY hook beats stale pipeline (multi-project race)
+#   4     PERMIT blocks BUSY when dialog actually visible
+#   5-6   BUSY hook overrides idle pipeline (text generation)
+#   7     authoritative tool_use hold across tool-turn boundaries
+#   8-9   JSONL freshness signals (5 s fresh, 15 s safety net)
+#   10    BUSY → IDLE fallback (direct, no DONE intermediate)
+#   11    PERMIT hold (brief IDLE gap after user approves)
+#   12    raw BUSY/PERMIT passthrough
+#   13    default: trust raw state
 DETECTION_RULES: Tuple[Rule, ...] = (
     Rule(name="process_down", raw_in=("DOWN",), result="DOWN"),
     Rule(name="process_shell", raw_in=("SHELL",), result="SHELL"),
@@ -374,6 +397,31 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         result="BUSY",
     ),
     Rule(
+        # Authoritative BUSY hold across tool-turn boundaries. Claude
+        # Code fires a Stop hook at every tool boundary (not just at
+        # the true end of a response), which deletes the BUSY signal
+        # file. For long tools (> JSONL_ACTIVE_THRESHOLD), both
+        # jsonl_fresh_activity and jsonl_holds_busy expire before the
+        # next PreToolUse refreshes the signal, leaving detection to
+        # rely on the grandchild-process heuristic alone — which
+        # flickers between tools and is worse under multi-project
+        # concurrent load. The authoritative answer is in the JSONL
+        # itself: the most recent assistant record carries a
+        # stop_reason of "tool_use" whenever Claude is paused waiting
+        # on a tool result mid-response, and switches to "end_turn"
+        # (or "max_tokens" / "stop_sequence") only when the response
+        # truly ended. Hold BUSY for as long as stop_reason=tool_use
+        # is the latest signal, capped at BUSY_HOOK_JSONL_WINDOW so a
+        # phantom abandoned session cannot hold BUSY forever.
+        name="jsonl_tool_use_pending",
+        raw_in=("IDLE",),
+        prev_in=("BUSY",),
+        jsonl_missing=False,
+        jsonl_last_stop_reason_in=("tool_use",),
+        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
+        result="BUSY",
+    ),
+    Rule(
         # JSONL session log shows fresh activity (within 5s). Independent
         # of hooks — Claude Code writes records at conversation turn
         # boundaries. Also serves as the natural multi-turn bridge: when
@@ -385,9 +433,14 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         result="BUSY",
     ),
     Rule(
-        # Longer JSONL window used to HOLD an already-BUSY state
-        # through long thinking phases when hooks have gone silent.
-        # Prevents premature BUSY → IDLE during silent thinking.
+        # Short safety net between the 5 s fresh window and the
+        # authoritative tool_use hold above: holds BUSY for
+        # JSONL_ACTIVE_THRESHOLD when the JSONL is still warm but
+        # either (a) no assistant stop_reason has been written yet
+        # (brand-new turn, user record only) or (b) the record is
+        # older schema without stop_reason. Keeps the legacy
+        # behavior as a defensive fallback for edge cases
+        # jsonl_tool_use_pending does not cover.
         name="jsonl_holds_busy",
         raw_in=("IDLE",),
         prev_in=("BUSY",),
@@ -484,7 +537,10 @@ def build_fast_context(prev_state, project_dir,
             else:
                 hook_age = now - hook_ts
 
-    jsonl_age = ccm_core.read_jsonl_age(project_dir) if project_dir else -1
+    if project_dir:
+        jsonl_age, jsonl_last_stop_reason = ccm_core.read_jsonl_tail_info(project_dir)
+    else:
+        jsonl_age, jsonl_last_stop_reason = -1, None
 
     return DetectionContext(
         raw=raw,
@@ -493,6 +549,7 @@ def build_fast_context(prev_state, project_dir,
         hook_age=hook_age,
         prev_state=prev_state,
         jsonl_age=jsonl_age,
+        jsonl_last_stop_reason=jsonl_last_stop_reason,
         now=now,
     )
 
@@ -548,7 +605,12 @@ def build_detection_context(win_target, project_dir, prev_state,
             else:
                 hook_age = now - hook_ts
 
-    jsonl_age = ccm_core.read_jsonl_age(project_dir, claude_pid=claude_pid) if project_dir else -1
+    if project_dir:
+        jsonl_age, jsonl_last_stop_reason = ccm_core.read_jsonl_tail_info(
+            project_dir, claude_pid=claude_pid
+        )
+    else:
+        jsonl_age, jsonl_last_stop_reason = -1, None
 
     return DetectionContext(
         raw=raw,
@@ -557,6 +619,7 @@ def build_detection_context(win_target, project_dir, prev_state,
         hook_age=hook_age,
         prev_state=prev_state,
         jsonl_age=jsonl_age,
+        jsonl_last_stop_reason=jsonl_last_stop_reason,
         now=now,
     )
 

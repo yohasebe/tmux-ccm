@@ -533,10 +533,10 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     return newest
 
 
-# Cache for _read_jsonl_real_activity_ts. Key: jsonl path. Value:
-# ((mtime_int, size_int), real_activity_ts_or_None). The cache hits
-# on every detection cycle as long as the JSONL file hasn't been
-# written, so the cost of tail-reading + JSON parsing is paid only
+# Cache for _parse_jsonl_tail. Key: jsonl path. Value:
+# ((mtime_int, size_int), (real_activity_ts_or_None, last_stop_reason_or_None)).
+# The cache hits on every detection cycle as long as the JSONL file hasn't
+# been written, so the cost of tail-reading + JSON parsing is paid only
 # when the file actually changes.
 #
 # Why (mtime, size) and not just mtime: int(mtime) has 1-second
@@ -552,19 +552,24 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
 # the entry to the end (MRU); on insertion, we pop the oldest entry
 # if the cache exceeds JSONL_ACTIVITY_CACHE_MAX.
 JSONL_ACTIVITY_CACHE_MAX = 128
-_jsonl_activity_cache: "OrderedDict[str, Tuple[Tuple[int, int], Optional[int]]]" = OrderedDict()
+_jsonl_activity_cache: "OrderedDict[str, Tuple[Tuple[int, int], Tuple[Optional[int], Optional[str]]]]" = OrderedDict()
 
 
-def _read_jsonl_real_activity_ts(
+def _parse_jsonl_tail(
     path: str, mtime: int, size: int
-) -> Optional[int]:
-    """Tail-read a JSONL file and return the unix timestamp of the most
-    recent real-conversation-activity record, or None if no such record
-    was found in the tail window. System metadata records (those whose
-    `type` is in JSONL_NON_ACTIVITY_TYPES) are skipped.
+) -> Tuple[Optional[int], Optional[str]]:
+    """Tail-read a JSONL file and return:
+      - unix timestamp of the most recent real-conversation-activity
+        record, or None if no such record was found in the tail window
+      - `stop_reason` of the most recent `assistant` record in the tail
+        window, or None if no assistant record with a parseable
+        stop_reason was found
+
+    System metadata records (types in JSONL_NON_ACTIVITY_TYPES) are
+    skipped for both fields.
 
     Cached by (path, mtime, size): the second call with an unchanged
-    mtime AND size returns the cached result without re-reading the
+    mtime AND size returns the cached tuple without re-reading the
     file. A new write changes the size (JSONL is append-only during
     a session), so cache invalidation is reliable even within the
     same wall-clock second.
@@ -572,8 +577,8 @@ def _read_jsonl_real_activity_ts(
     On a "real activity record found but timestamp unparseable" edge
     case (malformed Claude Code output, hypothetical schema drift),
     falls back to the file mtime itself so the rule engine still has
-    a usable signal — better to err on the side of "fresh" than lose
-    detection entirely.
+    a usable timestamp — better to err on the side of "fresh" than
+    lose detection entirely.
     """
     key = (mtime, size)
     cached = _jsonl_activity_cache.get(path)
@@ -583,6 +588,7 @@ def _read_jsonl_real_activity_ts(
 
     real_ts: Optional[int] = None
     found_real_activity = False
+    last_stop_reason: Optional[str] = None
 
     try:
         with open(path, "rb") as f:
@@ -591,8 +597,8 @@ def _read_jsonl_real_activity_ts(
             f.seek(max(0, actual_size - JSONL_TAIL_BYTES))
             tail_bytes = f.read()
     except OSError:
-        _cache_jsonl_activity(path, key, None)
-        return None
+        _cache_jsonl_activity(path, key, (None, None))
+        return (None, None)
 
     tail = tail_bytes.decode("utf-8", errors="ignore")
     lines = tail.split("\n")
@@ -618,18 +624,28 @@ def _read_jsonl_real_activity_ts(
         rec_type = rec.get("type")
         if not rec_type or rec_type in JSONL_NON_ACTIVITY_TYPES:
             continue
-        # Found a real-activity record.
-        found_real_activity = True
-        ts_str = rec.get("timestamp")
-        if not ts_str or not isinstance(ts_str, str):
-            continue
-        try:
-            iso = ts_str.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(iso)
-            real_ts = int(dt.timestamp())
+        # Found a real-activity record: extract timestamp once.
+        if not found_real_activity:
+            found_real_activity = True
+            ts_str = rec.get("timestamp")
+            if ts_str and isinstance(ts_str, str):
+                try:
+                    iso = ts_str.replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(iso)
+                    real_ts = int(dt.timestamp())
+                except (ValueError, TypeError):
+                    pass
+        # Capture the most recent assistant stop_reason. Walk past the
+        # first real-activity record (which may be a `user` tool_result
+        # newer than the assistant record it answers) to find the
+        # assistant stop_reason that describes the in-flight turn.
+        if last_stop_reason is None and rec_type == "assistant":
+            msg = rec.get("message") or {}
+            sr = msg.get("stop_reason") if isinstance(msg, dict) else None
+            if isinstance(sr, str) and sr:
+                last_stop_reason = sr
+        if found_real_activity and real_ts is not None and last_stop_reason is not None:
             break
-        except (ValueError, TypeError):
-            continue
 
     if real_ts is None and found_real_activity:
         # Real activity records exist but none had a parseable timestamp.
@@ -637,48 +653,71 @@ def _read_jsonl_real_activity_ts(
         # rules still see a "fresh" signal.
         real_ts = mtime
 
-    _cache_jsonl_activity(path, key, real_ts)
-    return real_ts
+    result = (real_ts, last_stop_reason)
+    _cache_jsonl_activity(path, key, result)
+    return result
 
 
 def _cache_jsonl_activity(path: str, key: Tuple[int, int],
-                          real_ts: Optional[int]) -> None:
+                          value: Tuple[Optional[int], Optional[str]]) -> None:
     """Insert into _jsonl_activity_cache with LRU eviction."""
-    _jsonl_activity_cache[path] = (key, real_ts)
+    _jsonl_activity_cache[path] = (key, value)
     _jsonl_activity_cache.move_to_end(path)
     while len(_jsonl_activity_cache) > JSONL_ACTIVITY_CACHE_MAX:
         _jsonl_activity_cache.popitem(last=False)
 
 
-def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
-    """Return seconds since the project's most recent real conversation
-    activity (`user`/`assistant`/etc.) in the newest JSONL file, or -1
-    if no JSONL exists or no real activity is present in the tail.
+def read_jsonl_tail_info(project_dir: str, claude_pid=None) -> Tuple[int, Optional[str]]:
+    """Return `(age_seconds, last_assistant_stop_reason)` for the project's
+    newest JSONL file.
 
-    NOTE: this filters out system metadata records (Claude Code v2.1.108+
-    `system/away_summary` recap, `system/turn_duration`,
-    `system/stop_hook_summary`, `attachment/task_reminder`, ...) so
-    that the recap event does NOT register as fresh activity. Without
-    the filter, recap holds BUSY for up to BUSY_HOOK_JSONL_WINDOW
-    seconds because both the file mtime and the simultaneous BUSY
-    hook signal corroborate "session is busy".
+      - age_seconds: seconds since the most recent real-activity record,
+        or -1 if no JSONL exists or no real activity is present in the
+        tail.
+      - last_assistant_stop_reason: `stop_reason` string from the most
+        recent `assistant` record in the tail (e.g. `"tool_use"`,
+        `"end_turn"`, `"max_tokens"`), or None if none was found.
+
+    System metadata records (Claude Code v2.1.108+ `system/away_summary`
+    recap, `system/turn_duration`, `system/stop_hook_summary`,
+    `attachment/task_reminder`, ...) are filtered out of both fields so
+    the recap event does NOT register as fresh activity and does NOT
+    clobber the last-assistant stop_reason signal.
+
+    The stop_reason is used by the `jsonl_tool_use_pending` detection
+    rule to hold BUSY authoritatively across tool-turn boundaries —
+    the 15 s `jsonl_holds_busy` window was a heuristic stand-in for
+    "Claude is between tools mid-response"; stop_reason="tool_use" is
+    the exact upstream signal for that state.
 
     When claude_pid is provided, the exact session file is resolved
     via `~/.claude/sessions/{pid}.json` (authoritative, no slug guess).
     """
     if not project_dir:
-        return -1
+        return -1, None
     newest = _find_newest_jsonl(project_dir, claude_pid=claude_pid)
     if newest is None:
-        return -1
+        return -1, None
     try:
         st = os.stat(newest)
     except OSError:
-        return -1
-    real_ts = _read_jsonl_real_activity_ts(newest, int(st.st_mtime), st.st_size)
+        return -1, None
+    real_ts, stop_reason = _parse_jsonl_tail(newest, int(st.st_mtime), st.st_size)
     if real_ts is None:
-        return -1
-    return int(time.time() - real_ts)
+        return -1, stop_reason
+    return int(time.time() - real_ts), stop_reason
+
+
+def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
+    """Thin wrapper around `read_jsonl_tail_info` that returns only the age.
+
+    Kept for callers that do not need the stop_reason and for backward
+    compatibility with the pytest suite that mocks this function
+    directly. The combined accessor is preferred in new detection code
+    because it shares the underlying tail-parse cache entry.
+    """
+    age, _ = read_jsonl_tail_info(project_dir, claude_pid=claude_pid)
+    return age
 
 
 # ─── Claude Code hooks.log canary ───

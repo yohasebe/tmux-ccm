@@ -392,6 +392,157 @@ class TestJsonlRealActivityFilter:
         assert 4 <= age <= 8
 
 
+# ─── JSONL tail stop_reason extraction ───
+#
+# read_jsonl_tail_info returns (age, last_assistant_stop_reason). The
+# stop_reason is what the new `jsonl_tool_use_pending` detection rule
+# keys on to hold BUSY authoritatively across tool-turn boundaries,
+# replacing the 15 s `jsonl_holds_busy` heuristic cliff.
+
+def assistant_record(unix_ts, stop_reason=None):
+    """Minimal assistant record with optional stop_reason inside `message`."""
+    msg = {"content": "x"}
+    if stop_reason is not None:
+        msg["stop_reason"] = stop_reason
+    return {
+        "type": "assistant",
+        "timestamp": _iso_ts(unix_ts),
+        "message": msg,
+    }
+
+
+class TestJsonlTailStopReason:
+    def setup_method(self):
+        ccm_core._jsonl_path_cache.clear()
+        ccm_core._jsonl_activity_cache.clear()
+
+    def teardown_method(self):
+        ccm_core._jsonl_path_cache.clear()
+        ccm_core._jsonl_activity_cache.clear()
+
+    def _setup_project(self, tmp_path, monkeypatch, project_dir="/p/q"):
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        slug = ccm_core._project_slug(project_dir)
+        d = tmp_path / slug
+        d.mkdir()
+        return d / "session.jsonl"
+
+    def test_returns_tool_use_from_latest_assistant(self, tmp_path, monkeypatch):
+        """The most recent assistant record has stop_reason='tool_use'
+        (Claude paused for a tool result) → that is what we return."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            {"type": "user", "timestamp": _iso_ts(now - 10),
+             "message": {"content": "x"}},
+            assistant_record(now - 5, stop_reason="tool_use"),
+        ])
+        age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        assert 4 <= age <= 7
+        assert stop == "tool_use"
+
+    def test_returns_end_turn_from_latest_assistant(self, tmp_path, monkeypatch):
+        """Response completed normally: stop_reason='end_turn'."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 2, stop_reason="end_turn"),
+        ])
+        age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        assert stop == "end_turn"
+
+    def test_walks_past_tool_result_user_record_to_prior_assistant(
+        self, tmp_path, monkeypatch
+    ):
+        """After a tool call the tail looks like:
+            assistant stop_reason=tool_use   (Claude requested a tool)
+            user (tool_result)               (tool finished, result injected)
+        The newest real-activity record is the `user` tool_result, but
+        the assistant stop_reason that describes the in-flight turn is
+        one record back. We must return that assistant's stop_reason,
+        not None.
+        """
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 10, stop_reason="tool_use"),
+            {"type": "user", "timestamp": _iso_ts(now - 2),
+             "message": {"content": [{"type": "tool_result", "content": "ok"}]}},
+        ])
+        age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        # age is of the newest real record (user tool_result)
+        assert 1 <= age <= 4
+        # stop_reason comes from the assistant one record back
+        assert stop == "tool_use"
+
+    def test_skips_system_records_for_stop_reason(self, tmp_path, monkeypatch):
+        """System records (recap / stop_hook_summary) are filtered out
+        even when walking for stop_reason. The assistant record buried
+        beneath trailing system records still surfaces."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 300, stop_reason="tool_use"),
+            system_record(now - 3, subtype="stop_hook_summary"),
+            system_record(now - 2, subtype="turn_duration"),
+            system_record(now - 1, subtype="away_summary"),
+        ])
+        age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        assert stop == "tool_use"
+
+    def test_returns_none_when_no_assistant_record(self, tmp_path, monkeypatch):
+        """A fresh session with only a user prompt and no assistant
+        reply yet: stop_reason is None."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            {"type": "user", "timestamp": _iso_ts(now - 2),
+             "message": {"content": "hello"}},
+        ])
+        age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        assert stop is None
+
+    def test_returns_none_when_assistant_lacks_stop_reason(
+        self, tmp_path, monkeypatch
+    ):
+        """Older schema or partial record without a stop_reason → None,
+        not a falsy empty string or crash."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [assistant_record(now - 2, stop_reason=None)])
+        age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        assert stop is None
+
+    def test_returns_none_when_jsonl_missing(self, tmp_path, monkeypatch):
+        """No JSONL file at all: (-1, None)."""
+        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        age, stop = ccm_core.read_jsonl_tail_info("/nonexistent")
+        assert age == -1
+        assert stop is None
+
+    def test_cache_shared_with_read_jsonl_age(self, tmp_path, monkeypatch):
+        """read_jsonl_age and read_jsonl_tail_info share the same
+        (path, mtime, size)-keyed cache. After a read_jsonl_age call
+        a subsequent read_jsonl_tail_info call must not re-open the
+        JSONL file — otherwise every scan pays the parse cost twice."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [assistant_record(now - 2, stop_reason="tool_use")])
+        # Prime cache via the legacy accessor.
+        ccm_core.read_jsonl_age("/p/q")
+        opens = []
+        real_open = open
+        def tracking_open(path, *a, **kw):
+            opens.append(str(path))
+            return real_open(path, *a, **kw)
+        with patch("builtins.open", side_effect=tracking_open):
+            age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        assert stop == "tool_use"
+        assert str(f) not in opens, (
+            "read_jsonl_tail_info re-opened JSONL despite cache being primed"
+        )
+
+
 # ─── hook_busy_idle gap discriminator (recap fix Phase 2) ───
 #
 # These tests exercise the new `hook_after_real_activity_lt` Rule
@@ -1891,6 +2042,80 @@ class TestLifecycleSequences:
                     raw="SHELL", prev_state=prev, hook_state=hook, hook_age=0,
                 )
                 assert state == "SHELL", f"prev={prev} hook={hook}"
+
+    def test_tool_chain_holds_busy_via_stop_reason(self):
+        """Between-tools gap with long tool execution: BUSY must hold.
+
+        Real incident (monadic-chat, 2026-04-22): Claude runs a 1m22s
+        Ruby test suite. Sequence:
+          1. PreToolUse fires → hook=BUSY, grandchild present.
+          2. Tool runs without JSONL writes for >15s.
+          3. Tool completes → Stop deletes signal. Grandchild may
+             momentarily disappear before the next PreToolUse fires.
+          4. ccm scan at this exact moment sees raw=IDLE, hook="",
+             grandchild absent. With only the old rules, neither
+             jsonl_fresh_activity (<5s) nor jsonl_holds_busy (<15s)
+             matched → fallback_busy_to_idle → false IDLE.
+
+        The authoritative fix is `jsonl_tool_use_pending`: the latest
+        assistant record's stop_reason is "tool_use" for the whole
+        in-flight turn, so we can hold BUSY until the JSONL shows
+        "end_turn" (or some other terminal reason).
+        """
+        # Mid-tool-chain: Stop deleted the hook signal, JSONL is stale
+        # past the 15s fresh/active windows, but the assistant
+        # stop_reason is still "tool_use".
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="",
+            jsonl_age=45,
+            jsonl_last_stop_reason="tool_use",
+        ) == ("jsonl_tool_use_pending", "BUSY")
+        # Response truly ends: last assistant is end_turn → IDLE.
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="",
+            jsonl_age=45,
+            jsonl_last_stop_reason="end_turn",
+        ) == ("fallback_busy_to_idle", "IDLE")
+        # max_tokens / stop_sequence are also terminal → IDLE.
+        for terminal in ("max_tokens", "stop_sequence"):
+            assert self._eval(
+                raw="IDLE", prev_state="BUSY", hook_state="",
+                jsonl_age=45, jsonl_last_stop_reason=terminal,
+            ) == ("fallback_busy_to_idle", "IDLE"), terminal
+        # Safety cap: tool_use pending but JSONL ages beyond
+        # BUSY_HOOK_JSONL_WINDOW → give up, do not hold BUSY forever
+        # on an abandoned session.
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="",
+            jsonl_age=ccm_core.BUSY_HOOK_JSONL_WINDOW + 10,
+            jsonl_last_stop_reason="tool_use",
+        ) == ("fallback_busy_to_idle", "IDLE")
+
+    def test_tool_use_pending_does_not_override_fresh_hook(self):
+        """A fresh BUSY hook should still win — higher priority than
+        the stop_reason hold. This preserves the existing multi-project
+        race guarantee (hook_fresh_busy at priority 3)."""
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY",
+            hook_state="BUSY", hook_age=0, jsonl_age=2,
+            jsonl_last_stop_reason="tool_use",
+        ) == ("hook_fresh_busy", "BUSY")
+
+    def test_tool_use_pending_requires_prev_busy(self):
+        """We only hold BUSY across tool turns when we were BUSY
+        before. From a fresh/reset prev_state='' (e.g. just after
+        reset_window_after_attach), the stop_reason hold does NOT
+        fire — it would be wrong to promote a newly-attached window
+        to BUSY based purely on a stale JSONL assistant record.
+        With jsonl_age=60 (past the 5s/15s freshness windows) and
+        prev_state='', the match falls through to `default` → IDLE."""
+        rule, state = self._eval(
+            raw="IDLE", prev_state="",  # post-attach reset
+            hook_state="",
+            jsonl_age=60, jsonl_last_stop_reason="tool_use",
+        )
+        assert rule == "default"
+        assert state == "IDLE"
 
 
 # ─── Formatting helpers ───
