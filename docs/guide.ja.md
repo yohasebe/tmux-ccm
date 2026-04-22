@@ -588,10 +588,10 @@ ccm debug trace <project-name> 0.5       # 間隔指定
 1 行につき 1 スキャンで、検出コンテキストとマッチしたルール、解決された状態を表示します:
 
 ```
-19:48:55  raw=IDLE  prev=IDLE  hook=-,-  pid_age=653  jsonl=6883,end_turn  default → IDLE [WRITE]
+19:48:55  raw=IDLE  prev=IDLE  hook=-,-  pid_age=653  jsonl=6883,end_turn  default[-] → IDLE [WRITE]
 ```
 
-Ctrl-C で停止。ダッシュボードと並行実行しても干渉しません。
+`rule_name[phase]` カラムはマッチしたルール名とその session-lifecycle phase (`shell` / `startup` / `midturn` / `between_tools` / `idle` / `permit`、真の catch-all passthrough (`default` 等) は `-`)。Ctrl-C で停止。ダッシュボードと並行実行しても干渉しません。
 
 **パイプライン全体のトレース** (環境変数で有効化、全プロジェクトの全スキャンを記録):
 

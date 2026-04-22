@@ -588,10 +588,10 @@ ccm debug trace <project-name> 0.5       # or specify interval
 Each line shows the full detection context, the rule that matched, and the resolved state:
 
 ```
-19:48:55  raw=IDLE  prev=IDLE  hook=-,-  pid_age=653  jsonl=6883,end_turn  default → IDLE [WRITE]
+19:48:55  raw=IDLE  prev=IDLE  hook=-,-  pid_age=653  jsonl=6883,end_turn  default[-] → IDLE [WRITE]
 ```
 
-Ctrl-C to stop. Safe to run alongside the live dashboard.
+The `rule_name[phase]` column shows the matched rule and its session-lifecycle phase (`shell` / `startup` / `midturn` / `between_tools` / `idle` / `permit`, or `-` for genuine catch-all passthroughs like `default`). Ctrl-C to stop. Safe to run alongside the live dashboard.
 
 **Whole-pipeline trace** — env var, captures every detection scan across all projects:
 
