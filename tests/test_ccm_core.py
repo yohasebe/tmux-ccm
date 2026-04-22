@@ -1026,11 +1026,60 @@ class TestDetectPaneState:
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
 
     @patch("ccm_core.tmux_cmd")
-    def test_no_permit_from_slash_menu_footer(self, mock_tmux):
-        """'Enter to confirm · Esc to cancel' (slash menu) is NOT permission."""
+    def test_permit_from_confirmation_modal_footer(self, mock_tmux):
+        """'Enter to confirm · Esc to cancel' modals (model picker,
+        session-resume menu from v2.1.117+, /exit confirmation, ...)
+        are classified as PERMIT. Semantically Claude is blocked
+        pending a single user keypress — the same UX pattern as a
+        permission dialog — so the ⚠ icon and the same state are
+        the correct surface. Earlier ccm treated this as IDLE
+        because the `❯ Opus` line at column 0 matched
+        PATTERN_INPUT_PROMPT first; the extended PATTERN_PERMIT_FOOTER
+        now runs BEFORE the input-prompt check and catches modals."""
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         mock_tmux.return_value = "Choose a model\n❯ Opus\n  Sonnet\nEnter to confirm · Esc to cancel"
-        # No "Esc to cancel · Tab to amend" prefix → falls through to IDLE
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_permit_from_session_resume_modal(self, mock_tmux):
+        """Regression test for the v2.1.117+ session-resume modal:
+        the `❯` cursor is indented (so PATTERN_INPUT_PROMPT does
+        NOT match at column 0) and the footer is
+        'Enter to confirm · Esc to cancel'. Before the pattern
+        extension ccm saw has_child + no prompt → raw=BUSY →
+        dashboard BUSY for a modal that is actually awaiting user
+        input. See the 2026-04-22 user report in the session log."""
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = (
+            "This session is 1h 58m old and 732.6k tokens.\n"
+            "\n"
+            "  ❯ 1. Resume from summary (recommended)\n"
+            "    2. Resume full session as-is\n"
+            "    3. Don't ask me again\n"
+            "\n"
+            "  Enter to confirm · Esc to cancel"
+        )
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_no_permit_from_bare_esc_to_cancel(self, mock_tmux):
+        """Slash menus (/hooks, /config navigation) show JUST
+        'Esc to cancel' with no separator or confirming action.
+        These remain non-PERMIT — the user is browsing, not blocked
+        on a decision. Classification boundary:
+          • 'Esc to cancel'                  → slash menu   (IDLE)
+          • 'Esc to cancel · Tab to amend'   → permission   (PERMIT)
+          • 'Esc to cancel · ctrl+e ...'     → permission   (PERMIT)
+          • 'Enter to confirm · Esc to ...'  → confirmation (PERMIT)
+        """
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = (
+            "/hooks\n"
+            "❯ UserPromptSubmit\n"
+            "  PreToolUse\n"
+            "Esc to cancel"
+        )
+        # Bare footer → no PERMIT match. ❯ at column 0 → IDLE.
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
     @patch("ccm_core.tmux_cmd")

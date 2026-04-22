@@ -176,18 +176,32 @@ _PROMPT_CHARS = "❯"
 _ACCEPT_CHARS = "❯⏵"
 PATTERN_INPUT_PROMPT = re.compile(rf"^[{_PROMPT_CHARS}]\s")
 PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
-# Permission dialog footer markers (v2.1.101+). "Tab to amend" and
-# "ctrl+e to explain" are unique to the permission prompt — other
-# menus (slash commands, /hooks) only show "Esc to cancel". Used as a
-# hook-independent fallback when Claude Code stops firing hooks
-# mid-session (see anthropics/claude-code#16047, #13193).
+# Modal-dialog footer markers. Matches any Claude Code UI that is
+# blocked awaiting a user keypress response. Two forms are covered:
 #
-# Anchored to the start of the line (after optional whitespace and the
-# "Esc to cancel · " prefix) so that the same words appearing in the
-# body of a Claude response — e.g. "use ctrl+e to explain" inside an
-# answer — do not falsely trigger PERMIT.
+#   - "Esc to cancel · Tab to amend"          (permission dialog, v2.1.101+)
+#   - "Esc to cancel · ctrl+e to explain"     (permission dialog alt)
+#   - "Enter to confirm · Esc to cancel"      (confirmation modal:
+#                                              session-resume menu
+#                                              from v2.1.117+, /exit
+#                                              confirmation, ...)
+#
+# All three map to the PERMIT state because semantically Claude is
+# blocked pending a single user action — the UX is the same as a
+# permission prompt (user sees the ⚠ icon, knows to return to the
+# pane). A fifth "MODAL" state would split hairs without benefit.
+#
+# Anchored at line start (after optional whitespace) so the same
+# words inside a Claude response — e.g. "use ctrl+e to explain" in
+# answer text, or a code example containing "Enter to confirm" —
+# do not falsely trigger PERMIT. The bare "Esc to cancel" line used
+# by slash menus (/hooks, /config, ...) deliberately does NOT match:
+# those menus are free navigation, not a blocked decision.
 PATTERN_PERMIT_FOOTER = re.compile(
-    r"^\s*Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
+    r"^\s*(?:"
+    r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
+    r"|Enter to confirm\s*(?:·|\|)\s*Esc to cancel"
+    r")"
 )
 
 # Claude Code process name in `ps` output
