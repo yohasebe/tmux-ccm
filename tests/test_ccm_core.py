@@ -1532,6 +1532,68 @@ class TestFourStateModel:
         assert state != "DONE"
 
 
+class TestRulePhaseAnnotations:
+    """Drift guard: every rule in DETECTION_RULES must declare its
+    session-lifecycle phase (or explicitly None for catch-all
+    passthroughs). Phase metadata is consumed by `ccm debug trace`
+    and CCM_DEBUG_TRACE; a missing or typo-ed phase would silently
+    break the debug output grouping. See
+    `project_phase_machine_roadmap` for the roadmap this annotation
+    feeds into.
+    """
+
+    # Catch-all rules that legitimately lack a fixed phase because
+    # their semantic phase depends on ctx.raw at fire time.
+    EXPECTED_NONE = {"raw_not_idle", "default"}
+
+    def test_every_rule_has_phase_or_is_listed_passthrough(self):
+        import ccm_detection as det
+        for rule in ccm_core.DETECTION_RULES:
+            if rule.name in self.EXPECTED_NONE:
+                assert rule.phase is None, (
+                    f"{rule.name} is registered as a passthrough but "
+                    f"has phase={rule.phase!r}"
+                )
+            else:
+                assert rule.phase is not None, (
+                    f"{rule.name} has no phase annotation. Add one of "
+                    f"{det.PHASES} to the Rule() call, or add the rule "
+                    f"to TestRulePhaseAnnotations.EXPECTED_NONE if it "
+                    f"is genuinely a catch-all passthrough."
+                )
+                assert rule.phase in det.PHASES, (
+                    f"{rule.name} has phase={rule.phase!r} which is "
+                    f"not a recognized PHASE value {det.PHASES}"
+                )
+
+    def test_specific_rule_phase_classifications(self):
+        """Document the expected phase for each named rule. When a
+        rule's phase intentionally changes, update this mapping
+        (and ccm_detection.py) together so the intent is explicit
+        in two places."""
+        expected = {
+            "process_down": "shell",
+            "process_shell": "shell",
+            "hook_fresh_busy": "midturn",
+            "hook_permit_blocking": "permit",
+            "hook_busy_idle": "midturn",
+            "hook_busy_idle_no_jsonl": "midturn",
+            "jsonl_tool_use_pending": "between_tools",
+            "jsonl_fresh_activity": "midturn",
+            "jsonl_holds_busy": "midturn",
+            "fallback_busy_to_idle": "idle",
+            "fallback_permit_hold": "permit",
+            "startup_transient_raw_busy": "startup",
+            "raw_not_idle": None,
+            "default": None,
+        }
+        actual = {r.name: r.phase for r in ccm_core.DETECTION_RULES}
+        assert actual == expected, (
+            "Rule phase classifications drifted from the documented "
+            "mapping. Update both ccm_detection.py and this test."
+        )
+
+
 class TestEvaluateRules:
     """Pure unit tests: each case asserts (matched_rule_name, resolved_state).
 
@@ -3112,6 +3174,10 @@ class TestDebugTraceHook:
             assert rec["rule"] == "startup_transient_raw_busy"
             assert rec["state"] == "IDLE"
             assert rec["action"] == "hold_no_write"
+            # Phase metadata must be included so trace consumers can
+            # group records by session-lifecycle phase without a
+            # separate rule→phase lookup.
+            assert rec["phase"] == "startup"
 
     def test_no_env_var_no_write(self, tmp_path, monkeypatch):
         trace = tmp_path / "trace.log"

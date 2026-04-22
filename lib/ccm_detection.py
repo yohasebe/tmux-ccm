@@ -218,6 +218,35 @@ def _set_win_state(win_target, state):
 # To add or change a detection rule, edit DETECTION_RULES below.
 # The rule table is the single source of truth for state transitions.
 
+# ─── Phase taxonomy (Step 1 of a phased move toward a phase-machine
+# architecture — see project_phase_machine_roadmap memo) ───
+#
+# Each rule is annotated with the session-lifecycle "phase" in which
+# it is designed to fire. This is metadata only at Step 1: the rule
+# engine still evaluates rules in priority order without consulting
+# `phase`. The annotation exists so:
+#   * `ccm debug trace` and `CCM_DEBUG_TRACE` log the phase alongside
+#     the matched rule, making "why did this fire?" investigations
+#     one step clearer.
+#   * New rules must pick a phase (via the Rule constructor), which
+#     forces authors to think about scope instead of quietly slotting
+#     a rule into an arbitrary priority.
+#   * A drift-guard test asserts every rule's phase is in PHASES or
+#     explicitly None (for genuine catch-all passthroughs).
+# Step 2 (future) would make the evaluator phase-scoped — only rules
+# whose `phase` matches the current session phase would be evaluated,
+# closing the rule-shadowing class of bugs structurally. That
+# requires an authoritative "what phase are we in?" signal, which is
+# why we're collecting phase data first.
+PHASES = (
+    "shell",          # no Claude process (DOWN / SHELL)
+    "startup",        # claude pid young, MCP loading, no hooks yet
+    "midturn",        # user prompt in flight; Claude generating / tool-calling
+    "between_tools",  # Stop fired mid-response, next tool pending
+    "idle",           # prompt visible, waiting for user input
+    "permit",         # permission dialog open
+)
+
 
 @dataclass(frozen=True)
 class DetectionContext:
@@ -321,6 +350,12 @@ class Rule:
     # jsonl_age must be valid (>= 0); otherwise the rule does NOT
     # match.
     hook_after_real_activity_lt: Optional[int] = None
+    # Session-lifecycle phase this rule belongs to. Must be one of
+    # `PHASES` above, or None for genuine catch-all passthroughs
+    # whose phase depends on `ctx.raw` (e.g., `raw_not_idle` and
+    # `default`). Metadata only — not consulted by `matches()`.
+    # Surface in debug traces; enforced by a drift-guard test.
+    phase: Optional[str] = None
 
     def matches(self, ctx: "DetectionContext") -> bool:
         if self.raw_in is not None and ctx.raw not in self.raw_in:
@@ -379,8 +414,8 @@ class Rule:
 #   13    raw BUSY/PERMIT passthrough
 #   14    default: trust raw state
 DETECTION_RULES: Tuple[Rule, ...] = (
-    Rule(name="process_down", raw_in=("DOWN",), result="DOWN"),
-    Rule(name="process_shell", raw_in=("SHELL",), result="SHELL"),
+    Rule(name="process_down", raw_in=("DOWN",), result="DOWN", phase="shell"),
+    Rule(name="process_shell", raw_in=("SHELL",), result="SHELL", phase="shell"),
     Rule(
         # Fast path: very fresh BUSY hook is trusted over any raw state.
         # The recap discriminator (hook_after_real_activity_lt) rejects
@@ -390,6 +425,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         hook_age_lt=HOOK_FRESH_THRESHOLD,
         hook_after_real_activity_lt=JSONL_HOOK_GAP_TOLERANCE,
         result="BUSY",
+        phase="midturn",
     ),
     Rule(
         # PERMIT dialog visible (raw != IDLE means input prompt is not
@@ -399,6 +435,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         hook_age_lt=PERMIT_MAX_TIMEOUT,
         raw_in=("BUSY", "PERMIT"),
         result="PERMIT",
+        phase="permit",
     ),
     Rule(
         # Slow path: trust a BUSY hook signal while raw=IDLE, as long as
@@ -413,6 +450,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         jsonl_missing=False,
         hook_after_real_activity_lt=JSONL_HOOK_GAP_TOLERANCE,
         result="BUSY",
+        phase="midturn",
     ),
     Rule(
         # Same BUSY-hook-trust path for the edge case where no JSONL
@@ -423,6 +461,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         raw_in=("IDLE",),
         jsonl_missing=True,
         result="BUSY",
+        phase="midturn",
     ),
     Rule(
         # Authoritative BUSY hold across tool-turn boundaries. Claude
@@ -448,6 +487,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         jsonl_last_stop_reason_in=("tool_use",),
         jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
         result="BUSY",
+        phase="between_tools",
     ),
     Rule(
         # JSONL session log shows fresh activity (within 5s). Independent
@@ -459,6 +499,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         raw_in=("IDLE",),
         jsonl_age_lt=JSONL_FRESH_THRESHOLD,
         result="BUSY",
+        phase="midturn",
     ),
     Rule(
         # Short safety net between the 5 s fresh window and the
@@ -474,6 +515,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         prev_in=("BUSY",),
         jsonl_age_lt=JSONL_ACTIVE_THRESHOLD,
         result="BUSY",
+        phase="midturn",
     ),
     Rule(
         # Fallback: BUSY → IDLE direct transition (no DONE intermediate).
@@ -482,6 +524,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         raw_in=("IDLE",),
         prev_in=("BUSY",),
         result="IDLE",
+        phase="idle",
     ),
     Rule(
         # Fallback: keep PERMIT until a hook signal (BUSY) arrives.
@@ -495,6 +538,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         hook_age_lt=PERMIT_MAX_TIMEOUT,
         result="PERMIT",
         action=Action.HOLD_NO_WRITE,
+        phase="permit",
     ),
     Rule(
         # Startup transient: `detect_pane_state` reports raw=BUSY when
@@ -534,15 +578,26 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         claude_pid_age_lt=STARTUP_GRACE_SEC,
         result="IDLE",
         action=Action.HOLD_NO_WRITE,
+        phase="startup",
     ),
     Rule(
-        # raw BUSY/PERMIT passthrough: trust raw state.
+        # raw BUSY/PERMIT passthrough: trust raw state. No phase
+        # annotation — this is a genuine catch-all whose semantic
+        # phase depends on ctx.raw (PERMIT → permit, BUSY → could
+        # be midturn or a post-grace hung startup). Step 2 of the
+        # phase-machine roadmap will reclassify this into phase-
+        # specific rules; for now None signals "passthrough" in
+        # traces.
         name="raw_not_idle",
         raw_in=("BUSY", "PERMIT"),
         result=USE_RAW,
     ),
     Rule(
         # Default: trust raw state. Always matches (terminal rule).
+        # No phase — this fires in any unmatched case, typically
+        # for raw=IDLE from prev=IDLE/SHELL/"" where no promoting
+        # evidence exists. The surrounding context determines
+        # semantic phase.
         name="default",
         result=USE_RAW,
     ),
@@ -834,6 +889,7 @@ def _trace_scan(win_target, ctx, rule, state):
             "jsonl_stop": ctx.jsonl_last_stop_reason,
             "claude_pid_age": ctx.claude_pid_age,
             "rule": rule.name,
+            "phase": rule.phase,
             "state": state,
             "action": rule.action.value,
         }

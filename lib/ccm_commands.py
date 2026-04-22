@@ -915,7 +915,7 @@ def cmd_debug_trace(project_match, interval=0.3):
     sys.stderr.write(
         f"# ccm debug trace: {proj_name} ({win_target}) — {proj_dir}\n"
         f"# interval={interval}s  Ctrl-C to stop\n"
-        f"# columns: time  raw  prev  hook(state,age)  pid_age  jsonl(age,stop)  rule  →  state[action]\n"
+        f"# columns: time  raw  prev  hook(state,age)  pid_age  jsonl(age,stop)  rule[phase]  →  state[action]\n"
     )
     sys.stderr.flush()
 
@@ -956,13 +956,17 @@ def cmd_debug_trace(project_match, interval=0.3):
         pid_age = ctx.claude_pid_age if ctx.claude_pid_age >= 0 else "-"
         jsonl_str = f"{ctx.jsonl_age if ctx.jsonl_age >= 0 else '-'},{ctx.jsonl_last_stop_reason or '-'}"
         action_short = "WRITE" if rule.action == ccm_core.Action.DEFAULT else "HOLD"
+        # Phase annotation is metadata only (Step 1 of phase-machine
+        # roadmap) — show it next to the rule name so "why fired?"
+        # investigations include the intended session-lifecycle scope.
+        rule_label = f"{rule.name}[{rule.phase or '-'}]"
 
         sys.stdout.write(
             f"{_time.strftime('%H:%M:%S')}  "
             f"raw={ctx.raw:5}  prev={prev_state or '-':5}  "
             f"hook={hook_str:10}  pid_age={str(pid_age):4}  "
             f"jsonl={jsonl_str:20}  "
-            f"{rule.name:28} → {state:5} [{action_short}]\n"
+            f"{rule_label:42} → {state:5} [{action_short}]\n"
         )
         sys.stdout.flush()
 
