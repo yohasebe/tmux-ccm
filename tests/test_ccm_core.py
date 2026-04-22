@@ -326,19 +326,28 @@ class TestJsonlRealActivityFilter:
         ])
         assert ccm_core.read_jsonl_age("/p/q") == -1
 
-    def test_falls_back_to_mtime_when_real_activity_lacks_timestamp(
-        self, tmp_path, monkeypatch
-    ):
-        """Real activity record found but its `timestamp` field is
-        missing or unparseable → fall back to the file mtime so the
-        rule engine still has a usable signal."""
+    def test_no_timestamp_record_is_skipped(self, tmp_path, monkeypatch):
+        """Records without a parseable `timestamp` are NOT counted as
+        real activity. Claude Code v2.1.117+ writes
+        `permission-mode` / `file-history-snapshot` / `last-prompt`
+        records at `--continue` startup; none of them carry a
+        timestamp field. An earlier implementation fell back to the
+        file mtime when a record "looked real" but had no timestamp,
+        which caused these housekeeping bursts to report
+        jsonl_age ≈ 0 and make `jsonl_fresh_activity` fire with
+        state=BUSY for the 10 s of MCP loading after every attach.
+
+        The fix is twofold: the specific housekeeping types are on
+        JSONL_NON_ACTIVITY_TYPES, AND any record lacking a parseable
+        timestamp is skipped regardless of type. This test asserts
+        the second guard directly.
+        """
         f = self._setup_project(tmp_path, monkeypatch)
-        now = time.time()
-        # user record without a timestamp field
+        # Hypothetical future "real" type with a malformed record
+        # (no timestamp). Must NOT promote via mtime.
         write_jsonl(f, [{"type": "user", "message": {"content": "no ts"}}])
-        os.utime(f, (now - 7, now - 7))
         age = ccm_core.read_jsonl_age("/p/q")
-        assert 6 <= age <= 9
+        assert age == -1
 
     def test_caches_by_mtime(self, tmp_path, monkeypatch):
         """Two calls with no file write between them should hit the
@@ -390,6 +399,39 @@ class TestJsonlRealActivityFilter:
         age = ccm_core.read_jsonl_age("/p/q")
         # The valid record is at -5, garbage after it is skipped.
         assert 4 <= age <= 8
+
+    def test_skips_startup_housekeeping_records(self, tmp_path, monkeypatch):
+        """Regression test for the attach-startup false-BUSY bug:
+        Claude Code v2.1.117+ writes a burst of `permission-mode`,
+        `file-history-snapshot`, and `last-prompt` records (none of
+        which carry timestamps) at `--continue` startup. Before the
+        fix, these were treated as real activity, the mtime fallback
+        made jsonl_age ≈ 0, `jsonl_fresh_activity` promoted
+        state=BUSY, and the dashboard showed ~10 s of false BUSY
+        after every attach to a SHELL window.
+        """
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        # Simulate a --continue startup tail: a real assistant record
+        # from hours ago (end of the previous turn), followed by the
+        # burst of no-timestamp housekeeping records written during
+        # startup.
+        write_jsonl(f, [
+            real_activity_record(now - 3600, role="assistant"),
+            {"type": "permission-mode", "permissionMode": "default",
+             "sessionId": "xyz"},
+            {"type": "file-history-snapshot", "messageId": "m1",
+             "snapshot": {}, "isSnapshotUpdate": False},
+            {"type": "last-prompt"},
+            {"type": "permission-mode", "permissionMode": "default",
+             "sessionId": "xyz"},
+        ])
+        age = ccm_core.read_jsonl_age("/p/q")
+        # Age must reflect the assistant record (~3600 s), not the
+        # housekeeping burst (~0 s).
+        assert 3590 <= age <= 3620, (
+            f"jsonl_age={age}: housekeeping records leaked through the filter"
+        )
 
 
 # ─── JSONL tail stop_reason extraction ───

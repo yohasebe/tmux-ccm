@@ -89,18 +89,34 @@ JSONL_ACTIVE_THRESHOLD = int(os.environ.get("CCM_JSONL_ACTIVE_THRESHOLD", "15"))
 # short enough that a missed Stop does not strand the project in
 # BUSY indefinitely.
 BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
-# JSONL real-activity filter (Claude Code v2.1.108+ recap interaction).
+# JSONL real-activity filter (Claude Code v2.1.108+ recap interaction
+# and v2.1.117+ `--continue` startup housekeeping).
 # Records whose top-level `type` is in this set are treated as system
-# metadata, not real conversation activity. read_jsonl_age() walks the
-# tail of the JSONL file backwards and returns the timestamp of the
-# most recent record NOT in this set, so events like the v2.1.108
-# `system/away_summary` (recap), `system/turn_duration`,
-# `system/stop_hook_summary`, and `attachment/task_reminder` do not
-# falsely register as fresh activity. Without this filter, recap
-# generation makes ccm hold BUSY for up to BUSY_HOOK_JSONL_WINDOW
-# seconds because both the JSONL mtime and the simultaneous BUSY hook
-# signal corroborate "session is busy".
-JSONL_NON_ACTIVITY_TYPES = frozenset({"system", "attachment", "summary"})
+# metadata, not real conversation activity. read_jsonl_age() walks
+# the tail of the JSONL file backwards and returns the timestamp of
+# the most recent record NOT in this set, so these events do not
+# falsely register as fresh activity:
+#
+#   `system/away_summary` (v2.1.108 recap)
+#   `system/turn_duration`, `system/stop_hook_summary`
+#   `attachment/task_reminder`
+#   `permission-mode`          (no timestamp — startup housekeeping)
+#   `file-history-snapshot`    (no timestamp — Edit/Write tracking)
+#   `last-prompt`              (no timestamp — prompt-cache bookkeeping)
+#
+# Without this filter, Claude Code `--continue` writes a burst of
+# permission-mode / file-history-snapshot / last-prompt records at
+# session start, and because they have no `timestamp` field the
+# earlier fallback-to-mtime branch made read_jsonl_age() report
+# jsonl_age ≈ 0. The `jsonl_fresh_activity` rule then fired with
+# state=BUSY and wrote BUSY to @ccm_prev_state — the exact cause of
+# the 10-second false BUSY observed after attach. Since none of
+# these housekeeping records carry timestamps anyway, a parseable
+# `timestamp` field is now ALSO required in _parse_jsonl_tail below.
+JSONL_NON_ACTIVITY_TYPES = frozenset({
+    "system", "attachment", "summary",
+    "permission-mode", "file-history-snapshot", "last-prompt",
+})
 # Tail size (bytes) read from each JSONL when looking for the most
 # recent real activity record. Needs to accommodate a single large
 # tool_result record (Read of 2000 lines, long shell output, ...)
@@ -647,7 +663,6 @@ def _parse_jsonl_tail(
         return cached[1]
 
     real_ts: Optional[int] = None
-    found_real_activity = False
     last_stop_reason: Optional[str] = None
 
     try:
@@ -684,9 +699,16 @@ def _parse_jsonl_tail(
         rec_type = rec.get("type")
         if not rec_type or rec_type in JSONL_NON_ACTIVITY_TYPES:
             continue
-        # Found a real-activity record: extract timestamp once.
-        if not found_real_activity:
-            found_real_activity = True
+        # A real-activity record REQUIRES a parseable timestamp.
+        # Claude Code v2.1.117+ writes `permission-mode` /
+        # `file-history-snapshot` / `last-prompt` records at session
+        # start; these are housekeeping and carry no `timestamp`
+        # field. They are already in JSONL_NON_ACTIVITY_TYPES but
+        # this guard is the defense-in-depth for any future
+        # no-timestamp types we haven't classified yet. Skipping
+        # them here prevents the fresh-JSONL rules from treating
+        # them as conversation activity.
+        if real_ts is None:
             ts_str = rec.get("timestamp")
             if ts_str and isinstance(ts_str, str):
                 try:
@@ -695,23 +717,18 @@ def _parse_jsonl_tail(
                     real_ts = int(dt.timestamp())
                 except (ValueError, TypeError):
                     pass
-        # Capture the most recent assistant stop_reason. Walk past the
-        # first real-activity record (which may be a `user` tool_result
-        # newer than the assistant record it answers) to find the
-        # assistant stop_reason that describes the in-flight turn.
+        # Capture the most recent assistant stop_reason. Walk past
+        # the first real-activity record (which may be a `user`
+        # tool_result newer than the assistant record it answers)
+        # to find the assistant stop_reason that describes the
+        # in-flight turn.
         if last_stop_reason is None and rec_type == "assistant":
             msg = rec.get("message") or {}
             sr = msg.get("stop_reason") if isinstance(msg, dict) else None
             if isinstance(sr, str) and sr:
                 last_stop_reason = sr
-        if found_real_activity and real_ts is not None and last_stop_reason is not None:
+        if real_ts is not None and last_stop_reason is not None:
             break
-
-    if real_ts is None and found_real_activity:
-        # Real activity records exist but none had a parseable timestamp.
-        # Fall back to file mtime as a safe approximation so detection
-        # rules still see a "fresh" signal.
-        real_ts = mtime
 
     result = (real_ts, last_stop_reason)
     _cache_jsonl_activity(path, key, result)
