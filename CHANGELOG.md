@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- Dashboard cursor movement feels smoother under held ↑/↓. The main loop now coalesces contiguous navigation keypresses with a non-blocking `getch` drain (applying each to the selection without re-rendering) and defers the preview-panel redraw during a 100 ms "nav burst" window. Once the burst ends, the main loop triggers a restore render to bring the preview back. Previously each terminal-auto-repeat keystroke paid the full render cost (including character-by-character ANSI-colored preview painting, the single largest per-frame expense), so holding an arrow key accumulated keys in the input buffer and the cursor lagged then jumped
 - Refactor: hook scripts share boilerplate via new `ccm_hook_init` / `ccm_hook_format_tool_detail` / `ccm_hook_resolve_project` helpers in `hooks/lib.sh` (−184 lines across 7 scripts)
 - Refactor: state icon table centralised in `lib/state_meta.sh`; Python `STATE_ICONS` and the bash `ccm_state_icon` helper read from one source, with a bats parity test enforcing the single-source invariant
 - Refactor: state detection engine extracted into `lib/ccm_detection.py` (`DETECTION_RULES`, `Rule` / `DetectionContext` / `Action` types, slow- and fast-path context builders, `apply_actions`). `ccm_core.py` re-exports the detection API so existing callers are unaffected

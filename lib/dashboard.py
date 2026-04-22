@@ -58,6 +58,15 @@ STATE_COLOR_PAIR = {
 # ─── Dashboard ───
 
 class Dashboard:
+    # Keys that only adjust a selection index. The main loop coalesces
+    # these across terminal auto-repeat so a held arrow key renders
+    # once at the end of the burst instead of once per keystroke.
+    # All three modes (dashboard / tree / menu) share the same set
+    # because each mode's ↑/↓/j/k handler is a safe selection-only
+    # update with no side effects beyond `self.selected`,
+    # `self.tree_selected`, or `self.menu_selected`.
+    NAV_KEYS = frozenset((curses.KEY_UP, curses.KEY_DOWN, ord("j"), ord("k")))
+
     def __init__(self, initial_mode="dashboard", start_in_search=False):
         self.projects = []
         self.lock = threading.Lock()
@@ -80,6 +89,13 @@ class Dashboard:
         self.preview_cache = ""
         self._preview_lines = []
         self._last_preview_target = ""
+        # Monotonic timestamp marking the end of a "navigation burst"
+        # window. While now < _nav_deadline, render() skips the
+        # expensive preview panel redraw (character-by-character
+        # addstr with ANSI parsing) so holding ↑/↓ keeps up with
+        # terminal auto-repeat. When the deadline passes, the main
+        # loop triggers one full render to restore the preview.
+        self._nav_deadline = 0.0
         # Menu mode state
         self.menu_items = []  # Built dynamically by _build_menu()
         self.menu_selected = 0
@@ -131,7 +147,14 @@ class Dashboard:
 
             key = stdscr.getch()
             if key == -1:
-                if self.data_dirty:
+                # Deferred preview restore: if a navigation burst just
+                # ended (deadline passed), do one full render to bring
+                # the preview panel back. Without this the preview
+                # would stay blank until the next background refresh.
+                if self._nav_deadline and time.monotonic() >= self._nav_deadline:
+                    self._nav_deadline = 0.0
+                    self._render_current(stdscr)
+                elif self.data_dirty:
                     with self.lock:
                         self.data_dirty = False
                     self._render_current(stdscr)
@@ -144,6 +167,40 @@ class Dashboard:
             action = self._dispatch_key(key, stdscr)
             if action in ("quit", "attached"):
                 break
+
+            # Coalesce queued navigation keys. Terminal auto-repeat
+            # outpaces the full render cycle (capture-pane subprocess
+            # + ANSI parse + preview panel redraw), so without
+            # coalescing a held ↓/↑ accumulates in the input buffer
+            # and the cursor appears to lag then jump. Drain
+            # contiguous nav keys with nodelay, applying each to the
+            # selection, and render once at the end of the burst.
+            # Non-nav keys encountered during drain are pushed back
+            # with ungetch so the normal dispatch path handles them
+            # on the next loop iteration.
+            if key in self.NAV_KEYS:
+                stdscr.nodelay(True)
+                try:
+                    while True:
+                        nxt = stdscr.getch()
+                        if nxt == -1:
+                            break
+                        if nxt in self.NAV_KEYS:
+                            nxt_action = self._dispatch_key(nxt, stdscr)
+                            if nxt_action in ("quit", "attached"):
+                                action = nxt_action
+                                break
+                        else:
+                            try:
+                                curses.ungetch(nxt)
+                            except curses.error:
+                                pass
+                            break
+                finally:
+                    stdscr.timeout(50)
+                if action in ("quit", "attached"):
+                    break
+
             self._render_current(stdscr)
 
     def _render_current(self, stdscr):
@@ -578,8 +635,13 @@ class Dashboard:
                 hooks_color = curses.color_pair(C_CYAN) if self.hooks_on else curses.color_pair(C_YELLOW)
                 self._addstr(stdscr, footer_row, hooks_col, self.hooks_status, hooks_color)
 
-            # Preview panel
-            if preview_height > 0:
+            # Preview panel. Skip during a navigation burst so rapid
+            # ↑/↓ presses don't each pay the ~2000-addstr cost of
+            # character-by-character ANSI-colored preview painting
+            # (the single biggest expense per render). The main loop
+            # schedules a full redraw once the burst settles, which
+            # restores the preview.
+            if preview_height > 0 and time.monotonic() >= self._nav_deadline:
                 self._update_preview()
                 if self.preview_position == "right":
                     self._render_preview(stdscr, preview_col, 0, preview_width, preview_height)
@@ -687,10 +749,12 @@ class Dashboard:
             if n > 0:
                 self.selected = (self.selected - 1) % n
                 self._last_preview_target = ""  # Force preview refresh
+                self._nav_deadline = time.monotonic() + 0.1
         elif key in (curses.KEY_DOWN, ord("j")):
             if n > 0:
                 self.selected = (self.selected + 1) % n
                 self._last_preview_target = ""  # Force preview refresh
+                self._nav_deadline = time.monotonic() + 0.1
         elif key in (curses.KEY_ENTER, 10, 13):
             if n > 0:
                 return self._do_attach(stdscr)
