@@ -543,6 +543,7 @@ Claude Code には ccm と機能的に重なる非公開の環境変数がいく
 | `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` | authoritative な `session_state_changed` イベント（状態値は `idle` / `running` / `requires_action`）を emit するが、`--print --output-format=stream-json` の stdout のみ。ccm は interactive mode なので現状取得不可。将来 Claude Code 側がファイル / hook 経由の配信を追加すれば、ccm の検出ヒューリスティックを統合できる可能性があるため監視対象として記載 |
 | `CLAUDE_CODE_NO_FLICKER` | ccm 対応済。alternate screen buffer を使うペインのプレビューキャプチャで自動的に `tmux capture-pane -a` にフォールバック |
 | `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` | 競合なし。Claude Code による tmux ウィンドウタイトル書き換えが嫌な場合はシェル rc で `1` に設定するとよい。ccm 側のウィンドウ名 (state アイコン) の命名はどちらの場合も優先される |
+| `DISABLE_UPDATES` | 競合なし。Claude Code のすべての更新経路 (手動 `claude update` 含む) をブロックする (v2.1.118 で追加、`DISABLE_AUTOUPDATER` より厳格)。スナップショットで Claude Code のバージョンを固定したい、セッション途中での予期せぬアップグレードを避けたいユーザー向け |
 
 これらは ccm の動作に必須ではありません。Claude Code をカスタマイズしているユーザーが機能の重なりを事前に把握できるようにするための記載です。
 
