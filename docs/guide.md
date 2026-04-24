@@ -544,6 +544,7 @@ A few undocumented Claude Code env vars overlap with ccm's behavior. If you set 
 | `CLAUDE_CODE_NO_FLICKER` | Already handled by ccm. Preview capture falls back to `tmux capture-pane -a` when the pane uses the alternate screen buffer |
 | `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` | No conflict. If you dislike Claude Code rewriting your tmux window title, set this to `1` in your shell rc — ccm's own window naming (state icons) takes precedence either way |
 | `DISABLE_UPDATES` | No conflict. Blocks all Claude Code update paths including manual `claude update` (stricter than `DISABLE_AUTOUPDATER`, added in v2.1.118). Useful if you pin Claude Code versions in snapshots and want to avoid surprise upgrades mid-session |
+| `CLAUDE_CODE_HIDE_CWD` | No conflict. Hides the working directory in Claude Code's startup logo (added in v2.1.119). ccm already displays the directory under each project in `ccm status` and the dashboard, so you can safely hide it from the in-pane logo to reduce visual redundancy |
 
 These are not required for ccm to work. They are listed only so that users who customize Claude Code can predict overlaps.
 
