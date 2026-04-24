@@ -222,6 +222,29 @@ PATTERN_PERMIT_FOOTER = re.compile(
     r")"
 )
 
+# ─── PERMIT modal classification patterns ───
+# Content-level signatures (not just the footer) used by
+# `classify_permit_modal()` to distinguish safe modals (session-resume,
+# /model picker, /exit confirmation) from dangerous permission
+# dialogs. Order inside `classify_permit_modal()` matters — check the
+# most specific signatures first.
+#
+# We match these against the full captured tail, not just the footer
+# line, because the footer alone is ambiguous: both session-resume
+# and /model use `Enter to confirm · Esc to …`.
+PATTERN_RESUME_MODAL = re.compile(
+    r"This session is \d+h \d+m old"
+    r"|Resume from summary \(recommended\)"
+)
+PATTERN_PERMISSION_DIALOG = re.compile(
+    r"Do you want to proceed\?"
+    r"|Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
+)
+PATTERN_MODEL_PICKER = re.compile(
+    r"Switch between Claude models"
+    r"|Select (?:a )?model"
+)
+
 # Claude Code process name in `ps` output
 CLAUDE_PROCESS_NAME = "claude"
 # Processes that are always children of Claude Code and should be ignored
@@ -251,6 +274,77 @@ STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
 STATE_ICONS = {
     "PERMIT": "⚠", "BUSY": "◉", "IDLE": "●", "SHELL": "■", "DOWN": "○",
 }
+
+
+# ─── PERMIT modal classification ───
+
+# Guidance strings are kept close to the classifier so they evolve
+# together when Claude Code adds a new modal kind. Multi-line so
+# `cmd_send` can print them verbatim under the refusal header.
+_PERMIT_GUIDANCE = {
+    "session-resume": (
+        "claude --continue resume picker (safe — no side effects).\n"
+        "User action required: switch to the target pane, then:\n"
+        "  - Enter         → Resume from summary (recommended)\n"
+        "  - ↓, Enter      → Resume full session as-is\n"
+        "  - ↓×2, Enter    → Don't ask me again\n"
+        "  - Esc           → Cancel resume (session won't start)"
+    ),
+    "permission-request": (
+        "Permission dialog for a tool invocation (DANGEROUS —\n"
+        "do NOT attempt to dismiss from another pane).\n"
+        "User action required: switch to the target pane and\n"
+        "respond to the prompt yourself. ccm refuses to send\n"
+        "keystrokes here because they could accidentally approve\n"
+        "or deny a tool call."
+    ),
+    "confirmation-modal": (
+        "Confirmation modal (e.g., /model picker, /exit).\n"
+        "Safe to dismiss but requires a user decision.\n"
+        "User action required: switch to the target pane and\n"
+        "press Enter to confirm or Esc to cancel."
+    ),
+    "unknown-permit": (
+        "Unrecognized PERMIT modal. Treat as dangerous by default.\n"
+        "User action required: switch to the target pane and\n"
+        "inspect the dialog before responding. If this is a new\n"
+        "Claude Code modal, the classifier in ccm_core.py needs\n"
+        "an additional signature pattern."
+    ),
+}
+
+
+def classify_permit_modal(pane_text: str):
+    """Classify a PERMIT-state pane by content signature.
+
+    Returns (category, guidance) where category is one of:
+      - "session-resume"     — claude --continue resume picker
+      - "permission-request" — tool permission dialog (dangerous)
+      - "confirmation-modal" — /model picker, /exit, ... (safe)
+      - "unknown-permit"     — none of the above matched
+
+    `pane_text` is the full captured tail (lines joined with newlines).
+    Order matters: the more specific the signature, the earlier we
+    check. Permission dialog is checked before the generic confirm
+    footer so that a permission dialog never falls through as a safe
+    confirmation-modal.
+    """
+    if PATTERN_PERMISSION_DIALOG.search(pane_text):
+        cat = "permission-request"
+    elif PATTERN_RESUME_MODAL.search(pane_text):
+        cat = "session-resume"
+    elif PATTERN_MODEL_PICKER.search(pane_text):
+        cat = "confirmation-modal"
+    elif PATTERN_PERMIT_FOOTER.search(pane_text):
+        # Footer says "Enter to confirm · Esc to ..." but no
+        # content-level signature matched — treat as a generic safe
+        # confirmation rather than unknown. Permission dialogs are
+        # caught above, so what remains is almost always a /<slash>
+        # confirm or a not-yet-cataloged confirm modal.
+        cat = "confirmation-modal"
+    else:
+        cat = "unknown-permit"
+    return cat, _PERMIT_GUIDANCE[cat]
 
 
 # ─── Subprocess helpers ───

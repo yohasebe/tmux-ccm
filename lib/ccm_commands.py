@@ -766,12 +766,31 @@ def cmd_send(args):
 
     # State-based gating
     if state == "PERMIT":
-        ccm_core.ccm_die(
-            f"{project_name} is in PERMIT state (permission dialog active). "
-            "Refusing to send — typing into a permission dialog could "
-            "accidentally approve or deny a tool call. Respond in the "
-            "target pane first, then retry."
-        )
+        # Give the caller (human or another Claude) enough information
+        # to understand what the target pane is blocked on. The
+        # refusal itself is unconditional — PERMIT is never auto-
+        # dismissed from another pane even when the modal is safe,
+        # because misclassification of a real permission dialog could
+        # accidentally approve a tool call.
+        raw_tail = ccm_core.tmux_cmd(
+            "capture-pane", "-t", win_target, "-p", "-S", "-10"
+        ) or ""
+        if not raw_tail.strip():
+            raw_tail = ccm_core.tmux_cmd(
+                "capture-pane", "-a", "-t", win_target, "-p", "-S", "-10"
+            ) or ""
+        tail_lines = [l for l in raw_tail.split("\n") if l.strip()][-8:]
+        category, guidance = ccm_core.classify_permit_modal(raw_tail)
+        lines = [
+            f"{project_name} is in PERMIT state — send refused.",
+            f"  Classification: {category}",
+            "  Guidance:",
+        ]
+        lines.extend(f"    {g}" for g in guidance.split("\n"))
+        if tail_lines:
+            lines.append("  Pane tail:")
+            lines.extend(f"    {l}" for l in tail_lines)
+        ccm_core.ccm_die("\n".join(lines))
 
     if state == "SHELL":
         if not auto_start:
