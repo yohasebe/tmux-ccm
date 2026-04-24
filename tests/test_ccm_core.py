@@ -2332,6 +2332,21 @@ class TestLifecycleSequences:
             jsonl_age=45,
             jsonl_last_stop_reason="tool_use",
         ) == ("jsonl_tool_use_pending", "BUSY")
+        # Stale PERMIT signal left by a dismissed permission dialog
+        # MUST NOT keep firing this rule via the inherited tool_use
+        # tail. Regression case from 2026-04-24 (live monadic-chat
+        # trace): after the (now-fixed) PERMIT_GAP_TOLERANCE released
+        # PERMIT, the rule used to grab the still-tool_use JSONL tail
+        # and hold BUSY for the full 600 s, producing the same stuck-
+        # state symptom on the BUSY axis. The hook_missing=True gate
+        # forces fall-through to fallback_busy_to_idle when any hook
+        # signal (PERMIT/SHELL) is still present.
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="PERMIT",
+            hook_age=120,
+            jsonl_age=45,
+            jsonl_last_stop_reason="tool_use",
+        ) == ("fallback_busy_to_idle", "IDLE")
         # Response truly ends: last assistant is end_turn → IDLE.
         assert self._eval(
             raw="IDLE", prev_state="BUSY", hook_state="",

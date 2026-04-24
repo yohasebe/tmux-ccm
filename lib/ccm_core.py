@@ -154,6 +154,18 @@ SHELL_CLUSTER_COUNT = int(os.environ.get("CCM_SHELL_CLUSTER_COUNT", "3"))
 SHELL_CLUSTER_ISSUE = "anthropics/claude-code#48069"
 SHELL_CLUSTER_ISSUE_NOTE = "macOS silent-exit"
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))  # 10 min safety net
+# Brief grace window for `fallback_permit_hold` after raw transitions
+# to IDLE (modal footer no longer visible). Covers the normal
+# approve→PreToolUse handoff (sub-second) plus a generous buffer for
+# slow shells. Past this window, a still-PERMIT hook signal is
+# treated as stale — typical cause: user dismissed the dialog with
+# Esc / No / Tab to amend, none of which fire a follow-up hook to
+# clear the PermissionRequest signal in Claude Code, leaving ccm
+# stuck on PERMIT for the full PERMIT_MAX_TIMEOUT (600 s) without
+# this shorter cap. The longer 600 s timeout is preserved for
+# `hook_permit_blocking`, which only fires while raw is still
+# BUSY/PERMIT (i.e. the modal IS visible — trust the hook).
+PERMIT_GAP_TOLERANCE = int(os.environ.get("CCM_PERMIT_GAP_TOLERANCE", "60"))
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 # How long after the `claude` process starts a `raw=BUSY` reading is

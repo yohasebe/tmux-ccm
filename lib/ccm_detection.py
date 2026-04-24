@@ -75,6 +75,7 @@ from ccm_core import (
     JSONL_ACTIVE_THRESHOLD,
     JSONL_FRESH_THRESHOLD,
     JSONL_HOOK_GAP_TOLERANCE,
+    PERMIT_GAP_TOLERANCE,
     PERMIT_MAX_TIMEOUT,
     STARTUP_GRACE_SEC,
 )
@@ -480,9 +481,32 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         # truly ended. Hold BUSY for as long as stop_reason=tool_use
         # is the latest signal, capped at BUSY_HOOK_JSONL_WINDOW so a
         # phantom abandoned session cannot hold BUSY forever.
+        # Genuine between-tools gap: Claude Code's Stop hook has
+        # cleared the signal file and the next PreToolUse has not
+        # yet fired, but the JSONL tail still shows
+        # `stop_reason="tool_use"` so the response is mid-flight.
+        # Hold BUSY until the JSONL flips to a terminal stop_reason
+        # (`end_turn` / `max_tokens` / `stop_sequence`).
+        #
+        # CRITICAL: hook_missing=True is what gates this safely.
+        # When the hook signal IS present:
+        #   - hook=BUSY → `hook_busy_idle` (earlier in the chain)
+        #     handles it, with the same gap-tolerance guard against
+        #     recap-style phantom hooks.
+        #   - hook=PERMIT → must NOT trigger this rule. Allowing it
+        #     would re-create the 600 s BUSY-stuck symptom on the
+        #     mirror axis of the (just-fixed) PERMIT-stuck case:
+        #     after a user dismisses a permission dialog with Esc,
+        #     the PERMIT signal stays stale AND the JSONL tail still
+        #     carries the old tool_use stop_reason from the assistant
+        #     turn that triggered the dismissed permission. With
+        #     hook_missing=True the rule correctly falls through to
+        #     fallback_busy_to_idle in that scenario. Verified
+        #     empirically 2026-04-24 (live monadic-chat trace).
         name="jsonl_tool_use_pending",
         raw_in=("IDLE",),
         prev_in=("BUSY",),
+        hook_missing=True,
         jsonl_missing=False,
         jsonl_last_stop_reason_in=("tool_use",),
         jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
@@ -527,15 +551,30 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         phase="idle",
     ),
     Rule(
-        # Fallback: keep PERMIT until a hook signal (BUSY) arrives.
-        # After user responds, there's a brief IDLE gap before the tool
-        # starts; don't let the fallback turn that into IDLE.
+        # Fallback: keep PERMIT for a brief grace window after the modal
+        # footer disappears (raw transitioned to IDLE). Covers the
+        # normal approve→PreToolUse handoff (sub-second, sometimes a
+        # few seconds on slow machines).
+        #
+        # Critically NOT bounded by PERMIT_MAX_TIMEOUT (600 s): if the
+        # user dismisses a permission dialog with Esc / No / Tab to
+        # amend, Claude Code does NOT fire any follow-up hook to clear
+        # the PermissionRequest signal — the hook file stays PERMIT
+        # for 10 minutes, and a 10-minute hold here would leave the
+        # dashboard frozen on PERMIT for the full window even though
+        # the modal is long gone. With PERMIT_GAP_TOLERANCE (60 s)
+        # the dashboard recovers to IDLE within a minute, while still
+        # bridging the genuine approve→PreToolUse gap. The longer
+        # PERMIT_MAX_TIMEOUT remains in effect for hook_permit_blocking,
+        # which only fires while raw is still BUSY/PERMIT (modal still
+        # visible — trust the hook signal in that case).
+        #
         # HOLD_NO_WRITE: do not touch tmux state — preserve prior PERMIT.
         name="fallback_permit_hold",
         raw_in=("IDLE",),
         prev_in=("PERMIT",),
         hook_in=("PERMIT",),
-        hook_age_lt=PERMIT_MAX_TIMEOUT,
+        hook_age_lt=PERMIT_GAP_TOLERANCE,
         result="PERMIT",
         action=Action.HOLD_NO_WRITE,
         phase="permit",
