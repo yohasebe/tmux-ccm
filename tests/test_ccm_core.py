@@ -1027,17 +1027,39 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_permit_from_confirmation_modal_footer(self, mock_tmux):
-        """'Enter to confirm · Esc to cancel' modals (model picker,
-        session-resume menu from v2.1.117+, /exit confirmation, ...)
-        are classified as PERMIT. Semantically Claude is blocked
-        pending a single user keypress — the same UX pattern as a
-        permission dialog — so the ⚠ icon and the same state are
-        the correct surface. Earlier ccm treated this as IDLE
-        because the `❯ Opus` line at column 0 matched
-        PATTERN_INPUT_PROMPT first; the extended PATTERN_PERMIT_FOOTER
-        now runs BEFORE the input-prompt check and catches modals."""
+        """'Enter to confirm · Esc to <verb>' modals are classified
+        as PERMIT. Semantically Claude is blocked pending a single
+        user keypress — the same UX pattern as a permission dialog —
+        so the ⚠ icon and the same state are the correct surface.
+        PATTERN_PERMIT_FOOTER runs BEFORE the input-prompt check so
+        it catches modals even when they also contain a `❯` cursor."""
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         mock_tmux.return_value = "Choose a model\n❯ Opus\n  Sonnet\nEnter to confirm · Esc to cancel"
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_permit_from_model_picker_exit_footer(self, mock_tmux):
+        """Regression test for the v2.1.119 `/model` picker: the
+        footer verb shifted from `Esc to cancel` (a5534c1 fixture)
+        to `Esc to exit`. Verified empirically 2026-04-24 with
+        Claude Code 2.1.119 — the widened `Esc to \\w+` branch in
+        PATTERN_PERMIT_FOOTER is what this test guards. Without the
+        widening, `ccm status` reported BUSY for any pane showing
+        the `/model` dialog."""
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = (
+            "Select model\n"
+            "Switch between Claude models. Applies to this session.\n"
+            "\n"
+            "  ❯ 1. Default (recommended) ✔  Opus 4.7 with 1M context\n"
+            "    2. Sonnet                   Sonnet 4.6\n"
+            "    3. Sonnet (1M context)      Sonnet 4.6 with 1M context\n"
+            "    4. Haiku                    Haiku 4.5\n"
+            "\n"
+            "  ◉ xHigh effort (default) ← → to adjust\n"
+            "\n"
+            "  Enter to confirm · Esc to exit"
+        )
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
 
     @patch("ccm_core.tmux_cmd")
@@ -1067,10 +1089,11 @@ class TestDetectPaneState:
         'Esc to cancel' with no separator or confirming action.
         These remain non-PERMIT — the user is browsing, not blocked
         on a decision. Classification boundary:
-          • 'Esc to cancel'                  → slash menu   (IDLE)
-          • 'Esc to cancel · Tab to amend'   → permission   (PERMIT)
-          • 'Esc to cancel · ctrl+e ...'     → permission   (PERMIT)
-          • 'Enter to confirm · Esc to ...'  → confirmation (PERMIT)
+          • 'Esc to cancel'                      → slash menu   (IDLE)
+          • 'Enter to use, t to sort, Esc to …'  → slash menu   (IDLE)
+          • 'Esc to cancel · Tab to amend'       → permission   (PERMIT)
+          • 'Esc to cancel · ctrl+e ...'         → permission   (PERMIT)
+          • 'Enter to confirm · Esc to <verb>'   → confirmation (PERMIT)
         """
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         mock_tmux.return_value = (
@@ -1080,6 +1103,30 @@ class TestDetectPaneState:
             "Esc to cancel"
         )
         # Bare footer → no PERMIT match. ❯ at column 0 → IDLE.
+        assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_no_permit_from_skills_menu_footer(self, mock_tmux):
+        """`/skills` uses its own footer
+        `Enter to use, t to sort, Esc to close` — neither the
+        `Enter to confirm` prefix nor the bare `Esc to cancel`
+        match PATTERN_PERMIT_FOOTER. Semantically this is a free-
+        navigation slash menu (Enter toggles/selects a skill, user
+        can leave anytime), NOT a blocked decision — IDLE is the
+        correct classification. Verified empirically 2026-04-24
+        with Claude Code 2.1.119."""
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = (
+            "Skills\n"
+            "10 skills · Enter to use, t to sort, Esc to close\n"
+            "\n"
+            "  ❯ ✔ on         clip · user · ~11 tok\n"
+            "      ✔ on         commit · user · ~11 tok"
+        )
+        # Footer does not match PATTERN_PERMIT_FOOTER.
+        # `❯` is indented (col 2), so PATTERN_INPUT_PROMPT (col 0)
+        # does not match either — detect_pane_state returns IDLE
+        # via the no-child fallthrough.
         assert ccm_core.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
