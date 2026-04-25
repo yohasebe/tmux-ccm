@@ -4481,6 +4481,8 @@ class TestEventLogMode:
         ("no", ""),
         ("observe", "observe"),
         ("OBSERVE", "observe"),
+        ("auto", "auto"),
+        ("AUTO", "auto"),
         ("1", "primary"),
         ("true", "primary"),
         ("TRUE", "primary"),
@@ -4500,6 +4502,10 @@ class TestEventLogMode:
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "  observe  ")
         assert ccm_core._event_log_mode() == "observe"
 
+    def test_whitespace_trimmed_auto(self, monkeypatch):
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "  auto  ")
+        assert ccm_core._event_log_mode() == "auto"
+
 
 # ─── CONT state registered in STATE_ICONS ───
 
@@ -4518,3 +4524,128 @@ class TestContStateRegistered:
         # And CONT outranks IDLE/SHELL just like BUSY does.
         assert ccm_core.STATE_PRIORITY["CONT"] < ccm_core.STATE_PRIORITY["IDLE"]
         assert ccm_core.STATE_PRIORITY["CONT"] < ccm_core.STATE_PRIORITY["SHELL"]
+
+
+# ─── auto-mode detect_window_state integration ───
+#
+# Phase 3a wiring: when CCM_USE_EVENT_LOG=auto, the new event-log
+# state takes over per-project IFF the event log is non-empty;
+# otherwise the legacy DETECTION_RULES result is committed. The
+# tests below exercise the dispatch from detect_window_state — the
+# pure derive function and the env-var parser are covered above.
+
+class TestDetectWindowStateAutoMode:
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    @patch("ccm_core.read_events_tail")
+    def test_auto_with_empty_events_uses_legacy(
+        self, mock_events, mock_hook, mock_tmux, monkeypatch
+    ):
+        """No event log file (or empty file) → legacy state wins.
+        Legacy detection here returns BUSY because hook_state=BUSY;
+        the event-log derive on empty events would have returned
+        IDLE, which would be wrong for an actively-running Claude."""
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "auto")
+        mock_events.return_value = ()  # no events recorded
+        mock_hook.return_value = (int(time.time()), "BUSY", "")
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+        state = ccm_core.detect_window_state(
+            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
+        )
+        # Legacy hook_busy_idle path → BUSY.
+        assert state == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    @patch("ccm_core.read_events_tail")
+    def test_auto_with_events_uses_event_log_state(
+        self, mock_events, mock_hook, mock_tmux, monkeypatch
+    ):
+        """Event log has a `pretool` event → event-log derive returns
+        BUSY and that state is committed. To prove the dispatch wired
+        up correctly we make the legacy path return IDLE (no hook
+        signal, no jsonl activity) — only the event-log path can
+        produce BUSY in this configuration."""
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "auto")
+        mock_events.return_value = (
+            {"ts": int(time.time()), "type": "pretool"},
+        )
+        mock_hook.return_value = None  # no hook signal
+        # input prompt visible → raw=IDLE per detect_pane_state
+        mock_tmux.return_value = "❯ "
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+        state = ccm_core.detect_window_state(
+            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
+        )
+        # Event-log derivation wins: latest event class start → BUSY.
+        assert state == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    @patch("ccm_core.read_events_tail")
+    def test_observe_keeps_legacy_even_with_events(
+        self, mock_events, mock_hook, mock_tmux, monkeypatch
+    ):
+        """observe mode never commits the event-log state, even when
+        the event log is populated. Legacy stays authoritative."""
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "observe")
+        mock_events.return_value = (
+            {"ts": int(time.time()), "type": "pretool"},
+        )
+        mock_hook.return_value = None
+        mock_tmux.return_value = "❯ "  # raw=IDLE
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+        state = ccm_core.detect_window_state(
+            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
+        )
+        # Legacy returns IDLE (no hook, prompt visible). observe
+        # mode does NOT promote to BUSY despite the start event.
+        assert state == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    @patch("ccm_core.read_events_tail")
+    def test_primary_uses_event_log_even_when_empty(
+        self, mock_events, mock_hook, mock_tmux, monkeypatch
+    ):
+        """primary mode commits event-log state unconditionally.
+        Empty events → IDLE from the derive function, even though
+        the legacy path here would say BUSY. This is the diagnostic
+        / forced-mode behaviour; auto mode would prefer legacy here."""
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "primary")
+        mock_events.return_value = ()
+        mock_hook.return_value = (int(time.time()), "BUSY", "")
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+        state = ccm_core.detect_window_state(
+            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
+        )
+        # primary mode commits the empty-events derivation → IDLE,
+        # despite the legacy hook_busy_idle path saying BUSY.
+        assert state == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    @patch("ccm_core.read_events_tail")
+    def test_disabled_default_does_not_read_events(
+        self, mock_events, mock_hook, mock_tmux, monkeypatch
+    ):
+        """With CCM_USE_EVENT_LOG unset (the default), the event log
+        is never consulted — guards against accidentally activating
+        the new path for users who have not opted in."""
+        monkeypatch.delenv("CCM_USE_EVENT_LOG", raising=False)
+        mock_events.return_value = (
+            {"ts": int(time.time()), "type": "pretool"},
+        )
+        mock_hook.return_value = None
+        mock_tmux.return_value = "❯ "
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+        ccm_core.detect_window_state(
+            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
+        )
+        # The reader is never called in the disabled (default) path.
+        mock_events.assert_not_called()

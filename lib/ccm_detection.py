@@ -962,7 +962,12 @@ def _event_log_mode():
     """Read CCM_USE_EVENT_LOG env var and normalize to one of:
       ""         — disabled (legacy path only, no event-log read)
       "observe"  — compute both, log to trace, use legacy as authoritative
-      "primary"  — compute both, log, use event-log as authoritative
+      "auto"     — use event-log state per-project IFF the event log
+                   file exists for that project; otherwise fall back to
+                   legacy state. Recommended production setting once
+                   hooks have been confirmed firing
+      "primary"  — always commit event-log state, even when the log is
+                   empty (returns IDLE). Diagnostic / forced-mode only
 
     Accepted aliases: "1" / "true" / "yes" / "primary" → "primary".
     Anything else ("", "0", unset) → disabled.
@@ -970,6 +975,8 @@ def _event_log_mode():
     raw = os.environ.get("CCM_USE_EVENT_LOG", "").strip().lower()
     if raw == "observe":
         return "observe"
+    if raw == "auto":
+        return "auto"
     if raw in ("1", "true", "yes", "primary", "on"):
         return "primary"
     return ""
@@ -991,7 +998,11 @@ def detect_window_state(win_target, project_dir, prev_state,
     The event-log path is activated by CCM_USE_EVENT_LOG:
       - observe: compute both paths, log the diff to CCM_DEBUG_TRACE,
         still commit the legacy state (risk-free observation).
-      - primary: commit the event-log state instead of the legacy one.
+      - auto: if the event log file exists for this project, commit
+        the event-log state; otherwise (project has no event log yet,
+        or hooks were never installed) fall back to legacy.
+      - primary: always commit the event-log state, even when the log
+        is empty for this project (returns IDLE). Diagnostic / forced.
     """
     ctx = build_detection_context(
         win_target, project_dir, prev_state,
@@ -1001,8 +1012,10 @@ def detect_window_state(win_target, project_dir, prev_state,
 
     mode = _event_log_mode()
     event_log_state = None
+    event_log_present = False
     if mode:
         events = ccm_core.read_events_tail(project_dir)
+        event_log_present = bool(events)
         # pid_present: the legacy raw detection already resolved SHELL
         # when no claude process is present, so raw != "SHELL" is a
         # reliable "pid present" proxy without a second ps scan.
@@ -1014,10 +1027,19 @@ def detect_window_state(win_target, project_dir, prev_state,
             claude_pid_age=ctx.claude_pid_age,
         )
 
-    # Commit which state? In observe mode, legacy is still authoritative
-    # so we do not risk user-facing regressions during the observation
-    # window. In primary mode we commit the event-log state.
+    # Commit which state?
+    #   observe → legacy (event_log_state is logged for diff only)
+    #   auto    → event_log_state when the log is non-empty, else
+    #             legacy. The non-empty check covers two cases at
+    #             once: hooks never installed (no log file at all),
+    #             and hooks just installed but no event yet (file
+    #             missing or zero-byte). In both we want legacy
+    #             behaviour rather than an authoritative IDLE that
+    #             would mis-classify a currently-streaming Claude
+    #   primary → event_log_state unconditionally
     if mode == "primary" and event_log_state is not None:
+        resolved = event_log_state
+    elif mode == "auto" and event_log_present:
         resolved = event_log_state
     else:
         resolved = legacy_state
