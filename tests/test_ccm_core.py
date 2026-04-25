@@ -3354,6 +3354,82 @@ class TestDebugTraceHook:
         assert rec.get("event") == "trace_cap_reached"
         assert rec.get("cap_bytes") == 100
 
+    def test_only_diff_skips_agreeing_rows(self, tmp_path, monkeypatch):
+        """CCM_TRACE_ONLY_DIFF=1 must skip rows where the legacy and
+        event-log derivations agree. This is the filter that lets
+        observe-mode run for days without hitting the size cap — on
+        a quiet run the trace stays empty until a disagreement shows
+        up."""
+        trace = tmp_path / "trace.log"
+        monkeypatch.setenv("CCM_DEBUG_TRACE", str(trace))
+        monkeypatch.setenv("CCM_TRACE_ONLY_DIFF", "1")
+        ctx = self._basic_ctx()
+        rule, state = ccm_core.evaluate_rules(ctx)
+        with patch.object(ccm_core, "_set_win_state"), \
+             patch.object(ccm_core, "tmux_cmd"):
+            # event_log_state == state → no diff, must be skipped.
+            ccm_core.apply_actions(
+                "0:5", "/p", ctx, rule, state, event_log_state=state,
+            )
+        assert not trace.exists()
+
+    def test_only_diff_writes_when_states_disagree(self, tmp_path, monkeypatch):
+        trace = tmp_path / "trace.log"
+        monkeypatch.setenv("CCM_DEBUG_TRACE", str(trace))
+        monkeypatch.setenv("CCM_TRACE_ONLY_DIFF", "1")
+        ctx = self._basic_ctx()
+        rule, state = ccm_core.evaluate_rules(ctx)
+        with patch.object(ccm_core, "_set_win_state"), \
+             patch.object(ccm_core, "tmux_cmd"):
+            # Force a disagreement: legacy says IDLE (from the rule),
+            # event-log claims CONT. The row must land in the trace.
+            ccm_core.apply_actions(
+                "0:5", "/p", ctx, rule, state, event_log_state="CONT",
+            )
+        assert trace.exists()
+        rec = json.loads(trace.read_text().rstrip("\n"))
+        assert rec["state"] == state
+        assert rec["event_log_state"] == "CONT"
+        assert rec.get("diff") is True
+
+    def test_only_diff_skips_when_event_log_state_absent(
+        self, tmp_path, monkeypatch
+    ):
+        """CCM_TRACE_ONLY_DIFF=1 with CCM_USE_EVENT_LOG unset (so no
+        event_log_state is computed) must skip everything. Otherwise
+        leaving the flag set by accident would produce a misleading
+        "silent trace" that actually means "mode never activated"."""
+        trace = tmp_path / "trace.log"
+        monkeypatch.setenv("CCM_DEBUG_TRACE", str(trace))
+        monkeypatch.setenv("CCM_TRACE_ONLY_DIFF", "1")
+        ctx = self._basic_ctx()
+        rule, state = ccm_core.evaluate_rules(ctx)
+        with patch.object(ccm_core, "_set_win_state"), \
+             patch.object(ccm_core, "tmux_cmd"):
+            # event_log_state=None (default) → nothing to diff.
+            ccm_core.apply_actions("0:5", "/p", ctx, rule, state)
+        assert not trace.exists()
+
+    @pytest.mark.parametrize("value", ["0", "off", "false", "no", ""])
+    def test_only_diff_falsy_values_disabled(
+        self, tmp_path, monkeypatch, value
+    ):
+        """Falsy values for CCM_TRACE_ONLY_DIFF must leave the trace
+        in its default "write every row" mode. Parallels the
+        CCM_USE_EVENT_LOG parser semantics."""
+        trace = tmp_path / "trace.log"
+        monkeypatch.setenv("CCM_DEBUG_TRACE", str(trace))
+        monkeypatch.setenv("CCM_TRACE_ONLY_DIFF", value)
+        ctx = self._basic_ctx()
+        rule, state = ccm_core.evaluate_rules(ctx)
+        with patch.object(ccm_core, "_set_win_state"), \
+             patch.object(ccm_core, "tmux_cmd"):
+            # No diff, but flag is off → row is still written.
+            ccm_core.apply_actions(
+                "0:5", "/p", ctx, rule, state, event_log_state=state,
+            )
+        assert trace.exists()
+
 
 # ─── SHELL cluster detection (#48069 canary) ───
 

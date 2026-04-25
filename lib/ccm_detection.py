@@ -1084,6 +1084,13 @@ def _trace_scan(win_target, ctx, rule, state, event_log_state=None):
     two disagree, so `jq -c 'select(.diff)'` isolates the interesting
     scans during observation.
 
+    `CCM_TRACE_ONLY_DIFF=1` (any truthy value) restricts writes to
+    rows where the legacy and event-log derivations disagree. Lets
+    observe-mode run for days on a busy multi-project tmux without
+    hitting the size cap — the file only grows when a diff actually
+    shows up. Has no effect when the event-log path is disabled
+    (nothing to diff against, so the file would stay empty).
+
     Above `TRACE_MAX_BYTES` the writer emits a single sentinel line
     (so the reason for the gap is visible in the log) and stops
     appending. The stat + writes stay best-effort; a missing file
@@ -1091,6 +1098,13 @@ def _trace_scan(win_target, ctx, rule, state, event_log_state=None):
     """
     path = os.environ.get("CCM_DEBUG_TRACE")
     if not path:
+        return
+    only_diff = os.environ.get(
+        "CCM_TRACE_ONLY_DIFF", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if only_diff and (event_log_state is None or event_log_state == state):
+        # No disagreement to record. Skip before any stat/write I/O
+        # so the hot path stays cheap on quiet scans.
         return
     try:
         size = -1
