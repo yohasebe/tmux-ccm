@@ -4340,19 +4340,24 @@ class TestDeriveStateFromEvents:
             pid_present=False, claude_pid_age=-1,
         ) == "SHELL"
 
-    # ─── No events: fresh session ───
+    # ─── No events: defer to legacy ───
 
-    def test_pid_present_no_events_idle(self):
+    def test_pid_present_no_events_returns_none(self):
+        """Empty event log → None (caller falls back to legacy).
+        The previous behaviour returned IDLE here; that masked a
+        2.7-hour real outage observed 2026-04-25 where the event
+        log file went temporarily missing while the pane was
+        actually showing a PERMIT modal."""
         assert ccm_core.derive_state_from_events(
             events=(), jsonl_stop_reason=None,
             pid_present=True, claude_pid_age=2,
-        ) == "IDLE"
+        ) is None
 
-    def test_pid_present_no_events_old_pid_idle(self):
+    def test_pid_present_no_events_old_pid_returns_none(self):
         assert ccm_core.derive_state_from_events(
             events=(), jsonl_stop_reason=None,
             pid_present=True, claude_pid_age=5000,
-        ) == "IDLE"
+        ) is None
 
     # ─── Start-class events → BUSY ───
 
@@ -4388,13 +4393,28 @@ class TestDeriveStateFromEvents:
             pid_present=True, claude_pid_age=4000,
         ) == "PERMIT"
 
-    # ─── session_end → SHELL even if pid is still reported present ───
+    # ─── session_end with live pid → defer to legacy ───
 
-    def test_session_end_event_shell(self):
+    def test_session_end_with_live_pid_returns_none(self):
+        """Latest event session_end + pid_present=True is the brief
+        window between SessionEnd hook and the next prompt of a
+        restarted Claude. Returning SHELL here would falsely flag
+        the pane as "claude not running" until the next event
+        landed; legacy detection (which sees the live pid) is
+        more accurate. None means "fall back to legacy"."""
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": "session_end"},),
             jsonl_stop_reason=None,
             pid_present=True, claude_pid_age=100,
+        ) is None
+
+    def test_session_end_with_dead_pid_shell(self):
+        """pid_present=False short-circuits to SHELL before events
+        are consulted. session_end only matters when pid is alive."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "session_end"},),
+            jsonl_stop_reason=None,
+            pid_present=False, claude_pid_age=-1,
         ) == "SHELL"
 
     # ─── notify_idle → IDLE ───
@@ -4479,24 +4499,25 @@ class TestDeriveStateFromEvents:
             pid_present=True, claude_pid_age=500,
         ) == "BUSY"
 
-    # ─── Unknown event type: conservative IDLE ───
+    # ─── Unknown / malformed: defer to legacy ───
 
-    def test_unknown_event_type_idle(self):
-        """Unknown types (upstream schema drift) must not hard-error."""
+    def test_unknown_event_type_returns_none(self):
+        """Unknown types (upstream schema drift) must not hard-error
+        and must not silently commit IDLE — let legacy decide."""
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": "future_event"},),
             jsonl_stop_reason=None,
             pid_present=True, claude_pid_age=100,
-        ) == "IDLE"
+        ) is None
 
-    def test_latest_event_bad_shape_idle(self):
+    def test_latest_event_bad_shape_returns_none(self):
         """Malformed latest record (e.g. not a dict after aggressive
-        schema change) must fall through to conservative IDLE."""
+        schema change) defers to legacy."""
         assert ccm_core.derive_state_from_events(
             events=("not a dict",),
             jsonl_stop_reason=None,
             pid_present=True, claude_pid_age=100,
-        ) == "IDLE"
+        ) is None
 
     # ─── Lifecycle scenarios (the original failing cases) ───
 
@@ -4611,6 +4632,73 @@ class TestDeriveStateFromEvents:
             events=turn2_end, jsonl_stop_reason="end_turn",
             pid_present=True, claude_pid_age=3000,
         ) == "IDLE"
+
+    # ─── A' override: raw=PERMIT trumps non-PERMIT derivation ───
+
+    @pytest.mark.parametrize("event_type,jsonl_stop", [
+        ("pretool", "tool_use"),
+        ("posttool", "end_turn"),
+        ("prompt", None),
+        ("stop", "tool_use"),     # would otherwise be CONT
+        ("stop", "end_turn"),     # would otherwise be IDLE
+        ("notify_idle", None),
+    ])
+    def test_raw_permit_overrides_non_permit_candidate(
+        self, event_type, jsonl_stop
+    ):
+        """When the capture-pane footer detects a permission modal
+        (raw="PERMIT"), the event log lagging behind PermissionRequest
+        must not down-classify the state. This is the exact scenario
+        observed 2026-04-25 on whisper-stream: latest event was
+        pretool (BUSY), but a PERMIT modal was already on screen."""
+        events = ({"ts": 100, "type": event_type},)
+        assert ccm_core.derive_state_from_events(
+            events=events, jsonl_stop_reason=jsonl_stop,
+            pid_present=True, claude_pid_age=300,
+            raw="PERMIT",
+        ) == "PERMIT"
+
+    def test_raw_permit_with_permit_event_still_permit(self):
+        """raw=PERMIT and event log permit_req agree → PERMIT.
+        No-op override, but verifies the override does not corrupt
+        the already-correct case."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "permit_req"},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=300,
+            raw="PERMIT",
+        ) == "PERMIT"
+
+    @pytest.mark.parametrize("raw_value", ["IDLE", "BUSY", "SHELL", "DOWN", None])
+    def test_non_permit_raw_does_not_override(self, raw_value):
+        """Only raw="PERMIT" is authoritative. raw="BUSY" must NOT
+        override an event-log IDLE — that is the leftover-dev-server
+        scenario where the legacy process-tree heuristic falsely
+        flags BUSY but the event log correctly says the conversation
+        is IDLE. Letting BUSY override would re-introduce the false
+        BUSY that the event log was designed to fix."""
+        events = (
+            {"ts": 100, "type": "stop"},
+        )
+        assert ccm_core.derive_state_from_events(
+            events=events, jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=300,
+            raw=raw_value,
+        ) == "IDLE"
+
+    def test_raw_permit_does_not_override_session_end_fallback(self):
+        """session_end + pid present already returns None (legacy
+        fallback). raw="PERMIT" should NOT promote that to PERMIT —
+        the override is for cases where the event log said BUSY/CONT/
+        IDLE but the modal is on screen. session_end means we have
+        no event signal to override, so the right answer is still
+        "ask legacy" (which sees raw=PERMIT and returns PERMIT)."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "session_end"},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=300,
+            raw="PERMIT",
+        ) is None
 
 
 # ─── Event log env-var switch ───
@@ -4750,13 +4838,15 @@ class TestDetectWindowStateAutoMode:
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
     @patch("ccm_core.read_events_tail")
-    def test_primary_uses_event_log_even_when_empty(
+    def test_primary_falls_back_to_legacy_on_empty_events(
         self, mock_events, mock_hook, mock_tmux, monkeypatch
     ):
-        """primary mode commits event-log state unconditionally.
-        Empty events → IDLE from the derive function, even though
-        the legacy path here would say BUSY. This is the diagnostic
-        / forced-mode behaviour; auto mode would prefer legacy here."""
+        """primary mode used to commit the empty-events IDLE
+        unconditionally; that is unsafe (see the 2026-04-25
+        observation where a 2.7-hour event-log outage would have
+        produced false IDLE for a pane actually showing a PERMIT
+        modal). primary now shares auto's None-aware dispatch:
+        when derive returns None, the legacy state wins."""
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "primary")
         mock_events.return_value = ()
         mock_hook.return_value = (int(time.time()), "BUSY", "")
@@ -4765,9 +4855,61 @@ class TestDetectWindowStateAutoMode:
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
-        # primary mode commits the empty-events derivation → IDLE,
-        # despite the legacy hook_busy_idle path saying BUSY.
-        assert state == "IDLE"
+        # Empty events → derive returns None → legacy hook_busy_idle
+        # commits BUSY, the same outcome auto mode would produce.
+        assert state == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    @patch("ccm_core.read_events_tail")
+    def test_auto_with_empty_events_and_permit_pane_keeps_permit(
+        self, mock_events, mock_hook, mock_tmux, monkeypatch
+    ):
+        """The 2026-04-25 observation: event log file went temporarily
+        missing for 2.7 hours while the pane was actually showing a
+        PERMIT modal. Pre-fix behaviour was derive()→IDLE, auto mode
+        committing IDLE, and `ccm send` happily injecting into the
+        modal. Post-fix: derive returns None, legacy fires raw=PERMIT
+        and the dashboard stays on PERMIT."""
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "auto")
+        mock_events.return_value = ()  # event log empty / missing
+        mock_hook.return_value = None  # no hook signal either
+        # capture-pane returns a PERMIT modal footer line.
+        mock_tmux.return_value = "  Esc to cancel · Tab to amend"
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+        state = ccm_core.detect_window_state(
+            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
+        )
+        # Legacy raw=PERMIT fallback wins.
+        assert state == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    @patch("ccm_core.read_events_tail")
+    def test_auto_with_pretool_event_and_permit_pane_keeps_permit(
+        self, mock_events, mock_hook, mock_tmux, monkeypatch
+    ):
+        """The 2026-04-25 whisper-stream observation: PreToolUse fired
+        first (latest event = pretool → derive→BUSY), then the modal
+        appeared, and PermissionRequest had not yet fired. Pre-fix
+        auto mode would have committed BUSY (event-log) and the
+        dashboard would have lost the ⚠ prompt. Post-fix: A' raw=PERMIT
+        override forces PERMIT regardless of latest event."""
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "auto")
+        mock_events.return_value = (
+            {"ts": int(time.time()), "type": "pretool"},
+        )
+        mock_hook.return_value = (int(time.time()), "BUSY", "")
+        # capture-pane shows PERMIT modal footer.
+        mock_tmux.return_value = "  Esc to cancel · Tab to amend"
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+        state = ccm_core.detect_window_state(
+            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
+        )
+        # raw=PERMIT override → derive returns PERMIT not BUSY.
+        assert state == "PERMIT"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")

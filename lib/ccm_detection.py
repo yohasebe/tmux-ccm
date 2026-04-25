@@ -769,7 +769,7 @@ TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
 
 
 def derive_state_from_events(events, jsonl_stop_reason,
-                             pid_present, claude_pid_age):
+                             pid_present, claude_pid_age, raw=None):
     """Pure function: resolve state from event log tail + JSONL + pid.
 
     Arguments:
@@ -785,20 +785,33 @@ def derive_state_from_events(events, jsonl_stop_reason,
             or -1 if unknown. Used to suppress the false-IDLE that
             would otherwise apply during MCP-loading startup with no
             events recorded yet.
+        raw: optional capture-pane classification ("IDLE" / "BUSY" /
+            "PERMIT" / "SHELL" / "DOWN"). When `raw=="PERMIT"` the
+            function returns "PERMIT" regardless of event-log content
+            — the pane footer match is the authoritative signal for
+            modal-blocked panes (the event log can lag behind the
+            PermissionRequest hook firing or miss it entirely under
+            anthropics/claude-code#16047 class regressions).
 
-    Returns one of: "SHELL", "PERMIT", "BUSY", "CONT", "IDLE".
+    Returns one of: "SHELL", "PERMIT", "BUSY", "CONT", "IDLE", or
+    None. None means "no authoritative answer" — the caller should
+    commit the legacy state instead. Returned when (a) the event log
+    is empty (no hook events recorded yet), (b) the latest record is
+    malformed or carries an unknown type, or (c) pid is present but
+    the latest event is `session_end` (claude has been restarted and
+    the new session has not yet emitted any event).
 
     Semantics (see project_event_log_redesign memo for the decision log):
       - pid absent → SHELL (authoritative from process tree)
-      - latest event session_end → SHELL (authoritative)
       - latest event permit-class → PERMIT (no time limit; ONLY an
         event clears PERMIT, not a timer)
       - latest event start-class → BUSY
       - latest event notify_idle → IDLE (Claude itself signalled idle)
       - latest event stop → IDLE if JSONL stop_reason is terminal,
         CONT if tool_use or unknown (tool still in flight)
-      - no events + pid present → IDLE (fresh session; caller's
-        startup-transient suppression is owned by the legacy path)
+      - raw=="PERMIT" → PERMIT (overrides any non-PERMIT candidate)
+      - no events / unknown type / session_end with pid present →
+        None (fall back to legacy detection)
     """
     if not pid_present:
         return "SHELL"
@@ -810,41 +823,69 @@ def derive_state_from_events(events, jsonl_stop_reason,
     if not events_seq:
         # No hook activity recorded yet. Could be (a) fresh Claude
         # session before first UserPromptSubmit, (b) hooks never
-        # installed on this project, or (c) event log was cleaned up.
-        # All three resolve to IDLE — there is no positive evidence
-        # of ongoing work. The legacy pane-level startup transient
-        # check is not duplicated here; callers that want it must
-        # run the legacy path in parallel.
-        return "IDLE"
+        # installed on this project, (c) event log file was cleaned
+        # up out from under us. The previous behaviour was to return
+        # IDLE here, which masked a 2.7-hour real outage observed
+        # 2026-04-25 where the file went missing and `ccm send` would
+        # have happily injected into a pane that was actually showing
+        # a PERMIT modal. Returning None forces caller fallback to
+        # legacy detection (capture-pane footer + JSONL heartbeat),
+        # which keeps the modal visible to the dashboard.
+        return None
 
     latest = events_seq[-1]
     t = latest.get("type") if isinstance(latest, dict) else None
     if not t:
-        return "IDLE"
+        # Malformed latest record — let legacy decide rather than
+        # silently committing IDLE.
+        return None
 
     klass = EVENT_CLASSES.get(t)
+    if klass is None:
+        # Unknown event type (upstream schema drift) — defer to legacy.
+        return None
     if klass == EVENT_CLASS_END:
-        return "SHELL"
+        # session_end with pid present: claude has restarted but the
+        # new session has not yet emitted any event. Returning SHELL
+        # would falsely show "claude not running" on the dashboard for
+        # the brief window between SessionEnd and the next prompt.
+        # Defer to legacy (which sees the live pid via raw).
+        return None
+
     if klass == EVENT_CLASS_PERMIT:
-        return "PERMIT"
-    if klass == EVENT_CLASS_START:
-        return "BUSY"
-    if klass == EVENT_CLASS_IDLE:
-        return "IDLE"
-    if klass == EVENT_CLASS_PAUSE:
+        candidate = "PERMIT"
+    elif klass == EVENT_CLASS_START:
+        candidate = "BUSY"
+    elif klass == EVENT_CLASS_IDLE:
+        candidate = "IDLE"
+    elif klass == EVENT_CLASS_PAUSE:
         # stop event: CONT if still in tool_use mid-turn, IDLE if
         # the response completed with a terminal stop_reason. Missing
         # stop_reason (older schema or no assistant record in tail)
         # is conservative → CONT so that long-running tools without
         # clear evidence do not flip to false IDLE.
         if jsonl_stop_reason in TERMINAL_STOP_REASONS:
-            return "IDLE"
-        return "CONT"
-    # Unknown event type — conservative IDLE. Unknown types in the
-    # log indicate upstream schema drift; detection must not hard-
-    # error on unseen values, only the EVENT_CLASSES table needs to
-    # be updated.
-    return "IDLE"
+            candidate = "IDLE"
+        else:
+            candidate = "CONT"
+    else:
+        # Defensive — every defined class above is handled, but a new
+        # EVENT_CLASS_* added without updating this branch should
+        # surface as a legacy fallback rather than a hard error.
+        return None
+
+    # Capture-pane PERMIT footer overrides any non-PERMIT derivation.
+    # The PermissionRequest hook can fire after the modal is already
+    # rendered, or fail to fire at all under #16047-class regressions,
+    # leaving the latest event still a start-class hook (pretool /
+    # posttool / prompt) when a permission dialog is actually waiting
+    # on user input. The capture-pane footer match (PATTERN_PERMIT_FOOTER)
+    # is reliable in those cases — a modal cannot render its footer
+    # without actually being on screen.
+    if raw == "PERMIT" and candidate != "PERMIT":
+        return "PERMIT"
+
+    return candidate
 
 
 def build_detection_context(win_target, project_dir, prev_state,
@@ -998,11 +1039,19 @@ def detect_window_state(win_target, project_dir, prev_state,
     The event-log path is activated by CCM_USE_EVENT_LOG:
       - observe: compute both paths, log the diff to CCM_DEBUG_TRACE,
         still commit the legacy state (risk-free observation).
-      - auto: if the event log file exists for this project, commit
-        the event-log state; otherwise (project has no event log yet,
-        or hooks were never installed) fall back to legacy.
-      - primary: always commit the event-log state, even when the log
-        is empty for this project (returns IDLE). Diagnostic / forced.
+      - auto: commit the event-log state when `derive_state_from_events`
+        returns a non-None answer; otherwise fall back to legacy. The
+        derive function returns None for empty event logs, malformed
+        records, unknown event types, and `session_end` with a live
+        pid — situations where the event log lacks an authoritative
+        signal and the legacy path's capture-pane / process-tree /
+        JSONL heuristics are more reliable.
+      - primary: same dispatch as auto today (the old "commit IDLE
+        even when events are empty" behaviour is unsafe — see the
+        2026-04-25 observation where a 2.7-hour event-log outage
+        would have produced false IDLE for a pane actually showing a
+        PERMIT modal). Kept as a separate mode so a future diagnostic
+        flag can bring back unconditional event-log commits if needed.
     """
     ctx = build_detection_context(
         win_target, project_dir, prev_state,
@@ -1012,10 +1061,8 @@ def detect_window_state(win_target, project_dir, prev_state,
 
     mode = _event_log_mode()
     event_log_state = None
-    event_log_present = False
     if mode:
         events = ccm_core.read_events_tail(project_dir)
-        event_log_present = bool(events)
         # pid_present: the legacy raw detection already resolved SHELL
         # when no claude process is present, so raw != "SHELL" is a
         # reliable "pid present" proxy without a second ps scan.
@@ -1025,21 +1072,17 @@ def detect_window_state(win_target, project_dir, prev_state,
             jsonl_stop_reason=ctx.jsonl_last_stop_reason,
             pid_present=pid_present,
             claude_pid_age=ctx.claude_pid_age,
+            raw=ctx.raw,
         )
 
     # Commit which state?
     #   observe → legacy (event_log_state is logged for diff only)
-    #   auto    → event_log_state when the log is non-empty, else
-    #             legacy. The non-empty check covers two cases at
-    #             once: hooks never installed (no log file at all),
-    #             and hooks just installed but no event yet (file
-    #             missing or zero-byte). In both we want legacy
-    #             behaviour rather than an authoritative IDLE that
-    #             would mis-classify a currently-streaming Claude
-    #   primary → event_log_state unconditionally
-    if mode == "primary" and event_log_state is not None:
-        resolved = event_log_state
-    elif mode == "auto" and event_log_present:
+    #   auto    → event_log_state when not None, else legacy. The
+    #             None sentinel covers all cases where the event log
+    #             cannot speak authoritatively (empty, malformed,
+    #             unknown type, post-session_end transient).
+    #   primary → same dispatch as auto for now; see docstring.
+    if mode in ("primary", "auto") and event_log_state is not None:
         resolved = event_log_state
     else:
         resolved = legacy_state
