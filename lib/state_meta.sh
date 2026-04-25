@@ -10,10 +10,15 @@
 #
 # State taxonomy:
 #   Detection states (written to @ccm_prev_state, used by
-#   DETECTION_RULES): PERMIT / BUSY / IDLE / SHELL / DOWN
+#   DETECTION_RULES): PERMIT / BUSY / CONT / IDLE / SHELL / DOWN
 #   Display-only "recently completed" marker: COMPLETED — not a
 #   detection state, only ever shown as the ✔ next to an IDLE row
 #   that just transitioned from BUSY/PERMIT.
+#
+# CONT: continuation-of-BUSY state emitted by the event-log
+# detection path (phase 2+). Claude stopped mid-turn with
+# JSONL stop_reason="tool_use" and no follow-up hook has
+# fired yet. Treated as BUSY-equivalent by `ccm send`.
 #
 # Usage:
 #   source "${SCRIPT_DIR}/state_meta.sh"
@@ -24,6 +29,7 @@ ccm_state_icon() {
     case "${1:-}" in
         PERMIT)    printf '⚠' ;;
         BUSY)      printf '◉' ;;
+        CONT)      printf '◍' ;;
         COMPLETED) printf '✔' ;;
         IDLE)      printf '●' ;;
         SHELL)     printf '■' ;;

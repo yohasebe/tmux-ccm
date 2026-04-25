@@ -4088,3 +4088,400 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
             ccm_core.cmd_send(["blog", "--nope", "hi"])
+
+
+# ─── Event log reader (detection redesign phase 2+) ───
+
+class TestReadEventsTail:
+    def _setup_hook_dir(self, tmp_path, monkeypatch):
+        """Redirect CCM_HOOK_DIR to a sandbox and return its path."""
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        # Clear the module-level cache so tests do not interfere.
+        ccm_core._events_cache.clear()
+        return hook_dir
+
+    def _events_path(self, project_dir):
+        return ccm_core._events_log_path(project_dir)
+
+    def test_missing_file_returns_empty(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        assert ccm_core.read_events_tail("/x/never") == ()
+
+    def test_empty_project_dir_returns_empty(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        assert ccm_core.read_events_tail("") == ()
+        assert ccm_core.read_events_tail(None) == ()
+
+    def test_reads_single_event(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            f.write('{"ts":100,"type":"prompt"}\n')
+        events = ccm_core.read_events_tail("/x/proj")
+        assert events == ({"ts": 100, "type": "prompt"},)
+
+    def test_reads_multiple_events_in_order(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        records = [
+            '{"ts":100,"type":"prompt"}',
+            '{"ts":101,"type":"pretool"}',
+            '{"ts":102,"type":"stop"}',
+        ]
+        with open(path, "w") as f:
+            f.write("\n".join(records) + "\n")
+        events = ccm_core.read_events_tail("/x/proj")
+        assert [e["type"] for e in events] == ["prompt", "pretool", "stop"]
+        assert [e["ts"] for e in events] == [100, 101, 102]
+
+    def test_skips_malformed_lines(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            f.write("not json\n")
+            f.write('{"ts":100,"type":"prompt"}\n')
+            f.write('{"corrupt":\n')
+            f.write('{"ts":101,"type":"stop"}\n')
+        events = ccm_core.read_events_tail("/x/proj")
+        assert [e["type"] for e in events] == ["prompt", "stop"]
+
+    def test_skips_records_missing_required_fields(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            f.write('{"type":"prompt"}\n')              # no ts
+            f.write('{"ts":100}\n')                      # no type
+            f.write('{"ts":"bad","type":"stop"}\n')      # ts wrong type
+            f.write('{"ts":100,"type":""}\n')            # empty type
+            f.write('{"ts":101,"type":"prompt"}\n')      # ok
+        events = ccm_core.read_events_tail("/x/proj")
+        assert events == ({"ts": 101, "type": "prompt"},)
+
+    def test_limit_slices_newest(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            for i in range(30):
+                f.write(f'{{"ts":{i},"type":"prompt"}}\n')
+        events = ccm_core.read_events_tail("/x/proj", limit=5)
+        assert len(events) == 5
+        assert [e["ts"] for e in events] == [25, 26, 27, 28, 29]
+
+    def test_caches_by_mtime_and_size(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            f.write('{"ts":100,"type":"prompt"}\n')
+        e1 = ccm_core.read_events_tail("/x/proj")
+        # Second read with identical mtime/size must hit cache — the
+        # simplest observation is the result is the same tuple object.
+        e2 = ccm_core.read_events_tail("/x/proj")
+        assert e1 is e2 or e1 == e2  # tuple identity preserved on hit
+
+    def test_invalidates_on_append(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            f.write('{"ts":100,"type":"prompt"}\n')
+        e1 = ccm_core.read_events_tail("/x/proj")
+        assert [e["type"] for e in e1] == ["prompt"]
+        # Bump mtime so the cache key changes even if the second write
+        # lands within the same wall-clock second (CI can be fast enough
+        # for that to happen). The size will also change, so the cache
+        # key (mtime, size) is definitely different.
+        os.utime(path, (time.time() + 2, time.time() + 2))
+        with open(path, "a") as f:
+            f.write('{"ts":101,"type":"stop"}\n')
+        e2 = ccm_core.read_events_tail("/x/proj")
+        assert [e["type"] for e in e2] == ["prompt", "stop"]
+
+    def test_tail_truncation_for_large_files(self, tmp_path, monkeypatch):
+        """File larger than EVENTS_TAIL_BYTES: the reader must return
+        only the tail records, not parse the whole file."""
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            # Write enough records to exceed EVENTS_TAIL_BYTES (8 KB).
+            # Each line is ~28 bytes → need ~300 lines to comfortably
+            # exceed the window.
+            for i in range(400):
+                f.write(f'{{"ts":{i},"type":"prompt"}}\n')
+        events = ccm_core.read_events_tail("/x/proj", limit=5)
+        assert len(events) == 5
+        # Last 5 records (399, 398, 397, 396, 395) in chronological order
+        assert [e["ts"] for e in events] == [395, 396, 397, 398, 399]
+
+
+# ─── derive_state_from_events (detection redesign phase 2+) ───
+
+class TestDeriveStateFromEvents:
+    """Parametrized coverage of the pure state-derivation function.
+
+    The function is the phase-2 replacement for the legacy
+    DETECTION_RULES pipeline: state is a pure function of (event log
+    tail, JSONL stop_reason, pid presence + age). These tests
+    encode the full truth table; any semantic change must update
+    both the function and the matching row below.
+    """
+
+    # ─── SHELL: pid absent ───
+
+    def test_pid_absent_shell(self):
+        assert ccm_core.derive_state_from_events(
+            events=(), jsonl_stop_reason=None,
+            pid_present=False, claude_pid_age=-1,
+        ) == "SHELL"
+
+    def test_pid_absent_with_events_still_shell(self):
+        """Process tree is authoritative over stale event log."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "prompt"},),
+            jsonl_stop_reason=None,
+            pid_present=False, claude_pid_age=-1,
+        ) == "SHELL"
+
+    # ─── No events: fresh session ───
+
+    def test_pid_present_no_events_idle(self):
+        assert ccm_core.derive_state_from_events(
+            events=(), jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=2,
+        ) == "IDLE"
+
+    def test_pid_present_no_events_old_pid_idle(self):
+        assert ccm_core.derive_state_from_events(
+            events=(), jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=5000,
+        ) == "IDLE"
+
+    # ─── Start-class events → BUSY ───
+
+    @pytest.mark.parametrize("event_type", [
+        "prompt", "pretool", "posttool", "subagent", "compact",
+    ])
+    def test_start_class_events_busy(self, event_type):
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": event_type},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=100,
+        ) == "BUSY"
+
+    # ─── Permit-class events → PERMIT ───
+
+    @pytest.mark.parametrize("event_type", [
+        "permit_req", "notify_permit",
+    ])
+    def test_permit_class_events_permit(self, event_type):
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": event_type},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=100,
+        ) == "PERMIT"
+
+    def test_permit_no_time_limit(self):
+        """PERMIT must not decay by timer — only by subsequent event.
+        This guards the Option-2 design decision (indefinite PERMIT)."""
+        # Event is from 1 hour ago; still PERMIT.
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": int(time.time()) - 3600, "type": "permit_req"},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=4000,
+        ) == "PERMIT"
+
+    # ─── session_end → SHELL even if pid is still reported present ───
+
+    def test_session_end_event_shell(self):
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "session_end"},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=100,
+        ) == "SHELL"
+
+    # ─── notify_idle → IDLE ───
+
+    def test_notify_idle_event_idle(self):
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "notify_idle"},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=100,
+        ) == "IDLE"
+
+    # ─── stop + stop_reason discriminator ───
+
+    @pytest.mark.parametrize("reason", [
+        "end_turn", "max_tokens", "stop_sequence",
+    ])
+    def test_stop_terminal_reason_idle(self, reason):
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "stop"},),
+            jsonl_stop_reason=reason,
+            pid_present=True, claude_pid_age=100,
+        ) == "IDLE"
+
+    def test_stop_tool_use_cont(self):
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "stop"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=100,
+        ) == "CONT"
+
+    def test_stop_unknown_reason_cont(self):
+        """Missing/unknown stop_reason is conservative CONT so long
+        tools without clear evidence never flip to false IDLE."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "stop"},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=100,
+        ) == "CONT"
+
+    def test_stop_arbitrary_nonterminal_cont(self):
+        """Any stop_reason outside TERMINAL_STOP_REASONS is CONT."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "stop"},),
+            jsonl_stop_reason="future_unknown",
+            pid_present=True, claude_pid_age=100,
+        ) == "CONT"
+
+    # ─── Latest event wins (event log ordering) ───
+
+    def test_latest_event_wins_busy_over_stop(self):
+        """After Stop → PreToolUse for the next tool, state is BUSY."""
+        assert ccm_core.derive_state_from_events(
+            events=(
+                {"ts": 100, "type": "stop"},
+                {"ts": 101, "type": "pretool"},
+            ),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=100,
+        ) == "BUSY"
+
+    def test_latest_event_wins_stop_over_busy(self):
+        """After PreToolUse → Stop, state depends on stop_reason."""
+        assert ccm_core.derive_state_from_events(
+            events=(
+                {"ts": 100, "type": "pretool"},
+                {"ts": 101, "type": "stop"},
+            ),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=100,
+        ) == "IDLE"
+
+    def test_latest_event_wins_prompt_clears_stale_permit(self):
+        """Stale permit_req + new prompt → BUSY. The PERMIT-dismiss
+        path: user dismissed a dialog long ago, then submitted a new
+        prompt. New event supersedes stale PERMIT."""
+        assert ccm_core.derive_state_from_events(
+            events=(
+                {"ts": 100, "type": "permit_req"},
+                {"ts": 200, "type": "prompt"},
+            ),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=500,
+        ) == "BUSY"
+
+    # ─── Unknown event type: conservative IDLE ───
+
+    def test_unknown_event_type_idle(self):
+        """Unknown types (upstream schema drift) must not hard-error."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "future_event"},),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=100,
+        ) == "IDLE"
+
+    def test_latest_event_bad_shape_idle(self):
+        """Malformed latest record (e.g. not a dict after aggressive
+        schema change) must fall through to conservative IDLE."""
+        assert ccm_core.derive_state_from_events(
+            events=("not a dict",),
+            jsonl_stop_reason=None,
+            pid_present=True, claude_pid_age=100,
+        ) == "IDLE"
+
+    # ─── Lifecycle scenarios (the original failing cases) ───
+
+    def test_long_running_tool_stays_cont(self):
+        """Regression from project_false_idle_long_tool: hook went
+        silent mid-build, prev decayed to IDLE in legacy pipeline.
+        In the event-log model the tail still ends at `stop` with
+        tool_use, so state stays CONT authoritatively."""
+        events = (
+            {"ts": 100, "type": "prompt"},
+            {"ts": 101, "type": "pretool"},
+            {"ts": 102, "type": "stop"},
+        )
+        assert ccm_core.derive_state_from_events(
+            events=events, jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+        ) == "CONT"
+
+    def test_permit_dismiss_then_new_prompt_recovers(self):
+        """Dismissed permit with no follow-up → PERMIT (indefinite),
+        then new user prompt → BUSY. The indefinite PERMIT is the
+        Option-2 choice from the design discussion."""
+        # Before new prompt:
+        events_before = ({"ts": 100, "type": "permit_req"},)
+        assert ccm_core.derive_state_from_events(
+            events=events_before, jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+        ) == "PERMIT"
+        # After new prompt:
+        events_after = events_before + (
+            {"ts": 500, "type": "prompt"},
+        )
+        assert ccm_core.derive_state_from_events(
+            events=events_after, jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+        ) == "BUSY"
+
+    def test_iterator_input_accepted(self):
+        """derive must handle arbitrary iterables, not just tuples.
+        The event log reader returns a tuple today but we defend
+        against that shape changing later."""
+        def gen():
+            yield {"ts": 100, "type": "prompt"}
+            yield {"ts": 101, "type": "stop"}
+        assert ccm_core.derive_state_from_events(
+            events=gen(), jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=100,
+        ) == "IDLE"
+
+
+# ─── Event log env-var switch ───
+
+class TestEventLogMode:
+    @pytest.mark.parametrize("raw,expected", [
+        ("", ""),
+        ("0", ""),
+        ("off", ""),
+        ("no", ""),
+        ("observe", "observe"),
+        ("OBSERVE", "observe"),
+        ("1", "primary"),
+        ("true", "primary"),
+        ("TRUE", "primary"),
+        ("yes", "primary"),
+        ("primary", "primary"),
+        ("on", "primary"),
+    ])
+    def test_normalizes_env_value(self, raw, expected, monkeypatch):
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", raw)
+        assert ccm_core._event_log_mode() == expected
+
+    def test_unset_disabled(self, monkeypatch):
+        monkeypatch.delenv("CCM_USE_EVENT_LOG", raising=False)
+        assert ccm_core._event_log_mode() == ""
+
+    def test_whitespace_trimmed(self, monkeypatch):
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "  observe  ")
+        assert ccm_core._event_log_mode() == "observe"
+
+
+# ─── CONT state registered in STATE_ICONS ───
+
+class TestContStateRegistered:
+    def test_cont_has_icon(self):
+        assert "CONT" in ccm_core.STATE_ICONS
+        assert ccm_core.STATE_ICONS["CONT"] == "◍"

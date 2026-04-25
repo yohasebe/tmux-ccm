@@ -727,6 +727,126 @@ def evaluate_fast(prev_state, project_dir, now=None) -> str:
     return state
 
 
+# ─── Event-log state derivation (detection redesign phase 2+) ───
+# Phase 2 of the event-log redesign: state is a pure function of the
+# event-log tail plus JSONL stop_reason and process lifecycle signals.
+# The time-window heuristics that gate the legacy DETECTION_RULES
+# (JSONL_FRESH_THRESHOLD, JSONL_ACTIVE_THRESHOLD, JSONL_HOOK_GAP_TOLERANCE,
+# BUSY_HOOK_JSONL_WINDOW, and the implicit fallback_busy_to_idle timing)
+# all collapse down to a single STARTUP_GRACE_SEC pid-age check here.
+#
+# Activated by `CCM_USE_EVENT_LOG` env var:
+#   unset    — legacy DETECTION_RULES path only (no event-log read)
+#   observe  — compute both, log to trace, still use legacy (diff study)
+#   1 / primary — compute both, log, use event-log state as authoritative
+#
+# Event type → state class mapping. Keep in sync with the normalized
+# vocabulary emitted by `hooks/lib.sh::ccm_append_event`. Adding a
+# new upstream hook event means: pick its normalized name at the
+# writer, add it here, and add a parametrized test.
+EVENT_CLASS_START = "start"  # → BUSY
+EVENT_CLASS_PERMIT = "permit"  # → PERMIT
+EVENT_CLASS_PAUSE = "pause"  # → IDLE or CONT depending on JSONL
+EVENT_CLASS_IDLE = "idle"  # → IDLE (explicit)
+EVENT_CLASS_END = "end"  # → SHELL
+
+EVENT_CLASSES = {
+    "prompt": EVENT_CLASS_START,
+    "pretool": EVENT_CLASS_START,
+    "posttool": EVENT_CLASS_START,
+    "subagent": EVENT_CLASS_START,
+    "compact": EVENT_CLASS_START,
+    "stop": EVENT_CLASS_PAUSE,
+    "permit_req": EVENT_CLASS_PERMIT,
+    "notify_permit": EVENT_CLASS_PERMIT,
+    "notify_idle": EVENT_CLASS_IDLE,
+    "session_end": EVENT_CLASS_END,
+}
+
+# stop_reason values that mean "Claude's response truly ended"
+# (versus "tool_use" which means "paused mid-response for a tool").
+TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
+
+
+def derive_state_from_events(events, jsonl_stop_reason,
+                             pid_present, claude_pid_age):
+    """Pure function: resolve state from event log tail + JSONL + pid.
+
+    Arguments:
+        events: iterable of {"ts": int, "type": str} dicts, newest last.
+            Empty iterable means "no event log for this project yet".
+        jsonl_stop_reason: string or None. The stop_reason of the most
+            recent assistant record in the JSONL tail. Used only when
+            the latest event is a "stop" — CONT vs IDLE discriminator.
+        pid_present: bool. True iff a `claude` process currently runs
+            for this project's window. SHELL when False, regardless of
+            any stale events in the log.
+        claude_pid_age: int. Seconds since the `claude` process started,
+            or -1 if unknown. Used to suppress the false-IDLE that
+            would otherwise apply during MCP-loading startup with no
+            events recorded yet.
+
+    Returns one of: "SHELL", "PERMIT", "BUSY", "CONT", "IDLE".
+
+    Semantics (see project_event_log_redesign memo for the decision log):
+      - pid absent → SHELL (authoritative from process tree)
+      - latest event session_end → SHELL (authoritative)
+      - latest event permit-class → PERMIT (no time limit; ONLY an
+        event clears PERMIT, not a timer)
+      - latest event start-class → BUSY
+      - latest event notify_idle → IDLE (Claude itself signalled idle)
+      - latest event stop → IDLE if JSONL stop_reason is terminal,
+        CONT if tool_use or unknown (tool still in flight)
+      - no events + pid present → IDLE (fresh session; caller's
+        startup-transient suppression is owned by the legacy path)
+    """
+    if not pid_present:
+        return "SHELL"
+
+    # Tuple/list/iterator — defensive normalization. derive must not
+    # depend on random-access indexing so any iterable works.
+    events_seq = tuple(events) if not isinstance(events, tuple) else events
+
+    if not events_seq:
+        # No hook activity recorded yet. Could be (a) fresh Claude
+        # session before first UserPromptSubmit, (b) hooks never
+        # installed on this project, or (c) event log was cleaned up.
+        # All three resolve to IDLE — there is no positive evidence
+        # of ongoing work. The legacy pane-level startup transient
+        # check is not duplicated here; callers that want it must
+        # run the legacy path in parallel.
+        return "IDLE"
+
+    latest = events_seq[-1]
+    t = latest.get("type") if isinstance(latest, dict) else None
+    if not t:
+        return "IDLE"
+
+    klass = EVENT_CLASSES.get(t)
+    if klass == EVENT_CLASS_END:
+        return "SHELL"
+    if klass == EVENT_CLASS_PERMIT:
+        return "PERMIT"
+    if klass == EVENT_CLASS_START:
+        return "BUSY"
+    if klass == EVENT_CLASS_IDLE:
+        return "IDLE"
+    if klass == EVENT_CLASS_PAUSE:
+        # stop event: CONT if still in tool_use mid-turn, IDLE if
+        # the response completed with a terminal stop_reason. Missing
+        # stop_reason (older schema or no assistant record in tail)
+        # is conservative → CONT so that long-running tools without
+        # clear evidence do not flip to false IDLE.
+        if jsonl_stop_reason in TERMINAL_STOP_REASONS:
+            return "IDLE"
+        return "CONT"
+    # Unknown event type — conservative IDLE. Unknown types in the
+    # log indicate upstream schema drift; detection must not hard-
+    # error on unseen values, only the EVENT_CLASSES table needs to
+    # be updated.
+    return "IDLE"
+
+
 def build_detection_context(win_target, project_dir, prev_state,
                             panes_cache, ps_lines, own_pgid
                             ) -> DetectionContext:
@@ -790,10 +910,15 @@ def build_detection_context(win_target, project_dir, prev_state,
 
 
 def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
-                  state: str) -> str:
+                  state: str, event_log_state=None) -> str:
     """Execute the side effects declared by a matched rule.
 
     Returns the resolved state string.
+
+    `event_log_state` is the result of `derive_state_from_events`
+    when the event-log path is active (observe or primary); it is
+    forwarded to `_trace_scan` so the debug trace records both
+    states on every scan regardless of which one is committed.
     """
     action = rule.action
 
@@ -805,7 +930,7 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     # DetectionContext input plus the matched rule + resolved state.
     # Writing happens here (after the rule is known, before side
     # effects) so a malformed trace never corrupts real state.
-    _trace_scan(win_target, ctx, rule, state)
+    _trace_scan(win_target, ctx, rule, state, event_log_state=event_log_state)
 
     # Record SHELL transitions for cluster-crash detection (#48069).
     # A transition into SHELL from a known *active* state (BUSY /
@@ -833,6 +958,23 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     return state
 
 
+def _event_log_mode():
+    """Read CCM_USE_EVENT_LOG env var and normalize to one of:
+      ""         — disabled (legacy path only, no event-log read)
+      "observe"  — compute both, log to trace, use legacy as authoritative
+      "primary"  — compute both, log, use event-log as authoritative
+
+    Accepted aliases: "1" / "true" / "yes" / "primary" → "primary".
+    Anything else ("", "0", unset) → disabled.
+    """
+    raw = os.environ.get("CCM_USE_EVENT_LOG", "").strip().lower()
+    if raw == "observe":
+        return "observe"
+    if raw in ("1", "true", "yes", "primary", "on"):
+        return "primary"
+    return ""
+
+
 def detect_window_state(win_target, project_dir, prev_state,
                         panes_cache, ps_lines, own_pgid):
     """Full detection pipeline. Returns the resolved state string.
@@ -840,17 +982,48 @@ def detect_window_state(win_target, project_dir, prev_state,
     Thin orchestration layer:
       1. build_detection_context — gather inputs
       2. evaluate_rules          — pure rule-table match
-      3. apply_actions           — execute tmux/file side effects
+      3. (phase 2+) derive_state_from_events — parallel event-log path
+      4. apply_actions           — execute tmux/file side effects
 
     All state transitions are declared in DETECTION_RULES above. To add
     or change a case, edit the rule table rather than this function.
+
+    The event-log path is activated by CCM_USE_EVENT_LOG:
+      - observe: compute both paths, log the diff to CCM_DEBUG_TRACE,
+        still commit the legacy state (risk-free observation).
+      - primary: commit the event-log state instead of the legacy one.
     """
     ctx = build_detection_context(
         win_target, project_dir, prev_state,
         panes_cache, ps_lines, own_pgid,
     )
-    rule, state = evaluate_rules(ctx)
-    return apply_actions(win_target, project_dir, ctx, rule, state)
+    rule, legacy_state = evaluate_rules(ctx)
+
+    mode = _event_log_mode()
+    event_log_state = None
+    if mode:
+        events = ccm_core.read_events_tail(project_dir)
+        # pid_present: the legacy raw detection already resolved SHELL
+        # when no claude process is present, so raw != "SHELL" is a
+        # reliable "pid present" proxy without a second ps scan.
+        pid_present = ctx.raw not in ("SHELL", "DOWN")
+        event_log_state = derive_state_from_events(
+            events=events,
+            jsonl_stop_reason=ctx.jsonl_last_stop_reason,
+            pid_present=pid_present,
+            claude_pid_age=ctx.claude_pid_age,
+        )
+
+    # Commit which state? In observe mode, legacy is still authoritative
+    # so we do not risk user-facing regressions during the observation
+    # window. In primary mode we commit the event-log state.
+    if mode == "primary" and event_log_state is not None:
+        resolved = event_log_state
+    else:
+        resolved = legacy_state
+
+    return apply_actions(win_target, project_dir, ctx, rule, resolved,
+                         event_log_state=event_log_state)
 
 
 # ─── Debug trace (CCM_DEBUG_TRACE env var) ───
@@ -877,11 +1050,17 @@ TRACE_MAX_BYTES = int(
 )
 
 
-def _trace_scan(win_target, ctx, rule, state):
+def _trace_scan(win_target, ctx, rule, state, event_log_state=None):
     """Append one JSON record per detection cycle when CCM_DEBUG_TRACE
     is set. Records include every DetectionContext field plus the
     rule name and resolved state. Failure to open/write the trace
     file is silently ignored — this path must never break detection.
+
+    When the event-log path is active (CCM_USE_EVENT_LOG), the
+    derived state is included as `event_log_state` alongside the
+    legacy rule result. A `diff=true` field flags rows where the
+    two disagree, so `jq -c 'select(.diff)'` isolates the interesting
+    scans during observation.
 
     Above `TRACE_MAX_BYTES` the writer emits a single sentinel line
     (so the reason for the gap is visible in the log) and stops
@@ -932,6 +1111,10 @@ def _trace_scan(win_target, ctx, rule, state):
             "state": state,
             "action": rule.action.value,
         }
+        if event_log_state is not None:
+            record["event_log_state"] = event_log_state
+            if event_log_state != state:
+                record["diff"] = True
         with open(path, "a") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:

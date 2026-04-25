@@ -272,7 +272,7 @@ STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
 # a state icon. The extra "COMPLETED" key used by notification
 # paths is bash-only (not a detection state).
 STATE_ICONS = {
-    "PERMIT": "⚠", "BUSY": "◉", "IDLE": "●", "SHELL": "■", "DOWN": "○",
+    "PERMIT": "⚠", "BUSY": "◉", "CONT": "◍", "IDLE": "●", "SHELL": "■", "DOWN": "○",
 }
 
 
@@ -922,6 +922,116 @@ def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
     """
     age, _ = read_jsonl_tail_info(project_dir, claude_pid=claude_pid)
     return age
+
+
+# ─── Event log reader (detection redesign phase 2+) ───
+# The per-project event log is written by `hooks/lib.sh::ccm_append_event`
+# as append-only JSONL at `$HOOK_DIR/<md5>.events.jsonl`. Each record is
+# `{"ts": unix_seconds, "type": <normalized_type>}`, one per hook
+# invocation. Phase 2+ of the detection redesign derives state as a
+# pure function of the event tail; this reader is the input side.
+#
+# The reader shares the tail-read + bounded-cache pattern used by
+# `_parse_jsonl_tail` so per-cycle overhead is ~0 on cache hit and a
+# single 8 KB seek + JSON parse on miss. The cache key is
+# (mtime_int, size) which is guaranteed to invalidate on any append
+# because the file is monotonically growing.
+
+EVENTS_TAIL_BYTES = 8192       # ~200 events at typical line length
+EVENTS_TAIL_MAX_LINES = 200    # parse cap per cycle
+EVENTS_CACHE_MAX = 128
+_events_cache: "OrderedDict[str, Tuple[Tuple[int, int], Tuple[dict, ...]]]" = OrderedDict()
+
+
+def _events_log_path(project_dir: str) -> str:
+    """Return the absolute path of a project's event log file."""
+    expanded = _resolve_project_dir(project_dir)
+    return os.path.join(CCM_HOOK_DIR, md5_hash(expanded) + ".events.jsonl")
+
+
+def _cache_events(path: str, key: Tuple[int, int],
+                  value: Tuple[dict, ...]) -> None:
+    _events_cache[path] = (key, value)
+    _events_cache.move_to_end(path)
+    while len(_events_cache) > EVENTS_CACHE_MAX:
+        _events_cache.popitem(last=False)
+
+
+def read_events_tail(project_dir: str, limit: int = 20) -> Tuple[dict, ...]:
+    """Return the last `limit` events from a project's event log.
+
+    Each event is a dict `{"ts": int, "type": str}`. Malformed lines
+    are silently skipped. Returns an empty tuple when no log exists
+    for the project (hook not installed, or no event yet written).
+
+    Why a tuple rather than a list: the result is cached and must be
+    immutable against accidental caller mutation.
+
+    Tail strategy: read the last EVENTS_TAIL_BYTES (8 KB) of the file
+    and parse forward, then slice the most recent `limit`. An
+    append-only log grows monotonically so the tail always contains
+    the most recent events even if the file exceeds the tail window.
+    """
+    if not project_dir:
+        return ()
+    path = _events_log_path(project_dir)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ()
+    size = st.st_size
+    mtime = int(st.st_mtime)
+    key = (mtime, size)
+    cached = _events_cache.get(path)
+    if cached is not None and cached[0] == key:
+        _events_cache.move_to_end(path)
+        events = cached[1]
+        return events[-limit:] if limit and len(events) > limit else events
+
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            actual_size = f.tell()
+            f.seek(max(0, actual_size - EVENTS_TAIL_BYTES))
+            tail_bytes = f.read()
+    except OSError:
+        _cache_events(path, key, ())
+        return ()
+
+    tail = tail_bytes.decode("utf-8", errors="ignore")
+    lines = tail.split("\n")
+    # Drop the leading partial line if we read mid-file.
+    if size > EVENTS_TAIL_BYTES and len(lines) > 1:
+        lines = lines[1:]
+
+    # Walk newest-first so the EVENTS_TAIL_MAX_LINES parse cap keeps
+    # the most recent records rather than dropping them. Final list
+    # is reversed back to chronological order for callers.
+    events_newest_first: list = []
+    for line in reversed(lines):
+        if len(events_newest_first) >= EVENTS_TAIL_MAX_LINES:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        t = rec.get("type")
+        ts = rec.get("ts")
+        if not isinstance(t, str) or not t:
+            continue
+        if not isinstance(ts, (int, float)):
+            continue
+        events_newest_first.append({"ts": int(ts), "type": t})
+
+    events_newest_first.reverse()
+    result = tuple(events_newest_first)
+    _cache_events(path, key, result)
+    return result[-limit:] if limit and len(result) > limit else result
 
 
 # ─── Claude Code hooks.log canary ───
@@ -1910,10 +2020,13 @@ from ccm_detection import (  # noqa: E402
     Action,
     Rule,
     USE_RAW,
+    EVENT_CLASSES,
+    TERMINAL_STOP_REASONS,
     apply_actions,
     build_detection_context,
     build_fast_context,
     capture_pane_bottom,
+    derive_state_from_events,
     detect_pane_state,
     detect_window_raw,
     detect_window_state,
@@ -1922,6 +2035,7 @@ from ccm_detection import (  # noqa: E402
     find_claude_pid,
     has_children,
     has_grandchildren,
+    _event_log_mode,
     _set_win_state,
     _FAST_PREV_TO_RAW,
 )
