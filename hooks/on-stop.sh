@@ -9,6 +9,8 @@ source "${SCRIPT_DIR}/lib.sh"
 
 ccm_hook_init || exit 0
 
+ccm_append_event "$HOOK_DIR" "$KEY" "stop"
+
 # Delete the BUSY signal file (and .busy file) to clear the BUSY state.
 # The detection layer will transition to IDLE on the next scan.
 rm -f "$HOOK_DIR/$KEY" "$HOOK_DIR/$KEY.busy"

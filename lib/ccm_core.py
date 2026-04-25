@@ -549,7 +549,8 @@ def cleanup_project_runtime_files(project_dir):
     Covers:
       - hook signal file (`$HOOK_DIR/<key>`) and its companions
         (`.busy` from the pre-4-state era, `.pending` from the
-        multi-turn Stop delayed-notify mechanism)
+        multi-turn Stop delayed-notify mechanism, `.events.jsonl`
+        from the event-log redesign)
       - notification dedup marker (`$NOTIFY_MARKER_DIR/<key>`)
       - git branch cache and listening-port cache
 
@@ -562,7 +563,7 @@ def cleanup_project_runtime_files(project_dir):
     expanded = _resolve_project_dir(project_dir)
     key = md5_hash(expanded)
     for directory, suffixes in (
-        (CCM_HOOK_DIR, ("", ".busy", ".pending")),
+        (CCM_HOOK_DIR, ("", ".busy", ".pending", ".events.jsonl")),
         (CCM_NOTIFY_MARKER_DIR, ("",)),
         (CCM_GIT_CACHE_DIR, ("",)),
         (CCM_PORT_CACHE_DIR, ("",)),

@@ -15,15 +15,18 @@ NOTIFY_TYPE=$(printf '%s' "$INPUT" | grep -o '"notification_type" *: *"[^"]*"' |
 
 case "$NOTIFY_TYPE" in
     permission_prompt)
+        ccm_append_event "$HOOK_DIR" "$KEY" "notify_permit"
         ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
         ;;
     elicitation_dialog)
         # MCP servers can request user input via elicitation dialogs
         # (Claude Code v2.1.107+). Functionally identical to a
         # permission prompt — Claude is paused waiting for the user.
+        ccm_append_event "$HOOK_DIR" "$KEY" "notify_permit"
         ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
         ;;
     idle_prompt)
+        ccm_append_event "$HOOK_DIR" "$KEY" "notify_idle"
         # Delete the signal file to clear the BUSY state.
         # Only delete if not already BUSY (avoid clearing active work signal
         # that was just written by a concurrent PreToolUse).

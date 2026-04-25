@@ -44,6 +44,49 @@ ccm_hook_init() {
     return 0
 }
 
+# Extract hook_event_name from Claude Code's hook payload.
+# Expects `INPUT` in scope (populated by ccm_hook_init). Writes the
+# event name to stdout (e.g., "PreToolUse", "Stop"); empty on failure.
+# Used by on-pre-tool-use.sh (shared across 7 Claude Code events) and
+# the event-log writer to dispatch on the authoritative upstream name
+# rather than guessing from hook script identity.
+ccm_hook_event_name() {
+    local name
+    name=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null) || \
+        name=$(printf '%s' "$INPUT" | grep -o '"hook_event_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    printf '%s' "$name"
+}
+
+# Append a single event record to the per-project event log.
+# This is the authoritative state timeline consumed by the Python
+# detection layer in Phase 2+ of the event-log redesign. Phase 1
+# (current) writes events in parallel to the existing signal-file
+# mechanism; detection logic is unchanged until Phase 2 opts in.
+#
+# Format: JSONL, append-only. One hook invocation = one line.
+# Path: $HOOK_DIR/<md5-of-cwd>.events.jsonl
+# Schema: {"ts": <unix_seconds>, "type": "<normalized>"}
+#
+# `type` is restricted to the 9-type normalized vocabulary:
+#   prompt, pretool, posttool, subagent, compact, stop,
+#   permit_req, notify_permit, notify_idle, session_end
+# (call sites use hard-coded values, so no escaping needed.)
+#
+# Atomicity: POSIX O_APPEND makes writes <PIPE_BUF (4KB) atomic
+# without flock. Errors are suppressed: a write failure must not
+# prevent the legacy signal-file path from running.
+#
+# Args: $1=HOOK_DIR, $2=KEY (md5 of cwd), $3=TYPE (normalized event type)
+ccm_append_event() {
+    local hook_dir="$1" key="$2" type="$3"
+    local ts events_file
+    [[ -z "$hook_dir" || -z "$key" || -z "$type" ]] && return 0
+    ts=$(date +%s)
+    events_file="${hook_dir}/${key}.events.jsonl"
+    printf '{"ts":%s,"type":"%s"}\n' "$ts" "$type" >> "$events_file" 2>/dev/null || true
+    return 0
+}
+
 # Build a human-readable tool detail string from Claude Code's hook
 # payload (the Permission* hooks use this to enrich their desktop
 # notification, e.g. "Bash: rm -rf ..." or "Edit: ~/src/main.rs").

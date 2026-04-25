@@ -13,4 +13,5 @@ ccm_hook_init || exit 0
 # "Denied " prefix distinguishes this from interactive PERMIT prompts.
 DETAIL=$(ccm_hook_format_tool_detail "Denied ")
 
+ccm_append_event "$HOOK_DIR" "$KEY" "permit_req"
 ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD" "$DETAIL"

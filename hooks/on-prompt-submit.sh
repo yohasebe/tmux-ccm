@@ -12,4 +12,5 @@ ccm_hook_init || exit 0
 # the user is starting a new turn, not waiting on a finished response.
 _ccm_cancel_pending_completion "$HOOK_DIR" "$KEY"
 
+ccm_append_event "$HOOK_DIR" "$KEY" "prompt"
 ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "$CWD"

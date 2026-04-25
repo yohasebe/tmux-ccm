@@ -3144,6 +3144,9 @@ class TestCleanupProjectRuntimeFiles:
         (tmp_path / "hooks" / key).write_text("0 BUSY")
         (tmp_path / "hooks" / f"{key}.busy").write_text("0")
         (tmp_path / "hooks" / f"{key}.pending").write_text("0")
+        (tmp_path / "hooks" / f"{key}.events.jsonl").write_text(
+            '{"ts":100,"type":"prompt"}\n{"ts":101,"type":"stop"}\n'
+        )
         (tmp_path / "notified" / key).write_text("0 COMPLETED")
         (tmp_path / "git-cache" / key).write_text("main")
         (tmp_path / "port-cache" / key).write_text("3000")
@@ -3160,6 +3163,7 @@ class TestCleanupProjectRuntimeFiles:
             f"hooks/{key}",
             f"hooks/{key}.busy",
             f"hooks/{key}.pending",
+            f"hooks/{key}.events.jsonl",
             f"notified/{key}",
             f"git-cache/{key}",
             f"port-cache/{key}",
