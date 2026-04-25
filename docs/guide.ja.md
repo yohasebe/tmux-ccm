@@ -507,6 +507,8 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 |------|-----------|------|
 | `CCM_DEBUG_TRACE` | (未設定) | JSONL トレースファイルのパス。設定すると slow-path 検出スキャン (`inject-status`、dashboard、`ccm status`) が各スキャンで `DetectionContext` 全体 + マッチルール + 解決された state を 1 行追記する。[状態検出の挙動デバッグ](#状態検出の挙動デバッグ) 参照。tmux 起動後の設定は `tmux set-environment -g CCM_DEBUG_TRACE <path>` で行う（シェルの `export` では tmux サブプロセスに届かない） |
 | `CCM_TRACE_MAX_BYTES` | `104857600`（100 MB） | `CCM_DEBUG_TRACE` ログファイルのサイズ上限。超過時は `{"event":"trace_cap_reached", ...}` の sentinel 行を 1 回だけ書いて以降の追記を停止し、解除忘れでディスクを食い尽くすのを防ぐ |
+| `CCM_TRACE_ONLY_DIFF` | (未設定) | truthy 値 (`1` / `true` / `yes` / `on`) を設定すると、`CCM_DEBUG_TRACE` の書き込みを「legacy と event-log の判定が食い違った行」のみに絞る。多プロジェクト tmux で観測モードを数日走らせてもサイズ上限に引っかからない — 実際に diff が出たときだけ追記される。`CCM_USE_EVENT_LOG=off` 時は無効（diff 対象がない） |
+| `CCM_USE_EVENT_LOG` | `auto` | 検出パスの切り替え。`auto`（デフォルト）は [`derive_state_from_events`](../lib/ccm_detection.py) が non-`None` を返したらその結果を採用、それ以外は legacy `DETECTION_RULES` にフォールバック。`off`（または `0` / `no` / `false`）で 2026-04-25 以前の legacy-only 挙動に戻す。`observe` は両方計算するが採用は legacy（`CCM_DEBUG_TRACE` と組み合わせて diff 観測用）。`primary`（または `1` / `true` / `yes` / `on`）は diagnostic 用の forced-mode 名で、現時点では `auto` と同じ dispatch。未知の値は `auto` に解決される — opt-out のスペルミスで誤って legacy に落ちないように |
 
 ### キャッシュ TTL
 

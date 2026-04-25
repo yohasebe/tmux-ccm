@@ -4705,28 +4705,39 @@ class TestDeriveStateFromEvents:
 
 class TestEventLogMode:
     @pytest.mark.parametrize("raw,expected", [
-        ("", ""),
-        ("0", ""),
-        ("off", ""),
-        ("no", ""),
+        # Falsy values → explicit "off" (legacy-only opt-out)
+        ("", "off"),
+        ("0", "off"),
+        ("off", "off"),
+        ("OFF", "off"),
+        ("no", "off"),
+        ("false", "off"),
+        # Named modes
         ("observe", "observe"),
         ("OBSERVE", "observe"),
         ("auto", "auto"),
         ("AUTO", "auto"),
+        # primary aliases
         ("1", "primary"),
         ("true", "primary"),
         ("TRUE", "primary"),
         ("yes", "primary"),
         ("primary", "primary"),
         ("on", "primary"),
+        # Unknown → conservative "auto" (the P3b default)
+        ("garbage", "auto"),
+        ("legacy", "auto"),
     ])
     def test_normalizes_env_value(self, raw, expected, monkeypatch):
         monkeypatch.setenv("CCM_USE_EVENT_LOG", raw)
         assert ccm_core._event_log_mode() == expected
 
-    def test_unset_disabled(self, monkeypatch):
+    def test_unset_defaults_to_auto(self, monkeypatch):
+        """P3b (2026-04-25): the unset default flipped from "off" to
+        "auto". Users who want pre-P3b legacy-only behaviour must opt
+        out explicitly with CCM_USE_EVENT_LOG=off (or 0/no/false)."""
         monkeypatch.delenv("CCM_USE_EVENT_LOG", raising=False)
-        assert ccm_core._event_log_mode() == ""
+        assert ccm_core._event_log_mode() == "auto"
 
     def test_whitespace_trimmed(self, monkeypatch):
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "  observe  ")
@@ -4735,6 +4746,15 @@ class TestEventLogMode:
     def test_whitespace_trimmed_auto(self, monkeypatch):
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "  auto  ")
         assert ccm_core._event_log_mode() == "auto"
+
+    def test_explicit_off_is_distinct_from_unset(self, monkeypatch):
+        """`off` and unset must produce different results: unset
+        means "use the new default" (auto), explicit off means "I
+        really do want legacy only". The detect_window_state
+        dispatch keys off this distinction to skip the events.jsonl
+        read entirely on `off`."""
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "off")
+        assert ccm_core._event_log_mode() == "off"
 
 
 # ─── CONT state registered in STATE_ICONS ───
@@ -4914,13 +4934,13 @@ class TestDetectWindowStateAutoMode:
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
     @patch("ccm_core.read_events_tail")
-    def test_disabled_default_does_not_read_events(
+    def test_explicit_off_does_not_read_events(
         self, mock_events, mock_hook, mock_tmux, monkeypatch
     ):
-        """With CCM_USE_EVENT_LOG unset (the default), the event log
-        is never consulted — guards against accidentally activating
-        the new path for users who have not opted in."""
-        monkeypatch.delenv("CCM_USE_EVENT_LOG", raising=False)
+        """`CCM_USE_EVENT_LOG=off` is the legacy-only opt-out — the
+        event log file must not be touched at all (matches the
+        pre-P3b unset behaviour)."""
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "off")
         mock_events.return_value = (
             {"ts": int(time.time()), "type": "pretool"},
         )
@@ -4928,8 +4948,37 @@ class TestDetectWindowStateAutoMode:
         mock_tmux.return_value = "❯ "
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         panes = [("0:1", "100", "%0")]
-        ccm_core.detect_window_state(
+        state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
-        # The reader is never called in the disabled (default) path.
+        # The reader is never called in the off path. Legacy-only
+        # behaviour: ❯ visible + no hook → IDLE.
         mock_events.assert_not_called()
+        assert state == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.read_hook_signal")
+    @patch("ccm_core.read_events_tail")
+    def test_unset_default_uses_auto_dispatch(
+        self, mock_events, mock_hook, mock_tmux, monkeypatch
+    ):
+        """P3b (2026-04-25): with CCM_USE_EVENT_LOG unset, the event
+        log IS consulted — and the event-log state takes over per the
+        auto-mode dispatch. Same scenario as
+        test_auto_with_events_uses_event_log_state but env unset."""
+        monkeypatch.delenv("CCM_USE_EVENT_LOG", raising=False)
+        mock_events.return_value = (
+            {"ts": int(time.time()), "type": "pretool"},
+        )
+        mock_hook.return_value = None  # legacy returns IDLE
+        mock_tmux.return_value = "❯ "
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0")]
+        state = ccm_core.detect_window_state(
+            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
+        )
+        # Reader was called (events consulted under default mode).
+        mock_events.assert_called()
+        # Event-log derive returns BUSY for pretool → auto dispatch
+        # commits BUSY (the same behaviour as explicit auto).
+        assert state == "BUSY"

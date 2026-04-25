@@ -1001,26 +1001,41 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
 
 def _event_log_mode():
     """Read CCM_USE_EVENT_LOG env var and normalize to one of:
-      ""         — disabled (legacy path only, no event-log read)
+      "off"      — disabled (legacy path only, no event-log read).
+                   Must be set explicitly (`0` / `off` / `no` / `false`).
       "observe"  — compute both, log to trace, use legacy as authoritative
-      "auto"     — use event-log state per-project IFF the event log
-                   file exists for that project; otherwise fall back to
-                   legacy state. Recommended production setting once
-                   hooks have been confirmed firing
-      "primary"  — always commit event-log state, even when the log is
-                   empty (returns IDLE). Diagnostic / forced-mode only
+      "auto"     — commit event-log state when derive returns non-None;
+                   otherwise fall back to legacy. **This is the default
+                   when the env var is unset** (P3b, 2026-04-25). Pre-P3b
+                   the unset default was "off"; the flip is justified by
+                   the observe-mode rollout finding zero false-IDLE diffs
+                   that the safety nets in `derive_state_from_events`
+                   (raw=PERMIT override, None-on-empty fallback) did not
+                   already catch
+      "primary"  — same dispatch as auto today; kept as a distinct token
+                   so a future diagnostic flag can bring back the
+                   "commit even when events are empty" behaviour without
+                   reusing this name
 
-    Accepted aliases: "1" / "true" / "yes" / "primary" → "primary".
-    Anything else ("", "0", unset) → disabled.
+    Accepted aliases: "1" / "true" / "yes" / "primary" / "on" → "primary".
+    Falsy values (`""` / `"0"` / `"off"` / `"no"` / `"false"`) → "off".
+    Unset → "auto" (the new default).
+    Unknown values → "auto" (conservative: opt-in remains the safe
+    side; users who explicitly want legacy-only must say so).
     """
-    raw = os.environ.get("CCM_USE_EVENT_LOG", "").strip().lower()
+    raw_env = os.environ.get("CCM_USE_EVENT_LOG")
+    if raw_env is None:
+        return "auto"  # P3b default
+    raw = raw_env.strip().lower()
+    if raw in ("", "0", "off", "no", "false"):
+        return "off"
     if raw == "observe":
         return "observe"
     if raw == "auto":
         return "auto"
     if raw in ("1", "true", "yes", "primary", "on"):
         return "primary"
-    return ""
+    return "auto"
 
 
 def detect_window_state(win_target, project_dir, prev_state,
@@ -1061,7 +1076,7 @@ def detect_window_state(win_target, project_dir, prev_state,
 
     mode = _event_log_mode()
     event_log_state = None
-    if mode:
+    if mode != "off":
         events = ccm_core.read_events_tail(project_dir)
         # pid_present: the legacy raw detection already resolved SHELL
         # when no claude process is present, so raw != "SHELL" is a
