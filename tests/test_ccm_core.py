@@ -4470,6 +4470,72 @@ class TestDeriveStateFromEvents:
             pid_present=True, claude_pid_age=100,
         ) == "IDLE"
 
+    def test_stale_permit_with_running_tool_stays_permit(self):
+        """The exact scenario from project_false_idle_long_tool.md:
+        user accepted a permission dialog, Claude started a long tool,
+        but PreToolUse fired silently (Claude Code #16047-class bug).
+        In the legacy pipeline raw=IDLE + stale hook + no prev=BUSY
+        fell through `default → IDLE`, and ccm send would then quietly
+        inject keystrokes into a pane running a tool.
+
+        With the event log as the source of truth, the latest event
+        is still `permit_req` (the dropped PreToolUse left no trace),
+        so state stays PERMIT. That is a cosmetic mismatch (no dialog
+        on screen) but a safe one: PERMIT refuses ccm send even with
+        --force, which is the whole point of refusing to decay by
+        timer."""
+        events = (
+            {"ts": 100, "type": "prompt"},
+            {"ts": 150, "type": "permit_req"},
+            # PreToolUse event missing — Claude Code dropped it.
+        )
+        assert ccm_core.derive_state_from_events(
+            events=events, jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+        ) == "PERMIT"
+
+    def test_multi_turn_tool_chain_transitions(self):
+        """Full lifecycle walk of a multi-turn response: Claude runs a
+        tool, pauses at a Stop boundary with stop_reason=tool_use (an
+        intermediate, not final, Stop), then the next turn starts with
+        another PreToolUse, and finally ends with Stop + end_turn.
+
+        The event-log pipeline must produce CONT at the intermediate
+        boundary (neither IDLE nor BUSY — tool pending, no new start
+        event yet) and flip back to BUSY as soon as the next start
+        event appears. This is what replaces the legacy
+        `jsonl_tool_use_pending` rule's 15-second BUSY-hold window."""
+        # Turn 1: prompt, tool runs, intermediate Stop.
+        turn1 = (
+            {"ts": 100, "type": "prompt"},
+            {"ts": 101, "type": "pretool"},
+            {"ts": 102, "type": "posttool"},
+            {"ts": 103, "type": "stop"},
+        )
+        assert ccm_core.derive_state_from_events(
+            events=turn1, jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+        ) == "CONT"
+
+        # Turn 2 start: next PreToolUse clears CONT → BUSY.
+        turn2_start = turn1 + (
+            {"ts": 110, "type": "pretool"},
+        )
+        assert ccm_core.derive_state_from_events(
+            events=turn2_start, jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+        ) == "BUSY"
+
+        # Final Stop with end_turn → IDLE (response complete).
+        turn2_end = turn2_start + (
+            {"ts": 115, "type": "posttool"},
+            {"ts": 116, "type": "stop"},
+        )
+        assert ccm_core.derive_state_from_events(
+            events=turn2_end, jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=3000,
+        ) == "IDLE"
+
 
 # ─── Event log env-var switch ───
 
