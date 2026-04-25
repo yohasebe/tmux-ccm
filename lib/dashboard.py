@@ -48,9 +48,10 @@ C_DIM = 6
 C_CYAN = 7
 C_YELLOW = 8
 C_SYNCING = 9
+C_CONT = 10  # event-log "tool_use in progress, hook silent" — amber
 
 STATE_COLOR_PAIR = {
-    "PERMIT": C_PERMIT, "BUSY": C_BUSY,
+    "PERMIT": C_PERMIT, "BUSY": C_BUSY, "CONT": C_CONT,
     "IDLE": C_IDLE, "SHELL": C_SHELL, "DOWN": C_SHELL,
 }
 
@@ -227,6 +228,7 @@ class Dashboard:
             # Salmon for BUSY (matches Claude Code's "Choreographing..." text)
             curses.init_pair(C_PERMIT, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_BUSY, 216, -1)    # salmon (#ff9966, matches status bar #e8967d)
+            curses.init_pair(C_CONT, 179, -1)    # amber (#d7af5f, matches status bar)
             curses.init_pair(C_COMPLETED, curses.COLOR_GREEN, -1)
             curses.init_pair(C_IDLE, 68, -1)      # blue
             curses.init_pair(C_SHELL, 245, -1)    # gray
@@ -237,6 +239,7 @@ class Dashboard:
         else:
             curses.init_pair(C_PERMIT, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_BUSY, curses.COLOR_RED, -1)
+            curses.init_pair(C_CONT, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_COMPLETED, curses.COLOR_GREEN, -1)
             curses.init_pair(C_IDLE, curses.COLOR_BLUE, -1)
             curses.init_pair(C_SHELL, curses.COLOR_WHITE, -1)

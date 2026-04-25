@@ -264,7 +264,7 @@ HOOK_SCRIPTS = [
     "on-session-end.sh",
 ]
 
-STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
+STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "CONT": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
 # Detection state icons. Keep in sync with `lib/state_meta.sh` —
 # bash hooks pay a ~50ms cost per Python cold start, so we cannot
 # just shell out to Python to resolve icons; the bash side has its

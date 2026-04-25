@@ -4019,6 +4019,28 @@ class TestCmdSend:
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
 
+    def test_send_cont_rejected_without_force(self, monkeypatch, capsys):
+        """CONT mirrors BUSY policy: refuse without --force. The error
+        message must mention CONT specifically so the caller can quote
+        the correct state back to the user."""
+        project = self._make_project(state="CONT")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
+            ccm_core.cmd_send(["blog", "hello"])
+        err = capsys.readouterr().err
+        assert "CONT" in err
+        assert "tool_use" in err
+        assert "--force" in err
+
+    def test_send_cont_allowed_with_force(self, monkeypatch):
+        """--force queues into CONT just like BUSY."""
+        project = self._make_project(state="CONT")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_core.cmd_send(["blog", "--force", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
+
     def test_send_shell_rejected_without_start(self, monkeypatch):
         project = self._make_project(state="SHELL")
         self._patch_resolution(monkeypatch, project=project)
@@ -4485,3 +4507,14 @@ class TestContStateRegistered:
     def test_cont_has_icon(self):
         assert "CONT" in ccm_core.STATE_ICONS
         assert ccm_core.STATE_ICONS["CONT"] == "◍"
+
+    def test_cont_in_state_priority(self):
+        """CONT must have a sort priority so dashboard ordering and
+        the inject_status grouping work when the event-log path is
+        active. CONT shares BUSY's priority slot — both mean Claude
+        is mid-turn and outranks IDLE/SHELL for prominence."""
+        assert "CONT" in ccm_core.STATE_PRIORITY
+        assert ccm_core.STATE_PRIORITY["CONT"] == ccm_core.STATE_PRIORITY["BUSY"]
+        # And CONT outranks IDLE/SHELL just like BUSY does.
+        assert ccm_core.STATE_PRIORITY["CONT"] < ccm_core.STATE_PRIORITY["IDLE"]
+        assert ccm_core.STATE_PRIORITY["CONT"] < ccm_core.STATE_PRIORITY["SHELL"]

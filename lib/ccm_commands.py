@@ -646,6 +646,9 @@ def cmd_send(args):
     State policy:
       IDLE         → send immediately
       BUSY         → refuse without --force; queue into buffer with --force
+      CONT         → same as BUSY (Claude paused mid-turn awaiting a tool
+                     result; queueing now still mixes with the in-flight
+                     turn). Only emitted when CCM_USE_EVENT_LOG is active
       PERMIT       → ALWAYS refuse (hard guard — typing into a permission
                      dialog could accidentally approve or deny a tool call)
       SHELL        → refuse without --start; launch Claude + 2s wait with --start
@@ -806,7 +809,14 @@ def cmd_send(args):
         # ready. 2 seconds is a reasonable compromise on modern hardware.
         time.sleep(2)
 
-    if state == "BUSY" and not force:
+    if state in ("BUSY", "CONT") and not force:
+        if state == "CONT":
+            ccm_core.ccm_die(
+                f"{project_name} is CONT (tool_use in progress). Claude "
+                "paused mid-turn awaiting a tool result; the message "
+                "would queue and mix with the in-flight turn. Use "
+                "--force if that is what you want."
+            )
         ccm_core.ccm_die(
             f"{project_name} is BUSY. The message would queue in the "
             "input buffer and mix with Claude's current turn. Use --force "
@@ -823,7 +833,7 @@ def cmd_send(args):
         preview = message.strip().replace("\n", " ")[:80]
         if len(message.strip()) > 80:
             preview += "..."
-        tag = " (force)" if state == "BUSY" else ""
+        tag = " (force)" if state in ("BUSY", "CONT") else ""
         print(f"Send to {project_name} ({state}{tag}): {preview}")
         try:
             ans = input("Proceed? [y/N]: ").strip().lower()
