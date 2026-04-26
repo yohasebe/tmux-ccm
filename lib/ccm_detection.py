@@ -871,20 +871,19 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # ended, but the Stop hook failed to fire — either the user
         # pressed Esc to interrupt mid-stream (Esc bypasses Stop in
         # current Claude Code), or the hook pipeline went silent
-        # (anthropics/claude-code#16047 class). Either way, holding
-        # BUSY off the stale start event would falsely keep the
-        # dashboard at BUSY for the rest of the 600 s
-        # BUSY_HOOK_JSONL_WINDOW. JSONL is the authoritative
-        # completion signal; defer to legacy (which sees raw=IDLE
-        # after the interrupt and lands on IDLE).
+        # (anthropics/claude-code#16047 class). The naive "defer to
+        # legacy" doesn't help here: legacy's hook_busy_idle rule
+        # holds BUSY off the stale BUSY signal that the Stop hook
+        # would have cleared, so deferring would still report BUSY.
+        # Commit IDLE directly — JSONL is the authoritative
+        # completion signal.
         # raw=="PERMIT" is the one exception — A' (capture-pane
-        # footer match) wins over the JSONL-based fallback because
-        # a modal literally on screen is more authoritative than a
-        # JSONL completion record from before the modal appeared.
+        # footer match) wins because a modal literally on screen is
+        # more authoritative than a pre-modal JSONL completion.
         if (raw != "PERMIT"
                 and jsonl_stop_reason in TERMINAL_STOP_REASONS
                 and 0 <= jsonl_age <= JSONL_HOOK_GAP_TOLERANCE):
-            return None
+            return "IDLE"
         candidate = "BUSY"
     elif klass == EVENT_CLASS_IDLE:
         candidate = "IDLE"

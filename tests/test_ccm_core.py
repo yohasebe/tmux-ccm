@@ -4708,21 +4708,22 @@ class TestDeriveStateFromEvents:
     @pytest.mark.parametrize("stop_reason", [
         "end_turn", "max_tokens", "stop_sequence",
     ])
-    def test_start_event_with_fresh_terminal_jsonl_defers(
+    def test_start_event_with_fresh_terminal_jsonl_returns_idle(
         self, event_type, stop_reason
     ):
         """Latest event is start-class but JSONL shows the response
         actually completed (terminal stop_reason within 60 s). The
         Stop hook never wrote a `stop` event — either Esc-interrupt
-        or hook silence (#16047 class). derive must return None so
-        the caller falls back to legacy detection (which then
-        commits IDLE based on raw=IDLE)."""
+        or hook silence (#16047 class). derive must return IDLE
+        directly: deferring to legacy here doesn't help because the
+        legacy hook_busy_idle rule still has the stale BUSY signal
+        that the missing Stop hook would have cleared."""
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": event_type},),
             jsonl_stop_reason=stop_reason,
             pid_present=True, claude_pid_age=300,
             jsonl_age=10,
-        ) is None
+        ) == "IDLE"
 
     def test_start_event_with_stale_terminal_jsonl_stays_busy(self):
         """If the JSONL terminal stop_reason is older than the
