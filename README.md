@@ -21,7 +21,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 ## Features
 
 - **Resource Management** — Idle Claude Code sessions auto-exit after 10 minutes to free memory and CPU; auto-restart with `--continue` when you switch back
-- **Dashboard** — Interactive popup with real-time Claude Code status (BUSY/IDLE/PERMIT)
+- **Dashboard** — Interactive popup with real-time Claude Code status (BUSY / CONT / IDLE / PERMIT)
 - **Tree View** — Hierarchical session/window/pane display with navigation
 - **Git Integration** — Branch name and dirty status (`main*`) per project
 - **Port Detection** — Listening TCP ports per project (with caching)
