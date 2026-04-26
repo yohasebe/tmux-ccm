@@ -2592,6 +2592,241 @@ class TestLifecycleSequences:
         assert rule == "default"
         assert state == "IDLE"
 
+    # ─── 2026-04-26 fix lifecycles ───
+
+    def test_esc_interrupt_release_lifecycle(self):
+        """User submits prompt, claude responds for a few seconds,
+        user presses Esc to interrupt. Claude Code does NOT fire
+        Stop / StopFailure on Esc, so the BUSY hook signal stays
+        active and the latest event log entry remains start-class.
+        Without the release rules the dashboard would stay BUSY for
+        up to 10 minutes; with them it lands on IDLE within seconds.
+
+        Walks the legacy path (event log not consulted here — that
+        is the derive_state_from_events scope, covered separately).
+        """
+        # T0: prompt submitted, hook=BUSY just fired.
+        assert self._eval(
+            raw="IDLE", prev_state="IDLE", hook_state="BUSY",
+            hook_age=0, jsonl_age=0,
+        ) == ("hook_fresh_busy", "BUSY")
+        # T0+5: claude streaming response, hook still active.
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="BUSY",
+            hook_age=5, jsonl_age=2,
+        ) == ("hook_busy_idle", "BUSY")
+        # T0+10: user presses Esc. Claude writes "Interrupted"
+        # message with stop_reason=stop_sequence to JSONL. Stop
+        # hook does NOT fire — BUSY signal stays.
+        # T0+30: jsonl_age=20 (terminal stop_reason 20s ago),
+        # hook_age=30 (BUSY signal 30s ago, fresher? no, OLDER).
+        # → release rule fires: hook_busy_jsonl_terminal_release.
+        assert self._eval(
+            raw="IDLE", prev_state="BUSY", hook_state="BUSY",
+            hook_age=30, jsonl_age=20,
+            jsonl_last_stop_reason="stop_sequence",
+        ) == ("hook_busy_jsonl_terminal_release", "IDLE")
+
+    def test_permit_release_after_silent_resolution_lifecycle(self):
+        """User accepts a permission dialog in `accept edits on`
+        mode (raw=BUSY via PATTERN_ACCEPT_EDITS). Claude Code does
+        not fire a "permission resolved" hook to clear the PERMIT
+        signal. Claude completes the response. Without the release
+        rule, the dashboard stays stuck on PERMIT (the live
+        regression observed on monadic-chat 2026-04-26 evening).
+        """
+        # T0: tool wants permission, dialog shown.
+        assert self._eval(
+            raw="PERMIT", prev_state="BUSY", hook_state="PERMIT",
+            hook_age=0,
+        ) == ("hook_permit_blocking", "PERMIT")
+        # T0+30: user accepts, modal disappears, accept-edits keeps
+        # raw=BUSY. PERMIT hook NOT cleared by Claude Code. Tool runs
+        # but no further hook events for the response (silence).
+        # T0+60: claude finishes with end_turn in JSONL.
+        # T0+90 scan: hook_age=90 (PERMIT signal stale), jsonl_age=30
+        # (terminal end_turn 30s ago, fresher than the permit hook).
+        # → release rule fires: hook_permit_jsonl_terminal_release.
+        assert self._eval(
+            raw="BUSY", prev_state="PERMIT", hook_state="PERMIT",
+            hook_age=90, jsonl_age=30,
+            jsonl_last_stop_reason="end_turn",
+        ) == ("hook_permit_jsonl_terminal_release", "IDLE")
+
+    def test_fresh_prompt_after_terminal_does_not_release(self):
+        """Regression guard for both release rules. A new prompt
+        submitted right after a previous turn ended must NOT fire
+        the release rules — the JSONL terminal in that case belongs
+        to the prior turn, not to anything related to the fresh
+        hook. Both rules use `hook_after_real_activity_lt=0` to
+        require the JSONL terminal to be fresher than the hook.
+        """
+        # New prompt: hook=BUSY just fired (age=1s, within HOOK_FRESH_THRESHOLD=2).
+        # JSONL still carries prior turn's end_turn from 8s ago.
+        # hook_age (1) < jsonl_age (8) → hook FRESHER than JSONL terminal
+        # → hook_busy_jsonl_terminal_release must NOT fire.
+        assert self._eval(
+            raw="IDLE", prev_state="IDLE", hook_state="BUSY",
+            hook_age=1, jsonl_age=8,
+            jsonl_last_stop_reason="end_turn",
+        ) == ("hook_fresh_busy", "BUSY")
+        # Same scenario but PERMIT axis: a fresh permit_req fired
+        # just after a prior turn ended. Must hold PERMIT, not release.
+        assert self._eval(
+            raw="BUSY", prev_state="BUSY", hook_state="PERMIT",
+            hook_age=2, jsonl_age=8,
+            jsonl_last_stop_reason="end_turn",
+        ) == ("hook_permit_blocking", "PERMIT")
+
+
+# ─── Property / invariant tests ───
+#
+# These tests assert global invariants of the detection pipeline
+# rather than scenario-specific outputs. They catch entire classes
+# of regressions (e.g. "ever returning DOWN from a non-SHELL pid"
+# would break dashboard rendering) and document the design contract
+# that future rule edits must preserve.
+
+VALID_RESOLVED_STATES = frozenset(
+    {"SHELL", "DOWN", "BUSY", "CONT", "IDLE", "PERMIT"}
+)
+
+
+class TestPipelineInvariants:
+    """Run `evaluate_rules` over the full Cartesian product of
+    inputs and verify each output respects the documented invariants.
+    Pure unit-level — no mocks."""
+
+    @pytest.mark.parametrize("raw", ["IDLE", "BUSY", "PERMIT", "SHELL", "DOWN"])
+    @pytest.mark.parametrize("hook_state", ["", "BUSY", "PERMIT"])
+    @pytest.mark.parametrize("prev_state", ["IDLE", "BUSY", "PERMIT", "SHELL"])
+    def test_resolved_state_always_in_valid_set(
+        self, raw, hook_state, prev_state
+    ):
+        """Every (raw × hook × prev) combination must resolve to one
+        of the documented states. New rules must not introduce e.g.
+        a stray "DONE" or lowercase variant — the dashboard renderer
+        and ccm send dispatcher both key on this set."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw=raw, hook_state=hook_state, prev_state=prev_state,
+                     hook_age=10 if hook_state else -1, jsonl_age=10)
+        )
+        assert state in VALID_RESOLVED_STATES, (
+            f"raw={raw} hook={hook_state} prev={prev_state} → "
+            f"rule={rule.name} state={state} (not in VALID_RESOLVED_STATES)"
+        )
+
+    @pytest.mark.parametrize("hook_state", ["", "BUSY", "PERMIT"])
+    @pytest.mark.parametrize("prev_state", ["IDLE", "BUSY", "PERMIT", "SHELL"])
+    def test_raw_shell_always_resolves_to_shell(self, hook_state, prev_state):
+        """raw=SHELL is authoritative from the process tree (no claude
+        process). Must always win over any hook signal or prev_state.
+        Without this guarantee, a stale BUSY hook could keep the
+        dashboard at BUSY for a project whose Claude was killed."""
+        _rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="SHELL", hook_state=hook_state, prev_state=prev_state,
+                     hook_age=10 if hook_state else -1)
+        )
+        assert state == "SHELL"
+
+    @pytest.mark.parametrize("hook_state", ["", "BUSY", "PERMIT"])
+    def test_raw_down_always_resolves_to_down(self, hook_state):
+        """raw=DOWN means no pane process at all (window deleted).
+        Must always resolve to DOWN regardless of any other signal."""
+        _rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="DOWN", hook_state=hook_state,
+                     hook_age=10 if hook_state else -1)
+        )
+        assert state == "DOWN"
+
+    @pytest.mark.parametrize("hook_state", ["", "BUSY", "PERMIT"])
+    @pytest.mark.parametrize("prev_state", ["IDLE", "BUSY", "PERMIT", "SHELL"])
+    def test_no_legacy_rule_emits_cont(self, hook_state, prev_state):
+        """CONT is exclusively emitted by the event-log path
+        (derive_state_from_events). The legacy DETECTION_RULES table
+        must never produce CONT — it is reserved for the new state
+        machine semantic of "Stop event seen but JSONL stop_reason
+        is tool_use" which legacy cannot identify cleanly."""
+        for raw in ("IDLE", "BUSY", "PERMIT"):
+            for jsonl_stop in (None, "tool_use", "end_turn", "max_tokens"):
+                _rule, state = ccm_core.evaluate_rules(
+                    make_ctx(raw=raw, hook_state=hook_state,
+                             prev_state=prev_state,
+                             hook_age=10 if hook_state else -1,
+                             jsonl_age=10,
+                             jsonl_last_stop_reason=jsonl_stop)
+                )
+                assert state != "CONT", (
+                    f"legacy emitted CONT for raw={raw} hook={hook_state} "
+                    f"prev={prev_state} jsonl_stop={jsonl_stop}"
+                )
+
+
+class TestDeriveInvariants:
+    """Property tests for `derive_state_from_events`."""
+
+    @pytest.mark.parametrize("event_type", [
+        "prompt", "pretool", "posttool", "subagent", "compact",
+        "stop", "permit_req", "notify_permit", "notify_idle",
+        "session_end",
+    ])
+    @pytest.mark.parametrize("stop_reason", [
+        None, "tool_use", "end_turn", "max_tokens", "stop_sequence",
+        "future_unknown",
+    ])
+    def test_derive_returns_valid_state_or_none(
+        self, event_type, stop_reason
+    ):
+        """For every (event_type × stop_reason) combination, derive
+        must return a member of VALID_RESOLVED_STATES or None.
+        Catches schema drift bugs where a new event type silently
+        produces a junk return value."""
+        result = ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": event_type},),
+            jsonl_stop_reason=stop_reason,
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=5, now=200,
+        )
+        assert result is None or result in VALID_RESOLVED_STATES, (
+            f"event={event_type} stop_reason={stop_reason} → {result!r}"
+        )
+
+    @pytest.mark.parametrize("raw", [None, "IDLE", "BUSY", "PERMIT"])
+    @pytest.mark.parametrize("event_type", [
+        "prompt", "pretool", "posttool", "stop", "permit_req",
+    ])
+    def test_derive_pid_absent_always_shell(self, raw, event_type):
+        """pid_present=False is the most authoritative signal —
+        process tree says claude is gone. derive must short-circuit
+        to SHELL regardless of event log content or raw value."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": event_type},),
+            jsonl_stop_reason="end_turn",
+            pid_present=False, claude_pid_age=-1,
+            jsonl_age=5, now=200, raw=raw,
+        ) == "SHELL"
+
+    @pytest.mark.parametrize("event_type", [
+        "prompt", "pretool", "posttool", "subagent", "compact",
+        "permit_req", "notify_permit", "stop",
+    ])
+    def test_raw_permit_overrides_any_non_permit_candidate(self, event_type):
+        """The A' override: raw=PERMIT (capture-pane footer match)
+        always resolves to PERMIT, regardless of latest event class.
+        Modal on screen is the most authoritative signal we have."""
+        for stop_reason in (None, "tool_use", "end_turn"):
+            result = ccm_core.derive_state_from_events(
+                events=({"ts": 100, "type": event_type},),
+                jsonl_stop_reason=stop_reason,
+                pid_present=True, claude_pid_age=300,
+                jsonl_age=5, now=200, raw="PERMIT",
+            )
+            # Either None (defer to legacy, which also lands on PERMIT)
+            # or PERMIT directly.
+            assert result in (None, "PERMIT"), (
+                f"event={event_type} stop_reason={stop_reason} → {result!r}"
+            )
+
 
 # ─── Formatting helpers ───
 
