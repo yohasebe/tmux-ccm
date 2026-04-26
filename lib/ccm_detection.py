@@ -770,7 +770,7 @@ TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
 
 def derive_state_from_events(events, jsonl_stop_reason,
                              pid_present, claude_pid_age, raw=None,
-                             jsonl_age=-1):
+                             jsonl_age=-1, now=0):
     """Pure function: resolve state from event log tail + JSONL + pid.
 
     Arguments:
@@ -880,9 +880,18 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # raw=="PERMIT" is the one exception — A' (capture-pane
         # footer match) wins because a modal literally on screen is
         # more authoritative than a pre-modal JSONL completion.
+        # Critical guard: the JSONL terminal stop_reason must be
+        # FRESHER than the latest start event. Without this guard,
+        # a fresh prompt submitted right after a previous turn ended
+        # would falsely flip to IDLE — the JSONL terminal in that
+        # case belongs to the prior turn, not the current event.
+        # Compare via age: smaller age == more recent.
+        event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
+        event_age = (now - event_ts) if (now > 0 and event_ts > 0) else -1
         if (raw != "PERMIT"
                 and jsonl_stop_reason in TERMINAL_STOP_REASONS
-                and 0 <= jsonl_age <= JSONL_HOOK_GAP_TOLERANCE):
+                and 0 <= jsonl_age <= JSONL_HOOK_GAP_TOLERANCE
+                and event_age > jsonl_age):
             return "IDLE"
         candidate = "BUSY"
     elif klass == EVENT_CLASS_IDLE:
@@ -1118,6 +1127,7 @@ def detect_window_state(win_target, project_dir, prev_state,
             claude_pid_age=ctx.claude_pid_age,
             raw=ctx.raw,
             jsonl_age=ctx.jsonl_age,
+            now=ctx.now,
         )
 
     # Commit which state?

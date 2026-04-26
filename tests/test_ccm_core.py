@@ -4712,18 +4712,46 @@ class TestDeriveStateFromEvents:
         self, event_type, stop_reason
     ):
         """Latest event is start-class but JSONL shows the response
-        actually completed (terminal stop_reason within 60 s). The
-        Stop hook never wrote a `stop` event — either Esc-interrupt
-        or hook silence (#16047 class). derive must return IDLE
-        directly: deferring to legacy here doesn't help because the
-        legacy hook_busy_idle rule still has the stale BUSY signal
-        that the missing Stop hook would have cleared."""
+        actually completed (terminal stop_reason fresher than the
+        event itself). The Stop hook never wrote a `stop` event —
+        either Esc-interrupt or hook silence (#16047 class). derive
+        must return IDLE directly: deferring to legacy here doesn't
+        help because the legacy hook_busy_idle rule still has the
+        stale BUSY signal that the missing Stop hook would have
+        cleared.
+
+        Event age (now - event_ts) must be greater than jsonl_age
+        for the fallback to trigger — that is the discriminator
+        against the "fresh prompt right after previous turn ended"
+        false-positive (project_p3b regression caught 2026-04-26)."""
+        # event_ts=100, now=200 → event_age=100; jsonl_age=10. JSONL
+        # is much fresher than the event → IDLE.
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": event_type},),
             jsonl_stop_reason=stop_reason,
             pid_present=True, claude_pid_age=300,
-            jsonl_age=10,
+            jsonl_age=10, now=200,
         ) == "IDLE"
+
+    def test_fresh_prompt_after_previous_turn_stays_busy(self):
+        """Regression guard (2026-04-26): a fresh `prompt` event
+        submitted right after a previous turn ended must NOT trigger
+        the Esc-fallback. The JSONL terminal stop_reason in that
+        case belongs to the prior turn, not the current event.
+
+        Pre-fix this scenario produced a phantom IDLE flicker —
+        observed live on the teaching pane while Claude was clearly
+        Incubating but the dashboard rendered ● IDLE ✓0s."""
+        # event_ts=200 (just now), now=205 → event_age=5
+        # jsonl_age=10 (previous turn ended 10 s ago)
+        # event_age (5) < jsonl_age (10) → JSONL terminal is OLDER
+        # than the event → fallback must NOT trigger → BUSY.
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 200, "type": "prompt"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=10, now=205,
+        ) == "BUSY"
 
     def test_start_event_with_stale_terminal_jsonl_stays_busy(self):
         """If the JSONL terminal stop_reason is older than the
