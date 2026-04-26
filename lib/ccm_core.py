@@ -1398,6 +1398,52 @@ def build_project_list(fast=False):
 
 # ─── Formatting helpers ───
 
+# Threshold above which a hook signal counts as "stale" enough to
+# surface in the UI. Matches `JSONL_HOOK_GAP_TOLERANCE` so the
+# dashboard's "stale" affordance lines up with the threshold the
+# detection rules already use to decide whether to release a stuck
+# state. Visually flagging staleness BEFORE the release rules can
+# release would be confusing — the user would see the hint, do
+# nothing, and the rule would silently un-stick anyway.
+SIGNAL_STALE_DISPLAY_THRESHOLD = 60  # seconds
+
+
+def signal_age_suffix(project_dir, state):
+    """Returns a parenthesised stale-signal age (e.g. " (8m)") when
+    the hook signal for this project is old enough to be worth
+    surfacing in the UI, or "" otherwise.
+
+    Only returns a non-empty string for state in {BUSY, PERMIT} —
+    those are the states where a stale hook signal can mask a real
+    state change (CONT / IDLE) that the release rules cannot
+    confidently make. SHELL / IDLE / DOWN / CONT either have no
+    associated hook signal or the signal is freshness-irrelevant.
+
+    Best-effort: never raises; returns "" on any error reading the
+    signal file."""
+    if state not in ("BUSY", "PERMIT"):
+        return ""
+    if not project_dir:
+        return ""
+    try:
+        sig = read_hook_signal(project_dir)
+    except Exception:
+        return ""
+    if sig is None:
+        return ""
+    ts = sig[0]
+    age = int(time.time()) - ts
+    if age < SIGNAL_STALE_DISPLAY_THRESHOLD:
+        return ""
+    if age < 60:
+        return f" ({age}s)"
+    if age < 3600:
+        return f" ({age // 60}m)"
+    if age < 86400:
+        return f" ({age // 3600}h)"
+    return f" ({age // 86400}d)"
+
+
 def format_elapsed(ts):
     if not ts or ts == 0:
         return ""
@@ -1724,12 +1770,16 @@ def print_status():
     for p in projects:
         color = _C_STATE.get(p.state, _C_DIM)
         icon = STATE_ICONS.get(p.state, "?")
-        status = f"{color}{icon} {p.state}{_C_RESET}"
+        suffix = signal_age_suffix(p.dir, p.state)
+        status = f"{color}{icon} {p.state}{suffix}{_C_RESET}"
         branch = p.branch or "-"
         ports = p.ports or "-"
         d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
-        # Status field with ANSI codes is wider than visible, compensate
-        print(f"{status:<22} {p.name:<20} {branch:<16} {ports:<12} {d}")
+        # Status field with ANSI codes is wider than visible; reserve
+        # extra width when a stale-signal suffix is appended so columns
+        # still line up.
+        width = 22 + len(suffix)
+        print(f"{status:<{width}} {p.name:<20} {branch:<16} {ports:<12} {d}")
 
 
 def print_ports():

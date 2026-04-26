@@ -2854,6 +2854,61 @@ class TestFormatElapsed:
         assert ccm_core.format_elapsed(None) == ""
 
 
+class TestSignalAgeSuffix:
+    """The stale-signal display affordance for the dashboard /
+    `ccm status` UI. Surfaces a hook signal age (e.g. " (8m)")
+    when state is BUSY or PERMIT and the signal is older than
+    SIGNAL_STALE_DISPLAY_THRESHOLD."""
+
+    def _patch_signal(self, monkeypatch, ts_or_none):
+        if ts_or_none is None:
+            monkeypatch.setattr(ccm_core, "read_hook_signal",
+                                lambda d: None)
+        else:
+            monkeypatch.setattr(ccm_core, "read_hook_signal",
+                                lambda d: (ts_or_none, "BUSY", ""))
+
+    @pytest.mark.parametrize("state", ["IDLE", "SHELL", "DOWN", "CONT"])
+    def test_non_busy_permit_states_return_empty(self, state, monkeypatch):
+        """Only BUSY / PERMIT can mask a real state behind a stale
+        hook. Other states either have no hook signal or the
+        signal is freshness-irrelevant."""
+        self._patch_signal(monkeypatch, int(time.time()) - 600)
+        assert ccm_core.signal_age_suffix("/p", state) == ""
+
+    def test_no_signal_returns_empty(self, monkeypatch):
+        self._patch_signal(monkeypatch, None)
+        assert ccm_core.signal_age_suffix("/p", "BUSY") == ""
+
+    def test_empty_dir_returns_empty(self, monkeypatch):
+        # Should not even attempt to read the signal.
+        self._patch_signal(monkeypatch, int(time.time()) - 600)
+        assert ccm_core.signal_age_suffix("", "BUSY") == ""
+        assert ccm_core.signal_age_suffix(None, "PERMIT") == ""
+
+    def test_fresh_signal_returns_empty(self, monkeypatch):
+        """Below the display threshold the suffix is suppressed —
+        otherwise every active turn would clutter the dashboard."""
+        self._patch_signal(monkeypatch,
+                           int(time.time()) - (ccm_core.SIGNAL_STALE_DISPLAY_THRESHOLD - 1))
+        assert ccm_core.signal_age_suffix("/p", "BUSY") == ""
+
+    def test_stale_permit_minutes_format(self, monkeypatch):
+        self._patch_signal(monkeypatch, int(time.time()) - 480)  # 8 min
+        assert ccm_core.signal_age_suffix("/p", "PERMIT") == " (8m)"
+
+    def test_stale_busy_hours_format(self, monkeypatch):
+        self._patch_signal(monkeypatch, int(time.time()) - 7200)  # 2 h
+        assert ccm_core.signal_age_suffix("/p", "BUSY") == " (2h)"
+
+    def test_read_signal_exception_returns_empty(self, monkeypatch):
+        """Best-effort: never propagate I/O errors to the UI."""
+        def raiser(d):
+            raise OSError("boom")
+        monkeypatch.setattr(ccm_core, "read_hook_signal", raiser)
+        assert ccm_core.signal_age_suffix("/p", "BUSY") == ""
+
+
 class TestFormatDir:
     def test_fits_full(self):
         assert ccm_core.format_dir("/short", 10, 80) == "/short"

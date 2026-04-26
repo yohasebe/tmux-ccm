@@ -22,6 +22,7 @@ from ccm_core import (
     STATE_PRIORITY, STATE_ICONS, CLAUDE_CMD,
     tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
     read_cache_file, build_project_list, format_elapsed, format_dir,
+    signal_age_suffix,
     hooks_configured, hooks_log_warning, disable_all_hooks_warning,
     managed_hooks_only_warning, shell_cluster_warnings,
     reset_window_after_attach,
@@ -563,6 +564,17 @@ class Dashboard:
 
                     # Remaining info after name column
                     col = COL_REST
+
+                    # Stale-signal age suffix for BUSY/PERMIT (e.g. "(8m)").
+                    # Surfaces hook signals that have outlived the
+                    # JSONL_HOOK_GAP_TOLERANCE window but cannot be
+                    # safely auto-released. Lets the user judge whether
+                    # the state is fresh or stuck.
+                    suffix = signal_age_suffix(p.dir, p.state)
+                    if suffix:
+                        self._addstr(stdscr, y, col, suffix.strip(),
+                                     curses.color_pair(C_DIM))
+                        col += len(suffix)
 
                     # Branch
                     if p.branch:
