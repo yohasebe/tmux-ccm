@@ -4700,6 +4700,92 @@ class TestDeriveStateFromEvents:
             raw="PERMIT",
         ) is None
 
+    # ─── Esc-interrupt / hook-silence fallback (2026-04-26) ───
+
+    @pytest.mark.parametrize("event_type", [
+        "prompt", "pretool", "posttool", "subagent", "compact",
+    ])
+    @pytest.mark.parametrize("stop_reason", [
+        "end_turn", "max_tokens", "stop_sequence",
+    ])
+    def test_start_event_with_fresh_terminal_jsonl_defers(
+        self, event_type, stop_reason
+    ):
+        """Latest event is start-class but JSONL shows the response
+        actually completed (terminal stop_reason within 60 s). The
+        Stop hook never wrote a `stop` event — either Esc-interrupt
+        or hook silence (#16047 class). derive must return None so
+        the caller falls back to legacy detection (which then
+        commits IDLE based on raw=IDLE)."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": event_type},),
+            jsonl_stop_reason=stop_reason,
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=10,
+        ) is None
+
+    def test_start_event_with_stale_terminal_jsonl_stays_busy(self):
+        """If the JSONL terminal stop_reason is older than the
+        gap-tolerance window, it likely belongs to a previous turn,
+        not the current start event. Hold BUSY — claude is genuinely
+        in a long thinking phase or tool wait, NOT a Esc-interrupt
+        aftermath."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "prompt"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=300,  # 5 min old, well past 60 s window
+        ) == "BUSY"
+
+    def test_start_event_with_tool_use_jsonl_stays_busy(self):
+        """JSONL stop_reason=tool_use means a tool is in flight —
+        the response has NOT completed. Don't trigger fallback even
+        if jsonl_age is small."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "pretool"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=2,
+        ) == "BUSY"
+
+    def test_start_event_no_jsonl_info_stays_busy(self):
+        """jsonl_age=-1 (sentinel for "no JSONL data") must NOT
+        trigger the fallback. Without a JSONL signal we cannot
+        confirm completion; default to the conservative BUSY."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "prompt"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=-1,  # default sentinel
+        ) == "BUSY"
+
+    def test_raw_permit_overrides_esc_interrupt_fallback(self):
+        """A' override (raw=PERMIT → PERMIT) must win over the new
+        Esc-interrupt fallback. If the user pressed Esc but the
+        capture-pane footer still shows a permission modal (rare
+        race), the capture-pane is more authoritative than JSONL —
+        the modal is literally on screen waiting for a keypress."""
+        # Without raw=PERMIT, the fallback would return None.
+        # With raw=PERMIT, it must short-circuit to PERMIT instead.
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "prompt"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=10,
+            raw="PERMIT",
+        ) == "PERMIT"
+
+    def test_pause_event_with_terminal_jsonl_still_idle(self):
+        """The existing PAUSE branch (latest event = stop) already
+        returns IDLE for terminal stop_reasons. Verify the new
+        fallback doesn't break it."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "stop"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=10,
+        ) == "IDLE"
+
 
 # ─── Event log env-var switch ───
 

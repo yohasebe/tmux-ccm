@@ -769,7 +769,8 @@ TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
 
 
 def derive_state_from_events(events, jsonl_stop_reason,
-                             pid_present, claude_pid_age, raw=None):
+                             pid_present, claude_pid_age, raw=None,
+                             jsonl_age=-1):
     """Pure function: resolve state from event log tail + JSONL + pid.
 
     Arguments:
@@ -792,6 +793,14 @@ def derive_state_from_events(events, jsonl_stop_reason,
             modal-blocked panes (the event log can lag behind the
             PermissionRequest hook firing or miss it entirely under
             anthropics/claude-code#16047 class regressions).
+        jsonl_age: optional. Seconds since the most recent JSONL
+            real-activity record, or -1 if unavailable. Used together
+            with `jsonl_stop_reason` to detect Esc-interrupt and hook
+            silence: a fresh JSONL terminal stop_reason combined with
+            a start-class latest event proves the response actually
+            ended even though the Stop hook never wrote a `stop`
+            event. In that case the function defers to legacy by
+            returning None.
 
     Returns one of: "SHELL", "PERMIT", "BUSY", "CONT", "IDLE", or
     None. None means "no authoritative answer" — the caller should
@@ -855,6 +864,27 @@ def derive_state_from_events(events, jsonl_stop_reason,
     if klass == EVENT_CLASS_PERMIT:
         candidate = "PERMIT"
     elif klass == EVENT_CLASS_START:
+        # Esc-interrupt / hook-silence fallback (2026-04-26).
+        # Latest event is start-class (prompt / pretool / posttool /
+        # subagent / compact) but JSONL shows the assistant just
+        # completed with a terminal stop_reason. The response really
+        # ended, but the Stop hook failed to fire — either the user
+        # pressed Esc to interrupt mid-stream (Esc bypasses Stop in
+        # current Claude Code), or the hook pipeline went silent
+        # (anthropics/claude-code#16047 class). Either way, holding
+        # BUSY off the stale start event would falsely keep the
+        # dashboard at BUSY for the rest of the 600 s
+        # BUSY_HOOK_JSONL_WINDOW. JSONL is the authoritative
+        # completion signal; defer to legacy (which sees raw=IDLE
+        # after the interrupt and lands on IDLE).
+        # raw=="PERMIT" is the one exception — A' (capture-pane
+        # footer match) wins over the JSONL-based fallback because
+        # a modal literally on screen is more authoritative than a
+        # JSONL completion record from before the modal appeared.
+        if (raw != "PERMIT"
+                and jsonl_stop_reason in TERMINAL_STOP_REASONS
+                and 0 <= jsonl_age <= JSONL_HOOK_GAP_TOLERANCE):
+            return None
         candidate = "BUSY"
     elif klass == EVENT_CLASS_IDLE:
         candidate = "IDLE"
@@ -1088,6 +1118,7 @@ def detect_window_state(win_target, project_dir, prev_state,
             pid_present=pid_present,
             claude_pid_age=ctx.claude_pid_age,
             raw=ctx.raw,
+            jsonl_age=ctx.jsonl_age,
         )
 
     # Commit which state?
