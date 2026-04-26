@@ -1399,13 +1399,14 @@ def build_project_list(fast=False):
 # ─── Formatting helpers ───
 
 # Threshold above which a hook signal counts as "stale" enough to
-# surface in the UI. Matches `JSONL_HOOK_GAP_TOLERANCE` so the
-# dashboard's "stale" affordance lines up with the threshold the
-# detection rules already use to decide whether to release a stuck
-# state. Visually flagging staleness BEFORE the release rules can
-# release would be confusing — the user would see the hint, do
-# nothing, and the rule would silently un-stick anyway.
-SIGNAL_STALE_DISPLAY_THRESHOLD = 60  # seconds
+# surface in the UI. Bound to `JSONL_HOOK_GAP_TOLERANCE` directly
+# (not an independent constant) so the dashboard's "stale" affordance
+# automatically tracks the threshold the detection rules use to
+# decide whether to release a stuck state. Visually flagging
+# staleness BEFORE the release rules can release would be confusing
+# — the user would see the hint, do nothing, and the rule would
+# silently un-stick anyway.
+SIGNAL_STALE_DISPLAY_THRESHOLD = JSONL_HOOK_GAP_TOLERANCE  # seconds
 
 
 def signal_age_suffix(project_dir, state):

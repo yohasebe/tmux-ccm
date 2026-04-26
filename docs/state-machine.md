@@ -98,6 +98,17 @@ The capture-pane footer (`Esc to cancel · Tab to amend`, `Enter to confirm · E
 
 A young claude PID (< 60 s) with raw=BUSY but no hook signal is almost certainly the MCP-loading startup transient (claude has children but hasn't drawn `❯` yet). The `startup_transient_raw_busy` rule demotes this to IDLE rather than reporting a false BUSY for 30 s after every attach.
 
+## Stale-signal UI affordance
+
+When a `BUSY` or `PERMIT` state survives past `JSONL_HOOK_GAP_TOLERANCE` (60 s) and the auto-release rules cannot safely fire (e.g. JSONL `stop_reason=tool_use` rather than terminal), the dashboard and `ccm status` append a parenthesised hook-signal age to the state cell:
+
+```
+⚠ PERMIT (8m)  monadic-chat
+◉ BUSY  (2m)  ccm-dev
+```
+
+This is the principled response to the limitation — when ccm cannot prove the signal is stuck, it surfaces the age so the user can judge. Implementation: [`ccm_core.signal_age_suffix(project_dir, state)`](../lib/ccm_core.py) is the single source of truth, used by both renderers. Threshold is bound directly to `JSONL_HOOK_GAP_TOLERANCE` so the affordance appears exactly when the auto-release window has lapsed. Other states (`IDLE` / `SHELL` / `DOWN` / `CONT`) suppress the suffix — their hook signals are either absent or freshness-irrelevant.
+
 ## Time-window heuristics
 
 These are tunable thresholds with empirically-chosen defaults:

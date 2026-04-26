@@ -400,6 +400,16 @@ class Rule:
         return True
 
 
+# stop_reason values that mean "Claude's response truly ended"
+# (versus "tool_use" which means "paused mid-response for a tool").
+# Single source of truth for both the legacy DETECTION_RULES table
+# (which uses the tuple form) and the event-log derive path (which
+# uses the frozenset form for fast `in` checks). Defined before
+# DETECTION_RULES so the rule definitions can reference the tuple.
+TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
+TERMINAL_STOP_REASONS_TUPLE = tuple(sorted(TERMINAL_STOP_REASONS))
+
+
 # Priority-ordered rule table. First match wins.
 #
 # Priority rationale (4-state model: PERMIT/BUSY/IDLE/SHELL):
@@ -453,7 +463,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         raw_in=("BUSY", "IDLE"),
         jsonl_missing=False,
         jsonl_age_lt=JSONL_HOOK_GAP_TOLERANCE,
-        jsonl_last_stop_reason_in=("end_turn", "max_tokens", "stop_sequence"),
+        jsonl_last_stop_reason_in=TERMINAL_STOP_REASONS_TUPLE,
         hook_after_real_activity_lt=0,
         result="IDLE",
         phase="permit",
@@ -492,7 +502,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         raw_in=("IDLE",),
         jsonl_missing=False,
         jsonl_age_lt=JSONL_HOOK_GAP_TOLERANCE,
-        jsonl_last_stop_reason_in=("end_turn", "max_tokens", "stop_sequence"),
+        jsonl_last_stop_reason_in=TERMINAL_STOP_REASONS_TUPLE,
         hook_after_real_activity_lt=0,
         result="IDLE",
         phase="midturn",
@@ -822,9 +832,43 @@ EVENT_CLASSES = {
     "session_end": EVENT_CLASS_END,
 }
 
-# stop_reason values that mean "Claude's response truly ended"
-# (versus "tool_use" which means "paused mid-response for a tool").
-TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
+def _jsonl_terminal_fresher_than_event(latest, jsonl_stop_reason,
+                                       jsonl_age, now):
+    """Return True iff the JSONL tail's terminal stop_reason is the
+    fresher signal compared to the latest event log record.
+
+    This is the single discriminator behind both Esc-fallback paths
+    in `derive_state_from_events` (start-class and permit-class
+    branches). Centralising it ensures the two release paths stay
+    symmetric — if we ever need to tweak the freshness window, the
+    threshold, or the time-comparison invariant, we change it once.
+
+    The legacy DETECTION_RULES table expresses the same idea via
+    `hook_after_real_activity_lt=0` on the corresponding rules; the
+    two mechanisms intentionally differ (event vs hook timestamp)
+    but share the same conceptual contract: a JSONL completion that
+    post-dates the start signal is authoritative evidence the
+    response actually ended.
+
+    Returns False when:
+      - jsonl_stop_reason is not in TERMINAL_STOP_REASONS
+      - jsonl_age is unavailable (-1) or older than
+        JSONL_HOOK_GAP_TOLERANCE (60 s)
+      - the latest event has no parsable timestamp
+      - `now` is unavailable (0)
+      - the latest event is fresher than (or equal to) the JSONL
+        terminal — this is the regression guard against "fresh
+        prompt right after a previous turn ended" false-positives
+    """
+    if jsonl_stop_reason not in TERMINAL_STOP_REASONS:
+        return False
+    if jsonl_age < 0 or jsonl_age > JSONL_HOOK_GAP_TOLERANCE:
+        return False
+    event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
+    if not (now > 0 and event_ts > 0):
+        return False
+    event_age = now - event_ts
+    return event_age > jsonl_age
 
 
 def derive_state_from_events(events, jsonl_stop_reason,
@@ -927,19 +971,13 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # fire a "permission resolved" hook when the user accepts a
         # dialog (especially in `accept edits on` mode), leaving the
         # latest event as permit_req/notify_permit even after claude
-        # completes the response. If the JSONL terminal stop_reason
-        # is fresher than the permit event AND raw is not PERMIT
-        # (capture-pane confirms no modal on screen), the dialog has
-        # been resolved — release to IDLE.
-        # raw==PERMIT keeps PERMIT (capture-pane footer is the
-        # authoritative signal that a modal IS on screen, regardless
-        # of any later JSONL completion of the prior turn).
-        event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
-        event_age = (now - event_ts) if (now > 0 and event_ts > 0) else -1
-        if (raw != "PERMIT"
-                and jsonl_stop_reason in TERMINAL_STOP_REASONS
-                and 0 <= jsonl_age <= JSONL_HOOK_GAP_TOLERANCE
-                and event_age > jsonl_age):
+        # completes the response. If JSONL completion is fresher
+        # than the permit event AND raw is not PERMIT (capture-pane
+        # confirms no modal on screen), the dialog has been resolved
+        # — release to IDLE. raw==PERMIT keeps PERMIT (modal IS on
+        # screen regardless of any later JSONL completion).
+        if (raw != "PERMIT" and _jsonl_terminal_fresher_than_event(
+                latest, jsonl_stop_reason, jsonl_age, now)):
             return "IDLE"
     elif klass == EVENT_CLASS_START:
         # Esc-interrupt / hook-silence fallback (2026-04-26).
@@ -958,18 +996,12 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # raw=="PERMIT" is the one exception — A' (capture-pane
         # footer match) wins because a modal literally on screen is
         # more authoritative than a pre-modal JSONL completion.
-        # Critical guard: the JSONL terminal stop_reason must be
-        # FRESHER than the latest start event. Without this guard,
-        # a fresh prompt submitted right after a previous turn ended
-        # would falsely flip to IDLE — the JSONL terminal in that
-        # case belongs to the prior turn, not the current event.
-        # Compare via age: smaller age == more recent.
-        event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
-        event_age = (now - event_ts) if (now > 0 and event_ts > 0) else -1
-        if (raw != "PERMIT"
-                and jsonl_stop_reason in TERMINAL_STOP_REASONS
-                and 0 <= jsonl_age <= JSONL_HOOK_GAP_TOLERANCE
-                and event_age > jsonl_age):
+        # The fresher-than-event check is the regression guard
+        # against "fresh prompt right after a previous turn ended"
+        # false-positives; centralised in
+        # `_jsonl_terminal_fresher_than_event`.
+        if (raw != "PERMIT" and _jsonl_terminal_fresher_than_event(
+                latest, jsonl_stop_reason, jsonl_age, now)):
             return "IDLE"
         candidate = "BUSY"
     elif klass == EVENT_CLASS_IDLE:
