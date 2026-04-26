@@ -429,6 +429,36 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         phase="midturn",
     ),
     Rule(
+        # PERMIT-axis mirror of hook_busy_jsonl_terminal_release.
+        # When the user accepts a permission dialog (or the dialog
+        # disappears for any reason — Esc dismissal, auto-approval,
+        # parent process resolution) Claude Code does not always fire
+        # a "permission resolved" hook to clear the PERMIT signal.
+        # The stale PERMIT then locks `hook_permit_blocking` (which
+        # accepts raw in (BUSY, PERMIT)) — and `accept edits on` mode
+        # keeps raw=BUSY via PATTERN_ACCEPT_EDITS, so even after
+        # claude completes the response the dashboard stays stuck on
+        # ⚠ PERMIT. Observed live on monadic-chat 2026-04-26 evening
+        # after permission approval in accept-edits mode: hook stayed
+        # PERMIT for 5 minutes despite a fresh JSONL end_turn.
+        #
+        # Discriminator and threshold mirror the BUSY-axis rule.
+        # hook_after_real_activity_lt=0 keeps a freshly-fired permit_req
+        # (which is newer than any prior turn's JSONL terminal) on
+        # PERMIT — only stale PERMIT signals overtaken by a newer
+        # JSONL terminal release to IDLE. Falls through to the
+        # `hook_permit_blocking` rule below otherwise.
+        name="hook_permit_jsonl_terminal_release",
+        hook_in=("PERMIT",),
+        raw_in=("BUSY", "IDLE"),
+        jsonl_missing=False,
+        jsonl_age_lt=JSONL_HOOK_GAP_TOLERANCE,
+        jsonl_last_stop_reason_in=("end_turn", "max_tokens", "stop_sequence"),
+        hook_after_real_activity_lt=0,
+        result="IDLE",
+        phase="permit",
+    ),
+    Rule(
         # PERMIT dialog visible (raw != IDLE means input prompt is not
         # showing, so the permission UI is still active).
         name="hook_permit_blocking",
@@ -892,6 +922,25 @@ def derive_state_from_events(events, jsonl_stop_reason,
 
     if klass == EVENT_CLASS_PERMIT:
         candidate = "PERMIT"
+        # PERMIT release fallback (2026-04-26 evening, mirror of the
+        # start-class fallback below). Claude Code does not always
+        # fire a "permission resolved" hook when the user accepts a
+        # dialog (especially in `accept edits on` mode), leaving the
+        # latest event as permit_req/notify_permit even after claude
+        # completes the response. If the JSONL terminal stop_reason
+        # is fresher than the permit event AND raw is not PERMIT
+        # (capture-pane confirms no modal on screen), the dialog has
+        # been resolved — release to IDLE.
+        # raw==PERMIT keeps PERMIT (capture-pane footer is the
+        # authoritative signal that a modal IS on screen, regardless
+        # of any later JSONL completion of the prior turn).
+        event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
+        event_age = (now - event_ts) if (now > 0 and event_ts > 0) else -1
+        if (raw != "PERMIT"
+                and jsonl_stop_reason in TERMINAL_STOP_REASONS
+                and 0 <= jsonl_age <= JSONL_HOOK_GAP_TOLERANCE
+                and event_age > jsonl_age):
+            return "IDLE"
     elif klass == EVENT_CLASS_START:
         # Esc-interrupt / hook-silence fallback (2026-04-26).
         # Latest event is start-class (prompt / pretool / posttool /
