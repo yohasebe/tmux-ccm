@@ -16,7 +16,7 @@ from ccm_core import (
     COMPLETED_AT_TIMEOUT, STATE_ICONS, STATE_PRIORITY,
     tmux_cmd, tmux_batch, build_project_list, update_window_names,
     auto_exit_idle, periodic_autosave, notify, read_hook_signal,
-    read_project_notify_marker,
+    read_project_notify_marker, signal_age_suffix,
 )
 
 # tmux status bar color map
@@ -161,8 +161,16 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         icon = STATE_ICONS.get(p.state, "○")
         is_current = (p.win_target == current_win_target)
 
+        # Stale-signal suffix for BUSY / PERMIT (e.g. "(2m)"). Same
+        # threshold as the dashboard / `ccm status` affordance — gives
+        # the user a visible hint that a stuck-looking state is past
+        # the auto-release window without forcing them to open the
+        # popup. Stripped of leading space; we add explicit dim
+        # markup before it.
+        stale = signal_age_suffix(p.dir, p.state).strip()
+
         if with_extras:
-            # Mode 2: idx:name (branch) [:port]:icon
+            # Mode 2: idx:name (branch) [:port]:icon[(stale)]
             if is_current:
                 entry = f"#[fg=#ffffff,bold]{p.win_idx}:#[fg=#ffffff,bold]{p.name}"
             else:
@@ -175,14 +183,18 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
             if p.ports:
                 entry += f"#[fg=#666666][:{p.ports}]#[fg=#9E9E9E]"
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
+            if stale:
+                entry += f"#[fg=#666666]{stale}#[fg=#9E9E9E]"
             if is_current:
                 entry += "#[nobold]"
         else:
-            # Mode 1: name:icon
+            # Mode 1: name:icon[(stale)]
             if is_current:
                 entry = f"#[fg=#ffffff,bold]{p.name}:#[fg={color},bold]{icon}#[nobold]#[fg=#9E9E9E]"
             else:
                 entry = f"{p.name}:#[fg={color}]{icon}#[fg=#9E9E9E]"
+            if stale:
+                entry += f"#[fg=#666666]{stale}#[fg=#9E9E9E]"
 
         entries.append(entry)
     return entries

@@ -67,6 +67,68 @@ class TestBuildDetailEntriesActive:
         assert "bold" not in entries[1]
 
 
+class TestStaleSignalSuffixInStatusBar:
+    """Mode 1 / 2 status bar should append `(Nm)` when a BUSY or
+    PERMIT signal is past JSONL_HOOK_GAP_TOLERANCE — same affordance
+    the dashboard and `ccm status` already provide. Surfacing the
+    age in the always-visible status bar lets the user catch
+    phantom-subagent / silent-permission stuck states without
+    opening the popup.
+    """
+
+    def test_mode1_stale_busy_appends_suffix(self, monkeypatch):
+        # Hook signal 8 minutes old → "(8m)" suffix.
+        ts = 9_999_999
+        monkeypatch.setattr("time.time", lambda: ts)
+        monkeypatch.setattr(ccm_core, "read_hook_signal",
+                            lambda d: (ts - 480, "BUSY", ""))
+        entries = inject_status.build_detail_entries(
+            [make_project("0:2", "2", "ccm-dev", "BUSY")],
+            with_extras=False, current_win_target="0:2",
+        )
+        assert "(8m)" in entries[0]
+
+    def test_mode2_stale_permit_appends_suffix(self, monkeypatch):
+        ts = 9_999_999
+        monkeypatch.setattr("time.time", lambda: ts)
+        monkeypatch.setattr(ccm_core, "read_hook_signal",
+                            lambda d: (ts - 120, "PERMIT", ""))
+        entries = inject_status.build_detail_entries(
+            [make_project("0:2", "2", "ccm-dev", "PERMIT")],
+            with_extras=True, current_win_target="0:2",
+        )
+        assert "(2m)" in entries[0]
+
+    def test_fresh_busy_no_suffix(self, monkeypatch):
+        """Below the stale threshold the suffix is suppressed —
+        otherwise every active turn would clutter the status bar."""
+        ts = 9_999_999
+        monkeypatch.setattr("time.time", lambda: ts)
+        monkeypatch.setattr(ccm_core, "read_hook_signal",
+                            lambda d: (ts - 5, "BUSY", ""))
+        entries = inject_status.build_detail_entries(
+            [make_project("0:2", "2", "ccm-dev", "BUSY")],
+            with_extras=False, current_win_target="0:2",
+        )
+        # No "(Ns)" / "(Nm)" pattern in the entry.
+        assert "(5s)" not in entries[0] and "(0m)" not in entries[0]
+
+    def test_idle_state_never_gets_suffix(self, monkeypatch):
+        """Only BUSY / PERMIT can mask a real state behind a stale
+        hook. IDLE / SHELL / DOWN / CONT must never see the suffix
+        even if a stale signal happens to be lying around."""
+        ts = 9_999_999
+        monkeypatch.setattr("time.time", lambda: ts)
+        monkeypatch.setattr(ccm_core, "read_hook_signal",
+                            lambda d: (ts - 600, "BUSY", ""))
+        for state in ("IDLE", "SHELL", "DOWN", "CONT"):
+            entries = inject_status.build_detail_entries(
+                [make_project("0:2", "2", "ccm-dev", state)],
+                with_extras=False, current_win_target="0:2",
+            )
+            assert "(10m)" not in entries[0], f"unexpected suffix for {state}"
+
+
 # ─── priority_color / priority_icon: CONT joins the BUSY group ───
 
 class TestPriorityCont:
