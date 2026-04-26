@@ -1543,6 +1543,55 @@ class TestFourStateModel:
         )
         assert (rule.name, state) == ("hook_fresh_busy", "BUSY")
 
+    def test_hook_busy_jsonl_terminal_release_fires_on_esc(self):
+        """Esc-interrupt scenario for the legacy path. Mirror of the
+        derive_state_from_events Esc-fallback: stale BUSY signal +
+        raw=IDLE + JSONL terminal stop_reason fresher than the hook
+        → IDLE. Without this rule the dashboard stays stuck BUSY for
+        up to 9.5 minutes after Esc (the 60 s ESC fallback expires
+        but the legacy hook_busy_idle's 600 s window holds)."""
+        # hook fired 30 s ago, JSONL terminal stop_reason 5 s ago.
+        # JSONL is fresher than the hook → ESC-class scenario.
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=30,
+                     jsonl_age=5, jsonl_last_stop_reason="end_turn",
+                     prev_state="BUSY")
+        )
+        assert (rule.name, state) == (
+            "hook_busy_jsonl_terminal_release", "IDLE",
+        )
+
+    def test_hook_busy_jsonl_terminal_release_skipped_for_fresh_prompt(self):
+        """Regression guard: a fresh prompt right after a previous
+        turn ended must NOT trigger the release rule. The JSONL
+        terminal in that scenario belongs to the prior turn, while
+        the BUSY hook is fresh from the new prompt — hook is
+        FRESHER than JSONL, so the rule should not match. Falls
+        through to hook_busy_idle which holds BUSY normally."""
+        # New prompt: hook=BUSY just fired (age=2 s), but JSONL still
+        # carries the prior turn's end_turn from 7 s ago.
+        # hook_age (2) < jsonl_age (7) → hook is fresher than JSONL
+        # → release rule must NOT fire.
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=2,
+                     jsonl_age=7, jsonl_last_stop_reason="end_turn",
+                     prev_state="IDLE")
+        )
+        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
+
+    def test_hook_busy_jsonl_terminal_release_skipped_for_tool_use(self):
+        """Tool execution in flight (stop_reason=tool_use) is NOT
+        a completion signal. Release rule must skip, normal BUSY hold."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=30,
+                     jsonl_age=5, jsonl_last_stop_reason="tool_use",
+                     prev_state="BUSY")
+        )
+        # Falls through past the release rule (stop_reason mismatch),
+        # then hook_busy_idle holds BUSY (jsonl_age - hook_age = -25,
+        # which is < JSONL_HOOK_GAP_TOLERANCE=60, so it matches).
+        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
+
     def test_busy_to_idle_direct_transition(self):
         """When Claude finishes and JSONL ages past threshold, BUSY
         transitions directly to IDLE without passing through DONE."""
@@ -1672,6 +1721,7 @@ class TestRulePhaseAnnotations:
             "process_shell": "shell",
             "hook_fresh_busy": "midturn",
             "hook_permit_blocking": "permit",
+            "hook_busy_jsonl_terminal_release": "midturn",
             "hook_busy_idle": "midturn",
             "hook_busy_idle_no_jsonl": "midturn",
             "jsonl_tool_use_pending": "between_tools",

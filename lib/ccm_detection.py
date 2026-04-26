@@ -439,6 +439,35 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         phase="permit",
     ),
     Rule(
+        # Symmetric to derive_state_from_events's Esc-interrupt fallback:
+        # when the BUSY hook signal is stale (the Stop hook never fired
+        # to clear it because the user pressed Esc, or the hook pipeline
+        # went silent under #16047) and the JSONL tail shows the response
+        # actually completed (terminal stop_reason fresher than the hook
+        # itself), release BUSY → IDLE. The 60 s `BUSY_HOOK_JSONL_WINDOW`
+        # cap on `hook_busy_idle` would otherwise leave the dashboard
+        # stuck for up to 9.5 minutes after an Esc interrupt — observed
+        # gap on 2026-04-26.
+        #
+        # The discriminator against "fresh prompt right after a previous
+        # turn ended" (which would have a fresh hook=BUSY but stale
+        # JSONL terminal from the prior turn) is `hook_after_real_activity_lt=0`:
+        # this rule matches only when `jsonl_age < hook_age`, i.e. the
+        # JSONL terminal is strictly fresher than the BUSY hook. A new
+        # prompt's hook=BUSY is fresher than the prior turn's terminal,
+        # so this rule will not fire for it; the existing `hook_busy_idle`
+        # rule handles it normally.
+        name="hook_busy_jsonl_terminal_release",
+        hook_in=("BUSY",),
+        raw_in=("IDLE",),
+        jsonl_missing=False,
+        jsonl_age_lt=JSONL_HOOK_GAP_TOLERANCE,
+        jsonl_last_stop_reason_in=("end_turn", "max_tokens", "stop_sequence"),
+        hook_after_real_activity_lt=0,
+        result="IDLE",
+        phase="midturn",
+    ),
+    Rule(
         # Slow path: trust a BUSY hook signal while raw=IDLE, as long as
         # the session's JSONL has been written within BUSY_HOOK_JSONL_WINDOW
         # AND the BUSY hook fired within JSONL_HOOK_GAP_TOLERANCE of the
