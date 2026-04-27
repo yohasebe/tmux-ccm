@@ -162,16 +162,27 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # the state icon as state-modifiers ("BUSY but stale", "IDLE
         # but with leftover bg processes").
         post = stale or bg
-        # Multi-pane marker is structural (about the window's pane
-        # layout, not the project's state). Render it BEFORE the
-        # icon so the visual unit `:icon` stays clean and the
+        # Multi-pane marker `[N]` is structural (about the window's
+        # pane layout, not the project's state). Render it BEFORE
+        # the icon so the visual unit `:icon` stays clean and the
         # marker sits next to the project name where the user
-        # parses identity. Pre-2026-04-28 it was bundled into the
-        # post-icon `extra` and looked unbalanced (`12:teaching:●⊞2`).
-        pre = f" ⊞{p.pane_count}" if p.pane_count > 1 else ""
+        # parses identity. Brackets dim, number cyan so the count
+        # draws the eye. ASCII-only to avoid font/terminal width
+        # ambiguity that would offset later columns.
+        pane_n = str(p.pane_count) if p.pane_count > 1 else ""
+
+        def _render_pane_marker(name_color):
+            """`[N]` with brackets dim and N cyan, returning to
+            the caller's name colour after."""
+            if not pane_n:
+                return ""
+            return (
+                f" #[fg=#666666][#[fg=cyan]{pane_n}#[fg=#666666]]"
+                f"#[fg={name_color}]"
+            )
 
         if with_extras:
-            # Mode 2: idx:name (branch) [:port][ ⊞N]:icon[(stale|bg)]
+            # Mode 2: idx:name (branch) [:port][ [N]]:icon[(stale|bg)]
             if is_current:
                 entry = f"#[fg=#ffffff,bold]{p.win_idx}:#[fg=#ffffff,bold]{p.name}"
             else:
@@ -183,24 +194,23 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
                     entry += f" #[fg=#666666](#[fg=cyan]{p.branch}#[fg=#666666])#[fg=#9E9E9E]"
             if p.ports:
                 entry += f"#[fg=#666666][:{p.ports}]#[fg=#9E9E9E]"
-            if pre:
-                entry += f"#[fg=#666666]{pre}#[fg=#9E9E9E]"
+            entry += _render_pane_marker(
+                "#ffffff,bold" if is_current else "#9E9E9E"
+            )
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
             if post:
                 entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"
             if is_current:
                 entry += "#[nobold]"
         else:
-            # Mode 1: name[ ⊞N]:icon[(stale|bg)]
+            # Mode 1: name[ [N]]:icon[(stale|bg)]
             if is_current:
                 entry = f"#[fg=#ffffff,bold]{p.name}"
-                if pre:
-                    entry += f"#[fg=#666666]{pre}#[fg=#ffffff,bold]"
+                entry += _render_pane_marker("#ffffff,bold")
                 entry += f":#[fg={color},bold]{icon}#[nobold]#[fg=#9E9E9E]"
             else:
                 entry = f"{p.name}"
-                if pre:
-                    entry += f"#[fg=#666666]{pre}#[fg=#9E9E9E]"
+                entry += _render_pane_marker("#9E9E9E")
                 entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
             if post:
                 entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"

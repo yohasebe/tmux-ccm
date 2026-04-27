@@ -4285,6 +4285,33 @@ class TestShellClusterDetection:
         assert ("0:5", "@ccm_completed_at") in unset_calls
         assert "0:5/@ccm_completed_at" not in store
 
+    def test_reset_window_after_attach_invokes_auto_focus(
+        self, monkeypatch
+    ):
+        """Regression guard for the wiring between
+        reset_window_after_attach and auto_focus_attention_pane.
+        The five TestAutoFocusAttentionPane cases below test the
+        helper in isolation — they all pass even if the call is
+        removed from reset_window_after_attach. This case asserts
+        the call actually happens during reset, so an accidental
+        removal is caught."""
+        called_with = []
+
+        def stub_auto_focus(win_target):
+            called_with.append(win_target)
+
+        # Bypass tmux entirely; we only care that auto_focus is
+        # invoked. show-option for @ccm_dir must return non-empty
+        # so reset doesn't short-circuit.
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *args: "/tmp/proj"
+                            if args[:2] == ("show-option", "-wqv")
+                            else "")
+        monkeypatch.setattr(ccm_core, "auto_focus_attention_pane",
+                            stub_auto_focus)
+        ccm_core.reset_window_after_attach("0:5")
+        assert called_with == ["0:5"]
+
 
 # ─── auto_focus_attention_pane ───
 #

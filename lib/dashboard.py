@@ -541,31 +541,44 @@ class Dashboard:
 
                 now_ts = int(time.time())
 
-                def _annotations_width(proj):
-                    """Total width the post-name cluster would
-                    occupy for `proj`, including the leading space
-                    between name and the first annotation."""
-                    pieces = []
-                    if proj.pane_count > 1:
-                        pieces.append(len(f"⊞{proj.pane_count}"))
+                # Per-project annotation cache. Computed once
+                # here so the rendering loop below does not have
+                # to call signal_age_suffix / format_elapsed (file
+                # I/O each time) a second time per refresh tick.
+                # Format: per-project dict with the resolved
+                # strings + the cluster's total width for
+                # COL_DIR alignment.
+                annotations = []
+                for proj in projects:
+                    pieces = []  # widths for COL_DIR calc
+                    elapsed_str = ""
                     if proj.completed_at:
                         age = now_ts - proj.completed_at
                         if 0 <= age < COMPLETED_AT_TIMEOUT:
-                            elapsed = format_elapsed(proj.completed_at)
-                            if elapsed:
-                                pieces.append(2 + len(elapsed))
-                    suffix = signal_age_suffix(proj.dir, proj.state).strip()
-                    if suffix:
-                        pieces.append(len(suffix))
+                            elapsed_str = format_elapsed(proj.completed_at) or ""
+                    suffix_str = signal_age_suffix(proj.dir, proj.state).strip()
+                    pane_marker = f"[{proj.pane_count}]" if proj.pane_count > 1 else ""
+                    if pane_marker:
+                        pieces.append(len(pane_marker))
+                    if elapsed_str:
+                        # "* " (2) + elapsed
+                        pieces.append(2 + len(elapsed_str))
+                    if suffix_str:
+                        pieces.append(len(suffix_str))
                     elif proj.bg_active:
                         pieces.append(len("(bg)"))
                     if proj.branch:
                         pieces.append(len(proj.branch) + 2)
-                    if not pieces:
-                        return 0
-                    # 1 space between name and first piece +
-                    # pieces joined with single spaces.
-                    return 1 + sum(pieces) + (len(pieces) - 1)
+                    cluster_w = (
+                        1 + sum(pieces) + (len(pieces) - 1)
+                        if pieces else 0
+                    )
+                    annotations.append({
+                        "pane_marker": pane_marker,
+                        "elapsed": elapsed_str,
+                        "suffix": suffix_str,
+                        "cluster_w": cluster_w,
+                    })
 
                 # Path lives at the column where the worst-case
                 # name + annotation cluster ends, plus a 1-char
@@ -573,11 +586,12 @@ class Dashboard:
                 # before the path column; rows with the worst-case
                 # cluster get exactly one space before the path.
                 COL_DIR = COL_NAME + max(
-                    (len(p.name) + _annotations_width(p) for p in projects),
+                    (len(p.name) + a["cluster_w"]
+                     for p, a in zip(projects, annotations)),
                     default=0,
                 ) + 1
 
-                for i, p in enumerate(projects):
+                for i, (p, ann) in enumerate(zip(projects, annotations)):
                     if i < scroll_offset:
                         continue
                     if row >= list_height - 3:
@@ -603,42 +617,41 @@ class Dashboard:
                     self._addstr(stdscr, y, COL_NAME, p.name, curses.A_BOLD)
 
                     # Annotations start one space after THIS row's
-                    # name end, not after a max-name-width column —
-                    # so ⊞N / ✔elapsed visually attach to the name
-                    # they belong to. Each piece keeps its own
-                    # colour so the cluster is still scannable:
-                    # name (bold) / ⊞N (dim) / ✔ (green) /
-                    # elapsed (dim).
+                    # name end. Each piece is split into its
+                    # "attention-grabbing" sub-piece (coloured) and
+                    # surrounding chrome (dim) so the user's eye
+                    # lands on the meaningful value. ASCII-only
+                    # markers ([N] for panes, * for completion)
+                    # avoid font/terminal width ambiguity that
+                    # would offset later columns.
                     col = COL_NAME + len(p.name) + 1
 
-                    # Multi-pane indicator (immediately after name).
-                    if p.pane_count > 1:
-                        marker = f"⊞{p.pane_count}"
-                        self._addstr(stdscr, y, col, marker,
-                                     curses.color_pair(C_DIM))
-                        col += len(marker) + 1
+                    # Pane-count marker [N]: brackets dim, number
+                    # cyan to draw the eye to the count.
+                    if ann["pane_marker"]:
+                        n = str(p.pane_count)
+                        self._addstr(stdscr, y, col, "[", curses.color_pair(C_DIM))
+                        self._addstr(stdscr, y, col + 1, n, curses.color_pair(C_CYAN))
+                        self._addstr(stdscr, y, col + 1 + len(n), "]", curses.color_pair(C_DIM))
+                        col += len(ann["pane_marker"]) + 1
 
-                    # Recently completed marker (✔ with elapsed time)
-                    if p.completed_at:
-                        comp_age = now_ts - p.completed_at
-                        if 0 <= comp_age < COMPLETED_AT_TIMEOUT:
-                            elapsed = format_elapsed(p.completed_at)
-                            if elapsed:
-                                self._addstr(stdscr, y, col, "✔ ",
-                                             curses.color_pair(C_COMPLETED))
-                                col += 2
-                                self._addstr(stdscr, y, col, elapsed,
-                                             curses.color_pair(C_DIM))
-                                col += len(elapsed) + 1
+                    # Completion marker "* elapsed": asterisk
+                    # green to flag a freshly-finished response,
+                    # elapsed dim.
+                    if ann["elapsed"]:
+                        self._addstr(stdscr, y, col, "*",
+                                     curses.color_pair(C_COMPLETED))
+                        self._addstr(stdscr, y, col + 1, " " + ann["elapsed"],
+                                     curses.color_pair(C_DIM))
+                        col += 2 + len(ann["elapsed"]) + 1
 
                     # Stale-signal age (BUSY/PERMIT) or
                     # background-activity (IDLE) — disjoint, shared
                     # slot.
-                    suffix = signal_age_suffix(p.dir, p.state).strip()
-                    if suffix:
-                        self._addstr(stdscr, y, col, suffix,
+                    if ann["suffix"]:
+                        self._addstr(stdscr, y, col, ann["suffix"],
                                      curses.color_pair(C_DIM))
-                        col += len(suffix) + 1
+                        col += len(ann["suffix"]) + 1
                     elif p.bg_active:
                         self._addstr(stdscr, y, col, "(bg)",
                                      curses.color_pair(C_DIM))

@@ -170,16 +170,26 @@ When the committed state is `IDLE` (the conversation turn has returned to the us
 
 Conceptually distinct from `(Nm)`: the stale-signal suffix is a "this might be stuck" hint, while `(bg)` is a positive statement about leftover processes. They are mutually exclusive — `(Nm)` only fires for `BUSY` / `PERMIT`, `(bg)` only fires for `IDLE`. `apply_actions` writes the `@ccm_bg_active` tmux window option whenever `state == "IDLE"` and `ctx.raw == "BUSY"`; clears it otherwise. `Project.bg_active` carries the flag to the renderers. `ccm send` treats `IDLE (bg)` exactly like plain `IDLE` — the user has the conversation ball regardless of background processes.
 
-### `⊞N` — multi-pane window
+### `[N]` — multi-pane window
 
-When a window has more than one pane (`Project.pane_count > 1`), the dashboard, `ccm status`, and status bar (mode 1 / 2) append `⊞N` (where N is the pane count):
+When a window has more than one pane (`Project.pane_count > 1`), the dashboard, `ccm status`, and status bar (mode 1 / 2) append `[N]` (where N is the pane count) immediately after the project name:
 
 ```
-⚠ PERMIT ⊞3  monadic-chat
-● IDLE ⊞2    ccm-dev
+ccm-dev [3]    ⚠ PERMIT (8m)
+teaching [2]   ● IDLE
 ```
 
-Surfaces the multi-pane case (Agent Teams workflow, casual `prefix " ` / `prefix %` splits, leftover orphan panes from earlier ad-hoc work) so the user can spot windows whose aggregated state may belong to a non-active pane. Combines freely with `(Nm)` and `(bg)` — a stuck-PERMIT split-pane window reads `⚠ PERMIT (8m) ⊞3`. Independent of state semantics; populated unconditionally from `panes_cache` in `build_project_list`.
+Brackets render dim, the digit cyan, so the eye lands on the count without reading the chrome. Surfaces the multi-pane case (Agent Teams workflow, casual `prefix " ` / `prefix %` splits, leftover orphan panes from earlier ad-hoc work) so the user can spot windows whose aggregated state may belong to a non-active pane. Combines freely with `(Nm)`, `(bg)`, and `*elapsed` — a stuck-PERMIT split-pane window reads `monadic-chat [3]   ⚠ PERMIT (8m)`. Independent of state semantics; populated unconditionally from `panes_cache` in `build_project_list`. The marker is plain ASCII (rather than a Unicode glyph like `⊞`) so column math is identical across all terminals and font configurations.
+
+### `* elapsed` — recently completed turn
+
+When a project transitions out of BUSY / PERMIT into IDLE, the dashboard records the timestamp in `@ccm_completed_at`. For `COMPLETED_AT_TIMEOUT` seconds afterward, the rendered row carries a `* <elapsed>` annotation right after the project name (and after `[N]` if the window has multiple panes):
+
+```
+ccm-dev * 25s   …/code/ccm
+```
+
+The asterisk renders green to draw attention to the just-completed transition; the elapsed time itself is dim. Display-only — the marker does not feed back into the state machine. ASCII so column math is consistent.
 
 ## Time-window heuristics
 

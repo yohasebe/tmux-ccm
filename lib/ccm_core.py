@@ -1791,6 +1791,8 @@ def periodic_autosave():
 _C_RESET = "\033[0m"
 _C_BOLD = "\033[1m"
 _C_DIM = "\033[2m"
+_C_CYAN_CLI = "\033[36m"          # for [N] pane-count digit
+_C_GREEN_CLI = "\033[1;32m"       # for "*" completed marker
 _C_STATE = {
     "PERMIT": "\033[1;33m",      # bold yellow
     "BUSY": "\033[38;5;209m",    # salmon
@@ -1833,23 +1835,38 @@ def print_status():
     for p in projects:
         color = _C_STATE.get(p.state, _C_DIM)
         icon = STATE_ICONS.get(p.state, "?")
+        # State-modifier suffixes (stale-age / bg) attach to the
+        # STATUS column right after the state name. Mutually
+        # exclusive — stale only fires for BUSY/PERMIT, bg only
+        # for IDLE.
         suffix = signal_age_suffix(p.dir, p.state)
-        # Background-activity affordance: state=IDLE but tool/dev-
-        # server processes are still running. The conversation turn
-        # has returned to the user but claude's leftover children
-        # continue to run.
         if p.bg_active:
             suffix += " (bg)"
-        if p.pane_count > 1:
-            suffix += f" ⊞{p.pane_count}"
         status = f"{color}{icon} {p.state}{suffix}{_C_RESET}"
+        # Pane-count marker `[N]` belongs to the PROJECT column
+        # (it describes the window's pane layout, not the state)
+        # — same convention as the dashboard and status bar.
+        # Brackets dim, digit cyan to draw the eye to the count.
+        if p.pane_count > 1:
+            n = str(p.pane_count)
+            pane_marker = (
+                f" {_C_DIM}[{_C_RESET}{_C_CYAN_CLI}{n}{_C_RESET}"
+                f"{_C_DIM}]{_C_RESET}"
+            )
+            pane_marker_visible_w = 1 + 2 + len(n)  # " [N]"
+        else:
+            pane_marker = ""
+            pane_marker_visible_w = 0
         branch = p.branch or "-"
         ports = p.ports or "-"
         d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
-        # Status field with ANSI codes is wider than visible; reserve
-        # extra width when a suffix is appended so columns still line up.
-        width = 22 + len(suffix)
-        print(f"{status:<{width}} {p.name:<20} {branch:<16} {ports:<12} {d}")
+        # ANSI codes inflate len() past visible width; reserve the
+        # extra characters in the format spec so columns still
+        # line up.
+        status_w = 22 + len(suffix)
+        name_w = 20 + (len(pane_marker) - pane_marker_visible_w if pane_marker else 0)
+        name_field = f"{p.name}{pane_marker}"
+        print(f"{status:<{status_w}} {name_field:<{name_w}} {branch:<16} {ports:<12} {d}")
 
 
 def print_ports():

@@ -163,10 +163,13 @@ class TestBgActiveSuffixInStatusBar:
 
 
 class TestPaneCountSuffixInStatusBar:
-    """The `⊞N` marker for windows with more than one pane.
+    """The `[N]` marker for windows with more than one pane.
     Surfaces the multi-pane case (Agent Teams, casual splits,
     leftover orphan panes) so the user can spot windows where the
-    aggregated state may belong to a non-active pane."""
+    aggregated state may belong to a non-active pane. Brackets
+    are rendered dim, the digit cyan, so the eye lands on the
+    count.
+    """
 
     def _make(self, pane_count, state="IDLE"):
         p = make_project("0:2", "2", "ccm-dev", state)
@@ -178,6 +181,9 @@ class TestPaneCountSuffixInStatusBar:
             [self._make(1)],
             with_extras=False, current_win_target="0:2",
         )
+        # No bracketed digit between name and the icon-colon.
+        assert "[1]" not in entries[0]
+        # And (sanity) no leftover legacy marker.
         assert "⊞" not in entries[0]
 
     def test_two_panes_show_marker(self):
@@ -185,28 +191,33 @@ class TestPaneCountSuffixInStatusBar:
             [self._make(2)],
             with_extras=False, current_win_target="0:2",
         )
-        assert "⊞2" in entries[0]
+        # The digit appears between dim brackets.
+        assert "[" in entries[0] and "]" in entries[0]
+        assert ">2<" in entries[0].replace("#[fg=cyan]", ">").replace("#[fg=#666666]", "<")
 
     def test_three_panes_show_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(3)],
             with_extras=False, current_win_target="0:2",
         )
-        assert "⊞3" in entries[0]
+        assert "3" in entries[0]
+        # The digit was emitted with a cyan colour code so the
+        # user's eye is drawn to the count.
+        assert "#[fg=cyan]3" in entries[0]
 
     def test_mode2_two_panes_show_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(2)],
             with_extras=True, current_win_target="0:2",
         )
-        assert "⊞2" in entries[0]
+        assert "#[fg=cyan]2" in entries[0]
 
     def test_pane_count_combines_with_stale_signal(self, monkeypatch):
         """A stuck-PERMIT split-pane window should render both the
-        stale-age suffix and the multi-pane marker. Layout post-
-        2026-04-28: ⊞N is BEFORE the state icon (structural marker
-        next to the project name), stale-age is AFTER the icon
-        (state-modifier). So in left-to-right text order: ⊞2 first,
+        stale-age suffix and the multi-pane marker. Layout: [N]
+        is BEFORE the state icon (structural marker next to the
+        project name), stale-age is AFTER the icon (state-
+        modifier). So in left-to-right text order: [N] first,
         then the icon, then (10m)."""
         import time
         ts = 9_999_999
@@ -218,10 +229,10 @@ class TestPaneCountSuffixInStatusBar:
             [p],
             with_extras=False, current_win_target="0:2",
         )
-        # Both markers present; order: multi first (pre-icon),
-        # stale after (post-icon).
+        # Both markers present; order: pane marker first (pre-
+        # icon), stale after (post-icon).
         assert "(10m)" in entries[0]
-        assert "⊞2" in entries[0]
-        assert entries[0].index("⊞2") < entries[0].index("(10m)")
+        assert "#[fg=cyan]2" in entries[0]
+        assert entries[0].index("#[fg=cyan]2") < entries[0].index("(10m)")
 
 
