@@ -152,9 +152,25 @@ def capture_pane_bottom(pane_target, lines=8):
     return non_empty[-lines:]
 
 
-def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid):
+def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
+                      current_command=""):
     claude_pid = find_claude_pid(pane_pid, ps_lines)
     if not claude_pid:
+        return "SHELL"
+
+    # Foreground-process override (2026-04-27, after observed personal
+    # pane stuck-BUSY): claude may exist somewhere in the process tree
+    # while the pane's foreground is actually a shell — e.g. user did
+    # Ctrl-Z on claude and dropped to a fresh zsh, or the claude pid
+    # was inherited from a parent shell but is no longer the active
+    # process. tmux's pane_current_command reports the actual
+    # foreground; if it is a shell command, the user is at a shell
+    # prompt regardless of the leftover claude pid. Auto-start can
+    # then trigger normally on the SHELL state. Editor / pager
+    # foregrounds (vim, less, etc.) are NOT in this set — those mean
+    # the user is actively doing something else and ccm should not
+    # auto-start over them.
+    if current_command in ccm_core.SHELL_FOREGROUND_COMMANDS:
         return "SHELL"
 
     has_child = has_children(claude_pid, ps_lines, own_pgid)
@@ -185,17 +201,22 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid):
 
 
 def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
+    # panes_cache entries can be 3-tuples (legacy) or 4-tuples
+    # (with pane_current_command, added 2026-04-27). Normalise to
+    # 4-tuple here so the rest of the logic doesn't branch.
     panes = [
-        (pid, pane_id)
-        for wt, pid, pane_id in panes_cache
+        (pid, pane_id, pc[3] if len(pc) >= 4 else "")
+        for pc in panes_cache
+        for wt, pid, pane_id in [pc[:3]]
         if wt == win_target
     ]
     if not panes:
         return "DOWN"
 
     best = "SHELL"
-    for pid, pane_id in panes:
-        state = detect_pane_state(pid, pane_id, ps_lines, own_pgid)
+    for pid, pane_id, current_command in panes:
+        state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
+                                   current_command=current_command)
         if state == "PERMIT":
             return "PERMIT"
         elif state == "BUSY":
@@ -1151,7 +1172,10 @@ def build_detection_context(win_target, project_dir, prev_state,
     # has been running (input to the startup-transient rule).
     claude_pid = None
     claude_pid_age = -1
-    for wt, pane_pid, _pane_id in panes_cache:
+    for entry in panes_cache:
+        # 3-tuple (legacy) or 4-tuple (with current_command, 2026-04-27)
+        wt = entry[0]
+        pane_pid = entry[1]
         if wt != win_target:
             continue
         cp = find_claude_pid(pane_pid, ps_lines)

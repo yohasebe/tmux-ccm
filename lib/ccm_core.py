@@ -250,6 +250,19 @@ CLAUDE_PROCESS_NAME = "claude"
 # Processes that are always children of Claude Code and should be ignored
 # when checking for meaningful child processes (tool execution).
 IGNORED_CHILDREN = {"caffeinate"}
+# Foreground commands (`tmux #{pane_current_command}`) that indicate
+# the pane is at a shell prompt — claude may exist somewhere in the
+# process tree but is not the active foreground process. Detected
+# 2026-04-27 on a `personal` pane where the user had backgrounded
+# claude (Ctrl-Z + new shell). Used to override the process-tree
+# heuristic (which would otherwise return BUSY for the lingering
+# claude pid). Editors / pagers (vim, less, etc.) are intentionally
+# NOT in this set — those mean the user is actively doing something,
+# even if not in claude, and ccm's auto-start should not fire over
+# them.
+SHELL_FOREGROUND_COMMANDS = frozenset({
+    "zsh", "bash", "sh", "fish", "ksh", "csh", "tcsh", "dash", "ash",
+})
 
 CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
 
@@ -1328,11 +1341,14 @@ def build_project_list(fast=False):
     panes_cache = []
     if not fast:
         panes_raw = tmux_cmd("list-panes", "-a", "-F",
-                             "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}")
+                             "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}")
         for line in panes_raw.split("\n"):
             parts = line.split("\t")
-            if len(parts) == 3:
-                panes_cache.append((parts[0], parts[1], parts[2]))
+            if len(parts) >= 4:
+                panes_cache.append((parts[0], parts[1], parts[2], parts[3]))
+            elif len(parts) == 3:
+                # Older list-panes format without command — backfill empty
+                panes_cache.append((parts[0], parts[1], parts[2], ""))
 
     own_pgid = str(os.getpgrp())
     seen_dirs = set()
