@@ -528,20 +528,46 @@ class Dashboard:
                 max_state_w = 8  # "● PERMIT" = 8
                 max_name_w = max((len(p.name) for p in projects), default=5)
 
-                # Fixed column positions (idx / state / name only).
-                # After name we flow each annotation sequentially:
-                # ⊞N and ✔elapsed sit tight against the name as a
-                # "name unit" so projects without those annotations
-                # don't get a wide blank gap. Inter-row vertical
-                # alignment is intentionally NOT enforced for the
-                # post-name region — fixed columns there waste
-                # horizontal space when most rows have no extras.
+                # Fixed column positions for idx / state / name.
+                # After name, ⊞N / ✔elapsed / stale|bg / branch
+                # flow sequentially as a tight cluster (no padding
+                # for absent annotations) — that keeps "no-extras"
+                # rows compact. The path column IS pinned to a
+                # fixed COL_DIR so the path itself lines up
+                # vertically: hybrid of the two prior attempts
+                # (full-aligned wasted space, fully-flowing left
+                # path ragged).
                 COL_IDX = 4       # after "  ▶ "
                 COL_STATE = COL_IDX + max_idx_w + 1
                 COL_NAME = COL_STATE + max_state_w + 1
                 COL_REST = COL_NAME + max_name_w + 1
 
                 now_ts = int(time.time())
+
+                # Pre-compute the worst-case post-name annotation
+                # width so we know where the path column starts.
+                def _annotations_width(proj):
+                    w = 0
+                    if proj.pane_count > 1:
+                        w += len(f"⊞{proj.pane_count}") + 1
+                    if proj.completed_at:
+                        age = now_ts - proj.completed_at
+                        if 0 <= age < COMPLETED_AT_TIMEOUT:
+                            elapsed = format_elapsed(proj.completed_at)
+                            if elapsed:
+                                w += 2 + len(elapsed) + 1
+                    suffix = signal_age_suffix(proj.dir, proj.state).strip()
+                    if suffix:
+                        w += len(suffix) + 1
+                    elif proj.bg_active:
+                        w += len("(bg)") + 1
+                    if proj.branch:
+                        w += len(proj.branch) + 3
+                    return w
+
+                COL_DIR = COL_REST + max(
+                    (_annotations_width(p) for p in projects), default=0
+                )
 
                 for i, p in enumerate(projects):
                     if i < scroll_offset:
@@ -618,12 +644,15 @@ class Dashboard:
                                      curses.color_pair(C_DIM))
                         col += len(p.branch) + 3
 
-                    # Directory (truncated to fit)
+                    # Directory at fixed COL_DIR so the path
+                    # column is vertically aligned across rows
+                    # regardless of which inline annotations were
+                    # rendered for this row.
                     if p.dir:
                         effective_w = list_width if preview_width > 0 else width
-                        dir_str = format_dir(p.dir, col, effective_w)
+                        dir_str = format_dir(p.dir, COL_DIR, effective_w)
                         if dir_str:
-                            self._addstr(stdscr, y, col, dir_str,
+                            self._addstr(stdscr, y, COL_DIR, dir_str,
                                          curses.color_pair(C_DIM))
 
                     row += 1
