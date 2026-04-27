@@ -580,6 +580,17 @@ class Dashboard:
                         self._addstr(stdscr, y, col, "(bg)",
                                      curses.color_pair(C_DIM))
                         col += 5
+                    # Multi-pane indicator: a single window holding
+                    # more than one pane (Agent Teams, casual splits,
+                    # leftover orphan panes). Signals visually that
+                    # the project's state is aggregated across panes
+                    # so a `⚠ PERMIT` may belong to a non-active
+                    # pane the user has not seen yet.
+                    if p.pane_count > 1:
+                        marker = f"⊞{p.pane_count}"
+                        self._addstr(stdscr, y, col, marker,
+                                     curses.color_pair(C_DIM))
+                        col += len(marker) + 1
 
                     # Branch
                     if p.branch:

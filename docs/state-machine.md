@@ -31,13 +31,31 @@ Pre-v0.3.0 the model carried a sixth detection state `CONT` (Claude paused with 
 
 ## Window-to-pane projection
 
-A tmux window can host multiple panes, but ccm reports a single state per window (per project). The projection rule is **active-pane authoritative**: the window's state is whatever `detect_pane_state` returns for the pane that tmux marks `pane_active=1`. Inactive panes contribute nothing.
+A tmux window can host multiple panes, but ccm reports a single state per window (per project). The projection rule is **aggregation with sliver exclusion**:
 
-This realises the design principle one level up — the user is only attending to one pane at a time (the active one), so the window's reported state must match that pane. Aggregating across panes (the pre-2026-04-27 behaviour, which took the "most active" state across all panes) infected windows with state from invisible / sliver / non-attended panes. The motivating regression: a `personal` window had a 1-row sliver pane holding a long-idle `claude --continue` whose `❯` prompt could not render in 1 row, so capture-pane-based prompt detection fell through `has_children=True` + no prompt visible → BUSY — a false signal the user could not see or correct from the visible shell pane.
+1. Filter out panes shorter than `SLIVER_HEIGHT_THRESHOLD` (4 rows by default, `CCM_SLIVER_HEIGHT_THRESHOLD` overrides). Such panes cannot render Claude's `❯` prompt + accept-edits indicator + footer, so capture-pane–based prompt detection silently fails and the pane false-reads BUSY (children present, no prompt visible).
+2. Aggregate the remaining panes by priority: `PERMIT > BUSY > IDLE > SHELL`. The window state is the most attention-needing pane's state.
+3. If every pane is below the threshold (impossible in practice), bypass the filter — better to give a possibly-wrong answer than fall through to SHELL on a window full of slivers.
 
-The active-pane rule also handles non-sliver multi-pane workflows correctly: if a user genuinely splits a window with claude in pane A and a side-shell in pane B, the user can only have one of those active at a time, and that is the one whose state ccm reports. Switching panes flips the reported state — which matches user perception.
+This rule satisfies two competing requirements:
 
-Inactive panes are not entirely invisible: they still drive the `(bg)` UI affordance (state=IDLE with raw=BUSY for grandchild processes spawned by claude) where applicable, since "background activity exists" is informational rather than action-actionable.
+- **Multi-pane Agent Teams** (and any deliberate `prefix " ` / `prefix %` split): the user can see all panes simultaneously and wants the window's reported state to surface attention-needing panes even when focus is on a different teammate. A single PERMIT teammate must show `⚠ PERMIT` for the whole window.
+- **Sliver / orphan panes** (the personal regression that motivated the rewrite): a 1-row sliver pane holding a long-idle `claude --continue` falsely reads BUSY because the prompt can't render in 1 row. Pre-fix that BUSY infected the whole window; post-fix the sliver is excluded and the visible panes drive the result.
+
+The two earlier designs were both wrong:
+
+- Pre-2026-04-27 "most-active-wins aggregation": correct for Agent Teams, broken for slivers.
+- 2026-04-27 morning's "active-pane authoritative" (commit `2024c30`, reverted): correct for slivers, broken for Agent Teams (a non-active teammate's PERMIT was invisible).
+
+Sliver-exclusion is the discriminator that lets one rule serve both cases.
+
+### Auto-focus on attach
+
+`reset_window_after_attach` (called from every ccm-mediated attach path: `cmd_attach`, dashboard `_do_attach`, dashboard tree-mode attach) calls `auto_focus_attention_pane(win_target)` after its existing wipes. If the window has multiple eligible (non-sliver) panes and one is in PERMIT and the active pane is not, focus is switched to the PERMIT pane via `tmux select-pane`.
+
+Scope is intentionally narrow: PERMIT only. BUSY panes are interesting to monitor but do not require user input, and stealing focus to one would surprise users who deliberately positioned themselves elsewhere. Manual `prefix + N` window-switch is not hooked — the auto-focus only fires through ccm-mediated attaches.
+
+Inactive panes also drive the `(bg)` UI affordance (state=IDLE with raw=BUSY from grandchild processes) when applicable.
 
 ## Detection backbones
 
@@ -152,6 +170,17 @@ When the committed state is `IDLE` (the conversation turn has returned to the us
 
 Conceptually distinct from `(Nm)`: the stale-signal suffix is a "this might be stuck" hint, while `(bg)` is a positive statement about leftover processes. They are mutually exclusive — `(Nm)` only fires for `BUSY` / `PERMIT`, `(bg)` only fires for `IDLE`. `apply_actions` writes the `@ccm_bg_active` tmux window option whenever `state == "IDLE"` and `ctx.raw == "BUSY"`; clears it otherwise. `Project.bg_active` carries the flag to the renderers. `ccm send` treats `IDLE (bg)` exactly like plain `IDLE` — the user has the conversation ball regardless of background processes.
 
+### `⊞N` — multi-pane window
+
+When a window has more than one pane (`Project.pane_count > 1`), the dashboard, `ccm status`, and status bar (mode 1 / 2) append `⊞N` (where N is the pane count):
+
+```
+⚠ PERMIT ⊞3  monadic-chat
+● IDLE ⊞2    ccm-dev
+```
+
+Surfaces the multi-pane case (Agent Teams workflow, casual `prefix " ` / `prefix %` splits, leftover orphan panes from earlier ad-hoc work) so the user can spot windows whose aggregated state may belong to a non-active pane. Combines freely with `(Nm)` and `(bg)` — a stuck-PERMIT split-pane window reads `⚠ PERMIT (8m) ⊞3`. Independent of state semantics; populated unconditionally from `panes_cache` in `build_project_list`.
+
 ## Time-window heuristics
 
 These are tunable thresholds with empirically-chosen defaults:
@@ -165,6 +194,7 @@ These are tunable thresholds with empirically-chosen defaults:
 | `PERMIT_GAP_TOLERANCE` | 60 s | `fallback_permit_hold` after-IDLE permit hold |
 | `BUSY_HOOK_JSONL_WINDOW` | 600 s | `hook_busy_idle` long-tool tolerance + final stuck-BUSY release cap |
 | `STARTUP_GRACE_SEC` | 60 s | startup transient pid-age window |
+| `SLIVER_HEIGHT_THRESHOLD` | 4 rows | minimum pane height to participate in window aggregation |
 
 ## Transition examples (lifecycle walk-through)
 

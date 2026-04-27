@@ -177,6 +177,18 @@ CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 # Claude that actually hangs during startup will surface as BUSY.
 STARTUP_GRACE_SEC = int(os.environ.get("CCM_STARTUP_GRACE_SEC", "60"))
 
+# Minimum pane height (in tmux rows) for a pane to contribute to the
+# window's aggregated state. Panes shorter than this cannot reliably
+# render Claude's `❯` prompt + accept-edits indicator + footer, so
+# capture-pane–based prompt detection silently fails and the pane
+# falsely reads BUSY (has children, no prompt visible). Excluding
+# them from aggregation prevents an invisible sliver from infecting
+# the whole window — observed live 2026-04-27 on a `personal` window
+# whose 1-row sliver pane held a long-idle `claude --continue`. If
+# every pane is below the threshold (impossible in practice), the
+# filter is bypassed so detection still produces an answer.
+SLIVER_HEIGHT_THRESHOLD = int(os.environ.get("CCM_SLIVER_HEIGHT_THRESHOLD", "4"))
+
 # ─── Claude Code UI patterns (update when Claude Code UI changes) ───
 # These are the ONLY place where Claude Code's terminal output is matched.
 # If detection breaks after a Claude Code update, check these first.
@@ -1284,11 +1296,13 @@ def shell_cluster_warnings(projects) -> list:
 class Project:
     __slots__ = (
         "win_target", "win_idx", "name", "dir", "state",
-        "branch", "ports", "completed_at", "bg_active", "sort_key",
+        "branch", "ports", "completed_at", "bg_active", "pane_count",
+        "sort_key",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
-                 branch="", ports="", completed_at=0, bg_active=False):
+                 branch="", ports="", completed_at=0, bg_active=False,
+                 pane_count=1):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -1298,6 +1312,12 @@ class Project:
         self.ports = ports
         self.completed_at = completed_at
         self.bg_active = bg_active
+        # Number of tmux panes in this window. Used to surface a
+        # `⊞N` suffix for multi-pane windows so users notice
+        # split-pane windows (Agent Teams, leftover splits, orphan
+        # panes from earlier ad-hoc work). Always >= 1; populated
+        # by build_project_list from panes_cache.
+        self.pane_count = pane_count
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
@@ -1341,21 +1361,25 @@ def build_project_list(fast=False):
     panes_cache = []
     if not fast:
         panes_raw = tmux_cmd("list-panes", "-a", "-F",
-                             "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{pane_active}")
+                             "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{pane_active}\t#{pane_height}")
         for line in panes_raw.split("\n"):
             parts = line.split("\t")
             # Tuple shape grew over time:
             #   3-tuple (very old): (target, pid, pane_id)
             #   4-tuple (2026-04-27): + pane_current_command
-            #   5-tuple (2026-04-27, this commit): + pane_active flag
-            # Newer slots default to empty / "0" so detection logic
-            # can handle mock fixtures that haven't been updated.
-            if len(parts) >= 5:
-                panes_cache.append((parts[0], parts[1], parts[2], parts[3], parts[4]))
+            #   5-tuple (2026-04-27): + pane_active flag
+            #   6-tuple (2026-04-27): + pane_height (for sliver
+            #     exclusion; see SLIVER_HEIGHT_THRESHOLD doc)
+            # Newer slots default to empty so detection logic can
+            # handle mock fixtures that haven't been updated.
+            if len(parts) >= 6:
+                panes_cache.append((parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]))
+            elif len(parts) == 5:
+                panes_cache.append((parts[0], parts[1], parts[2], parts[3], parts[4], ""))
             elif len(parts) == 4:
-                panes_cache.append((parts[0], parts[1], parts[2], parts[3], ""))
+                panes_cache.append((parts[0], parts[1], parts[2], parts[3], "", ""))
             elif len(parts) == 3:
-                panes_cache.append((parts[0], parts[1], parts[2], "", ""))
+                panes_cache.append((parts[0], parts[1], parts[2], "", "", ""))
 
     own_pgid = str(os.getpgrp())
     seen_dirs = set()
@@ -1415,11 +1439,19 @@ def build_project_list(fast=False):
         branch = read_cache_file(CCM_GIT_CACHE_DIR, proj_dir) if proj_dir else ""
         ports = read_cache_file(CCM_PORT_CACHE_DIR, proj_dir) if proj_dir else ""
 
+        # Count panes in this window (slow path only — fast path
+        # has no panes_cache and pane_count would always show 1).
+        if fast:
+            pane_count = 1
+        else:
+            pane_count = sum(1 for pc in panes_cache if pc[0] == win_target) or 1
+
         projects.append(Project(
             win_target=win_target, win_idx=win_idx, name=project,
             directory=proj_dir, state=state, branch=branch, ports=ports,
             completed_at=sort_ts,
             bg_active=bool(bg_active_str and bg_active_str != "0"),
+            pane_count=pane_count,
         ))
 
     projects.sort(key=lambda p: p.sort_key)
@@ -1808,6 +1840,8 @@ def print_status():
         # continue to run.
         if p.bg_active:
             suffix += " (bg)"
+        if p.pane_count > 1:
+            suffix += f" ⊞{p.pane_count}"
         status = f"{color}{icon} {p.state}{suffix}{_C_RESET}"
         branch = p.branch or "-"
         ports = p.ports or "-"
@@ -2074,6 +2108,87 @@ def reset_window_after_attach(win_target):
         return
     tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_completed_at")
     tmux_cmd("set-option", "-wt", win_target, "-u", "@ccm_shell_history")
+    auto_focus_attention_pane(win_target)
+
+
+def auto_focus_attention_pane(win_target):
+    """If the window has a pane in PERMIT state and that pane is
+    not currently the active one, switch focus to it.
+
+    Rationale (2026-04-27): `detect_window_raw` aggregates state
+    across panes and surfaces `⚠ PERMIT` for the whole window when
+    any pane has a permission modal up. The user attaches to that
+    window expecting to deal with the modal — but tmux drops them
+    on whichever pane was last active, which may not be the one
+    actually waiting. Auto-focusing on attach saves a manual
+    `prefix + arrow` step and prevents the user from typing into
+    the wrong pane.
+
+    Scope is intentionally narrow: PERMIT only. BUSY panes are
+    interesting to monitor but do not require user input, so
+    auto-stealing focus from where the user wanted to be would be
+    surprising. Only fires from `reset_window_after_attach` (i.e.
+    ccm-mediated attach: `cmd_attach`, dashboard `_do_attach`).
+    Manual `prefix + N` window-switch is not hooked.
+
+    No-op on single-pane windows. No-op if no pane is PERMIT. No-op
+    if the active pane already is PERMIT. The 2-row format we ask
+    tmux for has all the data needed; `detect_pane_state` is run
+    for each pane to determine state.
+    """
+    proj_dir = tmux_cmd("show-option", "-wqv", "-t", win_target, "@ccm_dir")
+    if not proj_dir:
+        return
+    panes_raw = tmux_cmd(
+        "list-panes", "-t", win_target, "-F",
+        "#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{pane_active}\t#{pane_height}",
+    )
+    if not panes_raw:
+        return
+    rows = []
+    for line in panes_raw.split("\n"):
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        pid, pane_id, cmd, active, height_str = parts[:5]
+        try:
+            height = int(height_str)
+        except ValueError:
+            height = 0
+        rows.append((pid, pane_id, cmd, active == "1", height))
+
+    if len(rows) < 2:
+        return
+
+    # Re-import here to avoid the import cycle at module load.
+    from ccm_detection import detect_pane_state
+
+    ps_lines = ps_snapshot().strip().split("\n")
+    own_pgid = str(os.getpgrp())
+
+    permit_pane = None
+    active_is_permit = False
+    for pid, pane_id, cmd, is_active, height in rows:
+        # Apply the same sliver filter as detect_window_raw — a
+        # short pane cannot reliably report PERMIT either, so we
+        # do not auto-focus it.
+        if height and height < SLIVER_HEIGHT_THRESHOLD:
+            continue
+        state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
+                                   current_command=cmd)
+        if state != "PERMIT":
+            continue
+        if is_active:
+            active_is_permit = True
+            break
+        if permit_pane is None:
+            permit_pane = pane_id
+
+    if active_is_permit:
+        return  # User is already on the right pane.
+    if permit_pane is None:
+        return  # No PERMIT pane to focus.
+    tmux_cmd("select-pane", "-t", permit_pane)
 
 
 def init_dirs():

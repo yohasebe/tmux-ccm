@@ -162,3 +162,61 @@ class TestBgActiveSuffixInStatusBar:
         assert "(bg)" in entries[0]
 
 
+class TestPaneCountSuffixInStatusBar:
+    """The `⊞N` marker for windows with more than one pane.
+    Surfaces the multi-pane case (Agent Teams, casual splits,
+    leftover orphan panes) so the user can spot windows where the
+    aggregated state may belong to a non-active pane."""
+
+    def _make(self, pane_count, state="IDLE"):
+        p = make_project("0:2", "2", "ccm-dev", state)
+        p.pane_count = pane_count
+        return p
+
+    def test_single_pane_no_marker(self):
+        entries = inject_status.build_detail_entries(
+            [self._make(1)],
+            with_extras=False, current_win_target="0:2",
+        )
+        assert "⊞" not in entries[0]
+
+    def test_two_panes_show_marker(self):
+        entries = inject_status.build_detail_entries(
+            [self._make(2)],
+            with_extras=False, current_win_target="0:2",
+        )
+        assert "⊞2" in entries[0]
+
+    def test_three_panes_show_marker(self):
+        entries = inject_status.build_detail_entries(
+            [self._make(3)],
+            with_extras=False, current_win_target="0:2",
+        )
+        assert "⊞3" in entries[0]
+
+    def test_mode2_two_panes_show_marker(self):
+        entries = inject_status.build_detail_entries(
+            [self._make(2)],
+            with_extras=True, current_win_target="0:2",
+        )
+        assert "⊞2" in entries[0]
+
+    def test_pane_count_combines_with_stale_signal(self, monkeypatch):
+        """A stuck-PERMIT split-pane window should render both the
+        stale-age suffix and the multi-pane marker side by side."""
+        import time
+        ts = 9_999_999
+        monkeypatch.setattr("time.time", lambda: ts)
+        monkeypatch.setattr(ccm_core, "read_hook_signal",
+                            lambda d: (ts - 600, "PERMIT", ""))
+        p = self._make(2, state="PERMIT")
+        entries = inject_status.build_detail_entries(
+            [p],
+            with_extras=False, current_win_target="0:2",
+        )
+        # Both markers present; order: stale first, multi after.
+        assert "(10m)" in entries[0]
+        assert "⊞2" in entries[0]
+        assert entries[0].index("(10m)") < entries[0].index("⊞2")
+
+

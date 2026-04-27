@@ -201,29 +201,40 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
 
 
 def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
-    """Window-level raw state = the active pane's state.
+    """Window-level raw state = aggregation across panes that are
+    tall enough to render Claude's UI. Priority: PERMIT > BUSY >
+    IDLE > SHELL.
 
-    User-centered design (2026-04-27): a tmux window can have
-    multiple panes, but only one is `pane_active=1` at any time —
-    that is the pane the user is currently attending to. The window
-    state ccm reports must match what the user sees; aggregating
-    state across all panes (the pre-2026-04-27 behaviour) infected
-    the window with state from invisible / sliver / non-active
-    panes. Concrete failure observed: `personal` window showed
-    `◉ BUSY` because a 1-row sliver pane held a multi-hour-idle
-    `claude --continue` whose `❯` prompt could not be rendered in
-    1 row, so capture-pane-based prompt detection fell through to
-    "has children + no prompt → BUSY" — a false signal the user had
-    no way to see or correct.
+    Design (2026-04-27, second iteration): a tmux window can host
+    multiple panes — the dominant case is single-pane projects, but
+    Agent Teams splits a window into pane-per-teammate and casual
+    `prefix " ` / `prefix %` splits also occur. The user attends to
+    all visible panes simultaneously (split layout); only one pane
+    is `pane_active=1` at a time but they can see the others. So
+    state must aggregate across panes — picking the most attention-
+    needing one (PERMIT > BUSY > ...) ensures a single teammate
+    waiting for permission surfaces in the dashboard even when the
+    user has focus on a different teammate.
 
-    panes_cache tuples can be 3, 4, or 5 elements (back-compat over
-    several iterations). The 5th element (pane_active="1" / "0" /
-    "") is what matters here; legacy fixtures without it fall back
-    to "first pane in the window" which preserves the historical
-    test behaviour for single-pane fixtures.
+    Sliver exclusion: a 1-row pane (or any pane shorter than
+    `SLIVER_HEIGHT_THRESHOLD`) cannot render the `❯` prompt +
+    accept-edits indicator + footer that pane-state detection
+    relies on. capture-pane returns nothing useful, has_children
+    fires alone, and the pane reads BUSY indefinitely — even when
+    Claude is long-idle. Excluding short panes from aggregation
+    prevents an invisible sliver from infecting the whole window
+    (the failure that motivated this rewrite). Tall panes still
+    aggregate as before. If every pane is below the threshold, all
+    panes are used (better to have a possibly-wrong answer than
+    no answer; this is the impossible-in-practice edge case).
+
+    panes_cache tuples can be 3 / 4 / 5 / 6 elements (back-compat
+    over several refactors). The 6th element is `pane_height`;
+    legacy fixtures without it skip the sliver filter, preserving
+    the pre-sliver-exclusion test behaviour.
     """
     # Filter to panes belonging to this window. Each entry becomes
-    # (pid, pane_id, current_command, pane_active).
+    # (pid, pane_id, current_command, pane_height).
     panes = []
     for pc in panes_cache:
         if pc[0] != win_target:
@@ -231,21 +242,40 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
         pid = pc[1]
         pane_id = pc[2]
         current_command = pc[3] if len(pc) >= 4 else ""
-        pane_active = pc[4] if len(pc) >= 5 else ""
-        panes.append((pid, pane_id, current_command, pane_active))
+        # pane_active (pc[4]) is intentionally not used here — see
+        # design note above. It is consulted only by the auto-focus
+        # helper.
+        height_str = pc[5] if len(pc) >= 6 else ""
+        try:
+            height = int(height_str) if height_str else None
+        except ValueError:
+            height = None
+        panes.append((pid, pane_id, current_command, height))
 
     if not panes:
         return "DOWN"
 
-    # Pick the active pane. tmux guarantees exactly one pane has
-    # pane_active=1 within a non-empty window. If no entry is
-    # marked active (legacy fixtures, mid-creation transient),
-    # default to the first pane — matches the pre-2026-04-27
-    # aggregation when a single-pane window was the input.
-    chosen = next((p for p in panes if p[3] == "1"), panes[0])
-    pid, pane_id, current_command, _ = chosen
-    return detect_pane_state(pid, pane_id, ps_lines, own_pgid,
-                             current_command=current_command)
+    # Sliver filter: drop panes too short to render Claude's UI.
+    # If every pane is filtered out (impossible in practice), keep
+    # them all — better wrong answer than no answer.
+    eligible = [p for p in panes
+                if p[3] is None or p[3] >= ccm_core.SLIVER_HEIGHT_THRESHOLD]
+    if not eligible:
+        eligible = panes
+
+    # Aggregate: PERMIT trumps BUSY trumps IDLE trumps SHELL.
+    # Equivalent to taking the min over STATE_PRIORITY.
+    best = "SHELL"
+    for pid, pane_id, current_command, _height in eligible:
+        state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
+                                   current_command=current_command)
+        if state == "PERMIT":
+            return "PERMIT"
+        if state == "BUSY":
+            best = "BUSY"
+        elif state == "IDLE" and best != "BUSY":
+            best = "IDLE"
+    return best
 
 
 def _set_win_state(win_target, state):

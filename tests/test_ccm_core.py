@@ -1199,11 +1199,10 @@ class TestDetectWindowRaw:
         assert ccm_core.detect_window_raw("0:1", [], [], "99999") == "DOWN"
 
     @patch("ccm_core.tmux_cmd")
-    def test_default_first_pane_when_no_active_flag(self, mock_tmux):
-        """Legacy fixtures without pane_active default to first pane —
-        matches the historical single-pane case (the dominant ccm
-        usage). Multi-pane fixtures should set pane_active explicitly
-        to be unambiguous."""
+    def test_busy_aggregates_across_panes(self, mock_tmux):
+        """Two-pane window where one pane has claude with children
+        running. Aggregation picks BUSY since at least one eligible
+        pane is BUSY (PERMIT > BUSY > IDLE > SHELL ordering)."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node"),
             (101, 1, 101, "bash"), (201, 101, 101, "claude"),
@@ -1213,62 +1212,79 @@ class TestDetectWindowRaw:
         assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
-    def test_active_pane_authoritative_shell_active(self, mock_tmux):
-        """The motivating regression (2026-04-27 personal window):
-        active pane is a plain shell, an inactive sliver pane has a
-        long-idle claude. Window state must follow what the user
-        sees — SHELL — not the inactive pane's state."""
+    def test_permit_trumps_busy_in_aggregation(self, mock_tmux):
+        """Agent Teams workflow: one pane is BUSY (teammate working),
+        another pane is PERMIT (different teammate waiting for user).
+        Window must surface PERMIT so the dashboard prompts the user
+        to handle the modal even when another teammate is mid-work."""
         ps = make_ps_lines(
-            (100, 1, 100, "zsh"),  # active pane: just a shell
-            (200, 1, 200, "zsh"), (300, 200, 300, "claude"),  # inactive: claude with MCP
-            (400, 300, 400, "python"),  # MCP child
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node"),
+            (101, 1, 101, "bash"), (201, 101, 101, "claude"),
         )
-        mock_tmux.return_value = ""
-        # 5-tuple: (target, pid, pane_id, current_command, pane_active)
+        # Both panes get the permit footer in capture-pane. detect_pane_state
+        # checks the footer first, so both panes report PERMIT and the
+        # aggregation picks PERMIT (which it would also have done if only
+        # one matched — that is the test's point).
+        mock_tmux.return_value = "Esc to cancel · Tab to amend"
         panes = [
-            ("0:1", "100", "%0", "zsh", "1"),  # active
-            ("0:1", "200", "%1", "claude", "0"),  # inactive sliver
+            ("0:1", "100", "%0", "claude", "1", "48"),
+            ("0:1", "101", "%1", "claude", "0", "48"),
+        ]
+        assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_sliver_pane_excluded_from_aggregation(self, mock_tmux):
+        """The motivating regression (2026-04-27 `personal` window):
+        a 1-row sliver pane held a long-idle claude and false-read
+        BUSY (children present, capture-pane empty so no `❯`). Pre-
+        fix that BUSY infected the whole window; post-fix the
+        sliver is filtered out and the visible shell pane drives
+        the result → SHELL."""
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"),  # visible pane: just a shell
+            (200, 1, 200, "zsh"), (300, 200, 300, "claude"),  # sliver: claude with MCP
+            (400, 300, 400, "python"),
+        )
+        # capture-pane on the sliver returns nothing (1 row cannot
+        # render the prompt). For the visible shell pane the test
+        # short-circuits before capture-pane is consulted.
+        mock_tmux.return_value = ""
+        panes = [
+            ("0:1", "100", "%0", "zsh", "1", "47"),    # full-size shell
+            ("0:1", "200", "%1", "claude", "0", "1"),  # 1-row sliver
         ]
         assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "SHELL"
 
     @patch("ccm_core.tmux_cmd")
-    def test_active_pane_authoritative_claude_active(self, mock_tmux):
-        """Mirror: active pane is the claude pane, inactive pane is
-        a side-shell. Window state follows the active pane → BUSY
-        (claude has children, no `❯` visible in mocked capture)."""
+    def test_all_slivers_fallback_uses_all_panes(self, mock_tmux):
+        """Edge case (impossible in practice): every pane is shorter
+        than SLIVER_HEIGHT_THRESHOLD. The filter is bypassed so
+        detection still produces an answer rather than silently
+        falling through to SHELL on a window full of slivers."""
         ps = make_ps_lines(
-            (100, 1, 100, "zsh"), (200, 100, 100, "claude"),  # active: claude
-            (300, 200, 200, "node"),  # claude child
-            (101, 1, 101, "zsh"),  # inactive: shell
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node"),
         )
-        mock_tmux.return_value = "streaming..."
+        mock_tmux.return_value = "Processing..."
         panes = [
-            ("0:1", "100", "%0", "claude", "1"),  # active
-            ("0:1", "101", "%1", "zsh", "0"),  # inactive
+            ("0:1", "100", "%0", "claude", "1", "1"),
+            ("0:1", "101", "%1", "claude", "0", "2"),
         ]
+        # Both slivers — without the bypass this would be SHELL.
+        # With bypass, the BUSY pane is detected.
         assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
-    def test_inactive_panes_completely_ignored(self, mock_tmux):
-        """Even if an inactive pane has a permission modal, the
-        window does not commit PERMIT — the user is not looking at
-        that pane and cannot interact with the modal until they
-        switch panes. Reporting PERMIT would falsely block ccm send
-        for a window the user is using productively elsewhere."""
+    def test_legacy_3tuple_no_sliver_filter(self, mock_tmux):
+        """Older callers still pass 3-tuples (target, pid, pane_id)
+        without pane_height. Detection must accept these unchanged
+        — the sliver filter only fires when height is present and
+        below the threshold."""
         ps = make_ps_lines(
-            (100, 1, 100, "zsh"),  # active: idle shell
-            (200, 1, 200, "zsh"), (300, 200, 300, "claude"),  # inactive: claude waiting
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node"),
         )
-        # mock_tmux is called for capture-pane on the active shell
-        # pane (which has no claude, so detection short-circuits to
-        # SHELL before any capture). Set a permit footer just to
-        # prove it would never be reached.
-        mock_tmux.return_value = "Esc to cancel · Tab to amend"
-        panes = [
-            ("0:1", "100", "%0", "zsh", "1"),  # active shell
-            ("0:1", "200", "%1", "claude", "0"),  # inactive permit
-        ]
-        assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "SHELL"
+        mock_tmux.return_value = "Processing..."
+        panes = [("0:1", "100", "%0")]
+        assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
 
 
 # ─── detect_window_state with hooks ───
@@ -4268,6 +4284,171 @@ class TestShellClusterDetection:
 
         assert ("0:5", "@ccm_completed_at") in unset_calls
         assert "0:5/@ccm_completed_at" not in store
+
+
+# ─── auto_focus_attention_pane ───
+#
+# When the user attaches to a window where one pane has a permission
+# modal up but the active pane is something else, ccm switches focus
+# to the PERMIT pane so the user can dismiss it without first hunting
+# for it. Trigger is narrow (PERMIT only — BUSY does not need user
+# input) and the call site is single (`reset_window_after_attach`).
+
+class TestAutoFocusAttentionPane:
+    def _stub_tmux(self, monkeypatch, panes_raw, proj_dir="/tmp/proj"):
+        """Stub tmux_cmd: return show-option for @ccm_dir, the
+        provided list-panes output, and record select-pane calls."""
+        select_calls = []
+
+        def fake(*args):
+            if args[:2] == ("show-option", "-wqv") and args[-1] == "@ccm_dir":
+                return proj_dir
+            if args[0] == "list-panes":
+                return panes_raw
+            if args[0] == "select-pane":
+                select_calls.append(args)
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        return select_calls
+
+    def test_no_op_when_proj_dir_missing(self, monkeypatch):
+        """Non-ccm window (no @ccm_dir tag): no list-panes call,
+        no select-pane call. Same guard as the rest of
+        reset_window_after_attach — auto-focus is a ccm feature, it
+        must not touch arbitrary user windows."""
+        select_calls = self._stub_tmux(monkeypatch, "", proj_dir="")
+        ccm_core.auto_focus_attention_pane("0:5")
+        assert select_calls == []
+
+    def test_no_op_on_single_pane_window(self, monkeypatch):
+        """Single-pane windows have no panes to choose between."""
+        panes_raw = "100\t%0\tclaude\t1\t48"
+        select_calls = self._stub_tmux(monkeypatch, panes_raw)
+        ccm_core.auto_focus_attention_pane("0:5")
+        assert select_calls == []
+
+    def test_focuses_permit_pane_when_active_is_not_permit(
+        self, monkeypatch
+    ):
+        """Active pane is a shell, inactive pane has a permission
+        modal up. Auto-focus must switch to the permit pane."""
+        # Make the inactive pane (%1) be the one that capture-pane
+        # reports as showing a permit footer. The active pane (%0)
+        # has cmd=zsh so detect_pane_state short-circuits to SHELL
+        # without consulting the capture-pane mock.
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"),  # active pane: shell
+            (200, 1, 200, "zsh"), (300, 200, 300, "claude"),  # inactive: claude
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot",
+                            lambda: "\n".join(ps))
+        # list-panes output: pane_pid \t pane_id \t current_command
+        # \t pane_active \t pane_height
+        panes_raw = (
+            "100\t%0\tzsh\t1\t48\n"
+            "200\t%1\tclaude\t0\t48"
+        )
+
+        # tmux_cmd dispatch: show-option for @ccm_dir, list-panes
+        # for the panes string, capture-pane returns permit footer
+        # for ANY pane (only the claude pane will reach that branch
+        # of detect_pane_state because the shell pane short-circuits
+        # to SHELL via current_command='zsh').
+        select_calls = []
+
+        def fake(*args):
+            if args[:2] == ("show-option", "-wqv") and args[-1] == "@ccm_dir":
+                return "/tmp/proj"
+            if args[0] == "list-panes":
+                return panes_raw
+            if args[0] == "select-pane":
+                select_calls.append(args)
+                return ""
+            if args[0] == "capture-pane":
+                return "Esc to cancel · Tab to amend"
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        ccm_core.auto_focus_attention_pane("0:5")
+
+        # The permit pane (%1) must have been selected.
+        assert any("%1" in c for c in select_calls), (
+            f"select-pane was not called with %1: {select_calls}"
+        )
+
+    def test_no_op_when_active_pane_is_already_permit(
+        self, monkeypatch
+    ):
+        """If the active pane is itself in PERMIT, do not steal
+        focus to another permit pane (would jitter focus needlessly
+        on multi-permit windows)."""
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"), (200, 100, 100, "claude"),  # active: claude
+            (101, 1, 101, "zsh"), (201, 101, 101, "claude"),  # inactive: claude
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot",
+                            lambda: "\n".join(ps))
+        panes_raw = (
+            "100\t%0\tclaude\t1\t48\n"
+            "101\t%1\tclaude\t0\t48"
+        )
+        select_calls = []
+
+        def fake(*args):
+            if args[:2] == ("show-option", "-wqv") and args[-1] == "@ccm_dir":
+                return "/tmp/proj"
+            if args[0] == "list-panes":
+                return panes_raw
+            if args[0] == "select-pane":
+                select_calls.append(args)
+                return ""
+            if args[0] == "capture-pane":
+                return "Esc to cancel · Tab to amend"  # both panes PERMIT
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        ccm_core.auto_focus_attention_pane("0:5")
+        assert select_calls == [], (
+            f"Should not steal focus when active is already PERMIT, "
+            f"but got: {select_calls}"
+        )
+
+    def test_sliver_permit_pane_not_focused(self, monkeypatch):
+        """A sliver pane below the height threshold cannot reliably
+        report PERMIT (capture-pane is empty), so even if its
+        process tree looks like a claude waiting, auto-focus must
+        not switch to it. Mirrors the sliver exclusion in
+        detect_window_raw."""
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"),  # active shell
+            (200, 1, 200, "zsh"), (300, 200, 300, "claude"),  # sliver claude
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot",
+                            lambda: "\n".join(ps))
+        panes_raw = (
+            "100\t%0\tzsh\t1\t47\n"
+            "200\t%1\tclaude\t0\t1"  # 1-row sliver
+        )
+        select_calls = []
+
+        def fake(*args):
+            if args[:2] == ("show-option", "-wqv") and args[-1] == "@ccm_dir":
+                return "/tmp/proj"
+            if args[0] == "list-panes":
+                return panes_raw
+            if args[0] == "select-pane":
+                select_calls.append(args)
+                return ""
+            if args[0] == "capture-pane":
+                return "Esc to cancel · Tab to amend"
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        ccm_core.auto_focus_attention_pane("0:5")
+        assert select_calls == [], (
+            f"Sliver pane should be excluded from auto-focus: {select_calls}"
+        )
 
 
 # ─── classify_permit_modal ───

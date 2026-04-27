@@ -157,7 +157,11 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # (which only fires for BUSY/PERMIT) so we can render either
         # cleanly.
         bg = "(bg)" if p.bg_active else ""
-        extra = stale or bg
+        # Multi-pane marker (⊞N) is independent of stale/bg — a
+        # split window can be in any of those states. Compose them
+        # so e.g. a stuck-PERMIT split-pane window reads "(8m)⊞3".
+        multi = f"⊞{p.pane_count}" if p.pane_count > 1 else ""
+        extra = (stale or bg) + multi
 
         if with_extras:
             # Mode 2: idx:name (branch) [:port]:icon[(stale)]
