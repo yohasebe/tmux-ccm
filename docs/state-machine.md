@@ -2,6 +2,19 @@
 
 Formal reference for the ccm detection pipeline. The implementation lives in [`lib/ccm_detection.py`](../lib/ccm_detection.py); this document describes the design contract that the two detection backbones (legacy `DETECTION_RULES` table and `derive_state_from_events`) must respect.
 
+## Design principle
+
+States answer one question: **does the user need to take action right now?**
+
+- `PERMIT` — yes, the user must approve / dismiss / answer a modal
+- `BUSY` / `CONT` — no, claude has the ball; wait
+- `IDLE` — no, the user has the ball, but no immediate action is required
+- `SHELL` / `DOWN` — environmental (claude not running)
+
+Background activity (leftover dev servers, phantom upstream events, cron-triggered processes) is **informational, not action-actionable** — it goes into a parenthesised suffix (`(bg)`, `(Nm)`) rather than the state label. The state label is the one-glance answer to "do I need to do something?"; suffixes carry context for users who want the deeper picture.
+
+When choosing between adding a new state, a new rule, or a new suffix, ask the principle question first. If the new condition does not change "what should the user do right now?", it belongs in a suffix or stays implicit — not in the state label.
+
 ## States
 
 | State | Icon | Meaning |
