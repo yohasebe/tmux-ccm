@@ -526,48 +526,56 @@ class Dashboard:
                 # Calculate column widths for alignment
                 max_idx_w = max((len(p.win_idx) for p in projects), default=1) + 1  # "#N"
                 max_state_w = 8  # "● PERMIT" = 8
-                max_name_w = max((len(p.name) for p in projects), default=5)
 
-                # Fixed column positions for idx / state / name.
-                # After name, ⊞N / ✔elapsed / stale|bg / branch
-                # flow sequentially as a tight cluster (no padding
-                # for absent annotations) — that keeps "no-extras"
-                # rows compact. The path column IS pinned to a
-                # fixed COL_DIR so the path itself lines up
-                # vertically: hybrid of the two prior attempts
-                # (full-aligned wasted space, fully-flowing left
-                # path ragged).
+                # Fixed column positions for idx / state / name
+                # only. Each row's annotation cluster (⊞N /
+                # ✔elapsed / stale|bg / branch) starts immediately
+                # after THAT row's name — not after a max-width
+                # fake name column, which would leave short names
+                # with a wide blank before their annotations.
+                # The directory column IS pinned to a fixed
+                # COL_DIR so paths line up across rows.
                 COL_IDX = 4       # after "  ▶ "
                 COL_STATE = COL_IDX + max_idx_w + 1
                 COL_NAME = COL_STATE + max_state_w + 1
-                COL_REST = COL_NAME + max_name_w + 1
 
                 now_ts = int(time.time())
 
-                # Pre-compute the worst-case post-name annotation
-                # width so we know where the path column starts.
                 def _annotations_width(proj):
-                    w = 0
+                    """Total width the post-name cluster would
+                    occupy for `proj`, including the leading space
+                    between name and the first annotation."""
+                    pieces = []
                     if proj.pane_count > 1:
-                        w += len(f"⊞{proj.pane_count}") + 1
+                        pieces.append(len(f"⊞{proj.pane_count}"))
                     if proj.completed_at:
                         age = now_ts - proj.completed_at
                         if 0 <= age < COMPLETED_AT_TIMEOUT:
                             elapsed = format_elapsed(proj.completed_at)
                             if elapsed:
-                                w += 2 + len(elapsed) + 1
+                                pieces.append(2 + len(elapsed))
                     suffix = signal_age_suffix(proj.dir, proj.state).strip()
                     if suffix:
-                        w += len(suffix) + 1
+                        pieces.append(len(suffix))
                     elif proj.bg_active:
-                        w += len("(bg)") + 1
+                        pieces.append(len("(bg)"))
                     if proj.branch:
-                        w += len(proj.branch) + 3
-                    return w
+                        pieces.append(len(proj.branch) + 2)
+                    if not pieces:
+                        return 0
+                    # 1 space between name and first piece +
+                    # pieces joined with single spaces.
+                    return 1 + sum(pieces) + (len(pieces) - 1)
 
-                COL_DIR = COL_REST + max(
-                    (_annotations_width(p) for p in projects), default=0
-                )
+                # Path lives at the column where the worst-case
+                # name + annotation cluster ends, plus a 1-char
+                # gap. Rows whose cluster ends earlier get padding
+                # before the path column; rows with the worst-case
+                # cluster get exactly one space before the path.
+                COL_DIR = COL_NAME + max(
+                    (len(p.name) + _annotations_width(p) for p in projects),
+                    default=0,
+                ) + 1
 
                 for i, p in enumerate(projects):
                     if i < scroll_offset:
@@ -594,12 +602,14 @@ class Dashboard:
                     # Project name
                     self._addstr(stdscr, y, COL_NAME, p.name, curses.A_BOLD)
 
-                    # name + ⊞N + ✔elapsed render as one tight unit
-                    # right after the project name (no padding
-                    # between). Each piece keeps its own colour so
-                    # the cluster is still scannable: name (bold) /
-                    # ⊞N (dim) / ✔ (green) / elapsed (dim).
-                    col = COL_REST
+                    # Annotations start one space after THIS row's
+                    # name end, not after a max-name-width column —
+                    # so ⊞N / ✔elapsed visually attach to the name
+                    # they belong to. Each piece keeps its own
+                    # colour so the cluster is still scannable:
+                    # name (bold) / ⊞N (dim) / ✔ (green) /
+                    # elapsed (dim).
+                    col = COL_NAME + len(p.name) + 1
 
                     # Multi-pane indicator (immediately after name).
                     if p.pane_count > 1:
