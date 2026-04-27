@@ -948,15 +948,19 @@ def cmd_debug_trace(project_match, interval=0.3):
         # observe real kernel/tmux state, not anything ccm has
         # memoized.
         ps_lines = ccm_core.ps_snapshot().split("\n")
+        # Match build_project_list's 5-field format so detect_window_raw
+        # picks the right (active) pane during trace runs. Older 3-tuple
+        # input would fall through to "first pane" via the legacy
+        # fallback, defeating the whole point of the trace tool.
         panes_raw = ccm_core.tmux_cmd(
             "list-panes", "-a", "-F",
-            "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}",
+            "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{pane_active}",
         )
         panes_cache = []
         for line in panes_raw.split("\n"):
             parts = line.split("\t")
-            if len(parts) == 3:
-                panes_cache.append(tuple(parts))
+            if len(parts) >= 5:
+                panes_cache.append(tuple(parts[:5]))
         own_pgid = str(os.getpgrp())
 
         prev_state = ccm_core.tmux_cmd(
