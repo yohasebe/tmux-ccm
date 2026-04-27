@@ -1043,6 +1043,28 @@ def derive_state_from_events(events, jsonl_stop_reason,
                 and _jsonl_fresher_than_event(latest, jsonl_age, now)):
             return "BUSY"
     elif klass == EVENT_CLASS_START:
+        # Phantom-subagent shortcut (2026-04-27). The Claude Code
+        # upstream fires occasional spurious `SubagentStart` /
+        # `SubagentStop` hooks during otherwise-idle periods (status
+        # line refresh? auto-memory? — root cause filed in memory
+        # `project_phantom_subagent`). Pattern: `... stop, notify_idle,
+        # subagent` with no follow-up activity. Legitimate subagent
+        # events always come mid-conversation (after a `prompt` or
+        # tool event); only the phantom case appears AFTER a
+        # `notify_idle` with no intervening start-class event. Walk
+        # back through any stacked subagent events; if we land on a
+        # `notify_idle` without crossing a `prompt` or tool event,
+        # the latest is phantom — defer to legacy.
+        if t == "subagent" and raw != "PERMIT":
+            for i in range(len(events_seq) - 2, -1, -1):
+                prev_event = events_seq[i]
+                prev_t = (prev_event.get("type")
+                          if isinstance(prev_event, dict) else None)
+                if prev_t == "subagent":
+                    continue  # walk past stacked phantoms
+                if prev_t == "notify_idle":
+                    return None  # phantom chain after idle
+                break  # crossed a real event; legitimate context
         # Esc-interrupt / hook-silence fallback (2026-04-26).
         # Latest event is start-class (prompt / pretool / posttool /
         # subagent / compact) but JSONL shows the assistant just
@@ -1066,14 +1088,11 @@ def derive_state_from_events(events, jsonl_stop_reason,
         if (raw != "PERMIT" and _jsonl_terminal_fresher_than_event(
                 latest, jsonl_stop_reason, jsonl_age, now)):
             return "IDLE"
-        # Phantom event timeout (2026-04-27, after observed teaching-
-        # pane stuck-BUSY). A start-class event with no follow-up
-        # stop / pretool / posttool for >BUSY_HOOK_JSONL_WINDOW
-        # (10 min) AND a stale JSONL combined are the long-tail
-        # signature of a phantom subagent (or other spurious upstream
-        # firing) — claude is clearly not actively working. Return
-        # None so the caller falls back to legacy, which resolves
-        # via fallback_busy_to_idle.
+        # Combined-stale fallback (2026-04-27): a start-class event
+        # with no follow-up for >BUSY_HOOK_JSONL_WINDOW (10 min)
+        # AND a similarly stale JSONL is the long-tail signature of
+        # any other spurious upstream firing (not just subagent).
+        # Defer to legacy.
         if raw != "PERMIT":
             event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
             if now > 0 and event_ts > 0:

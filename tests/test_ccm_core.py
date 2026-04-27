@@ -5392,6 +5392,108 @@ class TestDeriveStateFromEvents:
             raw="IDLE",
         ) == "PERMIT"
 
+    def test_phantom_subagent_after_notify_idle_defers(self):
+        """Live regression caught on monadic-chat 2026-04-27 morning:
+        upstream Claude Code fires a spurious `subagent` event in
+        an otherwise-idle period (status line / auto-memory / etc).
+        Pattern: `... stop, notify_idle, subagent` with no follow-up.
+        Real subagent events always come mid-conversation. The
+        latest=subagent + prev=notify_idle pattern is exclusive to
+        the phantom case. Defer to legacy → IDLE."""
+        events = (
+            {"ts": 100, "type": "stop"},
+            {"ts": 110, "type": "notify_idle"},
+            {"ts": 200, "type": "subagent"},  # phantom
+        )
+        # event_age=300, jsonl_age=400, both within 10-min window
+        # so the combined-stale fallback below would NOT fire — the
+        # subagent-specific rule must catch it.
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=400, now=500,
+            raw="IDLE",
+        )
+        assert result is None  # defer to legacy
+
+    def test_phantom_subagent_stacked_chain_defers(self):
+        """Multiple phantom subagent events stack up over time.
+        Walk back through them; if we reach `notify_idle` without
+        crossing a real event, still defer."""
+        events = (
+            {"ts": 100, "type": "stop"},
+            {"ts": 110, "type": "notify_idle"},
+            {"ts": 200, "type": "subagent"},
+            {"ts": 300, "type": "subagent"},
+            {"ts": 400, "type": "subagent"},  # latest
+        )
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=200, now=500,
+            raw="IDLE",
+        )
+        assert result is None
+
+    def test_legitimate_subagent_after_prompt_stays_busy(self):
+        """A `subagent` event after a `prompt` (with no notify_idle
+        in between) is a legitimate Task tool invocation. Must NOT
+        defer — claude is genuinely running a subagent."""
+        events = (
+            {"ts": 100, "type": "stop"},
+            {"ts": 110, "type": "notify_idle"},
+            {"ts": 200, "type": "prompt"},  # new user prompt
+            {"ts": 220, "type": "subagent"},  # Task tool started
+        )
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=10, now=230,
+            raw="BUSY",
+        )
+        assert result == "BUSY"
+
+    def test_legitimate_subagent_mid_tool_chain_stays_busy(self):
+        """`subagent` after `posttool` (mid tool chain) is normal."""
+        events = (
+            {"ts": 100, "type": "prompt"},
+            {"ts": 110, "type": "pretool"},
+            {"ts": 120, "type": "posttool"},
+            {"ts": 130, "type": "subagent"},  # Task spawned
+        )
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=5, now=140,
+            raw="BUSY",
+        )
+        assert result == "BUSY"
+
+    def test_phantom_subagent_with_raw_permit_keeps_permit(self):
+        """raw=PERMIT (modal on screen) wins even over the phantom-
+        subagent shortcut. The override logic for permit-class
+        events runs after phantom check and re-applies for safety."""
+        events = (
+            {"ts": 100, "type": "stop"},
+            {"ts": 110, "type": "notify_idle"},
+            {"ts": 200, "type": "subagent"},
+        )
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=400, now=500,
+            raw="PERMIT",
+        )
+        # The phantom-subagent rule has `raw != "PERMIT"` guard so it
+        # does NOT fire; falls through to BUSY candidate; final A'
+        # override pulls to PERMIT.
+        assert result == "PERMIT"
+
     def test_start_event_phantom_timeout_defers_to_legacy(self):
         """Phantom subagent / abandoned start event scenario:
         latest event is start-class (>10 min old) AND JSONL is
