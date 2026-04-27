@@ -5392,6 +5392,43 @@ class TestDeriveStateFromEvents:
             raw="IDLE",
         ) == "PERMIT"
 
+    def test_start_event_phantom_timeout_defers_to_legacy(self):
+        """Phantom subagent / abandoned start event scenario:
+        latest event is start-class (>10 min old) AND JSONL is
+        also stale (>10 min old). claude is clearly not actively
+        working — defer to legacy which resolves via
+        fallback_busy_to_idle to IDLE.
+
+        Caught live on teaching pane 2026-04-27 morning: phantom
+        `subagent` fired 41 minutes ago, no follow-up, JSONL stale
+        from 44 min ago. event-log path returned BUSY indefinitely
+        until this fallback was added."""
+        # event_ts=100, now=900 → event_age=800 > 600
+        # jsonl_age=2658 > 600
+        result = ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "subagent"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=7000,
+            jsonl_age=2658, now=900,
+            raw="IDLE",
+        )
+        assert result is None  # defer to legacy
+
+    def test_start_event_phantom_timeout_skipped_when_jsonl_fresh(self):
+        """Stale event but FRESH JSONL = claude is currently active
+        (e.g. responding from a long thinking burst that finally
+        emitted text). Don't apply the phantom-timeout fallback."""
+        result = ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "prompt"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=7000,
+            jsonl_age=10, now=900,  # event old, JSONL fresh
+            raw="IDLE",
+        )
+        # Falls through to terminal-release check (jsonl_stop=tool_use
+        # not terminal, so no release) → BUSY
+        assert result == "BUSY"
+
     def test_pause_event_with_terminal_jsonl_still_idle(self):
         """The existing PAUSE branch (latest event = stop) already
         returns IDLE for terminal stop_reasons. Verify the new

@@ -1066,6 +1066,22 @@ def derive_state_from_events(events, jsonl_stop_reason,
         if (raw != "PERMIT" and _jsonl_terminal_fresher_than_event(
                 latest, jsonl_stop_reason, jsonl_age, now)):
             return "IDLE"
+        # Phantom event timeout (2026-04-27, after observed teaching-
+        # pane stuck-BUSY). A start-class event with no follow-up
+        # stop / pretool / posttool for >BUSY_HOOK_JSONL_WINDOW
+        # (10 min) AND a stale JSONL combined are the long-tail
+        # signature of a phantom subagent (or other spurious upstream
+        # firing) — claude is clearly not actively working. Return
+        # None so the caller falls back to legacy, which resolves
+        # via fallback_busy_to_idle.
+        if raw != "PERMIT":
+            event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
+            if now > 0 and event_ts > 0:
+                event_age = now - event_ts
+                if (event_age > BUSY_HOOK_JSONL_WINDOW
+                        and 0 <= jsonl_age
+                        and jsonl_age > BUSY_HOOK_JSONL_WINDOW):
+                    return None
         candidate = "BUSY"
     elif klass == EVENT_CLASS_IDLE:
         candidate = "IDLE"
