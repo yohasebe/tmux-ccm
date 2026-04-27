@@ -61,8 +61,9 @@ Current rules (order matters — see `lib/ccm_detection.py` for the live table):
 13. `fallback_busy_to_idle` — prev=BUSY + JSONL aged → IDLE
 14. `fallback_permit_hold` — prev=PERMIT + raw=IDLE within `PERMIT_GAP_TOLERANCE` → PERMIT
 15. `startup_transient_raw_busy` — raw=BUSY + young pid + no hook → IDLE (MCP loading)
-16. `raw_not_idle` — catch-all passthrough (raw≠IDLE → raw)
-17. `default` — final catch-all → IDLE
+16. `raw_busy_passthrough` — raw=BUSY with no other rule matched → BUSY (phase: midturn)
+17. `raw_permit_passthrough` — raw=PERMIT with no other rule matched → PERMIT (phase: permit)
+18. `default` — final catch-all → IDLE
 
 ### Event-log backbone — `derive_state_from_events`
 

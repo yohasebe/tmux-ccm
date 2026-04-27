@@ -1806,7 +1806,10 @@ class TestRulePhaseAnnotations:
 
     # Catch-all rules that legitimately lack a fixed phase because
     # their semantic phase depends on ctx.raw at fire time.
-    EXPECTED_NONE = {"raw_not_idle", "default"}
+    # `raw_busy_passthrough` and `raw_permit_passthrough` (formerly
+    # the combined `raw_not_idle`) carry concrete `midturn` /
+    # `permit` phases, so they are NOT in this set.
+    EXPECTED_NONE = {"default"}
 
     def test_every_rule_has_phase_or_is_listed_passthrough(self):
         import ccm_detection as det
@@ -1849,7 +1852,8 @@ class TestRulePhaseAnnotations:
             "fallback_busy_to_idle": "idle",
             "fallback_permit_hold": "permit",
             "startup_transient_raw_busy": "startup",
-            "raw_not_idle": None,
+            "raw_busy_passthrough": "midturn",
+            "raw_permit_passthrough": "permit",
             "default": None,
         }
         actual = {r.name: r.phase for r in ccm_core.DETECTION_RULES}
@@ -2021,7 +2025,7 @@ class TestEvaluateRules:
         rule, state = ccm_core.evaluate_rules(
             make_ctx(raw="BUSY", jsonl_age=1)
         )
-        assert rule.name == "raw_not_idle"
+        assert rule.name == "raw_busy_passthrough"
         assert state == "BUSY"
 
     def test_jsonl_holds_busy_through_thinking_gap(self):
@@ -2175,15 +2179,15 @@ class TestEvaluateRules:
         assert rule2.name == "default"
         assert state2 == "IDLE"
 
-    # --- raw_not_idle ---
+    # --- raw_busy_passthrough / raw_permit_passthrough ---
 
     def test_raw_busy_passes_through(self):
         rule, state = ccm_core.evaluate_rules(make_ctx(raw="BUSY"))
-        assert (rule.name, state) == ("raw_not_idle", "BUSY")
+        assert (rule.name, state) == ("raw_busy_passthrough", "BUSY")
 
     def test_raw_permit_passes_through(self):
         rule, state = ccm_core.evaluate_rules(make_ctx(raw="PERMIT"))
-        assert (rule.name, state) == ("raw_not_idle", "PERMIT")
+        assert (rule.name, state) == ("raw_permit_passthrough", "PERMIT")
 
     # --- default ---
 
@@ -2289,7 +2293,7 @@ class TestFastPath:
         assert ccm_core.evaluate_fast("IDLE", project_dir) == "IDLE"
 
     def test_prev_busy_no_hook_stays_busy(self, project_dir):
-        """Without ps info, prev=BUSY stays BUSY via rule raw_not_idle."""
+        """Without ps info, prev=BUSY stays BUSY via rule raw_busy_passthrough."""
         assert ccm_core.evaluate_fast("BUSY", project_dir) == "BUSY"
 
     def test_prev_permit_no_hook_stays_permit(self, project_dir):
@@ -2416,7 +2420,7 @@ class TestLifecycleSequences:
         """Hook signals absent entirely (old config or disabled)."""
         # Text generation: raw=BUSY from process tree
         assert self._eval(raw="BUSY", prev_state="IDLE") == (
-            "raw_not_idle", "BUSY",
+            "raw_busy_passthrough", "BUSY",
         )
         # Prompt returns: raw=IDLE, prev=BUSY → IDLE directly
         assert self._eval(raw="IDLE", prev_state="BUSY") == (
@@ -2609,7 +2613,7 @@ class TestLifecycleSequences:
 
     def test_startup_transient_expires_after_grace(self):
         """After STARTUP_GRACE_SEC the rule no longer matches; raw=BUSY
-        with no hook evidence falls back through `raw_not_idle` → BUSY.
+        with no hook evidence falls back through `raw_busy_passthrough` → BUSY.
         This is the right outcome: if Claude is genuinely hung during
         startup (e.g. a malfunctioning MCP server keeps blocking the
         prompt render past 60 s), the user should see BUSY rather than

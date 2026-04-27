@@ -374,8 +374,8 @@ class Rule:
     hook_after_real_activity_lt: Optional[int] = None
     # Session-lifecycle phase this rule belongs to. Must be one of
     # `PHASES` above, or None for genuine catch-all passthroughs
-    # whose phase depends on `ctx.raw` (e.g., `raw_not_idle` and
-    # `default`). Metadata only — not consulted by `matches()`.
+    # whose phase depends on `ctx.raw` (e.g., `default`).
+    # Metadata only — not consulted by `matches()`.
     # Surface in debug traces; enforced by a drift-guard test.
     phase: Optional[str] = None
 
@@ -745,7 +745,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         #
         # After STARTUP_GRACE_SEC the rule stops firing; if Claude is
         # genuinely hung during startup the state will fall back to
-        # BUSY via `raw_not_idle`, which is the right outcome.
+        # BUSY via `raw_busy_passthrough`, which is the right outcome.
         name="startup_transient_raw_busy",
         raw_in=("BUSY",),
         hook_missing=True,
@@ -755,16 +755,31 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         phase="startup",
     ),
     Rule(
-        # raw BUSY/PERMIT passthrough: trust raw state. No phase
-        # annotation — this is a genuine catch-all whose semantic
-        # phase depends on ctx.raw (PERMIT → permit, BUSY → could
-        # be midturn or a post-grace hung startup). Step 2 of the
-        # phase-machine roadmap will reclassify this into phase-
-        # specific rules; for now None signals "passthrough" in
-        # traces.
-        name="raw_not_idle",
-        raw_in=("BUSY", "PERMIT"),
-        result=USE_RAW,
+        # raw=BUSY passthrough. Reached when none of the more
+        # specific BUSY-promoting / IDLE-demoting rules above
+        # matched — typically the no-hooks fallback path where the
+        # process tree shows BUSY (claude has children, no `❯`
+        # prompt) but neither the JSONL nor any hook signal can
+        # be consulted. Phase is `midturn` because that is what
+        # raw=BUSY actually represents at this point in the
+        # priority chain (the post-grace startup case is split off
+        # by `startup_transient_raw_busy` above; once we reach
+        # here the BUSY is a real mid-turn signal).
+        name="raw_busy_passthrough",
+        raw_in=("BUSY",),
+        result="BUSY",
+        phase="midturn",
+    ),
+    Rule(
+        # raw=PERMIT passthrough. Reached when none of the more
+        # specific PERMIT rules above matched — typically the no-
+        # hooks fallback where the capture-pane footer detected
+        # a permission modal but no PermissionRequest hook fired
+        # (or fired but was already cleared). Phase is `permit`.
+        name="raw_permit_passthrough",
+        raw_in=("PERMIT",),
+        result="PERMIT",
+        phase="permit",
     ),
     Rule(
         # Default: trust raw state. Always matches (terminal rule).
