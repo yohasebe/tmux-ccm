@@ -36,18 +36,19 @@ Current rules (order matters — see `lib/ccm_detection.py` for the live table):
 2. `process_shell` — raw=SHELL → SHELL
 3. `hook_fresh_busy` — fresh BUSY hook (< 2 s) → BUSY
 4. `hook_permit_jsonl_terminal_release` — stale PERMIT hook + JSONL terminal fresher than the hook → IDLE
-5. `hook_permit_blocking` — hook=PERMIT + raw in (BUSY, PERMIT) → PERMIT
-6. `hook_busy_jsonl_terminal_release` — stale BUSY hook + JSONL terminal fresher than the hook → IDLE
-7. `hook_busy_idle` — hook=BUSY + raw=IDLE + JSONL fresh enough + recap-gap guard → BUSY
-8. `hook_busy_idle_no_jsonl` — same but no JSONL exists yet → BUSY
-9. `jsonl_tool_use_pending` — between-tools gap with stop_reason=tool_use → BUSY
-10. `jsonl_fresh_activity` — JSONL written within 5 s → BUSY
-11. `jsonl_holds_busy` — JSONL within 15 s + prev=BUSY → BUSY
-12. `fallback_busy_to_idle` — prev=BUSY + JSONL aged → IDLE
-13. `fallback_permit_hold` — prev=PERMIT + raw=IDLE within `PERMIT_GAP_TOLERANCE` → PERMIT
-14. `startup_transient_raw_busy` — raw=BUSY + young pid + no hook → IDLE (MCP loading)
-15. `raw_not_idle` — catch-all passthrough (raw≠IDLE → raw)
-16. `default` — final catch-all → IDLE
+5. `hook_permit_tool_use_active` — stale PERMIT hook + raw in (BUSY, IDLE) + JSONL `tool_use` fresher than the hook → BUSY (auto-approved permit, claude actively running tools)
+6. `hook_permit_blocking` — hook=PERMIT + raw in (BUSY, PERMIT) → PERMIT
+7. `hook_busy_jsonl_terminal_release` — stale BUSY hook + JSONL terminal fresher than the hook → IDLE
+8. `hook_busy_idle` — hook=BUSY + raw=IDLE + JSONL fresh enough + recap-gap guard → BUSY
+9. `hook_busy_idle_no_jsonl` — same but no JSONL exists yet → BUSY
+10. `jsonl_tool_use_pending` — between-tools gap with stop_reason=tool_use → BUSY
+11. `jsonl_fresh_activity` — JSONL written within 5 s → BUSY
+12. `jsonl_holds_busy` — JSONL within 15 s + prev=BUSY → BUSY
+13. `fallback_busy_to_idle` — prev=BUSY + JSONL aged → IDLE
+14. `fallback_permit_hold` — prev=PERMIT + raw=IDLE within `PERMIT_GAP_TOLERANCE` → PERMIT
+15. `startup_transient_raw_busy` — raw=BUSY + young pid + no hook → IDLE (MCP loading)
+16. `raw_not_idle` — catch-all passthrough (raw≠IDLE → raw)
+17. `default` — final catch-all → IDLE
 
 ### Event-log backbone — `derive_state_from_events`
 
@@ -57,10 +58,13 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
 2. `events` empty / latest record malformed / unknown event type → `None` (defer to legacy)
 3. Latest event is `session_end` with live pid → `None` (claude restarted, defer to legacy)
 4. Latest event is permit-class (`permit_req` / `notify_permit`):
-   - if JSONL terminal stop_reason is fresher than the event AND `raw≠"PERMIT"` → `IDLE` (silent permission resolution)
+   - if `raw=="PERMIT"` (modal physically on screen) → `PERMIT` (capture-pane authoritative)
+   - else if JSONL terminal stop_reason is fresher than the event → `IDLE` (silent permission resolution / Esc dismiss)
+   - else if JSONL `stop_reason=tool_use` is fresher than the event AND within `BUSY_HOOK_JSONL_WINDOW` → `BUSY` (auto-approved permit, tool actively running)
    - else → `PERMIT`
 5. Latest event is start-class (`prompt` / `pretool` / `posttool` / `subagent` / `compact`):
-   - if JSONL terminal stop_reason is fresher than the event AND `raw≠"PERMIT"` → `IDLE` (Esc interrupt or hook silence)
+   - if JSONL terminal stop_reason is fresher than the event AND `raw≠"PERMIT"` → `IDLE` (Esc interrupt or hook silence within 60 s)
+   - else if both event_age AND jsonl_age exceed `BUSY_HOOK_JSONL_WINDOW` (10 min) AND `raw≠"PERMIT"` → `None` (phantom-event timeout — defer to legacy, which resolves via `fallback_busy_to_idle` → `IDLE`)
    - else → `BUSY`
 6. Latest event is `notify_idle` → `IDLE`
 7. Latest event is `stop`:
@@ -98,16 +102,30 @@ The capture-pane footer (`Esc to cancel · Tab to amend`, `Enter to confirm · E
 
 A young claude PID (< 60 s) with raw=BUSY but no hook signal is almost certainly the MCP-loading startup transient (claude has children but hasn't drawn `❯` yet). The `startup_transient_raw_busy` rule demotes this to IDLE rather than reporting a false BUSY for 30 s after every attach.
 
-## Stale-signal UI affordance
+## UI affordances
 
-When a `BUSY` or `PERMIT` state survives past `JSONL_HOOK_GAP_TOLERANCE` (60 s) and the auto-release rules cannot safely fire (e.g. JSONL `stop_reason=tool_use` rather than terminal), the dashboard and `ccm status` append a parenthesised hook-signal age to the state cell:
+Two parenthesised suffixes communicate sub-state context that does not warrant a separate state label:
+
+### `(Nm)` — stale-signal age
+
+When a `BUSY` or `PERMIT` state survives past `JSONL_HOOK_GAP_TOLERANCE` (60 s) and the auto-release rules cannot safely fire (e.g. JSONL `stop_reason=tool_use` rather than terminal), the dashboard, `ccm status`, and status bar (mode 1 / 2) append a parenthesised hook-signal age to the state cell:
 
 ```
 ⚠ PERMIT (8m)  monadic-chat
 ◉ BUSY  (2m)  ccm-dev
 ```
 
-This is the principled response to the limitation — when ccm cannot prove the signal is stuck, it surfaces the age so the user can judge. Implementation: [`ccm_core.signal_age_suffix(project_dir, state)`](../lib/ccm_core.py) is the single source of truth, used by both renderers. Threshold is bound directly to `JSONL_HOOK_GAP_TOLERANCE` so the affordance appears exactly when the auto-release window has lapsed. Other states (`IDLE` / `SHELL` / `DOWN` / `CONT`) suppress the suffix — their hook signals are either absent or freshness-irrelevant.
+This is the principled response to the limitation — when ccm cannot prove the signal is stuck, it surfaces the age so the user can judge. Implementation: [`ccm_core.signal_age_suffix(project_dir, state)`](../lib/ccm_core.py) is the single source of truth, used by all three renderers. Threshold is bound directly to `JSONL_HOOK_GAP_TOLERANCE` so the affordance appears exactly when the auto-release window has lapsed. Other states (`IDLE` / `SHELL` / `DOWN` / `CONT`) suppress the suffix — their hook signals are either absent or freshness-irrelevant.
+
+### `(bg)` — background activity in user's turn
+
+When the committed state is `IDLE` (the conversation turn has returned to the user) but `raw=BUSY` (the process tree still shows tool / dev-server grandchildren), the renderers append `(bg)` to indicate "Claude is at rest, but something it spawned is still running":
+
+```
+● IDLE (bg)  monadic-chat
+```
+
+Conceptually distinct from `(Nm)`: the stale-signal suffix is a "this might be stuck" hint, while `(bg)` is a positive statement about leftover processes. They are mutually exclusive — `(Nm)` only fires for `BUSY` / `PERMIT`, `(bg)` only fires for `IDLE`. `apply_actions` writes the `@ccm_bg_active` tmux window option whenever `state == "IDLE"` and `ctx.raw == "BUSY"`; clears it otherwise. `Project.bg_active` carries the flag to the renderers. `ccm send` treats `IDLE (bg)` exactly like plain `IDLE` — the user has the conversation ball regardless of background processes.
 
 ## Time-window heuristics
 
