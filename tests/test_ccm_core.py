@@ -3063,6 +3063,103 @@ class TestFormatDir:
         assert ccm_core.format_dir("/some/path", 75, 80) == ""
 
 
+class TestPrintStatus:
+    """Capture-stdout tests for the `ccm status` CLI rendering.
+    Locks in the cross-renderer convention that the `[N]`
+    pane-count marker belongs to the PROJECT column (not the
+    STATUS column) and gets the dim-bracket / cyan-digit
+    treatment, matching the dashboard and status bar."""
+
+    def _run_print_status(self, projects, monkeypatch, capsys):
+        # build_project_list does file I/O; bypass with a stub.
+        monkeypatch.setattr(ccm_core, "build_project_list",
+                            lambda fast=False: projects)
+        # Other side effects in print_status: hooks_log_warning,
+        # disable_all_hooks_warning, managed_hooks_only_warning,
+        # shell_cluster_warnings — stub all to empty so the test
+        # focuses on per-project rendering.
+        monkeypatch.setattr(ccm_core, "hooks_log_warning", lambda: "")
+        monkeypatch.setattr(ccm_core, "disable_all_hooks_warning",
+                            lambda: "")
+        monkeypatch.setattr(ccm_core, "managed_hooks_only_warning",
+                            lambda: "")
+        monkeypatch.setattr(ccm_core, "shell_cluster_warnings",
+                            lambda projects_arg: [])
+        monkeypatch.setattr(ccm_core, "hooks_configured",
+                            lambda: True)
+        ccm_core.print_status()
+        return capsys.readouterr().out
+
+    def test_no_pane_marker_for_single_pane_window(
+        self, monkeypatch, capsys
+    ):
+        projects = [
+            ccm_core.Project(
+                win_target="0:1", win_idx="1", name="solo",
+                directory="/tmp/solo", state="IDLE",
+                pane_count=1,
+            ),
+        ]
+        out = self._run_print_status(projects, monkeypatch, capsys)
+        # Find the project's row.
+        row = next(line for line in out.splitlines()
+                   if "solo" in line)
+        # No bracketed digit anywhere in the row.
+        assert "[1]" not in row
+        assert "[2]" not in row
+
+    def test_pane_marker_after_project_name_with_cyan(
+        self, monkeypatch, capsys
+    ):
+        """`[N]` marker belongs to the PROJECT column, not the
+        STATUS column. Pre-2026-04-28 it was suffixed to the
+        state name (e.g. `■ SHELL [2]   teaching`); the
+        dashboard convention puts it after the project name."""
+        projects = [
+            ccm_core.Project(
+                win_target="0:1", win_idx="1", name="teaching",
+                directory="/tmp/teaching", state="SHELL",
+                pane_count=2,
+            ),
+        ]
+        out = self._run_print_status(projects, monkeypatch, capsys)
+        row = next(line for line in out.splitlines()
+                   if "teaching" in line)
+        # The bracketed digit appears in the project column
+        # (i.e. after the name) — assert by character order.
+        assert "teaching" in row
+        # The digit "2" must appear AFTER "teaching" (project
+        # column), and the cyan ANSI code (\033[36m) must wrap
+        # the digit so the user's eye lands on the count.
+        teaching_pos = row.index("teaching")
+        # Find the cyan-coded digit "2" after teaching.
+        cyan_seg = "\033[36m2"
+        assert cyan_seg in row, (
+            f"expected cyan-coded '2' in row, got: {row!r}"
+        )
+        assert row.index(cyan_seg) > teaching_pos, (
+            f"[N] marker must follow the project name, got: {row!r}"
+        )
+        # And the marker must NOT appear inside the STATUS
+        # column (before the project name).
+        assert row.index(cyan_seg) > teaching_pos
+
+    def test_three_pane_marker_renders_digit_3(
+        self, monkeypatch, capsys
+    ):
+        projects = [
+            ccm_core.Project(
+                win_target="0:1", win_idx="1", name="trio",
+                directory="/tmp/trio", state="BUSY",
+                pane_count=3,
+            ),
+        ]
+        out = self._run_print_status(projects, monkeypatch, capsys)
+        row = next(line for line in out.splitlines()
+                   if "trio" in line)
+        assert "\033[36m3" in row
+
+
 class TestHooksConfigured:
     @patch("builtins.open", side_effect=FileNotFoundError)
     def test_false_when_no_settings(self, mock_open):

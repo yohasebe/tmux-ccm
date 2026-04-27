@@ -1339,8 +1339,8 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     ccm_core._set_win_state(win_target, state)
 
     # Set @ccm_completed_at when transitioning from BUSY/PERMIT to IDLE.
-    # This is a display-layer marker — the ✔ icon shows for
-    # COMPLETED_AT_TIMEOUT seconds after the transition.
+    # This is a display-layer marker — the `* elapsed` indicator
+    # shows for COMPLETED_AT_TIMEOUT seconds after the transition.
     if state == "IDLE" and ctx.prev_state in ("BUSY", "PERMIT"):
         ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_completed_at", str(ctx.now))
 

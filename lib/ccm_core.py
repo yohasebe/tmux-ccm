@@ -1313,10 +1313,11 @@ class Project:
         self.completed_at = completed_at
         self.bg_active = bg_active
         # Number of tmux panes in this window. Used to surface a
-        # `⊞N` suffix for multi-pane windows so users notice
-        # split-pane windows (Agent Teams, leftover splits, orphan
-        # panes from earlier ad-hoc work). Always >= 1; populated
-        # by build_project_list from panes_cache.
+        # `[N]` marker (brackets dim, digit cyan) on multi-pane
+        # windows so users notice split-pane windows (Agent Teams,
+        # leftover splits, orphan panes from earlier ad-hoc work).
+        # Always >= 1; populated by build_project_list from
+        # panes_cache.
         self.pane_count = pane_count
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
@@ -2096,9 +2097,9 @@ def reset_window_after_attach(win_target):
     effects are keyed off `@ccm_dir`; on a non-ccm window this is a
     no-op:
 
-    1. Unset `@ccm_completed_at` so the ✔ marker disappears (stale
-       completion markers from before the user attached should not
-       appear to follow the attach).
+    1. Unset `@ccm_completed_at` so the `* elapsed` completion
+       marker disappears (stale completion markers from before
+       the user attached should not appear to follow the attach).
     2. Unset `@ccm_shell_history` so the cluster-SHELL canary
        (#48069) is acknowledged. The warning will reappear only if
        NEW transitions cluster after the attach.

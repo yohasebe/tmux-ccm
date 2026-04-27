@@ -241,7 +241,8 @@ ccm setup-hooks
 | **BUSY** | フック / JSONL / プロセスツリー | 主経路: UserPromptSubmit / PreToolUse / SubagentStart フック。フォールバック（いずれか1つでマッチ）: (a) プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` に **user/assistant レコード**が `JSONL_FRESH_THRESHOLD`（5秒）以内に書き込まれている — Claude Code は会話のターン境界ごとにレコードを追記するため、フックが沈黙していてもセッション活動の証拠になる（[#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）。システムメタデータレコード（v2.1.108+ recap / `system/away_summary`、`turn_duration`、`attachment/task_reminder` 等）はフィルタされるため、recap 生成が偽の活動として検出されない。(b) `claude` の孫プロセス（Bashツール実行中の `bash → xcodebuild` 等）— v2.1+ UI が末尾に `❯ ` を表示していても BUSY 判定。(c) `claude` が非MCP の直接の子プロセスを持つ場合 |
 | **IDLE** | プロセスツリー | `claude` が直接の子（MCP / 言語サーバー）のみを持ち、入力プロンプトが見え、新鮮な BUSY フック信号がない |
 | **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: v2.1.101+ のフッター `Esc to cancel · Tab to amend · ctrl+e to explain` をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能（[#16047](https://github.com/anthropics/claude-code/issues/16047)） |
-| **完了（✔）** | 表示レイヤー | 一時的マーカー: BUSY/PERMIT → IDLE遷移後に30秒間表示、その後クリア |
+| **完了（`* elapsed`）** | 表示レイヤー | 一時的マーカー: BUSY/PERMIT → IDLE遷移後に30秒間表示、その後クリア。アスタリスクは緑（直近の完了に視線を誘導）、経過時間は dim |
+| **マルチペイン（`[N]`）** | ウィンドウ検査 | tmux ペインを 2 つ以上含むウィンドウに対し、全レンダラー（dashboard / status bar / `ccm status`）でプロジェクト名直後に表示。角括弧 dim、数字 cyan。集約状態が非アクティブペインのものである可能性をユーザーが認識できるようにする。詳細（sliver 保護と PERMIT 自動フォーカス）は下記「Agent Teamsとの併用」を参照 |
 
 ### フックなしでの検出
 
@@ -456,7 +457,11 @@ ccm管理のプロジェクトウィンドウ内でAgent Teamsを実行すると
 - いずれかがBUSY → `◉ BUSY` と表示
 - 全チームメイトがIDLE → `● IDLE` と表示
 
-ccmのダッシュボードやステータスバーで、追加設定なしにAgent Teamsの活動状況を確認できます。
+ccmのダッシュボードやステータスバーで、追加設定なしにAgent Teamsの活動状況を確認できます。マルチペインのウィンドウには、プロジェクト名直後に `[N]` マーカー（角括弧 dim、数字 cyan）が全レンダラーで付与されるので、並列のチームメイトを抱えるプロジェクトを一目で識別できます。
+
+**Sliver 保護**: `SLIVER_HEIGHT_THRESHOLD`（デフォルト 4 行 — 下記「環境変数」参照）より低いペインは状態集約から除外されます。極端に小さいペイン（過去の split で残った 1 行のストリップなど）では Claude の `❯` プロンプトが描画されず、capture-pane 検出が「子プロセス + プロンプト不可視」を BUSY と誤判定してしまうため、除外することで不可視 sliver がウィンドウ全体の状態を汚染するのを防ぎます。Agent Teams で意図的に小さいペインを使っており除外したくない場合は `CCM_SLIVER_HEIGHT_THRESHOLD` で閾値を上げてください。
+
+**Attach 時の自動フォーカス**: ccm 経由で attach（dashboard / `ccm attach`）した際、いずれかのチームメイトペインが許可待ち（`⚠ PERMIT`）でアクティブペインがそれ以外なら、ccm が自動で PERMIT ペインにフォーカスを切り替えます。許可が必要なプロジェクトに attach するたびに `prefix + 矢印` する手間を省きます。PERMIT 限定 — BUSY のチームメイトは監視対象であってユーザー入力を要求するわけではないので、フォーカスは奪いません。
 
 ### 競合なし
 
@@ -487,11 +492,12 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_JSONL_ACTIVE_THRESHOLD` | `15`（秒） | Stop後の BUSY 保持窓（`jsonl_holds_busy`）。fresh 窓切れと最終 IDLE 遷移の間をブリッジ。マルチステップツール使用中に BUSY→IDLE→BUSY がちらつく場合は大きくする |
 | `CCM_BUSY_HOOK_JSONL_WINDOW` | `600`（秒） | JSONL も更新されている場合に BUSY フックを信頼する最大 age。これを超えると Stop フック取りこぼし (anthropics/claude-code#25655) とみなして BUSY を解除する |
 | `CCM_JSONL_HOOK_GAP_TOLERANCE` | `60`（秒） | recap phantom 判別。直前の実会話 activity から秒数以上後に発火した BUSY フックを phantom とみなして拒否（v2.1.108 の `away_summary` 等）。小さくするとより積極的に拒否 |
-| `CCM_COMPLETED_AT_TIMEOUT` | `30`（秒） | BUSY/PERMIT → IDLE 遷移後に ✔ 完了マーカーが表示される時間 |
+| `CCM_COMPLETED_AT_TIMEOUT` | `30`（秒） | BUSY/PERMIT → IDLE 遷移後にダッシュボードで `* elapsed` 完了マーカーが表示される時間 |
 | `CCM_COMPLETION_GRACE_SEC` | `3`（秒） | Stop hook 発火から COMPLETED デスクトップ通知までの猶予時間。Claude Code は各ターン境界（ツール実行中も含む）で Stop を発火するため、ccm はこの秒数だけ待ってから通知する。その間に次の PreToolUse / UserPromptSubmit が発火すれば通知はキャンセルされる。小さくすると通知が早いがマルチターン会話中に誤発火するリスクが高まる。長時間のツール連鎖中に「完了」通知が早すぎると感じる場合は上げる |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600`（秒） | 安全網: フック信号で解消されない PERMIT 状態をこの秒数で自動クリア（permission ダイアログ表示中に Claude Code がクラッシュした場合など） |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600`（秒） | Claude Code セッションが IDLE 状態でいられる最大時間（`x` 一括終了の対象となる閾値、自動終了のトリガー） |
 | `CCM_STARTUP_GRACE_SEC` | `60`（秒） | `startup_transient_raw_busy` ルールが hook signal 未着の raw=BUSY を IDLE に降格させる claude プロセス年齢の窓。`claude --continue` 起動時の MCP ロード (通常 10-30 秒) をカバー。MCP 接続がこれより長くかかる構成なら上げる、起動ハングを早めに BUSY として可視化したいなら下げる |
+| `CCM_SLIVER_HEIGHT_THRESHOLD` | `4`（行） | ウィンドウの状態集約に参加する tmux ペインの最小高さ。これより小さいペインは Claude の `❯` プロンプトを描画できず、capture-pane 検出が「子プロセスあり + プロンプト不可視」で BUSY と誤判定するため除外する。Agent Teams で意図的に小さいペインを使っており除外したくない場合は上げる、フィルタを完全無効化したい場合は 1 まで下げる。実ペイン高さより大きい値にすると、2026-04-27 以前の「全ペイン無条件集約」相当の挙動を再現できる |
 
 ### カナリア閾値
 

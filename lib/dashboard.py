@@ -528,11 +528,12 @@ class Dashboard:
                 max_state_w = 8  # "● PERMIT" = 8
 
                 # Fixed column positions for idx / state / name
-                # only. Each row's annotation cluster (⊞N /
-                # ✔elapsed / stale|bg / branch) starts immediately
-                # after THAT row's name — not after a max-width
-                # fake name column, which would leave short names
-                # with a wide blank before their annotations.
+                # only. Each row's annotation cluster ([N] /
+                # `* elapsed` / stale|bg / branch) starts
+                # immediately after THAT row's name — not after a
+                # max-width fake name column, which would leave
+                # short names with a wide blank before their
+                # annotations.
                 # The directory column IS pinned to a fixed
                 # COL_DIR so paths line up across rows.
                 COL_IDX = 4       # after "  ▶ "

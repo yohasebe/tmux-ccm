@@ -241,7 +241,8 @@ To remove: `ccm remove-hooks`
 | **BUSY** | Hook / JSONL / Process tree | Primary: UserPromptSubmit / PreToolUse / SubagentStart hooks. Fallbacks (any one wins): (a) the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` has a **user/assistant record** newer than `JSONL_FRESH_THRESHOLD` (5s) — Claude Code appends a record at every conversation turn boundary, so this is positive evidence the session is alive even when hooks are silent ([#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)). System metadata records (v2.1.108+ recap / `system/away_summary`, `turn_duration`, `attachment/task_reminder`, ...) are filtered out so recap generation does not register as fresh activity; (b) `claude` has a grandchild process (e.g. `bash → xcodebuild` from the Bash tool) — works around the v2.1+ UI showing an empty `❯ ` prompt above an active tool; (c) any non-MCP direct child of `claude` |
 | **IDLE** | Process tree | `claude` exists with only direct children (MCP / language servers) and a visible input prompt, with no fresh BUSY hook |
 | **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the v2.1.101+ footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
-| **Completion (✔)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears |
+| **Completion (`* elapsed`)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears. Asterisk renders green (drawing the eye to the just-completed transition); the elapsed time is dim |
+| **Multi-pane (`[N]`)** | Window inspection | Marker on every renderer (dashboard, status bar, `ccm status`) when a window holds more than one tmux pane (Agent Teams, casual splits, leftover orphan panes). Brackets dim, digit cyan. Lets you spot windows whose aggregated state may belong to a non-active pane. See "Using with Agent Teams" below for related details (sliver protection and PERMIT auto-focus) |
 
 ### Detection without hooks
 
@@ -456,7 +457,11 @@ When you run Agent Teams inside a ccm-managed project window, ccm's state detect
 - If any teammate is BUSY → the project shows `◉ BUSY`
 - When all teammates are idle → the project shows `● IDLE`
 
-This means ccm's dashboard and status bar give you visibility into Agent Teams activity without any extra configuration.
+This means ccm's dashboard and status bar give you visibility into Agent Teams activity without any extra configuration. Multi-pane windows additionally carry a `[N]` marker (brackets dim, digit cyan) immediately after the project name in every renderer, so you can spot which projects have parallel teammates at a glance.
+
+**Sliver protection.** Panes shorter than `SLIVER_HEIGHT_THRESHOLD` (4 rows by default — see Environment Variables below) are excluded from state aggregation. Tiny pseudo-panes — typically a leftover 1-row strip from an earlier split — cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a busy pane and they false-read BUSY. Excluding them prevents an invisible sliver from infecting the whole window's reported state. If you have a legitimate small Agent Teams pane and want it to count, raise the threshold via `CCM_SLIVER_HEIGHT_THRESHOLD`.
+
+**Auto-focus on attach.** When you attach to a window via ccm (dashboard or `ccm attach`), if any teammate pane is waiting on a permission modal (`⚠ PERMIT`) and the active pane is not, ccm automatically switches focus to the PERMIT pane. Saves a manual `prefix + arrow` after every attach to a project that needs your input. PERMIT only — BUSY teammates are interesting to monitor but do not require user input, so focus is not stolen.
 
 ### No conflicts
 
@@ -487,11 +492,12 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_JSONL_ACTIVE_THRESHOLD` | `15` (seconds) | Post-Stop BUSY hold window (`jsonl_holds_busy`). Bridges the gap between the fresh window expiring and the final IDLE transition. Raise if you see BUSY flashing to IDLE and back during multi-step tool use |
 | `CCM_BUSY_HOOK_JSONL_WINDOW` | `600` (seconds) | Maximum age of a BUSY hook signal that ccm will trust when the project's JSONL is also being written. Beyond this, ccm assumes the Stop hook was missed (anthropics/claude-code#25655) and releases BUSY |
 | `CCM_JSONL_HOOK_GAP_TOLERANCE` | `60` (seconds) | Recap-phantom discriminator. A BUSY hook that fired more than this many seconds AFTER the last real conversation activity is rejected as phantom (e.g. v2.1.108 `away_summary`). Lower = more aggressive rejection |
-| `CCM_COMPLETED_AT_TIMEOUT` | `30` (seconds) | How long the ✔ "recently completed" marker stays visible after a BUSY/PERMIT → IDLE transition |
+| `CCM_COMPLETED_AT_TIMEOUT` | `30` (seconds) | How long the `* elapsed` "recently completed" marker stays visible in the dashboard after a BUSY/PERMIT → IDLE transition |
 | `CCM_COMPLETION_GRACE_SEC` | `3` (seconds) | Grace period between a Stop hook firing and the COMPLETED desktop notification. Claude Code fires Stop at every turn boundary (including mid-tool-use); ccm waits this long before alerting so a subsequent PreToolUse / UserPromptSubmit can cancel the pending notification. Lower = faster alerts but higher risk of notifying mid-conversation; raise if you frequently see premature "completion" notifications during long multi-turn work |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600` (seconds) | Safety net: PERMIT state auto-clears after this if no hook signal resolves it (e.g. if Claude Code crashed while a permission dialog was open) |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600` (seconds) | How long a Claude Code session can be IDLE before `x` (exit all) targets it, and how long before auto-exit triggers |
 | `CCM_STARTUP_GRACE_SEC` | `60` (seconds) | Window during which the `startup_transient_raw_busy` rule demotes raw=BUSY to IDLE when no hook signal is present — covers Claude's MCP-loading phase after `claude --continue`, which typically completes in 10–30 s. Raise if your MCP setup takes longer to come up than 60 s, lower if you want a genuinely hung startup to surface as BUSY sooner |
+| `CCM_SLIVER_HEIGHT_THRESHOLD` | `4` (rows) | Minimum tmux pane height for a pane to participate in the window's state aggregation. Panes shorter than this cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a genuinely BUSY pane and they false-read BUSY. Raise if you have legitimate small Agent Teams panes that should still count; lower (down to 1) to disable the filter entirely. Set to a value larger than your full pane height to test what the pre-2026-04-27 "aggregate everything" behaviour looked like |
 
 ### Canary thresholds
 
