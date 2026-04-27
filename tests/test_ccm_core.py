@@ -2771,7 +2771,7 @@ class TestLifecycleSequences:
 # that future rule edits must preserve.
 
 VALID_RESOLVED_STATES = frozenset(
-    {"SHELL", "DOWN", "BUSY", "CONT", "IDLE", "PERMIT"}
+    {"SHELL", "DOWN", "BUSY", "IDLE", "PERMIT"}
 )
 
 
@@ -2821,29 +2821,6 @@ class TestPipelineInvariants:
                      hook_age=10 if hook_state else -1)
         )
         assert state == "DOWN"
-
-    @pytest.mark.parametrize("hook_state", ["", "BUSY", "PERMIT"])
-    @pytest.mark.parametrize("prev_state", ["IDLE", "BUSY", "PERMIT", "SHELL"])
-    def test_no_legacy_rule_emits_cont(self, hook_state, prev_state):
-        """CONT is exclusively emitted by the event-log path
-        (derive_state_from_events). The legacy DETECTION_RULES table
-        must never produce CONT — it is reserved for the new state
-        machine semantic of "Stop event seen but JSONL stop_reason
-        is tool_use" which legacy cannot identify cleanly."""
-        for raw in ("IDLE", "BUSY", "PERMIT"):
-            for jsonl_stop in (None, "tool_use", "end_turn", "max_tokens"):
-                _rule, state = ccm_core.evaluate_rules(
-                    make_ctx(raw=raw, hook_state=hook_state,
-                             prev_state=prev_state,
-                             hook_age=10 if hook_state else -1,
-                             jsonl_age=10,
-                             jsonl_last_stop_reason=jsonl_stop)
-                )
-                assert state != "CONT", (
-                    f"legacy emitted CONT for raw={raw} hook={hook_state} "
-                    f"prev={prev_state} jsonl_stop={jsonl_stop}"
-                )
-
 
 class TestDeriveInvariants:
     """Property tests for `derive_state_from_events`."""
@@ -2951,7 +2928,7 @@ class TestSignalAgeSuffix:
             monkeypatch.setattr(ccm_core, "read_hook_signal",
                                 lambda d: (ts_or_none, "BUSY", ""))
 
-    @pytest.mark.parametrize("state", ["IDLE", "SHELL", "DOWN", "CONT"])
+    @pytest.mark.parametrize("state", ["IDLE", "SHELL", "DOWN"])
     def test_non_busy_permit_states_return_empty(self, state, monkeypatch):
         """Only BUSY / PERMIT can mask a real state behind a stale
         hook. Other states either have no hook signal or the
@@ -3843,17 +3820,19 @@ class TestDebugTraceHook:
         monkeypatch.setenv("CCM_TRACE_ONLY_DIFF", "1")
         ctx = self._basic_ctx()
         rule, state = ccm_core.evaluate_rules(ctx)
+        # Pick any valid state different from the legacy result so
+        # the diff actually triggers a write. Using IDLE here since
+        # the basic ctx (raw=BUSY) resolves to BUSY.
+        disagreeing = "IDLE" if state != "IDLE" else "PERMIT"
         with patch.object(ccm_core, "_set_win_state"), \
              patch.object(ccm_core, "tmux_cmd"):
-            # Force a disagreement: legacy says IDLE (from the rule),
-            # event-log claims CONT. The row must land in the trace.
             ccm_core.apply_actions(
-                "0:5", "/p", ctx, rule, state, event_log_state="CONT",
+                "0:5", "/p", ctx, rule, state, event_log_state=disagreeing,
             )
         assert trace.exists()
         rec = json.loads(trace.read_text().rstrip("\n"))
         assert rec["state"] == state
-        assert rec["event_log_state"] == "CONT"
+        assert rec["event_log_state"] == disagreeing
         assert rec.get("diff") is True
 
     def test_only_diff_skips_when_event_log_state_absent(
@@ -4559,28 +4538,6 @@ class TestCmdSend:
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
 
-    def test_send_cont_rejected_without_force(self, monkeypatch, capsys):
-        """CONT mirrors BUSY policy: refuse without --force. The error
-        message must mention CONT specifically so the caller can quote
-        the correct state back to the user."""
-        project = self._make_project(state="CONT")
-        self._patch_resolution(monkeypatch, project=project)
-        with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
-            ccm_core.cmd_send(["blog", "hello"])
-        err = capsys.readouterr().err
-        assert "CONT" in err
-        assert "tool_use" in err
-        assert "--force" in err
-
-    def test_send_cont_allowed_with_force(self, monkeypatch):
-        """--force queues into CONT just like BUSY."""
-        project = self._make_project(state="CONT")
-        self._patch_resolution(monkeypatch, project=project)
-        with patch("ccm_core.tmux_cmd") as mock_tmux:
-            ccm_core.cmd_send(["blog", "--force", "hello"])
-        calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
-
     def test_send_shell_rejected_without_start(self, monkeypatch):
         project = self._make_project(state="SHELL")
         self._patch_resolution(monkeypatch, project=project)
@@ -4902,29 +4859,32 @@ class TestDeriveStateFromEvents:
             pid_present=True, claude_pid_age=100,
         ) == "IDLE"
 
-    def test_stop_tool_use_cont(self):
+    def test_stop_tool_use_busy(self):
+        """Pre-v0.3.0 returned CONT for the tool_use mid-turn case;
+        collapsed into BUSY for state-model purity (both mean "user
+        waits", which is the action-need axis the state captures)."""
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": "stop"},),
             jsonl_stop_reason="tool_use",
             pid_present=True, claude_pid_age=100,
-        ) == "CONT"
+        ) == "BUSY"
 
-    def test_stop_unknown_reason_cont(self):
-        """Missing/unknown stop_reason is conservative CONT so long
+    def test_stop_unknown_reason_busy(self):
+        """Missing/unknown stop_reason is conservative BUSY so long
         tools without clear evidence never flip to false IDLE."""
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": "stop"},),
             jsonl_stop_reason=None,
             pid_present=True, claude_pid_age=100,
-        ) == "CONT"
+        ) == "BUSY"
 
-    def test_stop_arbitrary_nonterminal_cont(self):
-        """Any stop_reason outside TERMINAL_STOP_REASONS is CONT."""
+    def test_stop_arbitrary_nonterminal_busy(self):
+        """Any stop_reason outside TERMINAL_STOP_REASONS is BUSY."""
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": "stop"},),
             jsonl_stop_reason="future_unknown",
             pid_present=True, claude_pid_age=100,
-        ) == "CONT"
+        ) == "BUSY"
 
     # ─── Latest event wins (event log ordering) ───
 
@@ -4985,11 +4945,14 @@ class TestDeriveStateFromEvents:
 
     # ─── Lifecycle scenarios (the original failing cases) ───
 
-    def test_long_running_tool_stays_cont(self):
+    def test_long_running_tool_stays_busy(self):
         """Regression from project_false_idle_long_tool: hook went
         silent mid-build, prev decayed to IDLE in legacy pipeline.
         In the event-log model the tail still ends at `stop` with
-        tool_use, so state stays CONT authoritatively."""
+        tool_use (intermediate Stop boundary), so state stays BUSY
+        authoritatively. CONT was collapsed into BUSY pre-v0.3.0
+        because both states represent "ball is on Claude's side"
+        (user-centered design principle)."""
         events = (
             {"ts": 100, "type": "prompt"},
             {"ts": 101, "type": "pretool"},
@@ -4998,7 +4961,7 @@ class TestDeriveStateFromEvents:
         assert ccm_core.derive_state_from_events(
             events=events, jsonl_stop_reason="tool_use",
             pid_present=True, claude_pid_age=3000,
-        ) == "CONT"
+        ) == "BUSY"
 
     def test_permit_dismiss_then_new_prompt_recovers(self):
         """Dismissed permit with no follow-up → PERMIT (indefinite),
@@ -5061,11 +5024,12 @@ class TestDeriveStateFromEvents:
         intermediate, not final, Stop), then the next turn starts with
         another PreToolUse, and finally ends with Stop + end_turn.
 
-        The event-log pipeline must produce CONT at the intermediate
-        boundary (neither IDLE nor BUSY — tool pending, no new start
-        event yet) and flip back to BUSY as soon as the next start
-        event appears. This is what replaces the legacy
-        `jsonl_tool_use_pending` rule's 15-second BUSY-hold window."""
+        The event-log pipeline must produce BUSY at the intermediate
+        boundary (tool pending, ball still on Claude's side) and stay
+        BUSY through the next start event. CONT was collapsed into
+        BUSY pre-v0.3.0 — at this resolution the user does not need
+        to distinguish "actively running tool" from "between tools"
+        since neither requires user action."""
         # Turn 1: prompt, tool runs, intermediate Stop.
         turn1 = (
             {"ts": 100, "type": "prompt"},
@@ -5076,9 +5040,9 @@ class TestDeriveStateFromEvents:
         assert ccm_core.derive_state_from_events(
             events=turn1, jsonl_stop_reason="tool_use",
             pid_present=True, claude_pid_age=3000,
-        ) == "CONT"
+        ) == "BUSY"
 
-        # Turn 2 start: next PreToolUse clears CONT → BUSY.
+        # Turn 2 start: next PreToolUse keeps BUSY.
         turn2_start = turn1 + (
             {"ts": 110, "type": "pretool"},
         )
@@ -5103,7 +5067,7 @@ class TestDeriveStateFromEvents:
         ("pretool", "tool_use"),
         ("posttool", "end_turn"),
         ("prompt", None),
-        ("stop", "tool_use"),     # would otherwise be CONT
+        ("stop", "tool_use"),     # would otherwise be BUSY (mid-tool)
         ("stop", "end_turn"),     # would otherwise be IDLE
         ("notify_idle", None),
     ])
@@ -5153,7 +5117,7 @@ class TestDeriveStateFromEvents:
     def test_raw_permit_does_not_override_session_end_fallback(self):
         """session_end + pid present already returns None (legacy
         fallback). raw="PERMIT" should NOT promote that to PERMIT —
-        the override is for cases where the event log said BUSY/CONT/
+        the override is for cases where the event log said BUSY or
         IDLE but the modal is on screen. session_end means we have
         no event signal to override, so the right answer is still
         "ask legacy" (which sees raw=PERMIT and returns PERMIT)."""
@@ -5597,25 +5561,6 @@ class TestEventLogMode:
         read entirely on `off`."""
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "off")
         assert ccm_core._event_log_mode() == "off"
-
-
-# ─── CONT state registered in STATE_ICONS ───
-
-class TestContStateRegistered:
-    def test_cont_has_icon(self):
-        assert "CONT" in ccm_core.STATE_ICONS
-        assert ccm_core.STATE_ICONS["CONT"] == "◍"
-
-    def test_cont_in_state_priority(self):
-        """CONT must have a sort priority so dashboard ordering and
-        the inject_status grouping work when the event-log path is
-        active. CONT shares BUSY's priority slot — both mean Claude
-        is mid-turn and outranks IDLE/SHELL for prominence."""
-        assert "CONT" in ccm_core.STATE_PRIORITY
-        assert ccm_core.STATE_PRIORITY["CONT"] == ccm_core.STATE_PRIORITY["BUSY"]
-        # And CONT outranks IDLE/SHELL just like BUSY does.
-        assert ccm_core.STATE_PRIORITY["CONT"] < ccm_core.STATE_PRIORITY["IDLE"]
-        assert ccm_core.STATE_PRIORITY["CONT"] < ccm_core.STATE_PRIORITY["SHELL"]
 
 
 # ─── auto-mode detect_window_state integration ───

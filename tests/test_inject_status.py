@@ -115,13 +115,13 @@ class TestStaleSignalSuffixInStatusBar:
 
     def test_idle_state_never_gets_suffix(self, monkeypatch):
         """Only BUSY / PERMIT can mask a real state behind a stale
-        hook. IDLE / SHELL / DOWN / CONT must never see the suffix
-        even if a stale signal happens to be lying around."""
+        hook. IDLE / SHELL / DOWN must never see the suffix even if
+        a stale signal happens to be lying around."""
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
         monkeypatch.setattr(ccm_core, "read_hook_signal",
                             lambda d: (ts - 600, "BUSY", ""))
-        for state in ("IDLE", "SHELL", "DOWN", "CONT"):
+        for state in ("IDLE", "SHELL", "DOWN"):
             entries = inject_status.build_detail_entries(
                 [make_project("0:2", "2", "ccm-dev", state)],
                 with_extras=False, current_win_target="0:2",
@@ -162,52 +162,3 @@ class TestBgActiveSuffixInStatusBar:
         assert "(bg)" in entries[0]
 
 
-# ─── priority_color / priority_icon: CONT joins the BUSY group ───
-
-class TestPriorityCont:
-    """The mode-0 status-right indicator collapses every project's
-    state into a single icon + color. CONT means "Claude paused mid-
-    tool, do not interrupt", which is semantically identical to BUSY
-    for the purpose of "should the user know not to send right now",
-    so it is grouped with BUSY in both helpers."""
-
-    def test_color_cont_only_groups_with_busy(self):
-        projects = [make_project("0:5", "5", "blog", "CONT")]
-        assert inject_status.priority_color(projects) == \
-            inject_status.TMUX_COLORS["BUSY"]
-
-    def test_icon_cont_only_listed_in_busy_group(self):
-        projects = [make_project("0:5", "5", "blog", "CONT")]
-        # Listed under "BUSY" so the user reads "5: BUSY ◉" — the
-        # collapsed display should not have to teach the new state.
-        assert inject_status.priority_icon(projects) == "5: BUSY ◉"
-
-    def test_color_permit_still_wins_over_cont(self):
-        projects = [
-            make_project("0:5", "5", "blog", "CONT"),
-            make_project("0:6", "6", "site", "PERMIT"),
-        ]
-        assert inject_status.priority_color(projects) == \
-            inject_status.TMUX_COLORS["PERMIT"]
-
-    def test_icon_cont_and_busy_listed_together(self):
-        projects = [
-            make_project("0:5", "5", "blog", "CONT"),
-            make_project("0:6", "6", "site", "BUSY"),
-        ]
-        # Both window indices appear in the BUSY indicator — the user
-        # does not need to know one is CONT vs BUSY at this resolution.
-        assert inject_status.priority_icon(projects) == "5,6: BUSY ◉"
-
-    def test_color_falls_to_idle_when_no_busy_no_permit(self):
-        projects = [
-            make_project("0:5", "5", "blog", "IDLE"),
-            make_project("0:6", "6", "site", "SHELL"),
-        ]
-        assert inject_status.priority_color(projects) == \
-            inject_status.TMUX_COLORS["IDLE"]
-
-    def test_cont_in_tmux_colors_table(self):
-        """CONT must have its own color so mode 1/2's per-project
-        rendering does not fall back to SHELL gray."""
-        assert "CONT" in inject_status.TMUX_COLORS

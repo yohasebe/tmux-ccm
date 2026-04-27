@@ -23,10 +23,6 @@ from ccm_core import (
 TMUX_COLORS = {
     "PERMIT": "yellow",
     "BUSY": "#e8967d",
-    # CONT (event-log path only): amber, distinct from BUSY salmon so
-    # "Claude paused mid-tool" reads as different from "Claude actively
-    # streaming". Only emitted when CCM_USE_EVENT_LOG=primary.
-    "CONT": "#d7af5f",
     "IDLE": "#5f87af",
     "SHELL": "#8a8a8a",
     "DOWN": "#8a8a8a",
@@ -104,19 +100,12 @@ def sanitize_orig_status():
 
 
 def priority_color(projects):
-    """Determine highest priority color from project states.
-
-    CONT shares the BUSY color slot — both mean "Claude is mid-turn,
-    do not interrupt", so they group together for the single status-
-    right indicator. The dedicated CONT color in TMUX_COLORS is
-    consumed by mode 1/2's per-project rendering, where each project
-    keeps its own state.
-    """
+    """Determine highest priority color from project states."""
     has_permit = has_busy = False
     for p in projects:
         if p.state == "PERMIT":
             has_permit = True
-        elif p.state in ("BUSY", "CONT"):
+        elif p.state == "BUSY":
             has_busy = True
 
     if has_permit:
@@ -127,18 +116,13 @@ def priority_color(projects):
 
 
 def priority_icon(projects):
-    """Determine highest priority icon with window indices.
-
-    CONT projects are listed alongside BUSY in the BUSY group so the
-    status-right summary is "windows-doing-work: BUSY ◉" regardless
-    of whether the work is streaming or paused-on-tool.
-    """
+    """Determine highest priority icon with window indices."""
     permit_wins = []
     busy_wins = []
     for p in projects:
         if p.state == "PERMIT":
             permit_wins.append(p.win_idx)
-        elif p.state in ("BUSY", "CONT"):
+        elif p.state == "BUSY":
             busy_wins.append(p.win_idx)
 
     if permit_wins:

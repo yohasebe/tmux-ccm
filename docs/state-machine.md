@@ -7,7 +7,7 @@ Formal reference for the ccm detection pipeline. The implementation lives in [`l
 States answer one question: **does the user need to take action right now?**
 
 - `PERMIT` — yes, the user must approve / dismiss / answer a modal
-- `BUSY` / `CONT` — no, claude has the ball; wait
+- `BUSY` — no, claude has the ball; wait
 - `IDLE` — no, the user has the ball, but no immediate action is required
 - `SHELL` / `DOWN` — environmental (claude not running)
 
@@ -22,11 +22,12 @@ When choosing between adding a new state, a new rule, or a new suffix, ask the p
 | `SHELL` | `■` | No `claude` process in the pane (the user is at a plain shell prompt, or the window has not been started). |
 | `DOWN` | `○` | No pane process at all (window deleted while ccm was running). |
 | `IDLE` | `●` | Claude is running and waiting for the next user input (`❯` prompt visible). |
-| `BUSY` | `◉` | Claude is processing — thinking, streaming a response, or running a tool. |
-| `CONT` | `◍` | Claude paused mid-turn for a tool result (Stop event seen with `stop_reason=tool_use`). Operationally equivalent to `BUSY` for `ccm send` (always rejects without `--force`). Only emitted by the event-log backbone. |
+| `BUSY` | `◉` | Claude is processing — thinking, streaming a response, running a tool, or paused mid-turn for a tool result. Any state where the ball is on Claude's side. |
 | `PERMIT` | `⚠` | A permission dialog or confirmation modal is on screen waiting for the user. `ccm send` always refuses, even with `--force`. |
 
-`STATE_PRIORITY` (used for dashboard sorting and status-bar collapsed indicator): `PERMIT < BUSY = CONT < IDLE < SHELL < DOWN`. Smaller number = higher priority.
+`STATE_PRIORITY` (used for dashboard sorting and status-bar collapsed indicator): `PERMIT < BUSY < IDLE < SHELL < DOWN`. Smaller number = higher priority.
+
+Pre-v0.3.0 the model carried a sixth detection state `CONT` (Claude paused with `stop_reason=tool_use`) emitted only by the event-log backbone. It was collapsed into `BUSY` because the user-action axis (the design principle above) does not distinguish "actively running tool" from "between tools" — both are "wait, the ball is on Claude's side". Removing the distinction simplified the state machine, the priority table, and the `ccm send` dispatcher without losing actionable information.
 
 ## Detection backbones
 
@@ -83,20 +84,19 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
 6. Latest event is `notify_idle` → `IDLE`
 7. Latest event is `stop`:
    - JSONL stop_reason terminal → `IDLE`
-   - JSONL stop_reason `tool_use` or unknown → `CONT`
+   - JSONL stop_reason `tool_use` or unknown → `BUSY` (intermediate Stop boundary, ball still on Claude's side)
 8. Final A' override: if `raw=="PERMIT"` and candidate ≠ `"PERMIT"` → `"PERMIT"` (capture-pane footer match wins)
 
 ## Invariants
 
 These are tested by `TestPipelineInvariants` and `TestDeriveInvariants`:
 
-- Every legacy `evaluate_rules` call returns a state in `{SHELL, DOWN, BUSY, CONT, IDLE, PERMIT}`.
-- The legacy backbone never emits `CONT` (reserved for the event-log path).
+- Every legacy `evaluate_rules` call returns a state in `{SHELL, DOWN, BUSY, IDLE, PERMIT}`.
 - raw=SHELL always resolves to SHELL.
 - raw=DOWN always resolves to DOWN.
 - `derive_state_from_events` returns either `None` or a state in the same set.
 - `pid_present=False` always resolves derive to `SHELL`.
-- `raw=="PERMIT"` always pulls derive to `PERMIT` (or `None`, never `BUSY` / `CONT` / `IDLE`).
+- `raw=="PERMIT"` always pulls derive to `PERMIT` (or `None`, never `BUSY` / `IDLE`).
 
 ## Key discriminators (and why they exist)
 
@@ -129,7 +129,7 @@ When a `BUSY` or `PERMIT` state survives past `JSONL_HOOK_GAP_TOLERANCE` (60 s) 
 ◉ BUSY  (2m)  ccm-dev
 ```
 
-This is the principled response to the limitation — when ccm cannot prove the signal is stuck, it surfaces the age so the user can judge. Implementation: [`ccm_core.signal_age_suffix(project_dir, state)`](../lib/ccm_core.py) is the single source of truth, used by all three renderers. Threshold is bound directly to `JSONL_HOOK_GAP_TOLERANCE` so the affordance appears exactly when the auto-release window has lapsed. Other states (`IDLE` / `SHELL` / `DOWN` / `CONT`) suppress the suffix — their hook signals are either absent or freshness-irrelevant.
+This is the principled response to the limitation — when ccm cannot prove the signal is stuck, it surfaces the age so the user can judge. Implementation: [`ccm_core.signal_age_suffix(project_dir, state)`](../lib/ccm_core.py) is the single source of truth, used by all three renderers. Threshold is bound directly to `JSONL_HOOK_GAP_TOLERANCE` so the affordance appears exactly when the auto-release window has lapsed. Other states (`IDLE` / `SHELL` / `DOWN`) suppress the suffix — their hook signals are either absent or freshness-irrelevant.
 
 ### `(bg)` — background activity in user's turn
 

@@ -277,7 +277,7 @@ HOOK_SCRIPTS = [
     "on-session-end.sh",
 ]
 
-STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "CONT": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
+STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
 # Detection state icons. Keep in sync with `lib/state_meta.sh` —
 # bash hooks pay a ~50ms cost per Python cold start, so we cannot
 # just shell out to Python to resolve icons; the bash side has its
@@ -285,7 +285,7 @@ STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "CONT": 1, "IDLE": 2, "SHELL": 3, "DOW
 # a state icon. The extra "COMPLETED" key used by notification
 # paths is bash-only (not a detection state).
 STATE_ICONS = {
-    "PERMIT": "⚠", "BUSY": "◉", "CONT": "◍", "IDLE": "●", "SHELL": "■", "DOWN": "○",
+    "PERMIT": "⚠", "BUSY": "◉", "IDLE": "●", "SHELL": "■", "DOWN": "○",
 }
 
 
@@ -1439,9 +1439,9 @@ def signal_age_suffix(project_dir, state):
 
     Only returns a non-empty string for state in {BUSY, PERMIT} —
     those are the states where a stale hook signal can mask a real
-    state change (CONT / IDLE) that the release rules cannot
-    confidently make. SHELL / IDLE / DOWN / CONT either have no
-    associated hook signal or the signal is freshness-irrelevant.
+    state change (IDLE) that the release rules cannot confidently
+    make. SHELL / IDLE / DOWN either have no associated hook signal
+    or the signal is freshness-irrelevant.
 
     Best-effort: never raises; returns "" on any error reading the
     signal file."""

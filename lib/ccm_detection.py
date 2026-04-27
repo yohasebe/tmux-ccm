@@ -881,7 +881,7 @@ def evaluate_fast(prev_state, project_dir, now=None) -> str:
 # writer, add it here, and add a parametrized test.
 EVENT_CLASS_START = "start"  # → BUSY
 EVENT_CLASS_PERMIT = "permit"  # → PERMIT
-EVENT_CLASS_PAUSE = "pause"  # → IDLE or CONT depending on JSONL
+EVENT_CLASS_PAUSE = "pause"  # → IDLE (terminal) or BUSY (tool_use) depending on JSONL
 EVENT_CLASS_IDLE = "idle"  # → IDLE (explicit)
 EVENT_CLASS_END = "end"  # → SHELL
 
@@ -944,7 +944,8 @@ def derive_state_from_events(events, jsonl_stop_reason,
             Empty iterable means "no event log for this project yet".
         jsonl_stop_reason: string or None. The stop_reason of the most
             recent assistant record in the JSONL tail. Used only when
-            the latest event is a "stop" — CONT vs IDLE discriminator.
+            the latest event is a "stop" — IDLE (terminal) vs BUSY
+            (tool_use mid-turn) discriminator.
         pid_present: bool. True iff a `claude` process currently runs
             for this project's window. SHELL when False, regardless of
             any stale events in the log.
@@ -968,10 +969,10 @@ def derive_state_from_events(events, jsonl_stop_reason,
             event. In that case the function defers to legacy by
             returning None.
 
-    Returns one of: "SHELL", "PERMIT", "BUSY", "CONT", "IDLE", or
-    None. None means "no authoritative answer" — the caller should
-    commit the legacy state instead. Returned when (a) the event log
-    is empty (no hook events recorded yet), (b) the latest record is
+    Returns one of: "SHELL", "PERMIT", "BUSY", "IDLE", or None.
+    None means "no authoritative answer" — the caller should commit
+    the legacy state instead. Returned when (a) the event log is
+    empty (no hook events recorded yet), (b) the latest record is
     malformed or carries an unknown type, or (c) pid is present but
     the latest event is `session_end` (claude has been restarted and
     the new session has not yet emitted any event).
@@ -983,7 +984,7 @@ def derive_state_from_events(events, jsonl_stop_reason,
       - latest event start-class → BUSY
       - latest event notify_idle → IDLE (Claude itself signalled idle)
       - latest event stop → IDLE if JSONL stop_reason is terminal,
-        CONT if tool_use or unknown (tool still in flight)
+        BUSY if tool_use or unknown (tool still in flight)
       - raw=="PERMIT" → PERMIT (overrides any non-PERMIT candidate)
       - no events / unknown type / session_end with pid present →
         None (fall back to legacy detection)
@@ -1126,15 +1127,25 @@ def derive_state_from_events(events, jsonl_stop_reason,
     elif klass == EVENT_CLASS_IDLE:
         candidate = "IDLE"
     elif klass == EVENT_CLASS_PAUSE:
-        # stop event: CONT if still in tool_use mid-turn, IDLE if
-        # the response completed with a terminal stop_reason. Missing
-        # stop_reason (older schema or no assistant record in tail)
-        # is conservative → CONT so that long-running tools without
+        # stop event: BUSY if still in tool_use mid-turn (claude
+        # paused waiting on a tool result), IDLE if the response
+        # completed with a terminal stop_reason. Missing stop_reason
+        # (older schema or no assistant record in tail) is
+        # conservative → BUSY so that long-running tools without
         # clear evidence do not flip to false IDLE.
+        # Pre-v0.3.0 this branch returned "CONT" for the tool-use
+        # case to give the dashboard a visual hint. Removed for
+        # state-model purity: per the user-centered principle
+        # (docs/state-machine.md), state captures "does the user
+        # need to act" — and CONT and BUSY were both "wait", so
+        # they collapse into BUSY. The diagnostic distinction (was
+        # claude streaming or paused?) lives in the pane itself
+        # (look at the spinner / capture-pane) rather than in the
+        # state label.
         if jsonl_stop_reason in TERMINAL_STOP_REASONS:
             candidate = "IDLE"
         else:
-            candidate = "CONT"
+            candidate = "BUSY"
     else:
         # Defensive — every defined class above is handled, but a new
         # EVENT_CLASS_* added without updating this branch should
