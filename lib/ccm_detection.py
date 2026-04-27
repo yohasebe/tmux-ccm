@@ -469,6 +469,51 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         phase="permit",
     ),
     Rule(
+        # PERMIT signal lingers but the modal is NOT on screen (raw
+        # is BUSY or IDLE, not PERMIT) AND the JSONL shows the
+        # response is actively running a tool (`stop_reason=tool_use`
+        # within the 10-minute long-tool window). This is the auto-
+        # approved permit case: Claude Code fired permit_req for a
+        # tool that the user has pre-approved (or accepted in
+        # accept-edits mode), the dialog flashed and dismissed
+        # without firing a "permission resolved" hook, and the tool
+        # is now executing. From the user's perspective they are
+        # being attended to (claude is responding) — show BUSY, not
+        # PERMIT, because PERMIT semantically means "waiting on user
+        # input" and there is nothing for the user to do.
+        #
+        # Discriminator: raw==PERMIT (modal physically visible) is
+        # still the authoritative PERMIT signal — that case falls
+        # through to `hook_permit_blocking` below. Only when the
+        # capture-pane confirms no modal AND JSONL says a tool is
+        # in flight do we re-classify as BUSY.
+        name="hook_permit_tool_use_active",
+        hook_in=("PERMIT",),
+        # raw is BUSY or IDLE — modal NOT physically on screen
+        # (raw=PERMIT is handled by hook_permit_blocking below
+        # which is the authoritative on-screen-modal signal). The
+        # `⏵⏵ accept edits on` line is on a SEPARATE line from
+        # the `❯` input prompt, so detect_pane_state can return
+        # raw=IDLE even when accept-edits is active — covering
+        # both raw values catches both rendering layouts.
+        raw_in=("BUSY", "IDLE"),
+        jsonl_missing=False,
+        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
+        jsonl_last_stop_reason_in=("tool_use",),
+        # The discriminator against "user dismissed dialog with
+        # Esc, claude is genuinely idle" (the 2026-04-24 case):
+        # in a real dismiss scenario the PermissionRequest hook
+        # fired AFTER the last assistant tool_use write to JSONL,
+        # so hook_age < jsonl_age (hook is fresher). Auto-approved
+        # case is the opposite — tool runs AFTER permit, JSONL
+        # gets updated with new records, so jsonl_age < hook_age
+        # (JSONL fresher than hook). hook_after_real_activity_lt=0
+        # encodes "JSONL strictly fresher than hook".
+        hook_after_real_activity_lt=0,
+        result="BUSY",
+        phase="permit",
+    ),
+    Rule(
         # PERMIT dialog visible (raw != IDLE means input prompt is not
         # showing, so the permission UI is still active).
         name="hook_permit_blocking",
@@ -832,43 +877,40 @@ EVENT_CLASSES = {
     "session_end": EVENT_CLASS_END,
 }
 
-def _jsonl_terminal_fresher_than_event(latest, jsonl_stop_reason,
-                                       jsonl_age, now):
-    """Return True iff the JSONL tail's terminal stop_reason is the
-    fresher signal compared to the latest event log record.
+def _jsonl_fresher_than_event(latest, jsonl_age, now):
+    """Return True iff JSONL was updated AFTER the latest event log
+    record. This is the bare time-comparison primitive — no stop_reason
+    or window checks. Callers add their own conditions on top.
 
-    This is the single discriminator behind both Esc-fallback paths
-    in `derive_state_from_events` (start-class and permit-class
-    branches). Centralising it ensures the two release paths stay
-    symmetric — if we ever need to tweak the freshness window, the
-    threshold, or the time-comparison invariant, we change it once.
-
-    The legacy DETECTION_RULES table expresses the same idea via
-    `hook_after_real_activity_lt=0` on the corresponding rules; the
-    two mechanisms intentionally differ (event vs hook timestamp)
-    but share the same conceptual contract: a JSONL completion that
-    post-dates the start signal is authoritative evidence the
-    response actually ended.
+    Used by the Esc / hook-silence release paths to reject the
+    "fresh prompt right after a previous turn ended" false-positive
+    (the JSONL terminal in that case predates the new event).
 
     Returns False when:
-      - jsonl_stop_reason is not in TERMINAL_STOP_REASONS
-      - jsonl_age is unavailable (-1) or older than
-        JSONL_HOOK_GAP_TOLERANCE (60 s)
+      - jsonl_age is unavailable (-1)
       - the latest event has no parsable timestamp
       - `now` is unavailable (0)
-      - the latest event is fresher than (or equal to) the JSONL
-        terminal — this is the regression guard against "fresh
-        prompt right after a previous turn ended" false-positives
+      - the latest event is fresher than (or equal to) JSONL
     """
-    if jsonl_stop_reason not in TERMINAL_STOP_REASONS:
-        return False
-    if jsonl_age < 0 or jsonl_age > JSONL_HOOK_GAP_TOLERANCE:
+    if jsonl_age < 0:
         return False
     event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
     if not (now > 0 and event_ts > 0):
         return False
     event_age = now - event_ts
     return event_age > jsonl_age
+
+
+def _jsonl_terminal_fresher_than_event(latest, jsonl_stop_reason,
+                                       jsonl_age, now):
+    """Combines `_jsonl_fresher_than_event` with the terminal
+    stop_reason check + the JSONL_HOOK_GAP_TOLERANCE window. Used by
+    the start-class and permit-class Esc-fallback paths in derive."""
+    if jsonl_stop_reason not in TERMINAL_STOP_REASONS:
+        return False
+    if jsonl_age > JSONL_HOOK_GAP_TOLERANCE:
+        return False
+    return _jsonl_fresher_than_event(latest, jsonl_age, now)
 
 
 def derive_state_from_events(events, jsonl_stop_reason,
@@ -966,19 +1008,40 @@ def derive_state_from_events(events, jsonl_stop_reason,
 
     if klass == EVENT_CLASS_PERMIT:
         candidate = "PERMIT"
-        # PERMIT release fallback (2026-04-26 evening, mirror of the
-        # start-class fallback below). Claude Code does not always
-        # fire a "permission resolved" hook when the user accepts a
-        # dialog (especially in `accept edits on` mode), leaving the
-        # latest event as permit_req/notify_permit even after claude
-        # completes the response. If JSONL completion is fresher
-        # than the permit event AND raw is not PERMIT (capture-pane
-        # confirms no modal on screen), the dialog has been resolved
-        # — release to IDLE. raw==PERMIT keeps PERMIT (modal IS on
-        # screen regardless of any later JSONL completion).
-        if (raw != "PERMIT" and _jsonl_terminal_fresher_than_event(
-                latest, jsonl_stop_reason, jsonl_age, now)):
+        # raw=="PERMIT" precedence: if a modal is physically on
+        # screen (capture-pane footer match) we trust it over any
+        # JSONL state — that is the user-blocking case PERMIT was
+        # designed to flag.
+        if raw == "PERMIT":
+            return "PERMIT"
+        # No modal on screen. The latest permit event was either
+        # silently resolved (Claude Code does not fire a permission-
+        # resolved hook) or dismissed by the user. Look at JSONL to
+        # disambiguate the underlying activity:
+        #
+        #   1. Terminal stop_reason fresher than the permit event →
+        #      response truly ended → IDLE (Esc-dismiss / silent-
+        #      resolve mirror of the start-class fallback below).
+        #   2. JSONL shows a tool is in flight (`tool_use` within
+        #      the long-tool window) → claude is actively running
+        #      tools (auto-approved permit). The user is being
+        #      attended to, not waiting — show BUSY, not PERMIT.
+        #   3. Otherwise → PERMIT remains (cosmetic stuck state,
+        #      visible via the (Nm) suffix).
+        if _jsonl_terminal_fresher_than_event(
+                latest, jsonl_stop_reason, jsonl_age, now):
             return "IDLE"
+        # raw is not PERMIT (handled above). If JSONL shows a tool
+        # is in flight AND JSONL is fresher than the permit event
+        # (the same fresher-than-event discriminator we use for
+        # the terminal-release path above), claude is actively
+        # running tools after the permit was silently resolved →
+        # BUSY. The fresher-than-event guard rejects the dismiss
+        # case where JSONL last update predates the permit event.
+        if (jsonl_stop_reason == "tool_use"
+                and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW
+                and _jsonl_fresher_than_event(latest, jsonl_age, now)):
+            return "BUSY"
     elif klass == EVENT_CLASS_START:
         # Esc-interrupt / hook-silence fallback (2026-04-26).
         # Latest event is start-class (prompt / pretool / posttool /

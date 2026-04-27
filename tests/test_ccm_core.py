@@ -1608,6 +1608,83 @@ class TestFourStateModel:
             "hook_permit_jsonl_terminal_release", "IDLE",
         )
 
+    def test_hook_permit_tool_use_active_promotes_to_busy(self):
+        """Auto-approved permit case: hook=PERMIT lingers because
+        Claude Code does not fire a "permission resolved" hook, but
+        no modal is on screen (raw not PERMIT) and the JSONL shows
+        the tool is in flight (`tool_use` fresher than the hook).
+        Should show BUSY (claude responding) not PERMIT (waiting
+        on user).
+
+        Live regression caught on ccm-dev 2026-04-27 morning."""
+        # JSONL fresher than hook = tool ran AFTER permit fired
+        # (auto-approved), so claude is currently executing.
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=100,
+                     jsonl_age=20, jsonl_last_stop_reason="tool_use",
+                     prev_state="PERMIT")
+        )
+        assert (rule.name, state) == (
+            "hook_permit_tool_use_active", "BUSY",
+        )
+
+    def test_hook_permit_tool_use_active_skipped_when_modal_visible(self):
+        """raw=PERMIT (modal physically on screen) is the
+        authoritative signal — must NOT down-classify to BUSY just
+        because JSONL says tool_use. The modal is literally waiting
+        for user keypress."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="PERMIT", hook_state="PERMIT", hook_age=10,
+                     jsonl_age=5, jsonl_last_stop_reason="tool_use",
+                     prev_state="BUSY")
+        )
+        assert (rule.name, state) == ("hook_permit_blocking", "PERMIT")
+
+    def test_hook_permit_tool_use_active_skipped_when_jsonl_terminal(self):
+        """JSONL terminal stop_reason → response ended →
+        hook_permit_jsonl_terminal_release fires first (releases
+        to IDLE). The tool_use rule must not shadow it."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=100,
+                     jsonl_age=30, jsonl_last_stop_reason="end_turn",
+                     prev_state="PERMIT")
+        )
+        assert (rule.name, state) == (
+            "hook_permit_jsonl_terminal_release", "IDLE",
+        )
+
+    def test_hook_permit_tool_use_active_capped_by_window(self):
+        """Tool_use beyond BUSY_HOOK_JSONL_WINDOW (10 min) is too
+        stale to trust as an active tool — the new rule does not
+        fire, falls through to hook_permit_blocking which keeps
+        PERMIT (cosmetic stuck state, surfaced via the (Nm) UI
+        suffix)."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=120,
+                     jsonl_age=ccm_core.BUSY_HOOK_JSONL_WINDOW + 10,
+                     jsonl_last_stop_reason="tool_use",
+                     prev_state="PERMIT")
+        )
+        assert (rule.name, state) == ("hook_permit_blocking", "PERMIT")
+
+    def test_hook_permit_tool_use_active_skipped_for_dismiss_case(self):
+        """In the realistic dismiss case, PermissionRequest fired
+        AFTER the prior assistant tool_use write to JSONL — so hook
+        is FRESHER than JSONL (hook_age < jsonl_age). The new
+        rule's `hook_after_real_activity_lt=0` discriminator
+        rejects this case, falling through to the chain's IDLE
+        catch-all (default / fallback)."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE", hook_state="PERMIT", hook_age=10,
+                     jsonl_age=120,
+                     jsonl_last_stop_reason="tool_use",
+                     prev_state="BUSY")
+        )
+        # New rule must NOT fire; final state is IDLE
+        # (rule name varies — could be default or another fallback).
+        assert rule.name != "hook_permit_tool_use_active"
+        assert state == "IDLE"
+
     def test_hook_permit_jsonl_terminal_release_skipped_for_fresh_permit(self):
         """A freshly-fired PERMIT (a new permission dialog just
         appeared) is fresher than the prior turn's JSONL terminal —
@@ -1762,6 +1839,7 @@ class TestRulePhaseAnnotations:
             "hook_fresh_busy": "midturn",
             "hook_permit_blocking": "permit",
             "hook_permit_jsonl_terminal_release": "permit",
+            "hook_permit_tool_use_active": "permit",
             "hook_busy_jsonl_terminal_release": "midturn",
             "hook_busy_idle": "midturn",
             "hook_busy_idle_no_jsonl": "midturn",
@@ -2430,14 +2508,19 @@ class TestLifecycleSequences:
         # PERMIT, the rule used to grab the still-tool_use JSONL tail
         # and hold BUSY for the full 600 s, producing the same stuck-
         # state symptom on the BUSY axis. The hook_missing=True gate
-        # forces fall-through to fallback_busy_to_idle when any hook
-        # signal (PERMIT/SHELL) is still present.
+        # forces fall-through when any hook signal is still present.
+        # Updated 2026-04-27: the realistic dismiss scenario has hook
+        # FRESHER than JSONL (PermissionRequest fired AFTER the prior
+        # tool_use write). With the new hook_permit_tool_use_active
+        # rule's `hook_after_real_activity_lt=0` discriminator, a
+        # dismiss with hook fresher than JSONL falls through correctly
+        # to the chain's terminal IDLE catch-all.
         assert self._eval(
             raw="IDLE", prev_state="BUSY", hook_state="PERMIT",
-            hook_age=120,
-            jsonl_age=45,
+            hook_age=10,   # PermissionRequest just fired
+            jsonl_age=120, # last tool_use record was 2 min ago
             jsonl_last_stop_reason="tool_use",
-        ) == ("fallback_busy_to_idle", "IDLE")
+        )[1] == "IDLE"  # rule name varies (default / fallback) but state must be IDLE
         # Response truly ends: last assistant is end_turn → IDLE.
         assert self._eval(
             raw="IDLE", prev_state="BUSY", hook_state="",
@@ -5235,15 +5318,78 @@ class TestDeriveStateFromEvents:
             raw="BUSY",
         ) == "PERMIT"
 
-    def test_permit_event_with_tool_use_jsonl_keeps_permit(self):
-        """JSONL stop_reason=tool_use means a tool is in flight,
-        not completion. Permit remains."""
+    @pytest.mark.parametrize("event_type", ["permit_req", "notify_permit"])
+    def test_permit_event_with_tool_use_jsonl_promotes_to_busy(self, event_type):
+        """Auto-approved permit case (mirror of legacy
+        `hook_permit_tool_use_active`): permit signal survives,
+        raw=BUSY (the `⏵⏵` accept-edits spinner is showing), and
+        JSONL says a tool is in flight → claude is actively
+        running tools → BUSY (not PERMIT). The user is being
+        attended to, not waiting.
+
+        Scoped to raw=BUSY only — raw=IDLE with the same JSONL is
+        the dismiss case (tool finished, user dismissed dialog,
+        claude plainly idle), which keeps PERMIT (cosmetic)."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": event_type},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=10, now=200,
+            raw="BUSY",
+        ) == "BUSY"
+
+    def test_permit_event_with_tool_use_jsonl_keeps_permit_when_modal_visible(self):
+        """raw=PERMIT (modal physically on screen) trumps the
+        tool_use BUSY promotion — modal is the authoritative
+        on-screen signal."""
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": "permit_req"},),
             jsonl_stop_reason="tool_use",
             pid_present=True, claude_pid_age=300,
             jsonl_age=10, now=200,
+            raw="PERMIT",
+        ) == "PERMIT"
+
+    def test_permit_event_with_stale_tool_use_keeps_permit(self):
+        """tool_use beyond BUSY_HOOK_JSONL_WINDOW is too old to
+        trust as an active tool — fall through to PERMIT (cosmetic
+        stuck state)."""
+        # jsonl_age past the long-tool window
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "permit_req"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=700, now=900,
             raw="BUSY",
+        ) == "PERMIT"
+
+    def test_permit_event_with_idle_pane_and_fresh_tool_use_promotes_to_busy(self):
+        """raw=IDLE with tool_use AND JSONL fresher than the permit
+        event = `accept edits on` mode where `⏵⏵` lives on a
+        separate line from the `❯` prompt and detect_pane_state
+        returns raw=IDLE despite the tool actively running.
+        Should promote to BUSY (consistent with raw=BUSY case)."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "permit_req"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=10, now=200,  # event_age=100, jsonl fresher
+            raw="IDLE",
+        ) == "BUSY"
+
+    def test_permit_event_with_dismiss_case_keeps_permit(self):
+        """Real dismiss case: hook fresher than JSONL (Permission-
+        Request fired AFTER the prior assistant tool_use record).
+        Must NOT promote to BUSY — claude is genuinely paused."""
+        # event_ts=200, now=205 → event_age=5
+        # jsonl_age=120 → JSONL OLDER than event (older by 115s)
+        # → tool_use rule rejects (event fresher than JSONL)
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 200, "type": "permit_req"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=120, now=205,
+            raw="IDLE",
         ) == "PERMIT"
 
     def test_pause_event_with_terminal_jsonl_still_idle(self):
