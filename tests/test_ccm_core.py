@@ -1199,8 +1199,11 @@ class TestDetectWindowRaw:
         assert ccm_core.detect_window_raw("0:1", [], [], "99999") == "DOWN"
 
     @patch("ccm_core.tmux_cmd")
-    def test_busy_takes_priority_over_idle(self, mock_tmux):
-        """PERMIT is hook-only; pane with children = BUSY, takes priority over IDLE."""
+    def test_default_first_pane_when_no_active_flag(self, mock_tmux):
+        """Legacy fixtures without pane_active default to first pane —
+        matches the historical single-pane case (the dominant ccm
+        usage). Multi-pane fixtures should set pane_active explicitly
+        to be unambiguous."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node"),
             (101, 1, 101, "bash"), (201, 101, 101, "claude"),
@@ -1208,6 +1211,64 @@ class TestDetectWindowRaw:
         mock_tmux.return_value = "Processing..."
         panes = [("0:1", "100", "%0"), ("0:1", "101", "%1")]
         assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_active_pane_authoritative_shell_active(self, mock_tmux):
+        """The motivating regression (2026-04-27 personal window):
+        active pane is a plain shell, an inactive sliver pane has a
+        long-idle claude. Window state must follow what the user
+        sees — SHELL — not the inactive pane's state."""
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"),  # active pane: just a shell
+            (200, 1, 200, "zsh"), (300, 200, 300, "claude"),  # inactive: claude with MCP
+            (400, 300, 400, "python"),  # MCP child
+        )
+        mock_tmux.return_value = ""
+        # 5-tuple: (target, pid, pane_id, current_command, pane_active)
+        panes = [
+            ("0:1", "100", "%0", "zsh", "1"),  # active
+            ("0:1", "200", "%1", "claude", "0"),  # inactive sliver
+        ]
+        assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "SHELL"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_active_pane_authoritative_claude_active(self, mock_tmux):
+        """Mirror: active pane is the claude pane, inactive pane is
+        a side-shell. Window state follows the active pane → BUSY
+        (claude has children, no `❯` visible in mocked capture)."""
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"), (200, 100, 100, "claude"),  # active: claude
+            (300, 200, 200, "node"),  # claude child
+            (101, 1, 101, "zsh"),  # inactive: shell
+        )
+        mock_tmux.return_value = "streaming..."
+        panes = [
+            ("0:1", "100", "%0", "claude", "1"),  # active
+            ("0:1", "101", "%1", "zsh", "0"),  # inactive
+        ]
+        assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_inactive_panes_completely_ignored(self, mock_tmux):
+        """Even if an inactive pane has a permission modal, the
+        window does not commit PERMIT — the user is not looking at
+        that pane and cannot interact with the modal until they
+        switch panes. Reporting PERMIT would falsely block ccm send
+        for a window the user is using productively elsewhere."""
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"),  # active: idle shell
+            (200, 1, 200, "zsh"), (300, 200, 300, "claude"),  # inactive: claude waiting
+        )
+        # mock_tmux is called for capture-pane on the active shell
+        # pane (which has no claude, so detection short-circuits to
+        # SHELL before any capture). Set a permit footer just to
+        # prove it would never be reached.
+        mock_tmux.return_value = "Esc to cancel · Tab to amend"
+        panes = [
+            ("0:1", "100", "%0", "zsh", "1"),  # active shell
+            ("0:1", "200", "%1", "claude", "0"),  # inactive permit
+        ]
+        assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "SHELL"
 
 
 # ─── detect_window_state with hooks ───

@@ -201,29 +201,51 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
 
 
 def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
-    # panes_cache entries can be 3-tuples (legacy) or 4-tuples
-    # (with pane_current_command, added 2026-04-27). Normalise to
-    # 4-tuple here so the rest of the logic doesn't branch.
-    panes = [
-        (pid, pane_id, pc[3] if len(pc) >= 4 else "")
-        for pc in panes_cache
-        for wt, pid, pane_id in [pc[:3]]
-        if wt == win_target
-    ]
+    """Window-level raw state = the active pane's state.
+
+    User-centered design (2026-04-27): a tmux window can have
+    multiple panes, but only one is `pane_active=1` at any time —
+    that is the pane the user is currently attending to. The window
+    state ccm reports must match what the user sees; aggregating
+    state across all panes (the pre-2026-04-27 behaviour) infected
+    the window with state from invisible / sliver / non-active
+    panes. Concrete failure observed: `personal` window showed
+    `◉ BUSY` because a 1-row sliver pane held a multi-hour-idle
+    `claude --continue` whose `❯` prompt could not be rendered in
+    1 row, so capture-pane-based prompt detection fell through to
+    "has children + no prompt → BUSY" — a false signal the user had
+    no way to see or correct.
+
+    panes_cache tuples can be 3, 4, or 5 elements (back-compat over
+    several iterations). The 5th element (pane_active="1" / "0" /
+    "") is what matters here; legacy fixtures without it fall back
+    to "first pane in the window" which preserves the historical
+    test behaviour for single-pane fixtures.
+    """
+    # Filter to panes belonging to this window. Each entry becomes
+    # (pid, pane_id, current_command, pane_active).
+    panes = []
+    for pc in panes_cache:
+        if pc[0] != win_target:
+            continue
+        pid = pc[1]
+        pane_id = pc[2]
+        current_command = pc[3] if len(pc) >= 4 else ""
+        pane_active = pc[4] if len(pc) >= 5 else ""
+        panes.append((pid, pane_id, current_command, pane_active))
+
     if not panes:
         return "DOWN"
 
-    best = "SHELL"
-    for pid, pane_id, current_command in panes:
-        state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
-                                   current_command=current_command)
-        if state == "PERMIT":
-            return "PERMIT"
-        elif state == "BUSY":
-            best = "BUSY"
-        elif state == "IDLE" and best != "BUSY":
-            best = "IDLE"
-    return best
+    # Pick the active pane. tmux guarantees exactly one pane has
+    # pane_active=1 within a non-empty window. If no entry is
+    # marked active (legacy fixtures, mid-creation transient),
+    # default to the first pane — matches the pre-2026-04-27
+    # aggregation when a single-pane window was the input.
+    chosen = next((p for p in panes if p[3] == "1"), panes[0])
+    pid, pane_id, current_command, _ = chosen
+    return detect_pane_state(pid, pane_id, ps_lines, own_pgid,
+                             current_command=current_command)
 
 
 def _set_win_state(win_target, state):

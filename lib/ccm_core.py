@@ -1341,14 +1341,21 @@ def build_project_list(fast=False):
     panes_cache = []
     if not fast:
         panes_raw = tmux_cmd("list-panes", "-a", "-F",
-                             "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}")
+                             "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{pane_active}")
         for line in panes_raw.split("\n"):
             parts = line.split("\t")
-            if len(parts) >= 4:
-                panes_cache.append((parts[0], parts[1], parts[2], parts[3]))
+            # Tuple shape grew over time:
+            #   3-tuple (very old): (target, pid, pane_id)
+            #   4-tuple (2026-04-27): + pane_current_command
+            #   5-tuple (2026-04-27, this commit): + pane_active flag
+            # Newer slots default to empty / "0" so detection logic
+            # can handle mock fixtures that haven't been updated.
+            if len(parts) >= 5:
+                panes_cache.append((parts[0], parts[1], parts[2], parts[3], parts[4]))
+            elif len(parts) == 4:
+                panes_cache.append((parts[0], parts[1], parts[2], parts[3], ""))
             elif len(parts) == 3:
-                # Older list-panes format without command — backfill empty
-                panes_cache.append((parts[0], parts[1], parts[2], ""))
+                panes_cache.append((parts[0], parts[1], parts[2], "", ""))
 
     own_pgid = str(os.getpgrp())
     seen_dirs = set()

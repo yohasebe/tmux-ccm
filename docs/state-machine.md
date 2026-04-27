@@ -29,6 +29,16 @@ When choosing between adding a new state, a new rule, or a new suffix, ask the p
 
 Pre-v0.3.0 the model carried a sixth detection state `CONT` (Claude paused with `stop_reason=tool_use`) emitted only by the event-log backbone. It was collapsed into `BUSY` because the user-action axis (the design principle above) does not distinguish "actively running tool" from "between tools" — both are "wait, the ball is on Claude's side". Removing the distinction simplified the state machine, the priority table, and the `ccm send` dispatcher without losing actionable information.
 
+## Window-to-pane projection
+
+A tmux window can host multiple panes, but ccm reports a single state per window (per project). The projection rule is **active-pane authoritative**: the window's state is whatever `detect_pane_state` returns for the pane that tmux marks `pane_active=1`. Inactive panes contribute nothing.
+
+This realises the design principle one level up — the user is only attending to one pane at a time (the active one), so the window's reported state must match that pane. Aggregating across panes (the pre-2026-04-27 behaviour, which took the "most active" state across all panes) infected windows with state from invisible / sliver / non-attended panes. The motivating regression: a `personal` window had a 1-row sliver pane holding a long-idle `claude --continue` whose `❯` prompt could not render in 1 row, so capture-pane-based prompt detection fell through `has_children=True` + no prompt visible → BUSY — a false signal the user could not see or correct from the visible shell pane.
+
+The active-pane rule also handles non-sliver multi-pane workflows correctly: if a user genuinely splits a window with claude in pane A and a side-shell in pane B, the user can only have one of those active at a time, and that is the one whose state ccm reports. Switching panes flips the reported state — which matches user perception.
+
+Inactive panes are not entirely invisible: they still drive the `(bg)` UI affordance (state=IDLE with raw=BUSY for grandchild processes spawned by claude) where applicable, since "background activity exists" is informational rather than action-actionable.
+
 ## Detection backbones
 
 ccm runs two detection paths in parallel; the one that wins depends on the `CCM_USE_EVENT_LOG` env var:
