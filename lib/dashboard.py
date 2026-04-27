@@ -528,55 +528,20 @@ class Dashboard:
                 max_state_w = 8  # "● PERMIT" = 8
                 max_name_w = max((len(p.name) for p in projects), default=5)
 
-                # Fixed column positions
+                # Fixed column positions (idx / state / name only).
+                # After name we flow each annotation sequentially:
+                # ⊞N and ✔elapsed sit tight against the name as a
+                # "name unit" so projects without those annotations
+                # don't get a wide blank gap. Inter-row vertical
+                # alignment is intentionally NOT enforced for the
+                # post-name region — fixed columns there waste
+                # horizontal space when most rows have no extras.
                 COL_IDX = 4       # after "  ▶ "
                 COL_STATE = COL_IDX + max_idx_w + 1
                 COL_NAME = COL_STATE + max_state_w + 1
                 COL_REST = COL_NAME + max_name_w + 1
 
-                # Per-affordance fixed columns so the path column
-                # lands at the same x for every row regardless of
-                # which optional annotations are present. Computing
-                # max width per slot from the visible projects and
-                # advancing the cursor by exactly that width keeps
-                # rows whose annotation is absent leaving a blank
-                # space rather than shifting the next column left.
                 now_ts = int(time.time())
-
-                def _stale_or_bg_w(proj):
-                    s = signal_age_suffix(proj.dir, proj.state).strip()
-                    if s:
-                        return len(s)
-                    if proj.bg_active:
-                        return len("(bg)")
-                    return 0
-
-                def _multi_w(proj):
-                    return len(f"⊞{proj.pane_count}") if proj.pane_count > 1 else 0
-
-                def _branch_w(proj):
-                    return (len(proj.branch) + 2) if proj.branch else 0
-
-                def _completed_w(proj):
-                    if not proj.completed_at:
-                        return 0
-                    age = now_ts - proj.completed_at
-                    if age < 0 or age >= COMPLETED_AT_TIMEOUT:
-                        return 0
-                    elapsed = format_elapsed(proj.completed_at)
-                    return (2 + len(elapsed)) if elapsed else 0
-
-                max_stalebg_w = max((_stale_or_bg_w(p) for p in projects), default=0)
-                max_multi_w_ = max((_multi_w(p) for p in projects), default=0)
-                max_branch_w = max((_branch_w(p) for p in projects), default=0)
-                max_completed_w = max((_completed_w(p) for p in projects),
-                                      default=0)
-
-                COL_STALEBG = COL_REST
-                COL_MULTI = COL_STALEBG + (max_stalebg_w + 1 if max_stalebg_w else 0)
-                COL_BRANCH = COL_MULTI + (max_multi_w_ + 1 if max_multi_w_ else 0)
-                COL_COMPLETED = COL_BRANCH + (max_branch_w + 1 if max_branch_w else 0)
-                COL_DIR = COL_COMPLETED + (max_completed_w + 1 if max_completed_w else 0)
 
                 for i, p in enumerate(projects):
                     if i < scroll_offset:
@@ -603,31 +568,19 @@ class Dashboard:
                     # Project name
                     self._addstr(stdscr, y, COL_NAME, p.name, curses.A_BOLD)
 
-                    # Stale-signal age suffix for BUSY/PERMIT (e.g.
-                    # "(8m)") OR background-activity "(bg)". The two
-                    # share a slot since they fire on disjoint states
-                    # (BUSY/PERMIT vs IDLE).
-                    suffix = signal_age_suffix(p.dir, p.state).strip()
-                    if suffix:
-                        self._addstr(stdscr, y, COL_STALEBG, suffix,
-                                     curses.color_pair(C_DIM))
-                    elif p.bg_active:
-                        self._addstr(stdscr, y, COL_STALEBG, "(bg)",
-                                     curses.color_pair(C_DIM))
+                    # name + ⊞N + ✔elapsed render as one tight unit
+                    # right after the project name (no padding
+                    # between). Each piece keeps its own colour so
+                    # the cluster is still scannable: name (bold) /
+                    # ⊞N (dim) / ✔ (green) / elapsed (dim).
+                    col = COL_REST
 
-                    # Multi-pane indicator: window holds more than
-                    # one pane. Aggregated state may belong to a
-                    # non-active pane.
+                    # Multi-pane indicator (immediately after name).
                     if p.pane_count > 1:
-                        self._addstr(stdscr, y, COL_MULTI,
-                                     f"⊞{p.pane_count}",
+                        marker = f"⊞{p.pane_count}"
+                        self._addstr(stdscr, y, col, marker,
                                      curses.color_pair(C_DIM))
-
-                    # Branch
-                    if p.branch:
-                        self._addstr(stdscr, y, COL_BRANCH, "(", curses.color_pair(C_DIM))
-                        self._addstr(stdscr, y, COL_BRANCH + 1, p.branch, curses.color_pair(C_CYAN))
-                        self._addstr(stdscr, y, COL_BRANCH + 1 + len(p.branch), ")", curses.color_pair(C_DIM))
+                        col += len(marker) + 1
 
                     # Recently completed marker (✔ with elapsed time)
                     if p.completed_at:
@@ -635,17 +588,43 @@ class Dashboard:
                         if 0 <= comp_age < COMPLETED_AT_TIMEOUT:
                             elapsed = format_elapsed(p.completed_at)
                             if elapsed:
-                                self._addstr(stdscr, y, COL_COMPLETED, "✔ ", curses.color_pair(C_COMPLETED))
-                                self._addstr(stdscr, y, COL_COMPLETED + 2, elapsed, curses.color_pair(C_DIM))
+                                self._addstr(stdscr, y, col, "✔ ",
+                                             curses.color_pair(C_COMPLETED))
+                                col += 2
+                                self._addstr(stdscr, y, col, elapsed,
+                                             curses.color_pair(C_DIM))
+                                col += len(elapsed) + 1
 
-                    # Directory (truncated to fit). Always at COL_DIR
-                    # so the path column lines up across rows
-                    # regardless of which annotations are populated.
+                    # Stale-signal age (BUSY/PERMIT) or
+                    # background-activity (IDLE) — disjoint, shared
+                    # slot.
+                    suffix = signal_age_suffix(p.dir, p.state).strip()
+                    if suffix:
+                        self._addstr(stdscr, y, col, suffix,
+                                     curses.color_pair(C_DIM))
+                        col += len(suffix) + 1
+                    elif p.bg_active:
+                        self._addstr(stdscr, y, col, "(bg)",
+                                     curses.color_pair(C_DIM))
+                        col += 5
+
+                    # Branch
+                    if p.branch:
+                        self._addstr(stdscr, y, col, "(",
+                                     curses.color_pair(C_DIM))
+                        self._addstr(stdscr, y, col + 1, p.branch,
+                                     curses.color_pair(C_CYAN))
+                        self._addstr(stdscr, y, col + 1 + len(p.branch), ")",
+                                     curses.color_pair(C_DIM))
+                        col += len(p.branch) + 3
+
+                    # Directory (truncated to fit)
                     if p.dir:
                         effective_w = list_width if preview_width > 0 else width
-                        dir_str = format_dir(p.dir, COL_DIR, effective_w)
+                        dir_str = format_dir(p.dir, col, effective_w)
                         if dir_str:
-                            self._addstr(stdscr, y, COL_DIR, dir_str, curses.color_pair(C_DIM))
+                            self._addstr(stdscr, y, col, dir_str,
+                                         curses.color_pair(C_DIM))
 
                     row += 1
 
