@@ -203,7 +203,11 @@ class TestPaneCountSuffixInStatusBar:
 
     def test_pane_count_combines_with_stale_signal(self, monkeypatch):
         """A stuck-PERMIT split-pane window should render both the
-        stale-age suffix and the multi-pane marker side by side."""
+        stale-age suffix and the multi-pane marker. Layout post-
+        2026-04-28: ⊞N is BEFORE the state icon (structural marker
+        next to the project name), stale-age is AFTER the icon
+        (state-modifier). So in left-to-right text order: ⊞2 first,
+        then the icon, then (10m)."""
         import time
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
@@ -214,9 +218,10 @@ class TestPaneCountSuffixInStatusBar:
             [p],
             with_extras=False, current_win_target="0:2",
         )
-        # Both markers present; order: stale first, multi after.
+        # Both markers present; order: multi first (pre-icon),
+        # stale after (post-icon).
         assert "(10m)" in entries[0]
         assert "⊞2" in entries[0]
-        assert entries[0].index("(10m)") < entries[0].index("⊞2")
+        assert entries[0].index("⊞2") < entries[0].index("(10m)")
 
 

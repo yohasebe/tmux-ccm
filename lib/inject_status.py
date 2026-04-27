@@ -157,14 +157,21 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # (which only fires for BUSY/PERMIT) so we can render either
         # cleanly.
         bg = "(bg)" if p.bg_active else ""
-        # Multi-pane marker (⊞N) is independent of stale/bg — a
-        # split window can be in any of those states. Compose them
-        # so e.g. a stuck-PERMIT split-pane window reads "(8m)⊞3".
-        multi = f"⊞{p.pane_count}" if p.pane_count > 1 else ""
-        extra = (stale or bg) + multi
+        # Stale-age and bg fire on different states (BUSY/PERMIT vs
+        # IDLE) so they're mutually exclusive. Both render AFTER
+        # the state icon as state-modifiers ("BUSY but stale", "IDLE
+        # but with leftover bg processes").
+        post = stale or bg
+        # Multi-pane marker is structural (about the window's pane
+        # layout, not the project's state). Render it BEFORE the
+        # icon so the visual unit `:icon` stays clean and the
+        # marker sits next to the project name where the user
+        # parses identity. Pre-2026-04-28 it was bundled into the
+        # post-icon `extra` and looked unbalanced (`12:teaching:●⊞2`).
+        pre = f" ⊞{p.pane_count}" if p.pane_count > 1 else ""
 
         if with_extras:
-            # Mode 2: idx:name (branch) [:port]:icon[(stale)]
+            # Mode 2: idx:name (branch) [:port][ ⊞N]:icon[(stale|bg)]
             if is_current:
                 entry = f"#[fg=#ffffff,bold]{p.win_idx}:#[fg=#ffffff,bold]{p.name}"
             else:
@@ -176,19 +183,27 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
                     entry += f" #[fg=#666666](#[fg=cyan]{p.branch}#[fg=#666666])#[fg=#9E9E9E]"
             if p.ports:
                 entry += f"#[fg=#666666][:{p.ports}]#[fg=#9E9E9E]"
+            if pre:
+                entry += f"#[fg=#666666]{pre}#[fg=#9E9E9E]"
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
-            if extra:
-                entry += f"#[fg=#666666]{extra}#[fg=#9E9E9E]"
+            if post:
+                entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"
             if is_current:
                 entry += "#[nobold]"
         else:
-            # Mode 1: name:icon[(stale|bg)]
+            # Mode 1: name[ ⊞N]:icon[(stale|bg)]
             if is_current:
-                entry = f"#[fg=#ffffff,bold]{p.name}:#[fg={color},bold]{icon}#[nobold]#[fg=#9E9E9E]"
+                entry = f"#[fg=#ffffff,bold]{p.name}"
+                if pre:
+                    entry += f"#[fg=#666666]{pre}#[fg=#ffffff,bold]"
+                entry += f":#[fg={color},bold]{icon}#[nobold]#[fg=#9E9E9E]"
             else:
-                entry = f"{p.name}:#[fg={color}]{icon}#[fg=#9E9E9E]"
-            if extra:
-                entry += f"#[fg=#666666]{extra}#[fg=#9E9E9E]"
+                entry = f"{p.name}"
+                if pre:
+                    entry += f"#[fg=#666666]{pre}#[fg=#9E9E9E]"
+                entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
+            if post:
+                entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"
 
         entries.append(entry)
     return entries
