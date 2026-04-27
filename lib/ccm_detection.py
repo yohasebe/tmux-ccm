@@ -1223,6 +1223,26 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     if state == "IDLE" and ctx.prev_state in ("BUSY", "PERMIT"):
         ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_completed_at", str(ctx.now))
 
+    # Background-activity affordance (option C, 2026-04-27).
+    # Conceptually: state captures "whose turn it is" (BUSY = claude
+    # is responding, IDLE = user has the ball). But process-tree
+    # detection sets raw=BUSY whenever a tool grandchild exists —
+    # including leftover dev servers / background scripts that
+    # claude started but no longer owns. The event-log path now
+    # correctly overrides those to IDLE (via the rule chain that
+    # trusts JSONL stop_reason terminal), but the background
+    # processes are still running. Surface the discrepancy as a
+    # `(bg)` UI suffix so the user knows "claude is at rest, but
+    # something it spawned is still alive". Written when the
+    # committed state is IDLE but raw says BUSY (process tree has
+    # active children/grandchildren). Cleared whenever the two
+    # agree, so a stale flag cannot survive a state change.
+    if state == "IDLE" and ctx.raw == "BUSY":
+        ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_bg_active", "1")
+    elif state != "IDLE" or ctx.raw != "BUSY":
+        # Clear when no longer applicable. -u unsets the option.
+        ccm_core.tmux_cmd("set-option", "-wut", win_target, "@ccm_bg_active")
+
     return state
 
 

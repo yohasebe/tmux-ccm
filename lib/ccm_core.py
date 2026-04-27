@@ -1271,11 +1271,11 @@ def shell_cluster_warnings(projects) -> list:
 class Project:
     __slots__ = (
         "win_target", "win_idx", "name", "dir", "state",
-        "branch", "ports", "completed_at", "sort_key",
+        "branch", "ports", "completed_at", "bg_active", "sort_key",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
-                 branch="", ports="", completed_at=0):
+                 branch="", ports="", completed_at=0, bg_active=False):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -1284,6 +1284,7 @@ class Project:
         self.branch = branch
         self.ports = ports
         self.completed_at = completed_at
+        self.bg_active = bg_active
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
@@ -1317,7 +1318,8 @@ def build_project_list(fast=False):
     raw = tmux_cmd(
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
-        "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}"
+        "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
+        "#{@ccm_bg_active}"
     )
     if not raw:
         return []
@@ -1344,6 +1346,10 @@ def build_project_list(fast=False):
         prev_state, completed_at_str, win_activity_str = (
             parts[3], parts[4], parts[5]
         )
+        # @ccm_bg_active is the most recent addition; older tmux
+        # sessions / windows may not have it yet — treat absent as
+        # "no background activity".
+        bg_active_str = parts[6] if len(parts) >= 7 else ""
 
         if not project:
             continue
@@ -1390,6 +1396,7 @@ def build_project_list(fast=False):
             win_target=win_target, win_idx=win_idx, name=project,
             directory=proj_dir, state=state, branch=branch, ports=ports,
             completed_at=sort_ts,
+            bg_active=bool(bg_active_str and bg_active_str != "0"),
         ))
 
     projects.sort(key=lambda p: p.sort_key)
@@ -1772,13 +1779,18 @@ def print_status():
         color = _C_STATE.get(p.state, _C_DIM)
         icon = STATE_ICONS.get(p.state, "?")
         suffix = signal_age_suffix(p.dir, p.state)
+        # Background-activity affordance: state=IDLE but tool/dev-
+        # server processes are still running. The conversation turn
+        # has returned to the user but claude's leftover children
+        # continue to run.
+        if p.bg_active:
+            suffix += " (bg)"
         status = f"{color}{icon} {p.state}{suffix}{_C_RESET}"
         branch = p.branch or "-"
         ports = p.ports or "-"
         d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
         # Status field with ANSI codes is wider than visible; reserve
-        # extra width when a stale-signal suffix is appended so columns
-        # still line up.
+        # extra width when a suffix is appended so columns still line up.
         width = 22 + len(suffix)
         print(f"{status:<{width}} {p.name:<20} {branch:<16} {ports:<12} {d}")
 

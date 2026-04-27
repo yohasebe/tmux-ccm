@@ -168,6 +168,12 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # popup. Stripped of leading space; we add explicit dim
         # markup before it.
         stale = signal_age_suffix(p.dir, p.state).strip()
+        # Background-activity affordance: state=IDLE but raw=BUSY
+        # (leftover dev server etc.). Mutually exclusive with `stale`
+        # (which only fires for BUSY/PERMIT) so we can render either
+        # cleanly.
+        bg = "(bg)" if p.bg_active else ""
+        extra = stale or bg
 
         if with_extras:
             # Mode 2: idx:name (branch) [:port]:icon[(stale)]
@@ -183,18 +189,18 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
             if p.ports:
                 entry += f"#[fg=#666666][:{p.ports}]#[fg=#9E9E9E]"
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
-            if stale:
-                entry += f"#[fg=#666666]{stale}#[fg=#9E9E9E]"
+            if extra:
+                entry += f"#[fg=#666666]{extra}#[fg=#9E9E9E]"
             if is_current:
                 entry += "#[nobold]"
         else:
-            # Mode 1: name:icon[(stale)]
+            # Mode 1: name:icon[(stale|bg)]
             if is_current:
                 entry = f"#[fg=#ffffff,bold]{p.name}:#[fg={color},bold]{icon}#[nobold]#[fg=#9E9E9E]"
             else:
                 entry = f"{p.name}:#[fg={color}]{icon}#[fg=#9E9E9E]"
-            if stale:
-                entry += f"#[fg=#666666]{stale}#[fg=#9E9E9E]"
+            if extra:
+                entry += f"#[fg=#666666]{extra}#[fg=#9E9E9E]"
 
         entries.append(entry)
     return entries

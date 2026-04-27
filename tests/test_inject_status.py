@@ -129,6 +129,39 @@ class TestStaleSignalSuffixInStatusBar:
             assert "(10m)" not in entries[0], f"unexpected suffix for {state}"
 
 
+class TestBgActiveSuffixInStatusBar:
+    """The `(bg)` affordance for IDLE projects with leftover
+    background activity (state=IDLE committed but raw=BUSY because
+    of grandchild processes). Indicates "user has the ball but
+    something claude spawned is still running"."""
+
+    def _make(self, state, bg):
+        p = make_project("0:2", "2", "ccm-dev", state)
+        p.bg_active = bg
+        return p
+
+    def test_idle_with_bg_shows_bg_suffix(self):
+        entries = inject_status.build_detail_entries(
+            [self._make("IDLE", True)],
+            with_extras=False, current_win_target="0:2",
+        )
+        assert "(bg)" in entries[0]
+
+    def test_idle_without_bg_no_suffix(self):
+        entries = inject_status.build_detail_entries(
+            [self._make("IDLE", False)],
+            with_extras=False, current_win_target="0:2",
+        )
+        assert "(bg)" not in entries[0]
+
+    def test_mode2_idle_with_bg_shows_bg_suffix(self):
+        entries = inject_status.build_detail_entries(
+            [self._make("IDLE", True)],
+            with_extras=True, current_win_target="0:2",
+        )
+        assert "(bg)" in entries[0]
+
+
 # ─── priority_color / priority_icon: CONT joins the BUSY group ───
 
 class TestPriorityCont:

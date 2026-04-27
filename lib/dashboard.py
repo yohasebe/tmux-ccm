@@ -575,6 +575,14 @@ class Dashboard:
                         self._addstr(stdscr, y, col, suffix.strip(),
                                      curses.color_pair(C_DIM))
                         col += len(suffix)
+                    # Background-activity affordance: state=IDLE but
+                    # raw=BUSY (leftover dev server / orphan tool).
+                    # Conversation turn is the user's, but background
+                    # processes are still running.
+                    if p.bg_active:
+                        self._addstr(stdscr, y, col, "(bg)",
+                                     curses.color_pair(C_DIM))
+                        col += 5
 
                     # Branch
                     if p.branch:
