@@ -63,8 +63,9 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
    - else if JSONL `stop_reason=tool_use` is fresher than the event AND within `BUSY_HOOK_JSONL_WINDOW` → `BUSY` (auto-approved permit, tool actively running)
    - else → `PERMIT`
 5. Latest event is start-class (`prompt` / `pretool` / `posttool` / `subagent` / `compact`):
-   - if JSONL terminal stop_reason is fresher than the event AND `raw≠"PERMIT"` → `IDLE` (Esc interrupt or hook silence within 60 s)
-   - else if both event_age AND jsonl_age exceed `BUSY_HOOK_JSONL_WINDOW` (10 min) AND `raw≠"PERMIT"` → `None` (phantom-event timeout — defer to legacy, which resolves via `fallback_busy_to_idle` → `IDLE`)
+   - if `latest.type == "subagent"` AND the immediately-preceding non-subagent event is `notify_idle` AND `raw≠"PERMIT"` → `None` (phantom-subagent shortcut — Claude Code's upstream fires occasional spurious `subagent` events in idle periods; legitimate subagent invocations always come mid-conversation, never after the explicit idle marker. Walks back through stacked phantom subagent events to handle the chain case)
+   - else if JSONL terminal stop_reason is fresher than the event AND `raw≠"PERMIT"` → `IDLE` (Esc interrupt or hook silence within 60 s)
+   - else if both event_age AND jsonl_age exceed `BUSY_HOOK_JSONL_WINDOW` (10 min) AND `raw≠"PERMIT"` → `None` (combined-stale fallback — defer to legacy, which resolves via `fallback_busy_to_idle` → `IDLE`. Catches other spurious upstream firings beyond the specific subagent shortcut above)
    - else → `BUSY`
 6. Latest event is `notify_idle` → `IDLE`
 7. Latest event is `stop`:
