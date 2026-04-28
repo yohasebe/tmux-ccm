@@ -181,8 +181,7 @@ Appends a priority icon with window indices to your existing status-right. Your 
 |----------|-----------|------|-------|
 | 1 (highest) | Any project has PERMIT | `⚠` | Yellow |
 | 2 | Any project has BUSY | `◉` | Orange |
-| 3 | Any project recently completed | `✔` | Green |
-| 4 (lowest) | All projects are IDLE | `≡` | Gray |
+| 3 (lowest) | All projects are IDLE | `≡` | Gray |
 
 Click the icon to open the dashboard for full details.
 
@@ -203,7 +202,7 @@ Adds one or more tmux status lines below the main bar. Shows all projects includ
 | PERMIT | `⚠` | Yellow |
 | BUSY | `◉` | Orange |
 | IDLE | `●` | Blue |
-| IDLE (recently completed) | `✔` | Green |
+| IDLE (recently completed) | `* <elapsed>` after the project name | Green |
 | SHELL | `■` | Dark gray |
 
 Lines auto-expand based on terminal width and project count.
@@ -269,7 +268,8 @@ ccm debug trace <name> [interval] Live state-detection trace (read-only; Ctrl-C 
 | ⚠ | PERMIT | Waiting for user permission |
 | ◉ | BUSY | Claude is processing |
 | ● | IDLE | Waiting for input |
-| ✔ | IDLE (recently completed) | Transient marker shown for 30s after completion |
+| `* <elapsed>` | IDLE (recently completed) | Transient marker (asterisk green, time dim) shown for 30 s after BUSY/PERMIT → IDLE |
+| `[N]` | (any state, multi-pane window) | Pane count marker (brackets dim, digit cyan) when a window has more than one pane |
 | ■ | SHELL | Shell active, Claude not running |
 | ○ | DOWN | Window not available |
 
@@ -411,7 +411,7 @@ tmux switch-client -t oss      # Standard tmux session switching
 
 - Projects are tmux windows tagged with `@ccm_project` and `@ccm_dir`
 - Claude Code state is detected via hook signals + process tree inspection (with prompt pattern matching as supplement)
-- Completion marker (✔) is shown for 30s after BUSY/PERMIT → IDLE transitions
+- Completion marker (`* <elapsed>`) is shown for 30s after BUSY/PERMIT → IDLE transitions
 - Works with any tmux theme — ccm auto-detects theme changes to status-right
 - Git branch and port info are cached (30s) to minimize overhead
 - Popup session context is passed via temp file (`$TMPDIR/ccm-$UID/`)
