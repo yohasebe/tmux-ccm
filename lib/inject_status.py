@@ -261,7 +261,7 @@ def _inject_status_impl():
             pass
 
     # Get mode
-    mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "0"
+    mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "2"
 
     # Build project list — use fast mode when dashboard handles full detection
     projects = build_project_list(fast=dashboard_running)
@@ -449,20 +449,18 @@ def _inject_status_impl():
 
         # Visual palette for the dedicated mode-2 line(s).
         # `BG` (slightly darker than the main bar) keeps the ccm
-        # rows visually settled below. The "gutter" row uses the
-        # SAME bg as the entries plus a row of `▔` (UPPER ONE
-        # EIGHTH BLOCK) glyphs in `RULE_FG`, so visually only the
-        # top 1/8 of the row is occupied — a thin separator line
-        # rather than a full black bar. The remaining 7/8 reads
-        # as continuous bg with the entries below.
+        # rows visually settled below. `GUTTER_BG` is a single
+        # near-black row inserted between the main bar and the
+        # entry rows so the boundary reads as two distinct
+        # regions rather than a continuation of the main bar.
+        # Separator `·` with 2-space padding either side.
         BG = "#262626"
+        GUTTER_BG = "#1a1a1a"
         FG_DEFAULT = "#9E9E9E"
         FG_DIM = "#5a5a5a"
-        RULE_FG = "#3a3a3a"
         SEP = f"  #[fg={FG_DIM}]·#[fg={FG_DEFAULT}]  "
         SEP_VISIBLE_W = 5  # "  ·  "
-        # 200 chars covers any sane terminal; tmux truncates extra.
-        GUTTER_FMT = f"#[fill={BG}]#[fg={RULE_FG},bg={BG}]" + ("▔" * 200)
+        GUTTER_FMT = f"#[fill={GUTTER_BG}]#[bg={GUTTER_BG}] "
 
         if not entries:
             fmt = f"#[fill={BG}]#[fg={FG_DIM},bg={BG}] ≡ ccm: no projects  "

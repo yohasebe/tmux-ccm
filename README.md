@@ -182,16 +182,18 @@ If you cannot install `terminal-notifier` and notice the accumulation problem, s
 ccm shows active project status in the tmux status bar. Configure the display mode:
 
 ```tmux
-set -g @ccm-status-line 0     # default
+set -g @ccm-status-line 2     # default
 ```
 
 | Value | Mode | Description |
 |-------|------|-------------|
-| `0` | Icon (default) | Priority icon with window indices appended to status-right |
+| `0` | Icon | Priority icon with window indices appended to status-right (most conservative — does not change tmux's existing chrome) |
 | `1` | Full | Replaces window list with ccm-style colored entries |
-| `2` | Dedicated line | Adds status line(s) with branch/port details for all projects |
+| `2` | Dedicated line (default) | Adds dedicated status line(s) below the main bar with branch / port details for all projects |
 
-#### Mode 0 — Icon with indices (default)
+Mode 2 is the default because installing ccm signals "I want to track Claude Code state continuously"; a dedicated row makes that state visible at a glance without needing to open the dashboard. Mode 0 is the fallback for users who prefer the most conservative integration with their existing tmux theme.
+
+#### Mode 0 — Icon with indices
 
 Appends a priority icon with window indices to your existing status-right. Your clock, battery, etc. are preserved. When active projects exist, window numbers are shown (e.g., `5: PERMIT ⚠`). When all are IDLE, a single `≡` icon is shown:
 

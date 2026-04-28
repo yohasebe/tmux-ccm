@@ -178,13 +178,13 @@ ${setting}
 
     # Step 4: Status bar mode
     echo "  ${COLOR_BOLD}[4/4] Status bar mode${COLOR_RESET}"
-    echo "    0 = Icon in status-right (default, minimal)"
+    echo "    0 = Icon in status-right (minimal)"
     echo "    1 = Replace window list with ccm entries"
-    echo "    2 = Dedicated status line with full details"
-    local current_mode="0"
+    echo "    2 = Dedicated status line with full details (default)"
+    local current_mode="2"
     if [[ $in_tmux -eq 1 ]]; then
         current_mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
-        current_mode="${current_mode:-0}"
+        current_mode="${current_mode:-2}"
     elif grep -q '@ccm-status-line' ~/.tmux.conf 2>/dev/null; then
         current_mode=$(grep '@ccm-status-line' ~/.tmux.conf | awk '{print $NF}')
     fi

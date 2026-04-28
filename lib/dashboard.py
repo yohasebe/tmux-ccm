@@ -1684,7 +1684,7 @@ class Dashboard:
     def _build_menu(self):
         """Build menu items dynamically with current setting values."""
         # Status bar mode
-        mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "0"
+        mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "2"
         mode_labels = {"0": "Minimal", "1": "Window list", "2": "Dedicated line"}
         mode_label = mode_labels.get(mode, mode)
 

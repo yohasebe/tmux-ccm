@@ -266,18 +266,18 @@ The `✔` marker clears when:
 
 Configure with `set -g @ccm-status-line` in your `~/.tmux.conf`. See the [README Status Bar section](../README.md#status-bar) for configuration details and screenshots.
 
-### Mode 0 — Single icon (default)
+### Mode 0 — Single icon
 
 Appends one icon to your existing status-right. The icon shows the highest-priority state:
 
 > ```
-> 0:◉ my-project  1:⚠ api*  2:✔ web  3:● docs      07:30  ⚠ PERMIT
+> 5: PERMIT ⚠   13:30  2026-04-28
 > ```
 
-Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (orange) > `✔` recently completed (green) > `≡` all idle (gray)
+Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (orange) > `≡` all idle (gray)
 
-- Best for: users who want minimal status bar impact
-- Trade-off: no per-project detail (use dashboard for that)
+- Best for: users who want the most conservative integration with their existing tmux theme
+- Trade-off: no per-project detail (use the dashboard for that)
 
 ### Mode 1 — Full (ccm-style window list)
 
