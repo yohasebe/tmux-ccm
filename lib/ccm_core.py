@@ -57,27 +57,6 @@ COMPLETED_AT_TIMEOUT = int(os.environ.get(
 # projects contend for evaluation time.
 HOOK_FRESH_THRESHOLD = 2
 # JSONL session-log freshness threshold. If the project's newest .jsonl
-# file was touched within this many seconds, treat it as positive
-# evidence of activity (Claude wrote a record at a turn boundary).
-# Used as a hook-independent BUSY signal when the visible pane suggests
-# IDLE but Claude has just exchanged a record.
-JSONL_FRESH_THRESHOLD = int(os.environ.get("CCM_JSONL_FRESH_THRESHOLD", "5"))
-# Short JSONL window used to HOLD an already-BUSY state through brief
-# gaps where neither hook nor JSONL is fresh. Catches the couple of
-# seconds after `jsonl_fresh_activity` (5s) expires but the session
-# hasn't settled yet — e.g. Stop hook latency or a brief streaming
-# pause. Short by design: longer thinking phases with an active hook
-# are covered by `hook_busy_idle` (600s window + gap discriminator),
-# so this rule only needs to bridge the sub-minute gap between
-# "JSONL fresh" and "hook fresh" signals.
-#
-# Was 120s in the DONE-era design where it suppressed the BUSY→DONE
-# transition during long thinking — with DONE removed and Stop hooks
-# deleting the signal file, 120s produced a painful ~2-minute BUSY
-# lingering after visual completion (empirically measured).
-# Tuned to 15s: Stop-to-IDLE transition completes within ~15s in the
-# common case, and hook_busy_idle still covers long tool runs.
-JSONL_ACTIVE_THRESHOLD = int(os.environ.get("CCM_JSONL_ACTIVE_THRESHOLD", "15"))
 # Window for trusting a BUSY hook signal without JSONL corroboration.
 # A BUSY hook older than this AND a JSONL that has been silent for
 # the same duration is almost certainly left over from a turn that
@@ -134,18 +113,6 @@ SHELL_CLUSTER_COUNT = int(os.environ.get("CCM_SHELL_CLUSTER_COUNT", "3"))
 SHELL_CLUSTER_ISSUE = "anthropics/claude-code#48069"
 SHELL_CLUSTER_ISSUE_NOTE = "macOS silent-exit"
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))  # 10 min safety net
-# Brief grace window for `fallback_permit_hold` after raw transitions
-# to IDLE (modal footer no longer visible). Covers the normal
-# approve→PreToolUse handoff (sub-second) plus a generous buffer for
-# slow shells. Past this window, a still-PERMIT hook signal is
-# treated as stale — typical cause: user dismissed the dialog with
-# Esc / No / Tab to amend, none of which fire a follow-up hook to
-# clear the PermissionRequest signal in Claude Code, leaving ccm
-# stuck on PERMIT for the full PERMIT_MAX_TIMEOUT (600 s) without
-# this shorter cap. The longer 600 s timeout is preserved for
-# `hook_permit_blocking`, which only fires while raw is still
-# BUSY/PERMIT (i.e. the modal IS visible — trust the hook).
-PERMIT_GAP_TOLERANCE = int(os.environ.get("CCM_PERMIT_GAP_TOLERANCE", "60"))
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 # How long after the `claude` process starts a `raw=BUSY` reading is

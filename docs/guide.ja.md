@@ -488,16 +488,14 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 
 | 変数 | デフォルト | 用途 |
 |------|-----------|------|
-| `CCM_JSONL_FRESH_THRESHOLD` | `5`（秒） | `jsonl_fresh_activity` が raw=IDLE を BUSY に昇格させる JSONL 書き込み age の閾値。小さくするとターン完了後のIDLE遷移が速くなるが、マルチターン間の一瞬IDLE表示のリスクがある |
-| `CCM_JSONL_ACTIVE_THRESHOLD` | `15`（秒） | Stop後の BUSY 保持窓（`jsonl_holds_busy`）。fresh 窓切れと最終 IDLE 遷移の間をブリッジ。マルチステップツール使用中に BUSY→IDLE→BUSY がちらつく場合は大きくする |
-| `CCM_BUSY_HOOK_JSONL_WINDOW` | `600`（秒） | JSONL も更新されている場合に BUSY フックを信頼する最大 age。これを超えると Stop フック取りこぼし (anthropics/claude-code#25655) とみなして BUSY を解除する |
-| `CCM_JSONL_HOOK_GAP_TOLERANCE` | `60`（秒） | recap phantom 判別。直前の実会話 activity から秒数以上後に発火した BUSY フックを phantom とみなして拒否（v2.1.108 の `away_summary` 等）。小さくするとより積極的に拒否 |
+| `CCM_BUSY_HOOK_JSONL_WINDOW` | `600`（秒） | event-log path の combined-stale fallback 窓。最新イベントと JSONL の両方がこの秒数より古い場合、derive は legacy fallback に委ねる（最終的に IDLE に解決される）。abandoned session や上流 silence の長期テールを救う |
+| `CCM_JSONL_HOOK_GAP_TOLERANCE` | `60`（秒） | recap phantom 判別（legacy `hook_fresh_busy` ルール）。直前の実会話 activity から秒数以上後に発火した BUSY フックを phantom として拒否（上流 `away_summary` 等）。derive の Esc-release / silent-completion 鮮度チェックも同じ窓を使う |
 | `CCM_COMPLETED_AT_TIMEOUT` | `30`（秒） | BUSY/PERMIT → IDLE 遷移後にダッシュボードで `* elapsed` 完了マーカーが表示される時間 |
-| `CCM_COMPLETION_GRACE_SEC` | `3`（秒） | Stop hook 発火から COMPLETED デスクトップ通知までの猶予時間。Claude Code は各ターン境界（ツール実行中も含む）で Stop を発火するため、ccm はこの秒数だけ待ってから通知する。その間に次の PreToolUse / UserPromptSubmit が発火すれば通知はキャンセルされる。小さくすると通知が早いがマルチターン会話中に誤発火するリスクが高まる。長時間のツール連鎖中に「完了」通知が早すぎると感じる場合は上げる |
-| `CCM_PERMIT_MAX_TIMEOUT` | `600`（秒） | 安全網: フック信号で解消されない PERMIT 状態をこの秒数で自動クリア（permission ダイアログ表示中に Claude Code がクラッシュした場合など） |
+| `CCM_COMPLETION_GRACE_SEC` | `3`（秒） | Stop hook 発火から COMPLETED デスクトップ通知までの猶予時間。Claude Code は各ターン境界（ツール実行中も含む）で Stop を発火するため、ccm はこの秒数だけ待ってから通知する。その間に次の PreToolUse / UserPromptSubmit が発火すれば通知はキャンセルされる |
+| `CCM_PERMIT_MAX_TIMEOUT` | `600`（秒） | `evaluate_fast` (statusline) パスの安全網: これより古い PERMIT フックを stale 扱いし、上流の signal-clearing 失敗で PERMIT が貼り付くのを防ぐ |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600`（秒） | Claude Code セッションが IDLE 状態でいられる最大時間（`x` 一括終了の対象となる閾値、自動終了のトリガー） |
-| `CCM_STARTUP_GRACE_SEC` | `60`（秒） | `startup_transient_raw_busy` ルールが hook signal 未着の raw=BUSY を IDLE に降格させる claude プロセス年齢の窓。`claude --continue` 起動時の MCP ロード (通常 10-30 秒) をカバー。MCP 接続がこれより長くかかる構成なら上げる、起動ハングを早めに BUSY として可視化したいなら下げる |
-| `CCM_SLIVER_HEIGHT_THRESHOLD` | `4`（行） | ウィンドウの状態集約に参加する tmux ペインの最小高さ。これより小さいペインは Claude の `❯` プロンプトを描画できず、capture-pane 検出が「子プロセスあり + プロンプト不可視」で BUSY と誤判定するため除外する。Agent Teams で意図的に小さいペインを使っており除外したくない場合は上げる、フィルタを完全無効化したい場合は 1 まで下げる。実ペイン高さより大きい値にすると、2026-04-27 以前の「全ペイン無条件集約」相当の挙動を再現できる |
+| `CCM_STARTUP_GRACE_SEC` | `60`（秒） | legacy `startup_transient_raw_busy` ルールが hook signal 未着の raw=BUSY を IDLE に降格させる claude プロセス年齢の窓。`claude --continue` 起動時の MCP ロード (通常 10-30 秒) をカバー |
+| `CCM_SLIVER_HEIGHT_THRESHOLD` | `4`（行） | ウィンドウの状態集約に参加する tmux ペインの最小高さ。これより小さいペインは Claude の `❯` プロンプトを描画できず、capture-pane 検出が「子プロセスあり + プロンプト不可視」で BUSY と誤判定するため除外する。Agent Teams で意図的に小さいペインを使っており除外したくない場合は上げる、フィルタを完全無効化したい場合は 1 まで下げる |
 
 ### カナリア閾値
 

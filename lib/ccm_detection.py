@@ -72,11 +72,7 @@ from ccm_core import (
     # Detection thresholds (int at module load)
     BUSY_HOOK_JSONL_WINDOW,
     HOOK_FRESH_THRESHOLD,
-    JSONL_ACTIVE_THRESHOLD,
-    JSONL_FRESH_THRESHOLD,
     JSONL_HOOK_GAP_TOLERANCE,
-    PERMIT_GAP_TOLERANCE,
-    PERMIT_MAX_TIMEOUT,
     STARTUP_GRACE_SEC,
 )
 

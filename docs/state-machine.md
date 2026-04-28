@@ -50,7 +50,7 @@ Inactive panes also drive the `(bg)` UI affordance (state=IDLE with raw=BUSY fro
 
 ## Detection backbones
 
-The event-log path (`derive_state_from_events`) is the primary detection mechanism. The legacy `DETECTION_RULES` table is the safety net for cases where the event log is empty / malformed / in a post-`session_end` transient — the dispatcher commits the event-log state when derive returns non-`None`, and falls back to legacy otherwise. `CCM_USE_EVENT_LOG` selects between `auto` (default; the dispatcher above), `off` (legacy only — diagnostic opt-out), `observe` (legacy committed, event-log computed for trace diff), and `primary` (alias for `auto`).
+The event-log path (`derive_state_from_events`) is the primary detection mechanism. The legacy `DETECTION_RULES` table is the safety net for cases where the event log is empty / malformed / in a post-`session_end` transient — the dispatcher commits the event-log state when derive returns non-`None`, and falls back to legacy otherwise. `CCM_USE_EVENT_LOG=off` is a diagnostic kill-switch that disables the event-log read entirely; the unset default and any other value resolve to the auto dispatch.
 
 ### Legacy backbone — `DETECTION_RULES` table
 
