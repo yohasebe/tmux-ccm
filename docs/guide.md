@@ -217,7 +217,7 @@ This adds hooks to `~/.claude/settings.json`:
 | `UserPromptSubmit` | BUSY | Prompt submitted → Claude is processing (including text generation) |
 | `PreToolUse` | BUSY | Tool execution starting (solves multi-turn detection gap) |
 | `PostToolUse` | BUSY | Tool execution completed — keeps BUSY held across post-permission gaps |
-| `PostToolUseFailure` | BUSY | Tool execution failed (Claude Code v2.1.101+ split from `PostToolUse`) |
+| `PostToolUseFailure` | BUSY | Tool execution failed |
 | `SubagentStart` / `SubagentStop` | BUSY | Subagent execution start/end (parent agent still working) |
 | `PreCompact` / `PostCompact` | BUSY | Context compaction is busy work |
 | `Stop` / `StopFailure` | clears BUSY | Claude finished responding (signal file deleted) |
@@ -240,7 +240,7 @@ To remove: `ccm remove-hooks`
 | **SHELL** | Process check | No `claude` process found among window's child processes |
 | **BUSY** | Hook / JSONL / Process tree | Primary: UserPromptSubmit / PreToolUse / SubagentStart hooks. Fallbacks (any one wins): (a) the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` has a **user/assistant record** newer than `JSONL_FRESH_THRESHOLD` (5s) — Claude Code appends a record at every conversation turn boundary, so this is positive evidence the session is alive even when hooks are silent ([#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)). System metadata records (v2.1.108+ recap / `system/away_summary`, `turn_duration`, `attachment/task_reminder`, ...) are filtered out so recap generation does not register as fresh activity; (b) `claude` has a grandchild process (e.g. `bash → xcodebuild` from the Bash tool) — works around the v2.1+ UI showing an empty `❯ ` prompt above an active tool; (c) any non-MCP direct child of `claude` |
 | **IDLE** | Process tree | `claude` exists with only direct children (MCP / language servers) and a visible input prompt, with no fresh BUSY hook |
-| **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the v2.1.101+ footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
+| **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
 | **Completion (`* elapsed`)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears. Asterisk renders green (drawing the eye to the just-completed transition); the elapsed time is dim |
 | **Multi-pane (`[N]`)** | Window inspection | Marker on every renderer (dashboard, status bar, `ccm status`) when a window holds more than one tmux pane (Agent Teams, casual splits, leftover orphan panes). Brackets dim, digit cyan. Lets you spot windows whose aggregated state may belong to a non-active pane. See "Using with Agent Teams" below for related details (sliver protection and PERMIT auto-focus) |
 

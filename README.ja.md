@@ -37,7 +37,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 - [TPM](https://github.com/tmux-plugins/tpm)（プラグインインストール用。手動インストールも可）
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 以上を推奨**。ccm は v2.1.107 で追加された `elicitation_dialog` Notification matcher(MCP elicitation 用)を登録しますが、インストール時に `claude --version` を検出して古いバージョンでは自動的にこの matcher をスキップします。そのため v2.1.101–v2.1.106 でも残りの 13 フックイベントは動作します(MCP elicitation の検出だけ無効になります)。v2.1.100 以前は `PostToolUseFailure` イベント(v2.1.101 で追加)が必要なため非対応です
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 以上が必須**。ccm は v2.1.107 で追加された `elicitation_dialog` Notification matcher(MCP elicitation 用)を登録します。`ccm setup-hooks` は `claude --version` を確認し、古いバージョンでは installation を拒否します
 
 ## インストール
 
@@ -305,7 +305,7 @@ ccm setup-hooks
 
 `~/.claude/settings.json` にフックが追加され、状態変化を通知します：
 - **UserPromptSubmit** → プロンプト送信時にBUSY（テキスト生成を検出）
-- **PreToolUse / PostToolUse / PostToolUseFailure** → ツール実行中にBUSY（PostToolUseFailure は Claude Code v2.1.101+ のツール失敗イベント）
+- **PreToolUse / PostToolUse / PostToolUseFailure** → ツール実行中にBUSY
 - **SubagentStart / SubagentStop** → サブエージェント実行中にBUSY（親エージェントは作業継続中）
 - **PreCompact / PostCompact** → コンテキスト圧縮中にBUSY
 - **Stop / StopFailure** → Claude応答完了時にBUSY信号をクリア

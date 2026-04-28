@@ -163,8 +163,9 @@ teardown() {
 }
 
 @test "hooks-configured: returns false when PostToolUseFailure missing" {
-    # Simulate a pre-v2.1.101 install: all script paths present but no
-    # PostToolUseFailure event registered.
+    # All script paths present but PostToolUseFailure event is not
+    # registered — the configured-check must catch this and force a
+    # reinstall.
     ccm_setup_hooks >/dev/null 2>&1
     jq 'del(.hooks.PostToolUseFailure)' "${MOCK_DIR}/.claude/settings.json" \
         > "${MOCK_DIR}/.claude/settings.json.tmp"
@@ -255,8 +256,8 @@ teardown() {
     ! _ccm_version_ge "" "2.1.107"
 }
 
-@test "setup-hooks: skips elicitation_dialog matcher when claude too old" {
-    # Stub claude --version to an older release
+@test "setup-hooks: hard-fails when claude is too old" {
+    # Stub claude --version to a release below CCM_MIN_CLAUDE_VERSION
     local bin="${MOCK_DIR}/bin"
     mkdir -p "$bin"
     cat > "$bin/claude" <<'STUB'
@@ -264,18 +265,17 @@ teardown() {
 echo "2.1.103 (Claude Code)"
 STUB
     chmod +x "$bin/claude"
-    PATH="${bin}:${PATH}" ccm_setup_hooks >/dev/null 2>&1
+    run env PATH="${bin}:${PATH}" bash -c "source '${CCM_ROOT}/lib/common.sh' && ccm_setup_hooks"
+    [[ "$status" -ne 0 ]] || { echo "expected setup-hooks to fail on old claude"; return 1; }
+    [[ "$output" == *"too old"* ]] || { echo "expected 'too old' in error; got: $output"; return 1; }
 
-    local n_elicit
-    n_elicit=$(jq '[.hooks.Notification[] | select(.matcher == "elicitation_dialog")] | length' \
-        "${MOCK_DIR}/.claude/settings.json")
-    [[ "$n_elicit" -eq 0 ]] || { echo "expected 0 elicitation_dialog matchers, got $n_elicit"; return 1; }
-
-    # But the other two matchers must still be there
-    local n_other
-    n_other=$(jq '[.hooks.Notification[] | select(.matcher == "permission_prompt" or .matcher == "idle_prompt")] | length' \
-        "${MOCK_DIR}/.claude/settings.json")
-    [[ "$n_other" -eq 2 ]] || { echo "expected 2 other matchers, got $n_other"; return 1; }
+    # Settings file must NOT have been written (or at least not contain the new matcher)
+    if [[ -f "${MOCK_DIR}/.claude/settings.json" ]]; then
+        local n_elicit
+        n_elicit=$(jq '[.hooks.Notification[]? | select(.matcher == "elicitation_dialog")] | length' \
+            "${MOCK_DIR}/.claude/settings.json" 2>/dev/null || echo 0)
+        [[ "$n_elicit" -eq 0 ]] || { echo "settings should not contain elicitation_dialog after hard-fail"; return 1; }
+    fi
 }
 
 @test "setup-hooks: installs elicitation_dialog matcher when claude is v2.1.107" {
@@ -292,22 +292,6 @@ STUB
     n=$(jq '[.hooks.Notification[] | select(.matcher == "elicitation_dialog")] | length' \
         "${MOCK_DIR}/.claude/settings.json")
     [[ "$n" -eq 1 ]] || { echo "expected 1 elicitation_dialog matcher, got $n"; return 1; }
-}
-
-@test "hooks-configured: does NOT require elicitation_dialog on old claude" {
-    # Install under a stubbed old claude (no elicitation_dialog)
-    local bin="${MOCK_DIR}/bin"
-    mkdir -p "$bin"
-    cat > "$bin/claude" <<'STUB'
-#!/bin/bash
-echo "2.1.103 (Claude Code)"
-STUB
-    chmod +x "$bin/claude"
-    PATH="${bin}:${PATH}" ccm_setup_hooks >/dev/null 2>&1
-
-    # And verify hooks_configured is HAPPY with that install on same old claude
-    PATH="${bin}:${PATH}" run ccm_hooks_configured
-    [[ "$status" -eq 0 ]] || { echo "hooks_configured should pass on old claude with no elicitation_dialog"; return 1; }
 }
 
 @test "on-notification.sh: elicitation_dialog writes PERMIT signal" {

@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`CCM_STATUS_INTERVAL` env var** lets users tune how often tmux invokes `ccm inject-status` (default 5 s, was 2 s). Hook-driven `@ccm-permit-pending` keeps PERMIT-axis responsiveness independent of the polling cadence.
 
 ### Changed
+- **Claude Code v2.1.107+ is now required.** `ccm setup-hooks` hard-fails on older clients (or when `claude` is not on PATH) instead of silently skipping the `elicitation_dialog` Notification matcher. The matcher is registered unconditionally; `ccm_hooks_configured` always requires it.
 - **State model is 4 + 1** (PERMIT / BUSY / IDLE / SHELL / DOWN). The legacy DETECTION_RULES table is the safety net for cases where the event-log path returns `None` (empty log, malformed records, post-`session_end` transient with a live pid). For projects with hooks installed and an active session, the event-log path is authoritative.
 - **Markers in dashboard / status bar / `ccm status`** are pure ASCII (`[N]` for pane count, `* elapsed` for completion) to eliminate East-Asian-Width / font-rendering edge cases that can offset later columns. Brackets / time render dim; the digit / asterisk get the eye-catching colour.
 - **Window state is per-window aggregated, not per-pane** — Agent Teams (split panes per teammate) and casual splits both surface attention-needing panes regardless of which pane is active. Sliver-pane filter prevents an invisible 1-row pane from infecting the visible window state.

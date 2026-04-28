@@ -37,7 +37,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 - [TPM](https://github.com/tmux-plugins/tpm) (for plugin installation; or use manual install)
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 or later recommended**. ccm registers the `elicitation_dialog` Notification matcher (added in v2.1.107) for MCP elicitation prompts; on older releases this matcher is automatically skipped at install time (detected via `claude --version`), so v2.1.101–v2.1.106 clients still work with the remaining 13 hook events — you just do not get MCP elicitation detection until you update. v2.1.100 and earlier are not supported because ccm requires the `PostToolUseFailure` event that landed in v2.1.101
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 or later required**. ccm registers the `elicitation_dialog` Notification matcher (added in v2.1.107) for MCP elicitation prompts. `ccm setup-hooks` checks `claude --version` and refuses to install on older clients
 
 ## Installation
 
@@ -303,7 +303,7 @@ ccm setup-hooks
 
 This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **UserPromptSubmit** → BUSY when you submit a prompt (detects text generation)
-- **PreToolUse / PostToolUse / PostToolUseFailure** → BUSY across tool execution (PostToolUseFailure is a Claude Code v2.1.101+ event for tool errors)
+- **PreToolUse / PostToolUse / PostToolUseFailure** → BUSY across tool execution
 - **SubagentStart / SubagentStop** → BUSY around subagent execution (the parent agent is still working)
 - **PreCompact / PostCompact** → BUSY (context compaction is busy work)
 - **Stop / StopFailure** → clears BUSY signal when Claude finishes responding
@@ -316,7 +316,7 @@ ccm has multiple hook-independent fallbacks so detection still works when Claude
 
 - **JSONL session log heartbeat**: ccm reads the timestamp of the most recent **user/assistant record** in the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` file. System metadata records (Claude Code v2.1.108+ recap / `system/away_summary`, `system/turn_duration`, `attachment/task_reminder`, etc.) are filtered out, so recap generation and other internal events do not register as fresh activity. A real user/assistant record within the freshness window is positive evidence the session is alive.
 - **Process grandchild detection**: A grandchild process under `claude` (e.g. `claude → bash → xcodebuild`) is unambiguous evidence that a foreground tool is running, even if the input prompt is visible (the v2.1+ "ctrl+b ctrl+b to background" UI).
-- **Permission dialog footer match**: ccm recognizes the v2.1.101+ permission footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) directly from the visible pane.
+- **Permission dialog footer match**: ccm recognizes the permission footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) directly from the visible pane.
 - **`~/.claude/hooks.log` size canary**: ccm warns in `ccm status` and the dashboard footer when this file exceeds 100 MB — the documented root cause of #16047 is silent hook failure due to log bloat. The fix is `: > ~/.claude/hooks.log`.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.

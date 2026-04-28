@@ -19,9 +19,9 @@ case "$NOTIFY_TYPE" in
         ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
         ;;
     elicitation_dialog)
-        # MCP servers can request user input via elicitation dialogs
-        # (Claude Code v2.1.107+). Functionally identical to a
-        # permission prompt — Claude is paused waiting for the user.
+        # MCP servers can request user input via elicitation
+        # dialogs. Functionally identical to a permission prompt —
+        # Claude is paused waiting for the user.
         ccm_append_event "$HOOK_DIR" "$KEY" "notify_permit"
         ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD"
         ;;

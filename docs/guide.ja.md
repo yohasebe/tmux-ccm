@@ -217,7 +217,7 @@ ccm setup-hooks
 | `UserPromptSubmit` | BUSY | プロンプト送信 → Claude処理中（テキスト生成含む） |
 | `PreToolUse` | BUSY | ツール実行開始（マルチターンの検出ギャップを解消） |
 | `PostToolUse` | BUSY | ツール実行完了 — permission 後のBUSYシグナルを維持 |
-| `PostToolUseFailure` | BUSY | ツール実行失敗（Claude Code v2.1.101+ で `PostToolUse` から分離） |
+| `PostToolUseFailure` | BUSY | ツール実行失敗 |
 | `SubagentStart` / `SubagentStop` | BUSY | サブエージェント実行中（親エージェントは作業継続中） |
 | `PreCompact` / `PostCompact` | BUSY | コンテキスト圧縮はビジー作業 |
 | `Stop` / `StopFailure` | BUSY信号クリア | Claude応答完了（信号ファイルを削除） |
@@ -240,7 +240,7 @@ ccm setup-hooks
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
 | **BUSY** | フック / JSONL / プロセスツリー | 主経路: UserPromptSubmit / PreToolUse / SubagentStart フック。フォールバック（いずれか1つでマッチ）: (a) プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` に **user/assistant レコード**が `JSONL_FRESH_THRESHOLD`（5秒）以内に書き込まれている — Claude Code は会話のターン境界ごとにレコードを追記するため、フックが沈黙していてもセッション活動の証拠になる（[#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）。システムメタデータレコード（v2.1.108+ recap / `system/away_summary`、`turn_duration`、`attachment/task_reminder` 等）はフィルタされるため、recap 生成が偽の活動として検出されない。(b) `claude` の孫プロセス（Bashツール実行中の `bash → xcodebuild` 等）— v2.1+ UI が末尾に `❯ ` を表示していても BUSY 判定。(c) `claude` が非MCP の直接の子プロセスを持つ場合 |
 | **IDLE** | プロセスツリー | `claude` が直接の子（MCP / 言語サーバー）のみを持ち、入力プロンプトが見え、新鮮な BUSY フック信号がない |
-| **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: v2.1.101+ のフッター `Esc to cancel · Tab to amend · ctrl+e to explain` をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能（[#16047](https://github.com/anthropics/claude-code/issues/16047)） |
+| **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: フッター `Esc to cancel · Tab to amend · ctrl+e to explain` をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能（[#16047](https://github.com/anthropics/claude-code/issues/16047)） |
 | **完了（`* elapsed`）** | 表示レイヤー | 一時的マーカー: BUSY/PERMIT → IDLE遷移後に30秒間表示、その後クリア。アスタリスクは緑（直近の完了に視線を誘導）、経過時間は dim |
 | **マルチペイン（`[N]`）** | ウィンドウ検査 | tmux ペインを 2 つ以上含むウィンドウに対し、全レンダラー（dashboard / status bar / `ccm status`）でプロジェクト名直後に表示。角括弧 dim、数字 cyan。集約状態が非アクティブペインのものである可能性をユーザーが認識できるようにする。詳細（sliver 保護と PERMIT 自動フォーカス）は下記「Agent Teamsとの併用」を参照 |
 

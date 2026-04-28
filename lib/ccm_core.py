@@ -143,7 +143,7 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:
 #
-#   - "Esc to cancel · Tab to amend"          (permission dialog, v2.1.101+)
+#   - "Esc to cancel · Tab to amend"          (permission dialog)
 #   - "Esc to cancel · ctrl+e to explain"     (permission dialog alt)
 #   - "Enter to confirm · Esc to cancel"      (session-resume modal, v2.1.117+)
 #   - "Enter to confirm · Esc to exit"        (/model picker, v2.1.119)
