@@ -27,14 +27,27 @@ setup() {
     : > "$NOTIFY_LOG"
     export NOTIFY_LOG
 
-    # Stub osascript: records "osascript <title>" to the log. Title
-    # is the AppleScript fragment between `with title "` and the
-    # trailing quote — enough to confirm the call happened and
-    # identify which state fired.
+    # Stub terminal-notifier: extracts the title and records it.
+    # Both impls prefer terminal-notifier when on PATH; we want the
+    # parity test to exercise that preferred branch.
+    cat > "${MOCK_DIR}/bin/terminal-notifier" <<STUB
+#!/usr/bin/env bash
+# Walk -title <value> pairs.
+title=""
+while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+        -title) title="\$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+[[ -n "\$title" ]] && printf 'terminal-notifier %s\n' "\$title" >> "$NOTIFY_LOG"
+STUB
+    chmod +x "${MOCK_DIR}/bin/terminal-notifier"
+
+    # Stub osascript fallback (only hit when terminal-notifier is
+    # absent; kept for the cross-platform / minimal-install path).
     cat > "${MOCK_DIR}/bin/osascript" <<STUB
 #!/usr/bin/env bash
-# The -e argument holds a string like:
-#   display notification "BODY" with title "TITLE"[ sound name "NAME"]
 for arg in "\$@"; do
     case "\$arg" in
         *'with title '*)
@@ -45,19 +58,16 @@ done
 STUB
     chmod +x "${MOCK_DIR}/bin/osascript"
 
-    # notify-send fallback (only hit on Linux / when osascript is
-    # missing). We still wire it up so the stub can never accidentally
-    # run the host's real `notify-send`.
+    # notify-send fallback (Linux).
     cat > "${MOCK_DIR}/bin/notify-send" <<STUB
 #!/usr/bin/env bash
 printf 'notify-send %s\n' "\$*" >> "$NOTIFY_LOG"
 STUB
     chmod +x "${MOCK_DIR}/bin/notify-send"
 
-    # Required for `command -v osascript` in the bash implementation —
-    # bash searches PATH, finds our stub, and treats it as available.
-    # The Python side uses subprocess.Popen(["osascript", ...]) which
-    # also resolves through PATH to the stub.
+    # Reset Python's terminal-notifier path cache so it picks up
+    # the sandboxed stub instead of any cached real path.
+    export CCM_RESET_NOTIFIER_CACHE=1
 
     source "${CCM_ROOT}/hooks/lib.sh"
 }

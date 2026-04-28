@@ -63,6 +63,7 @@ Usage:
   ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
   ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
   ccm debug trace <name> [interval]  Live state-detection trace (read-only; Ctrl-C to stop)
+  ccm clear-notifications           Remove all ccm notifications from macOS Notification Center
   ccm help                          Show this help
 USAGE
 }
@@ -135,6 +136,9 @@ case "${1:-help}" in
         # `ccm debug trace <project> [interval]` — live state-detection trace.
         shift
         python3 "$CCM_ROOT/lib/ccm_core.py" debug "$@"
+        ;;
+    clear-notifications)
+        python3 "$CCM_ROOT/lib/ccm_core.py" clear-notifications
         ;;
     snapshot|snap)
         ccm_check_deps

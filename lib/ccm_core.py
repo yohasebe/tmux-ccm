@@ -1436,10 +1436,52 @@ def save_tmux_conf_setting(setting):
 
 # ─── Desktop notifications ───
 
+_TERMINAL_NOTIFIER_PATH = None
+_TERMINAL_NOTIFIER_CHECKED = False
+
+
+def _terminal_notifier_path():
+    """Return the path to `terminal-notifier` if installed, else None.
+
+    Result is cached for the process lifetime — `which` is fast but
+    we hit this on every notification.
+    """
+    global _TERMINAL_NOTIFIER_PATH, _TERMINAL_NOTIFIER_CHECKED
+    if _TERMINAL_NOTIFIER_CHECKED:
+        return _TERMINAL_NOTIFIER_PATH
+    _TERMINAL_NOTIFIER_CHECKED = True
+    try:
+        r = subprocess.run(["which", "terminal-notifier"],
+                           capture_output=True, text=True, timeout=2)
+        if r.returncode == 0:
+            _TERMINAL_NOTIFIER_PATH = r.stdout.strip() or None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return _TERMINAL_NOTIFIER_PATH
+
+
 def notify(state, project, detail=""):
     """Send desktop notification for state changes.
-    Controlled by @ccm-notify tmux option: off, permit, completed, permit,completed, all.
-    detail: optional context (e.g., "Bash: rm -rf ..." for PERMIT).
+
+    Controlled by @ccm-notify tmux option: off, permit, completed,
+    permit,completed, all. `detail` is optional context (e.g.
+    "Bash: rm -rf ..." for PERMIT).
+
+    macOS notifications accumulate in Notification Center — a
+    user who runs ccm continuously across many projects can build
+    up hundreds of stale entries that drive WindowServer /
+    NotificationCenter to high CPU. Two mitigations:
+
+      1. If `terminal-notifier` is installed, use it with
+         `-group ccm-<project>` so each project shows at most
+         one notification (new replaces old). Recommended.
+      2. Otherwise fall back to `osascript display notification`,
+         which has no group / replace primitive — users who hit
+         the NC-accumulation problem should either install
+         terminal-notifier (`brew install terminal-notifier`),
+         set `@ccm-notify permit` to drop the more-frequent
+         COMPLETED notifications, or run `ccm clear-notifications`
+         periodically.
     """
     setting = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,completed"
     if setting == "off":
@@ -1475,6 +1517,28 @@ def notify(state, project, detail=""):
         return
 
     title, body, sound = messages[state]
+    # Group ID per-project so a fresh notification for the same
+    # project replaces (rather than accumulates with) the previous
+    # one. terminal-notifier respects -group; osascript does not.
+    group_id = f"ccm-{project}"
+
+    tn_path = _terminal_notifier_path()
+    if tn_path:
+        cmd_args = [tn_path,
+                    "-message", body,
+                    "-title", title,
+                    "-group", group_id,
+                    "-sender", "com.apple.Terminal"]
+        if sound:
+            cmd_args.extend(["-sound", sound])
+        try:
+            subprocess.Popen(cmd_args,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return
+        except OSError:
+            pass  # fall through to osascript
+
     try:
         # Escape double quotes and backslashes for AppleScript string literals
         esc_title = title.replace("\\", "\\\\").replace('"', '\\"')
@@ -1492,6 +1556,28 @@ def notify(state, project, detail=""):
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             pass
+
+
+def clear_notifications():
+    """Remove all ccm notifications from the macOS Notification
+    Center. Requires `terminal-notifier` (the only command-line
+    way to enumerate / remove macOS notifications).
+
+    Returns the number of removed notifications, or -1 if
+    terminal-notifier is not installed.
+    """
+    tn_path = _terminal_notifier_path()
+    if not tn_path:
+        return -1
+    try:
+        # `terminal-notifier -list ALL` enumerates all notifications
+        # delivered by the same `-sender` bundle. We then call
+        # `-remove ALL` to clear them.
+        subprocess.run([tn_path, "-remove", "ALL"],
+                       capture_output=True, text=True, timeout=5)
+        return 0
+    except (subprocess.TimeoutExpired, OSError):
+        return -1
 
 
 # ─── Window name update ───
@@ -2021,6 +2107,19 @@ if __name__ == "__main__":
         cmd_snapshot_delete(args[0] if args else "")
     elif cmd == "reset-window":
         cmd_reset_window()
+    elif cmd == "clear-notifications":
+        # `ccm clear-notifications` — bulk-remove notifications
+        # ccm sent that are still sitting in macOS Notification
+        # Center. Only works when terminal-notifier is installed
+        # (the only command-line way to remove macOS notifications).
+        rc = clear_notifications()
+        if rc < 0:
+            ccm_warn(
+                "terminal-notifier is not installed. "
+                "Install with: brew install terminal-notifier"
+            )
+            sys.exit(1)
+        ccm_info("Cleared ccm notifications from Notification Center")
     elif cmd == "debug":
         # `ccm debug trace <project> [interval]`
         sub = args[0] if args else ""

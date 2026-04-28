@@ -344,7 +344,22 @@ _ccm_instant_notify() {
     title="${title//\\/\\\\}" ; title="${title//\"/\\\"}"
     body="${body//\\/\\\\}" ; body="${body//\"/\\\"}"
 
-    if command -v osascript &>/dev/null; then
+    # Prefer terminal-notifier when available — `-group` makes
+    # repeat notifications for the same project REPLACE rather
+    # than accumulate in macOS Notification Center, which prevents
+    # the WindowServer / NotificationCenter CPU drain that long-
+    # running ccm sessions can otherwise produce.
+    if command -v terminal-notifier &>/dev/null; then
+        local tn_args=(-message "$body" -title "$title"
+                       -group "ccm-${project}"
+                       -sender "com.apple.Terminal")
+        if [[ "$sound_setting" == "on" ]]; then
+            local sound_name
+            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null)
+            tn_args+=(-sound "${sound_name:-Glass}")
+        fi
+        terminal-notifier "${tn_args[@]}" >/dev/null 2>&1 &
+    elif command -v osascript &>/dev/null; then
         local sound_opt=""
         if [[ "$sound_setting" == "on" ]]; then
             local sound_name

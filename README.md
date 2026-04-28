@@ -157,6 +157,26 @@ set -g @ccm-notify-sound "on"     # default: off (plays "Glass" sound on macOS)
 set -g @ccm-notify-sound-name "Ping"  # optional: customize sound (macOS only)
 ```
 
+#### macOS — install `terminal-notifier` (recommended)
+
+By default ccm uses `osascript` for macOS notifications. Each notification is added to Notification Center and stays there until the user dismisses it. On a long-running multi-project setup this can accumulate hundreds of stale notifications and drive WindowServer / NotificationCenter to high CPU.
+
+Installing `terminal-notifier` resolves this — ccm sends per-project group IDs (`-group ccm-<project>`) so a fresh notification for the same project **replaces** the previous one in Notification Center rather than stacking.
+
+```bash
+brew install terminal-notifier
+```
+
+ccm auto-detects it on `PATH` and uses it preferentially. No configuration needed.
+
+To bulk-clear ccm notifications from Notification Center (requires `terminal-notifier`):
+
+```bash
+ccm clear-notifications
+```
+
+If you cannot install `terminal-notifier` and notice the accumulation problem, set `@ccm-notify "permit"` to receive only the actionable PERMIT notifications and skip the more-frequent COMPLETED ones.
+
 ### Status Bar
 
 ccm shows active project status in the tmux status bar. Configure the display mode:

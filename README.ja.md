@@ -157,6 +157,26 @@ set -g @ccm-notify-sound "on"     # デフォルト: off（macOSでは「Glass�
 set -g @ccm-notify-sound-name "Ping"  # 任意: サウンドをカスタマイズ（macOSのみ）
 ```
 
+#### macOS — `terminal-notifier` の導入を推奨
+
+デフォルトでは ccm は macOS 通知に `osascript` を使用します。各通知は通知センターに追加され、ユーザーが消すまで残ります。マルチプロジェクトで長時間運用すると数百件の古い通知が蓄積し、WindowServer / NotificationCenter が高 CPU になることがあります。
+
+`terminal-notifier` を導入するとこの問題は解消します — ccm がプロジェクトごとの group ID (`-group ccm-<project>`) で送信するため、同じプロジェクトの新しい通知は前の通知を **置き換え** ます。
+
+```bash
+brew install terminal-notifier
+```
+
+ccm が `PATH` 上の有無を自動検出して優先使用します。設定不要。
+
+通知センターに残った ccm 通知を一括削除（`terminal-notifier` が必要）:
+
+```bash
+ccm clear-notifications
+```
+
+`terminal-notifier` を導入できず蓄積問題に当たった場合は、`@ccm-notify "permit"` に設定して頻度の高い COMPLETED 通知をスキップし、要対応の PERMIT 通知のみ受け取るのが良いでしょう。
+
 ### ステータスバー
 
 tmuxステータスバーにプロジェクト状態を表示します。表示モードを設定：
