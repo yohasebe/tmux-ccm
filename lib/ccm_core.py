@@ -120,7 +120,7 @@ CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 # signal has been written yet. MCP server initialization typically
 # finishes within 10–30 s, so 60 s is a conservative cap. After the
 # grace expires the startup_transient rule stops firing and detection
-# falls back to the normal BUSY passthrough (`raw_not_idle`) — so a
+# falls back to the `raw_busy_passthrough` rule — so a
 # Claude that actually hangs during startup will surface as BUSY.
 STARTUP_GRACE_SEC = int(os.environ.get("CCM_STARTUP_GRACE_SEC", "60"))
 
@@ -578,7 +578,7 @@ def read_hook_signal(project_dir):
 # mtime is actionable. We use this as a positive BUSY signal only.
 #
 # Slug rule (verified empirically against ~/.claude/projects/):
-#   `/Users/.../speechdock` → `-Users-...-speechdock`
+#   `/Users/alice/code/myproject` → `-Users-alice-code-myproject`
 # Claude Code uses the *literal* cwd at session start (no realpath
 # resolution), so we must NOT resolve symlinks here.
 
@@ -847,17 +847,16 @@ def read_jsonl_tail_info(project_dir: str, claude_pid=None) -> Tuple[int, Option
         recent `assistant` record in the tail (e.g. `"tool_use"`,
         `"end_turn"`, `"max_tokens"`), or None if none was found.
 
-    System metadata records (Claude Code v2.1.108+ `system/away_summary`
-    recap, `system/turn_duration`, `system/stop_hook_summary`,
-    `attachment/task_reminder`, ...) are filtered out of both fields so
-    the recap event does NOT register as fresh activity and does NOT
+    System / housekeeping records (anything outside the
+    `JSONL_ACTIVITY_TYPES` whitelist) are filtered out of both
+    fields so they do NOT register as fresh activity and do NOT
     clobber the last-assistant stop_reason signal.
 
-    The stop_reason is used by the `jsonl_tool_use_pending` detection
-    rule to hold BUSY authoritatively across tool-turn boundaries —
-    the 15 s `jsonl_holds_busy` window was a heuristic stand-in for
-    "Claude is between tools mid-response"; stop_reason="tool_use" is
-    the exact upstream signal for that state.
+    `stop_reason` is the upstream signal that distinguishes "tool
+    pending mid-turn" (`tool_use`) from "response complete"
+    (`end_turn` / `max_tokens` / `stop_sequence`). The event-log
+    detection path uses it to hold BUSY across tool-turn
+    boundaries.
 
     When claude_pid is provided, the exact session file is resolved
     via `~/.claude/sessions/{pid}.json` (authoritative, no slug guess).

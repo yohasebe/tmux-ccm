@@ -186,7 +186,7 @@ class TestJsonlFreshness:
         assert ccm_core.read_jsonl_age("/x/y") == -1
 
 
-# ─── JSONL real-activity filter (recap fix Phase 1) ───
+# ─── JSONL real-activity filter ───
 #
 # These tests exercise read_jsonl_age()'s filtering of system metadata
 # records (Claude Code v2.1.108+ recap, turn_duration, attachment, ...)
@@ -221,7 +221,7 @@ class TestJsonlRealActivityFilter:
     def test_skips_away_summary_recap(self, tmp_path, monkeypatch):
         """The recap (system/away_summary) record at the end of the
         file is skipped; the previous assistant record's timestamp is
-        used. This is the core treefold scenario."""
+        used. This is the core recap-skip scenario."""
         f = self._setup_project(tmp_path, monkeypatch)
         now = time.time()
         write_jsonl(f, [
@@ -233,7 +233,7 @@ class TestJsonlRealActivityFilter:
         assert 195 <= age <= 210
 
     def test_skips_multiple_trailing_system_records(self, tmp_path, monkeypatch):
-        """treefold actually had stop_hook_summary + turn_duration +
+        """Real captured tail had stop_hook_summary + turn_duration +
         away_summary all stacked at the tail before the assistant
         record. Walk past all of them."""
         f = self._setup_project(tmp_path, monkeypatch)
@@ -279,7 +279,7 @@ class TestJsonlRealActivityFilter:
         timestamp field. An earlier implementation fell back to the
         file mtime when a record "looked real" but had no timestamp,
         which caused these housekeeping bursts to report
-        jsonl_age ≈ 0 and make `jsonl_fresh_activity` fire with
+        jsonl_age ≈ 0 and make a fresh-JSONL detection rule fire with
         state=BUSY for the 10 s of MCP loading after every attach.
 
         The fix: only records whose `type` is in the
@@ -352,7 +352,7 @@ class TestJsonlRealActivityFilter:
         `file-history-snapshot`, and `last-prompt` records (none of
         which carry timestamps) at `--continue` startup. Before the
         fix, these were treated as real activity, the mtime fallback
-        made jsonl_age ≈ 0, `jsonl_fresh_activity` promoted
+        made jsonl_age ≈ 0 and the fresh-JSONL rule promoted
         state=BUSY, and the dashboard showed ~10 s of false BUSY
         after every attach to a SHELL window.
         """
@@ -383,9 +383,9 @@ class TestJsonlRealActivityFilter:
 # ─── JSONL tail stop_reason extraction ───
 #
 # read_jsonl_tail_info returns (age, last_assistant_stop_reason). The
-# stop_reason is what the new `jsonl_tool_use_pending` detection rule
+# stop_reason is what the event-log detection path
 # keys on to hold BUSY authoritatively across tool-turn boundaries,
-# replacing the 15 s `jsonl_holds_busy` heuristic cliff.
+# uses to hold BUSY across tool-turn boundaries.
 
 def assistant_record(unix_ts, stop_reason=None):
     """Minimal assistant record with optional stop_reason inside `message`."""
@@ -587,10 +587,10 @@ class TestJsonlTailStopReason:
         )
 
 
-# ─── hook_busy_idle gap discriminator (recap fix Phase 2) ───
+# ─── recap-phantom gap discriminator ───
 #
 # These tests exercise the new `hook_after_real_activity_lt` Rule
-# field on the `hook_busy_idle` rule. The intent: trust BUSY hook only
+# on the legacy `hook_fresh_busy` rule. Trust BUSY hook only
 # when it fired within JSONL_HOOK_GAP_TOLERANCE seconds of (or after)
 # the last real conversation activity. This rejects phantom BUSY hooks
 # fired by Claude Code v2.1.108+ recap (`away_summary`) which write
@@ -897,10 +897,9 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_permit_from_model_picker_exit_footer(self, mock_tmux):
-        """Regression test for the v2.1.119 `/model` picker: the
-        footer verb shifted from `Esc to cancel` (a5534c1 fixture)
-        to `Esc to exit`. Verified empirically 2026-04-24 with
-        Claude Code 2.1.119 — the widened `Esc to \\w+` branch in
+        """Regression test for the `/model` picker footer wording:
+        the verb can be `Esc to cancel`, `Esc to exit`, or any
+        future variant. The widened `Esc to \\w+` branch in
         PATTERN_PERMIT_FOOTER is what this test guards. Without the
         widening, `ccm status` reported BUSY for any pane showing
         the `/model` dialog."""
@@ -925,10 +924,10 @@ class TestDetectPaneState:
         """Regression test for the v2.1.117+ session-resume modal:
         the `❯` cursor is indented (so PATTERN_INPUT_PROMPT does
         NOT match at column 0) and the footer is
-        'Enter to confirm · Esc to cancel'. Before the pattern
-        extension ccm saw has_child + no prompt → raw=BUSY →
-        dashboard BUSY for a modal that is actually awaiting user
-        input. See the 2026-04-22 user report in the session log."""
+        'Enter to confirm · Esc to cancel'. Without the
+        pattern extension ccm sees has_child + no prompt → raw=BUSY,
+        producing dashboard BUSY for a modal actually awaiting user
+        input."""
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         mock_tmux.return_value = (
             "This session is 1h 58m old and 732.6k tokens.\n"
@@ -972,10 +971,10 @@ class TestDetectPaneState:
         user can leave anytime), NOT a blocked decision — IDLE
         is the correct classification.
 
-        Verified empirically with two Claude Code versions:
-        - 2.1.119 (2026-04-24): `Enter to use, t to sort, Esc to close`
-        - 2.1.121 (2026-04-28): `Enter to use, / to search, t to sort, Esc to close`
-          (search box added by upstream — same Esc-to-close
+        Two upstream wordings observed:
+        - `Enter to use, t to sort, Esc to close`
+        - `Enter to use, / to search, t to sort, Esc to close`
+          (search box added in a later release; same Esc-to-close
           structure, same outcome for ccm)
 
         Footer text below uses the 2.1.121 format; the old format
@@ -1027,7 +1026,7 @@ class TestDetectPaneState:
         """Leftover server (claude → zsh → ruby) + visible `❯ ` prompt
         → IDLE at the pane level. The v2.1+ case where `❯ ` appears
         above a STILL-ACTIVE tool is handled at the window level by
-        hook_busy_idle / jsonl_fresh_activity, not here."""
+        the event-log path, not here."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"),
             (200, 100, 100, "claude"),
@@ -1103,7 +1102,7 @@ class TestDetectWindowRaw:
 
     @patch("ccm_core.tmux_cmd")
     def test_sliver_pane_excluded_from_aggregation(self, mock_tmux):
-        """The motivating regression (2026-04-27 `personal` window):
+        """Sliver-pane scenario:
         a 1-row sliver pane held a long-idle claude and false-read
         BUSY (children present, capture-pane empty so no `❯`). Pre-
         fix that BUSY infected the whole window; post-fix the
@@ -1402,9 +1401,9 @@ class TestRulePhaseAnnotations:
 
     # Catch-all rules that legitimately lack a fixed phase because
     # their semantic phase depends on ctx.raw at fire time.
-    # `raw_busy_passthrough` and `raw_permit_passthrough` (formerly
-    # the combined `raw_not_idle`) carry concrete `midturn` /
-    # `permit` phases, so they are NOT in this set.
+    # `raw_busy_passthrough` and `raw_permit_passthrough` carry
+    # concrete `midturn` / `permit` phases, so they are NOT in
+    # this set.
     EXPECTED_NONE = {"default"}
 
     def test_every_rule_has_phase_or_is_listed_passthrough(self):
@@ -1758,7 +1757,7 @@ class TestLifecycleSequences:
         assert rule == "default"
         assert state == "IDLE"
 
-    # ─── 2026-04-26 fix lifecycles ───
+    # ─── Esc-interrupt and silent-completion lifecycles ───
 
 # ─── Property / invariant tests ───
 #
@@ -2029,7 +2028,7 @@ class TestPrintStatus:
         self, monkeypatch, capsys
     ):
         """`[N]` marker belongs to the PROJECT column, not the
-        STATUS column. Pre-2026-04-28 it was suffixed to the
+        STATUS column (a previous iteration suffixed it to the
         state name (e.g. `■ SHELL [2]   teaching`); the
         dashboard convention puts it after the project name."""
         projects = [
@@ -3219,7 +3218,7 @@ class TestShellClusterDetection:
         """Regression guard for the startup_transient_raw_busy rule.
         The rule identifies MCP-loading transients by requiring
         `prev_state ∈ ("", "SHELL")`. If reset_window_after_attach
-        wiped prev_state to "" (as it did before 2026-04-22), the
+        wiped prev_state to "", the
         distinguisher would break: attaching to an already-BUSY
         session would also produce prev_state="", and the rule would
         misclassify real work as startup and flash IDLE.
@@ -4053,7 +4052,7 @@ class TestDeriveStateFromEvents:
     def test_pid_present_no_events_returns_none(self):
         """Empty event log → None (caller falls back to legacy).
         The previous behaviour returned IDLE here; that masked a
-        2.7-hour real outage observed 2026-04-25 where the event
+        real outage scenario where the event
         log file went temporarily missing while the pane was
         actually showing a PERMIT modal."""
         assert ccm_core.derive_state_from_events(
@@ -4147,7 +4146,7 @@ class TestDeriveStateFromEvents:
         ) == "IDLE"
 
     def test_stop_tool_use_busy(self):
-        """Pre-v0.3.0 returned CONT for the tool_use mid-turn case;
+        """The tool_use mid-turn case;
         collapsed into BUSY for state-model purity (both mean "user
         waits", which is the action-need axis the state captures)."""
         assert ccm_core.derive_state_from_events(
@@ -4237,7 +4236,7 @@ class TestDeriveStateFromEvents:
         silent mid-build, prev decayed to IDLE in legacy pipeline.
         In the event-log model the tail still ends at `stop` with
         tool_use (intermediate Stop boundary), so state stays BUSY
-        authoritatively. CONT was collapsed into BUSY pre-v0.3.0
+        authoritatively. The tool_use mid-turn pause classifies as BUSY
         because both states represent "ball is on Claude's side"
         (user-centered design principle)."""
         events = (
@@ -4314,7 +4313,7 @@ class TestDeriveStateFromEvents:
         The event-log pipeline must produce BUSY at the intermediate
         boundary (tool pending, ball still on Claude's side) and stay
         BUSY through the next start event. CONT was collapsed into
-        BUSY pre-v0.3.0 — at this resolution the user does not need
+        BUSY (at this resolution the user does not need
         to distinguish "actively running tool" from "between tools"
         since neither requires user action."""
         # Turn 1: prompt, tool runs, intermediate Stop.
@@ -4364,7 +4363,7 @@ class TestDeriveStateFromEvents:
         """When the capture-pane footer detects a permission modal
         (raw="PERMIT"), the event log lagging behind PermissionRequest
         must not down-classify the state. This is the exact scenario
-        observed 2026-04-25 on whisper-stream: latest event was
+        concrete scenario: latest event was
         pretool (BUSY), but a PERMIT modal was already on screen."""
         events = ({"ts": 100, "type": event_type},)
         assert ccm_core.derive_state_from_events(
@@ -4415,7 +4414,7 @@ class TestDeriveStateFromEvents:
             raw="PERMIT",
         ) is None
 
-    # ─── Esc-interrupt / hook-silence fallback (2026-04-26) ───
+    # ─── Esc-interrupt / hook-silence fallback ───
 
     @pytest.mark.parametrize("event_type", [
         "prompt", "pretool", "posttool", "subagent", "compact",
@@ -4431,14 +4430,14 @@ class TestDeriveStateFromEvents:
         event itself). The Stop hook never wrote a `stop` event —
         either Esc-interrupt or hook silence (#16047 class). derive
         must return IDLE directly: deferring to legacy here doesn't
-        help because the legacy hook_busy_idle rule still has the
+        help here because legacy alone cannot disambiguate the
         stale BUSY signal that the missing Stop hook would have
         cleared.
 
         Event age (now - event_ts) must be greater than jsonl_age
         for the fallback to trigger — that is the discriminator
         against the "fresh prompt right after previous turn ended"
-        false-positive (project_p3b regression caught 2026-04-26)."""
+        false-positive."""
         # event_ts=100, now=200 → event_age=100; jsonl_age=10. JSONL
         # is much fresher than the event → IDLE.
         assert ccm_core.derive_state_from_events(
@@ -4449,13 +4448,13 @@ class TestDeriveStateFromEvents:
         ) == "IDLE"
 
     def test_fresh_prompt_after_previous_turn_stays_busy(self):
-        """Regression guard (2026-04-26): a fresh `prompt` event
+        """Regression guard: a fresh `prompt` event
         submitted right after a previous turn ended must NOT trigger
         the Esc-fallback. The JSONL terminal stop_reason in that
         case belongs to the prior turn, not the current event.
 
         Pre-fix this scenario produced a phantom IDLE flicker —
-        observed live on the teaching pane while Claude was clearly
+        without it, while Claude is clearly
         Incubating but the dashboard rendered ● IDLE ✓0s."""
         # event_ts=200 (just now), now=205 → event_age=5
         # jsonl_age=10 (previous turn ended 10 s ago)
@@ -4528,7 +4527,7 @@ class TestDeriveStateFromEvents:
         event AND raw is not PERMIT (no modal visible), the dialog
         has been resolved silently — return IDLE.
 
-        Live regression caught 2026-04-26 evening on monadic-chat
+        Concrete scenario
         where stuck PERMIT persisted 5 minutes after permission
         approval in accept-edits mode (raw=BUSY)."""
         # event_ts=100, now=200 → event_age=100; jsonl_age=10. JSONL
@@ -4572,7 +4571,7 @@ class TestDeriveStateFromEvents:
     @pytest.mark.parametrize("event_type", ["permit_req", "notify_permit"])
     def test_permit_event_with_tool_use_jsonl_promotes_to_busy(self, event_type):
         """Auto-approved permit case (mirror of legacy
-        `hook_permit_tool_use_active`): permit signal survives,
+        permit-tool-use override branch): permit signal survives,
         raw=BUSY (the `⏵⏵` accept-edits spinner is showing), and
         JSONL says a tool is in flight → claude is actively
         running tools → BUSY (not PERMIT). The user is being
@@ -4644,7 +4643,7 @@ class TestDeriveStateFromEvents:
         ) == "PERMIT"
 
     def test_phantom_subagent_after_notify_idle_defers(self):
-        """Live regression caught on monadic-chat 2026-04-27 morning:
+        """Concrete scenario:
         upstream Claude Code fires a spurious `subagent` event in
         an otherwise-idle period (status line / auto-memory / etc).
         Pattern: `... stop, notify_idle, subagent` with no follow-up.
@@ -4750,9 +4749,9 @@ class TestDeriveStateFromEvents:
         latest event is start-class (>10 min old) AND JSONL is
         also stale (>10 min old). claude is clearly not actively
         working — defer to legacy which resolves via
-        fallback_busy_to_idle to IDLE.
+        the legacy fallback to IDLE.
 
-        Caught live on teaching pane 2026-04-27 morning: phantom
+        Concrete scenario: phantom
         `subagent` fired 41 minutes ago, no follow-up, JSONL stale
         from 44 min ago. event-log path returned BUSY indefinitely
         until this fallback was added."""
@@ -4838,7 +4837,7 @@ class TestEventLogMode:
 
 # ─── auto-mode detect_window_state integration ───
 #
-# Phase 3a wiring: when CCM_USE_EVENT_LOG=auto, the new event-log
+# Auto-mode wiring: when CCM_USE_EVENT_LOG=auto, the event-log
 # state takes over per-project IFF the event log is non-empty;
 # otherwise the legacy DETECTION_RULES result is committed. The
 # tests below exercise the dispatch from detect_window_state — the
@@ -4929,7 +4928,7 @@ class TestDetectWindowStateAutoMode:
     def test_auto_with_empty_events_and_permit_pane_keeps_permit(
         self, mock_events, mock_hook, mock_tmux, monkeypatch
     ):
-        """The 2026-04-25 observation: event log file went temporarily
+        """Scenario: event log file went temporarily
         missing for 2.7 hours while the pane was actually showing a
         PERMIT modal. Pre-fix behaviour was derive()→IDLE, auto mode
         committing IDLE, and `ccm send` happily injecting into the
@@ -4954,7 +4953,7 @@ class TestDetectWindowStateAutoMode:
     def test_auto_with_pretool_event_and_permit_pane_keeps_permit(
         self, mock_events, mock_hook, mock_tmux, monkeypatch
     ):
-        """The 2026-04-25 whisper-stream observation: PreToolUse fired
+        """Scenario: PreToolUse fired
         first (latest event = pretool → derive→BUSY), then the modal
         appeared, and PermissionRequest had not yet fired. Pre-fix
         auto mode would have committed BUSY (event-log) and the
@@ -4983,7 +4982,7 @@ class TestDetectWindowStateAutoMode:
     ):
         """`CCM_USE_EVENT_LOG=off` is the legacy-only opt-out — the
         event log file must not be touched at all (matches the
-        pre-P3b unset behaviour)."""
+        the legacy-only fallback)."""
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "off")
         mock_events.return_value = (
             {"ts": int(time.time()), "type": "pretool"},
@@ -5006,7 +5005,7 @@ class TestDetectWindowStateAutoMode:
     def test_unset_default_uses_auto_dispatch(
         self, mock_events, mock_hook, mock_tmux, monkeypatch
     ):
-        """P3b (2026-04-25): with CCM_USE_EVENT_LOG unset, the event
+        """With CCM_USE_EVENT_LOG unset, the event
         log IS consulted — and the event-log state takes over per the
         auto-mode dispatch. Same scenario as
         test_auto_with_events_uses_event_log_state but env unset."""

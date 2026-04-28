@@ -33,12 +33,12 @@ class TestBuildDetailEntriesActive:
         be highlighted as active."""
         projects = [
             make_project("0:2", "2", "ccm-dev", "SHELL"),
-            make_project("1:2", "2", "whisper-stream", "BUSY"),
+            make_project("1:2", "2", "sideproject", "BUSY"),
         ]
         entries = inject_status.build_detail_entries(
             projects, with_extras=True, current_win_target="1:2"
         )
-        assert "bold" in entries[1] and "whisper-stream" in entries[1]
+        assert "bold" in entries[1] and "sideproject" in entries[1]
         # ccm-dev must NOT be bold even though its index is also "2"
         assert "bold" not in entries[0]
         assert "ccm-dev" in entries[0]
@@ -47,7 +47,7 @@ class TestBuildDetailEntriesActive:
         """If the current window is not a ccm project, nothing is bold."""
         projects = [
             make_project("0:2", "2", "ccm-dev", "SHELL"),
-            make_project("0:5", "5", "speechdock", "IDLE"),
+            make_project("0:5", "5", "docs", "IDLE"),
         ]
         entries = inject_status.build_detail_entries(
             projects, current_win_target="0:99"
@@ -58,7 +58,7 @@ class TestBuildDetailEntriesActive:
         """Mode 1 (with_extras=False) shares the bold rule."""
         projects = [
             make_project("0:2", "2", "ccm-dev", "SHELL"),
-            make_project("1:2", "2", "whisper-stream", "BUSY"),
+            make_project("1:2", "2", "sideproject", "BUSY"),
         ]
         entries = inject_status.build_detail_entries(
             projects, with_extras=False, current_win_target="0:2"

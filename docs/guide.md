@@ -284,7 +284,7 @@ Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (orange) > `✔` recently com
 Replaces the standard tmux window list with ccm-style colored entries. Your existing status-right is preserved.
 
 > ```
-> openai-workflow:● | ccm:◉ | monadic-chat:● | 21:30 2026-03-21
+> myapp:● | sideproject:◉ | docs:● | 21:30 12-25
 > ```
 
 - Best for: users who want colored project status in the main bar

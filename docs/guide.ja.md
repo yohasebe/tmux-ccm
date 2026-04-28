@@ -284,7 +284,7 @@ Claude Codeが処理を完了すると、ccmは：
 tmux標準のウィンドウリストをccm形式の色付きエントリに置換。既存のstatus-rightは保持。
 
 > ```
-> openai-workflow:● | ccm:◉ | monadic-chat:● | 21:30 2026-03-21
+> myapp:● | sideproject:◉ | docs:● | 21:30 12-25
 > ```
 
 - 向いている人: メインバーに色付きプロジェクト状態を常時表示したい人

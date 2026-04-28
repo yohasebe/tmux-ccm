@@ -308,12 +308,11 @@ def _inject_status_impl():
 
     # Write current states and check for transitions.
     # Polling notifications are only a SAFETY NET for the hook-
-    # triggered instant notification path: they fire when the project's
-    # own hook signal corroborates the state. This prevents late /
-    # spurious notifications that would otherwise fire whenever a
-    # fallback detection rule (jsonl_holds_busy releasing, capture-
-    # pane footer match, etc.) derives a state transition long after
-    # the actual event — timings that never match reality.
+    # triggered instant notification path: they fire when the
+    # project's own hook signal corroborates the state. This
+    # prevents late / spurious notifications that would otherwise
+    # fire whenever a fallback detection path derives a state
+    # transition long after the actual event.
     #
     # COMPLETED: the Stop hook DELETES the signal file, so there is
     # no hook signal to corroborate a BUSY→IDLE transition after the

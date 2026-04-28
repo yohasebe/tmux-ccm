@@ -647,8 +647,8 @@ def cmd_send(args):
       IDLE         → send immediately
       BUSY         → refuse without --force; queue into buffer with --force
                      (covers both active streaming and tool_use mid-turn
-                     pauses — pre-v0.3.0 the latter was a separate `CONT`
-                     state, removed for state-model purity)
+                     pauses — both classify as BUSY because the ball is on
+                     Claude's side either way)
       PERMIT       → ALWAYS refuse (hard guard — typing into a permission
                      dialog could accidentally approve or deny a tool call)
       SHELL        → refuse without --start; launch Claude + 2s wait with --start
