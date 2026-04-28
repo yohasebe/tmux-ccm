@@ -44,14 +44,8 @@ CCM_SNAPSHOT_DIR = os.path.join(
 CCM_GIT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "git-cache")
 CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 
-# Display-layer "recently completed" marker timeout. Canonical env
-# var is CCM_COMPLETED_AT_TIMEOUT; CCM_DONE_TIMEOUT is accepted as a
-# backwards-compatibility alias for v0.1.0 users whose shell config
-# still sets the old name.
-COMPLETED_AT_TIMEOUT = int(os.environ.get(
-    "CCM_COMPLETED_AT_TIMEOUT",
-    os.environ.get("CCM_DONE_TIMEOUT", "30"),
-))
+# Display-layer "recently completed" marker timeout.
+COMPLETED_AT_TIMEOUT = int(os.environ.get("CCM_COMPLETED_AT_TIMEOUT", "30"))
 # Hook signal age (seconds) below which a BUSY signal is treated as "fresh"
 # and trusted unconditionally — bypasses the slower pipeline when multiple
 # projects contend for evaluation time.
@@ -1488,10 +1482,8 @@ def notify(state, project, detail=""):
         return
 
     state_lower = state.lower()
-    # Backwards compatibility: "done" in setting also matches "completed"
-    if setting != "all":
-        if state_lower not in setting and not (state_lower == "completed" and "done" in setting):
-            return
+    if setting != "all" and state_lower not in setting:
+        return
 
     sound_setting = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
     sound_name = (tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass") if sound_setting == "on" else ""

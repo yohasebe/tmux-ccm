@@ -148,8 +148,6 @@ set -g @ccm-notify "permit,completed"     # notify on PERMIT and completion
 | `all` | All state changes |
 | `off` | No notifications |
 
-The legacy value `done` is accepted as a synonym for `completed`, so configurations written for ccm v0.1.0 continue to work without modification.
-
 Enable notification sound:
 
 ```tmux

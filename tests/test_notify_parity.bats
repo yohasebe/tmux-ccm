@@ -183,18 +183,6 @@ assert_neither_fired() {
     assert_neither_fired
 }
 
-@test "done (back-compat alias): COMPLETED fires in both" {
-    mock_set_global_option @ccm-notify done
-    _invoke_both COMPLETED proj
-    assert_both_fired "ccm ✔ proj"
-}
-
-@test "done (back-compat alias): PERMIT skipped by both" {
-    mock_set_global_option @ccm-notify done
-    _invoke_both PERMIT proj
-    assert_neither_fired
-}
-
 @test "permit,completed: PERMIT fires in both" {
     mock_set_global_option @ccm-notify permit,completed
     _invoke_both PERMIT proj

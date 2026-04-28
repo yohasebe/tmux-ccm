@@ -307,8 +307,6 @@ _ccm_instant_notify() {
     case "$notify_setting" in
         all) ;;
         *"$state_lower"*) ;;
-        # Backwards compat: "done" in setting also matches "completed"
-        *"done"*) [[ "$state_lower" == "completed" ]] || return 0 ;;
         *) return 0 ;;
     esac
 

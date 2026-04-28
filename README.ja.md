@@ -148,8 +148,6 @@ set -g @ccm-notify "permit,completed"     # PERMITと完了時に通知
 | `all` | 全ての状態変化 |
 | `off` | 通知なし |
 
-旧名 `done` は `completed` のエイリアスとして受理されるため、ccm v0.1.0 向けの設定ファイルをそのまま使い続けられます。
-
 通知音を有効化：
 
 ```tmux

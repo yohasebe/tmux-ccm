@@ -398,14 +398,11 @@ def cmd_unregister(name):
     if orig_name:
         ccm_core.tmux_cmd("rename-window", "-t", win_target, orig_name)
 
-    # Remove all ccm tags. Legacy tags (`@ccm_done`, `@ccm_last_done`)
-    # from the pre-4-state model are included so v0.1.0 installs that
-    # have lingering tmux options get a clean unregister after upgrade.
+    # Remove all ccm tags.
     tags = ["automatic-rename", "@ccm_project", "@ccm_dir", "@ccm_orig_name",
             "@ccm_prev_state", "@ccm_completed_at",
             "@ccm_state_icon", "@ccm_state_color",
-            "@ccm_shell_history",
-            "@ccm_done", "@ccm_last_done"]
+            "@ccm_shell_history"]
     cmds = [("set-option", "-wt", win_target, "-u", tag) for tag in tags]
     ccm_core.tmux_batch(*cmds)
 

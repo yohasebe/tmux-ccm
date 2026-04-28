@@ -1843,8 +1843,8 @@ class Dashboard:
                 save_tmux_conf_setting(f"set -g @ccm-preview-position {new_pos}")
                 self._build_menu()
             elif action == "notify":
-                options = ["off", "permit", "done", "permit,done", "all"]
-                current = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,done"
+                options = ["off", "permit", "completed", "permit,completed", "all"]
+                current = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,completed"
                 try:
                     idx = options.index(current)
                 except ValueError:
