@@ -99,61 +99,6 @@ class TestHasChildren:
         assert ccm_core.has_children("200", ps, "99999") is True
 
 
-# ─── has_grandchildren ───
-
-class TestHasGrandchildren:
-    def test_false_when_only_direct_children(self):
-        """MCP servers / language servers as direct children → no grandchildren."""
-        ps = make_ps_lines(
-            (200, 100, 100, "claude"),
-            (300, 200, 200, "node"),               # MCP server
-            (400, 200, 200, "sourcekit-lsp"),      # language server
-        )
-        assert ccm_core.has_grandchildren("200", ps, "99999") is False
-
-    def test_true_when_bash_tool_running(self):
-        """claude → bash → command (e.g. xcodebuild) — tool execution."""
-        ps = make_ps_lines(
-            (200, 100, 100, "claude"),
-            (300, 200, 200, "bash"),
-            (400, 300, 300, "xcodebuild"),
-        )
-        assert ccm_core.has_grandchildren("200", ps, "99999") is True
-
-    def test_false_when_no_children(self):
-        ps = make_ps_lines((200, 100, 100, "claude"))
-        assert ccm_core.has_grandchildren("200", ps, "99999") is False
-
-    def test_excludes_caffeinate_at_grandchild_level(self):
-        """A bash child whose only grandchild is caffeinate is not a tool run."""
-        ps = make_ps_lines(
-            (200, 100, 100, "claude"),
-            (300, 200, 200, "bash"),
-            (400, 300, 300, "caffeinate"),
-        )
-        assert ccm_core.has_grandchildren("200", ps, "99999") is False
-
-    def test_excludes_caffeinate_at_child_level(self):
-        """caffeinate as a direct child is excluded from the children set,
-        so its (hypothetical) own children do not count as claude grandchildren."""
-        ps = make_ps_lines(
-            (200, 100, 100, "claude"),
-            (300, 200, 200, "caffeinate"),
-            (400, 300, 300, "node"),
-        )
-        assert ccm_core.has_grandchildren("200", ps, "99999") is False
-
-    def test_mixed_mcp_and_tool(self):
-        """MCP server as direct child + bash → cmd as another branch → True."""
-        ps = make_ps_lines(
-            (200, 100, 100, "claude"),
-            (300, 200, 200, "node"),               # MCP server (direct only)
-            (400, 200, 200, "bash"),               # Bash tool
-            (500, 400, 400, "xcodebuild"),         # tool subprocess
-        )
-        assert ccm_core.has_grandchildren("200", ps, "99999") is True
-
-
 # ─── JSONL session log freshness ───
 
 class TestJsonlFreshness:
@@ -1128,7 +1073,10 @@ class TestDetectWindowRaw:
             (101, 1, 101, "bash"), (201, 101, 101, "claude"),
         )
         mock_tmux.return_value = "Processing..."
-        panes = [("0:1", "100", "%0"), ("0:1", "101", "%1")]
+        panes = [
+            ("0:1", "100", "%0", "claude", "1", "48"),
+            ("0:1", "101", "%1", "claude", "0", "48"),
+        ]
         assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
@@ -1194,16 +1142,15 @@ class TestDetectWindowRaw:
         assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
-    def test_legacy_3tuple_no_sliver_filter(self, mock_tmux):
-        """Older callers still pass 3-tuples (target, pid, pane_id)
-        without pane_height. Detection must accept these unchanged
-        — the sliver filter only fires when height is present and
-        below the threshold."""
+    def test_empty_height_skips_sliver_filter(self, mock_tmux):
+        """A 6-tuple with empty pane_height ("") still works — the
+        sliver filter only fires when height parses as a positive
+        integer below the threshold."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node"),
         )
         mock_tmux.return_value = "Processing..."
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "")]
         assert ccm_core.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
 
 
@@ -1227,7 +1174,7 @@ class TestDetectWindowStateHooks:
         )
         # claude with no child (permission dialog pre-tool-spawn)
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "BUSY", panes, ps, "99999"
@@ -1243,7 +1190,7 @@ class TestDetectWindowStateHooks:
             "  Esc to cancel · Tab to amend · ctrl+e to explain"
         )
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
@@ -1256,7 +1203,7 @@ class TestDetectWindowStateHooks:
         """raw=SHELL → SHELL regardless of hook signals."""
         mock_hook.return_value = (int(time.time()), "BUSY", "")
         ps = make_ps_lines((100, 1, 100, "bash"))  # No claude
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
@@ -1270,7 +1217,7 @@ class TestDetectWindowStateHooks:
         mock_hook.return_value = None  # No hook signal (expired)
         mock_tmux.return_value = "Some output\n❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
@@ -1284,7 +1231,7 @@ class TestDetectWindowStateHooks:
         mock_hook.return_value = None  # No hook signal
         mock_tmux.return_value = "Some tool output without prompt"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
@@ -1297,7 +1244,7 @@ class TestDetectWindowStateHooks:
         """raw=IDLE + hook=SHELL → IDLE (process tree authoritative; stale SHELL signal ignored)."""
         mock_hook.return_value = (int(time.time()), "SHELL", "")
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
@@ -1310,7 +1257,7 @@ class TestDetectWindowStateHooks:
         """raw=SHELL + hook=SHELL → SHELL (consistent)."""
         mock_hook.return_value = (int(time.time()), "SHELL", "")
         ps = make_ps_lines((100, 1, 100, "bash"))  # no claude process
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "BUSY", panes, ps, "99999"
@@ -1323,7 +1270,7 @@ class TestDetectWindowStateHooks:
         """raw=BUSY + hook=SHELL should not happen in practice, but raw=BUSY takes priority."""
         mock_hook.return_value = (int(time.time()), "SHELL", "")
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 100, "node"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "BUSY", panes, ps, "99999"
@@ -1338,7 +1285,7 @@ class TestDetectWindowStateHooks:
         mock_hook.return_value = None
         mock_tmux.return_value = "Do you want to allow this?\n  Yes  No"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
@@ -1358,7 +1305,7 @@ class TestDetectWindowStateHooks:
         mock_hook.return_value = (old_ts, "PERMIT", "")
         mock_tmux.return_value = str(old_ts - 5)
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
 
         # With prev_state=IDLE: expired PERMIT doesn't resurrect
         state = ccm_core.detect_window_state(
@@ -4850,54 +4797,40 @@ class TestDeriveStateFromEvents:
 
 class TestEventLogMode:
     @pytest.mark.parametrize("raw,expected", [
-        # Falsy values → explicit "off" (legacy-only opt-out)
+        # Falsy values → explicit "off" (diagnostic kill-switch)
         ("", "off"),
         ("0", "off"),
         ("off", "off"),
         ("OFF", "off"),
         ("no", "off"),
         ("false", "off"),
-        # Named modes
-        ("observe", "observe"),
-        ("OBSERVE", "observe"),
+        # Anything else → "auto" (the default behaviour)
         ("auto", "auto"),
         ("AUTO", "auto"),
-        # primary aliases
-        ("1", "primary"),
-        ("true", "primary"),
-        ("TRUE", "primary"),
-        ("yes", "primary"),
-        ("primary", "primary"),
-        ("on", "primary"),
-        # Unknown → conservative "auto" (the P3b default)
+        ("1", "auto"),
+        ("true", "auto"),
+        ("yes", "auto"),
+        ("on", "auto"),
         ("garbage", "auto"),
-        ("legacy", "auto"),
     ])
     def test_normalizes_env_value(self, raw, expected, monkeypatch):
         monkeypatch.setenv("CCM_USE_EVENT_LOG", raw)
         assert ccm_core._event_log_mode() == expected
 
     def test_unset_defaults_to_auto(self, monkeypatch):
-        """P3b (2026-04-25): the unset default flipped from "off" to
-        "auto". Users who want pre-P3b legacy-only behaviour must opt
-        out explicitly with CCM_USE_EVENT_LOG=off (or 0/no/false)."""
         monkeypatch.delenv("CCM_USE_EVENT_LOG", raising=False)
         assert ccm_core._event_log_mode() == "auto"
 
-    def test_whitespace_trimmed(self, monkeypatch):
-        monkeypatch.setenv("CCM_USE_EVENT_LOG", "  observe  ")
-        assert ccm_core._event_log_mode() == "observe"
-
-    def test_whitespace_trimmed_auto(self, monkeypatch):
-        monkeypatch.setenv("CCM_USE_EVENT_LOG", "  auto  ")
-        assert ccm_core._event_log_mode() == "auto"
+    def test_whitespace_trimmed_off(self, monkeypatch):
+        monkeypatch.setenv("CCM_USE_EVENT_LOG", "  off  ")
+        assert ccm_core._event_log_mode() == "off"
 
     def test_explicit_off_is_distinct_from_unset(self, monkeypatch):
         """`off` and unset must produce different results: unset
-        means "use the new default" (auto), explicit off means "I
-        really do want legacy only". The detect_window_state
-        dispatch keys off this distinction to skip the events.jsonl
-        read entirely on `off`."""
+        means "use the new default" (auto), explicit off means
+        "use legacy only". detect_window_state keys off this
+        distinction to skip the events.jsonl read entirely on
+        `off`."""
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "off")
         assert ccm_core._event_log_mode() == "off"
 
@@ -4932,7 +4865,7 @@ class TestDetectWindowStateAutoMode:
             (100, 1, 100, "bash"), (200, 100, 100, "claude"),
             (300, 200, 200, "node"),  # claude grandchild → raw=BUSY
         )
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
@@ -4958,35 +4891,12 @@ class TestDetectWindowStateAutoMode:
         # input prompt visible → raw=IDLE per detect_pane_state
         mock_tmux.return_value = "❯ "
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
         # Event-log derivation wins: latest event class start → BUSY.
         assert state == "BUSY"
-
-    @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.read_hook_signal")
-    @patch("ccm_core.read_events_tail")
-    def test_observe_keeps_legacy_even_with_events(
-        self, mock_events, mock_hook, mock_tmux, monkeypatch
-    ):
-        """observe mode never commits the event-log state, even when
-        the event log is populated. Legacy stays authoritative."""
-        monkeypatch.setenv("CCM_USE_EVENT_LOG", "observe")
-        mock_events.return_value = (
-            {"ts": int(time.time()), "type": "pretool"},
-        )
-        mock_hook.return_value = None
-        mock_tmux.return_value = "❯ "  # raw=IDLE
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
-        state = ccm_core.detect_window_state(
-            "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
-        )
-        # Legacy returns IDLE (no hook, prompt visible). observe
-        # mode does NOT promote to BUSY despite the start event.
-        assert state == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
@@ -5005,7 +4915,7 @@ class TestDetectWindowStateAutoMode:
             (100, 1, 100, "bash"), (200, 100, 100, "claude"),
             (300, 200, 200, "node"),  # raw=BUSY via grandchild
         )
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
@@ -5030,7 +4940,7 @@ class TestDetectWindowStateAutoMode:
         # capture-pane returns a PERMIT modal footer line.
         mock_tmux.return_value = "  Esc to cancel · Tab to amend"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
@@ -5057,7 +4967,7 @@ class TestDetectWindowStateAutoMode:
         # capture-pane shows PERMIT modal footer.
         mock_tmux.return_value = "  Esc to cancel · Tab to amend"
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
@@ -5080,7 +4990,7 @@ class TestDetectWindowStateAutoMode:
         mock_hook.return_value = None
         mock_tmux.return_value = "❯ "
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
@@ -5106,7 +5016,7 @@ class TestDetectWindowStateAutoMode:
         mock_hook.return_value = None  # legacy returns IDLE
         mock_tmux.return_value = "❯ "
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )

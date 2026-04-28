@@ -103,40 +103,6 @@ def has_children(pid, ps_lines, own_pgid):
     return False
 
 
-def has_grandchildren(pid, ps_lines, own_pgid):
-    """True if any descendant two levels below `pid` exists.
-
-    Claude Code's Bash tool runs commands as `claude → bash → cmd`,
-    so a grandchild process is unambiguous evidence that a foreground
-    tool is executing. MCP servers and language servers are direct
-    children of claude only — they do not spawn nested workers in
-    normal operation, so this check does not false-trigger on them.
-
-    This is the hook-independent fallback for the case where Claude
-    Code's UI shows the empty `❯ ` prompt above a still-running tool
-    (the v2.1+ "ctrl+b ctrl+b to background" affordance), which would
-    otherwise let the input-prompt heuristic resolve to IDLE.
-    """
-    children = set()
-    for line in ps_lines:
-        parts = line.split()
-        if len(parts) >= 4 and parts[1] == str(pid):
-            if parts[2] == str(own_pgid):
-                continue
-            if parts[3] in IGNORED_CHILDREN:
-                continue
-            children.add(parts[0])
-    if not children:
-        return False
-    for line in ps_lines:
-        parts = line.split()
-        if len(parts) >= 4 and parts[1] in children:
-            if parts[3] in IGNORED_CHILDREN:
-                continue
-            return True
-    return False
-
-
 def capture_pane_bottom(pane_target, lines=8):
     """Capture bottom non-empty lines of a pane.
     Handles alternate screen mode (CLAUDE_CODE_NO_FLICKER=1) by trying
@@ -205,66 +171,50 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
     tall enough to render Claude's UI. Priority: PERMIT > BUSY >
     IDLE > SHELL.
 
-    Design (2026-04-27, second iteration): a tmux window can host
-    multiple panes — the dominant case is single-pane projects, but
-    Agent Teams splits a window into pane-per-teammate and casual
-    `prefix " ` / `prefix %` splits also occur. The user attends to
-    all visible panes simultaneously (split layout); only one pane
-    is `pane_active=1` at a time but they can see the others. So
-    state must aggregate across panes — picking the most attention-
-    needing one (PERMIT > BUSY > ...) ensures a single teammate
-    waiting for permission surfaces in the dashboard even when the
-    user has focus on a different teammate.
+    A tmux window can host multiple panes (single-pane projects
+    are the dominant case, but Agent Teams splits a window into
+    one pane per teammate and casual `prefix " ` / `prefix %`
+    splits also occur). The user attends to all visible panes
+    simultaneously, so window state aggregates across panes —
+    picking the most attention-needing one ensures a single
+    teammate waiting for permission surfaces in the dashboard
+    even when focus is on another teammate.
 
-    Sliver exclusion: a 1-row pane (or any pane shorter than
-    `SLIVER_HEIGHT_THRESHOLD`) cannot render the `❯` prompt +
-    accept-edits indicator + footer that pane-state detection
-    relies on. capture-pane returns nothing useful, has_children
-    fires alone, and the pane reads BUSY indefinitely — even when
-    Claude is long-idle. Excluding short panes from aggregation
-    prevents an invisible sliver from infecting the whole window
-    (the failure that motivated this rewrite). Tall panes still
-    aggregate as before. If every pane is below the threshold, all
-    panes are used (better to have a possibly-wrong answer than
-    no answer; this is the impossible-in-practice edge case).
+    Sliver exclusion: a pane shorter than
+    `SLIVER_HEIGHT_THRESHOLD` (default 4 rows) cannot render the
+    `❯` prompt + accept-edits indicator + footer that pane-state
+    detection relies on. capture-pane returns nothing useful,
+    has_children fires alone, and the pane reads BUSY indefinitely
+    — even when Claude is long-idle. Excluding short panes from
+    aggregation prevents an invisible sliver from infecting the
+    whole window. If every pane is below the threshold (impossible
+    in practice), all panes are used as a last resort.
 
-    panes_cache tuples can be 3 / 4 / 5 / 6 elements (back-compat
-    over several refactors). The 6th element is `pane_height`;
-    legacy fixtures without it skip the sliver filter, preserving
-    the pre-sliver-exclusion test behaviour.
+    panes_cache entries are 6-tuples:
+        (win_target, pid, pane_id, current_command, pane_active, pane_height)
     """
     # Filter to panes belonging to this window. Each entry becomes
-    # (pid, pane_id, current_command, pane_height).
+    # (pid, pane_id, current_command, pane_height). pane_active
+    # (pc[4]) is intentionally unused here — only the auto-focus
+    # helper consults it.
     panes = []
     for pc in panes_cache:
         if pc[0] != win_target:
             continue
-        pid = pc[1]
-        pane_id = pc[2]
-        current_command = pc[3] if len(pc) >= 4 else ""
-        # pane_active (pc[4]) is intentionally not used here — see
-        # design note above. It is consulted only by the auto-focus
-        # helper.
-        height_str = pc[5] if len(pc) >= 6 else ""
         try:
-            height = int(height_str) if height_str else None
-        except ValueError:
+            height = int(pc[5]) if pc[5] else None
+        except (ValueError, IndexError):
             height = None
-        panes.append((pid, pane_id, current_command, height))
+        panes.append((pc[1], pc[2], pc[3], height))
 
     if not panes:
         return "DOWN"
 
-    # Sliver filter: drop panes too short to render Claude's UI.
-    # If every pane is filtered out (impossible in practice), keep
-    # them all — better wrong answer than no answer.
     eligible = [p for p in panes
                 if p[3] is None or p[3] >= ccm_core.SLIVER_HEIGHT_THRESHOLD]
     if not eligible:
         eligible = panes
 
-    # Aggregate: PERMIT trumps BUSY trumps IDLE trumps SHELL.
-    # Equivalent to taking the min over STATE_PRIORITY.
     best = "SHELL"
     for pid, pane_id, current_command, _height in eligible:
         state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
@@ -1077,41 +1027,22 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
 
 
 def _event_log_mode():
-    """Read CCM_USE_EVENT_LOG env var and normalize to one of:
-      "off"      — disabled (legacy path only, no event-log read).
-                   Must be set explicitly (`0` / `off` / `no` / `false`).
-      "observe"  — compute both, log to trace, use legacy as authoritative
-      "auto"     — commit event-log state when derive returns non-None;
-                   otherwise fall back to legacy. **This is the default
-                   when the env var is unset** (P3b, 2026-04-25). Pre-P3b
-                   the unset default was "off"; the flip is justified by
-                   the observe-mode rollout finding zero false-IDLE diffs
-                   that the safety nets in `derive_state_from_events`
-                   (raw=PERMIT override, None-on-empty fallback) did not
-                   already catch
-      "primary"  — same dispatch as auto today; kept as a distinct token
-                   so a future diagnostic flag can bring back the
-                   "commit even when events are empty" behaviour without
-                   reusing this name
+    """Read CCM_USE_EVENT_LOG env var. Returns one of:
+      "auto"  — commit event-log state when `derive_state_from_events`
+                returns non-None; otherwise fall back to legacy.
+                Default when the env var is unset.
+      "off"   — diagnostic kill-switch. Legacy path only, no
+                event-log read. Set when troubleshooting a
+                suspected event-log regression.
 
-    Accepted aliases: "1" / "true" / "yes" / "primary" / "on" → "primary".
     Falsy values (`""` / `"0"` / `"off"` / `"no"` / `"false"`) → "off".
-    Unset → "auto" (the new default).
-    Unknown values → "auto" (conservative: opt-in remains the safe
-    side; users who explicitly want legacy-only must say so).
+    Anything else → "auto".
     """
     raw_env = os.environ.get("CCM_USE_EVENT_LOG")
     if raw_env is None:
-        return "auto"  # P3b default
-    raw = raw_env.strip().lower()
-    if raw in ("", "0", "off", "no", "false"):
-        return "off"
-    if raw == "observe":
-        return "observe"
-    if raw == "auto":
         return "auto"
-    if raw in ("1", "true", "yes", "primary", "on"):
-        return "primary"
+    if raw_env.strip().lower() in ("", "0", "off", "no", "false"):
+        return "off"
     return "auto"
 
 
@@ -1128,22 +1059,11 @@ def detect_window_state(win_target, project_dir, prev_state,
     All state transitions are declared in DETECTION_RULES above. To add
     or change a case, edit the rule table rather than this function.
 
-    The event-log path is activated by CCM_USE_EVENT_LOG:
-      - observe: compute both paths, log the diff to CCM_DEBUG_TRACE,
-        still commit the legacy state (risk-free observation).
-      - auto: commit the event-log state when `derive_state_from_events`
-        returns a non-None answer; otherwise fall back to legacy. The
-        derive function returns None for empty event logs, malformed
-        records, unknown event types, and `session_end` with a live
-        pid — situations where the event log lacks an authoritative
-        signal and the legacy path's capture-pane / process-tree /
-        JSONL heuristics are more reliable.
-      - primary: same dispatch as auto today (the old "commit IDLE
-        even when events are empty" behaviour is unsafe — see the
-        2026-04-25 observation where a 2.7-hour event-log outage
-        would have produced false IDLE for a pane actually showing a
-        PERMIT modal). Kept as a separate mode so a future diagnostic
-        flag can bring back unconditional event-log commits if needed.
+    `CCM_USE_EVENT_LOG=off` opts out (legacy only). Default is
+    auto: commit `derive_state_from_events` result when non-None,
+    fall back to legacy when derive defers (empty event log,
+    malformed records, unknown event types, or `session_end`
+    with a live pid).
     """
     ctx = build_detection_context(
         win_target, project_dir, prev_state,
@@ -1151,13 +1071,13 @@ def detect_window_state(win_target, project_dir, prev_state,
     )
     rule, legacy_state = evaluate_rules(ctx)
 
-    mode = _event_log_mode()
     event_log_state = None
-    if mode != "off":
+    if _event_log_mode() != "off":
         events = ccm_core.read_events_tail(project_dir)
-        # pid_present: the legacy raw detection already resolved SHELL
-        # when no claude process is present, so raw != "SHELL" is a
-        # reliable "pid present" proxy without a second ps scan.
+        # pid_present: the legacy raw detection already resolved
+        # SHELL when no claude process is present, so raw not in
+        # ("SHELL", "DOWN") is a reliable "pid present" proxy
+        # without a second ps scan.
         pid_present = ctx.raw not in ("SHELL", "DOWN")
         event_log_state = derive_state_from_events(
             events=events,
@@ -1169,18 +1089,7 @@ def detect_window_state(win_target, project_dir, prev_state,
             now=ctx.now,
         )
 
-    # Commit which state?
-    #   observe → legacy (event_log_state is logged for diff only)
-    #   auto    → event_log_state when not None, else legacy. The
-    #             None sentinel covers all cases where the event log
-    #             cannot speak authoritatively (empty, malformed,
-    #             unknown type, post-session_end transient).
-    #   primary → same dispatch as auto for now; see docstring.
-    if mode in ("primary", "auto") and event_log_state is not None:
-        resolved = event_log_state
-    else:
-        resolved = legacy_state
-
+    resolved = event_log_state if event_log_state is not None else legacy_state
     return apply_actions(win_target, project_dir, ctx, rule, resolved,
                          event_log_state=event_log_state)
 

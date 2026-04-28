@@ -408,10 +408,10 @@ def ps_snapshot():
     Output columns: pid ppid pgid comm etime. `etime` is appended at
     the end so the existing `parts[0..3]` positions for pid / ppid /
     pgid / comm are unchanged — all process-tree helpers
-    (find_claude_pid, has_children, has_grandchildren) continue to
-    parse by index without modification. `etime` is consumed only by
-    `find_process_age` below, which is used to distinguish Claude's
-    startup window from steady-state operation.
+    (find_claude_pid, has_children) parse by index without
+    modification. `etime` is consumed only by `find_process_age`
+    below, which distinguishes Claude's startup window from
+    steady-state operation.
     """
     try:
         r = subprocess.run(
@@ -1365,22 +1365,11 @@ def build_project_list(fast=False):
                              "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t#{pane_active}\t#{pane_height}")
         for line in panes_raw.split("\n"):
             parts = line.split("\t")
-            # Tuple shape grew over time:
-            #   3-tuple (very old): (target, pid, pane_id)
-            #   4-tuple (2026-04-27): + pane_current_command
-            #   5-tuple (2026-04-27): + pane_active flag
-            #   6-tuple (2026-04-27): + pane_height (for sliver
-            #     exclusion; see SLIVER_HEIGHT_THRESHOLD doc)
-            # Newer slots default to empty so detection logic can
-            # handle mock fixtures that haven't been updated.
+            # 6-tuple format: (target, pid, pane_id, current_command,
+            # pane_active, pane_height). All production callers
+            # (here + cmd_debug_trace) use this shape.
             if len(parts) >= 6:
-                panes_cache.append((parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]))
-            elif len(parts) == 5:
-                panes_cache.append((parts[0], parts[1], parts[2], parts[3], parts[4], ""))
-            elif len(parts) == 4:
-                panes_cache.append((parts[0], parts[1], parts[2], parts[3], "", ""))
-            elif len(parts) == 3:
-                panes_cache.append((parts[0], parts[1], parts[2], "", "", ""))
+                panes_cache.append(tuple(parts[:6]))
 
     own_pgid = str(os.getpgrp())
     seen_dirs = set()
@@ -2253,7 +2242,6 @@ from ccm_detection import (  # noqa: E402
     evaluate_rules,
     find_claude_pid,
     has_children,
-    has_grandchildren,
     _event_log_mode,
     _set_win_state,
     _FAST_PREV_TO_RAW,
