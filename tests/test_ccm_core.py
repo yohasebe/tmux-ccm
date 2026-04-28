@@ -1107,18 +1107,26 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_no_permit_from_skills_menu_footer(self, mock_tmux):
-        """`/skills` uses its own footer
-        `Enter to use, t to sort, Esc to close` — neither the
-        `Enter to confirm` prefix nor the bare `Esc to cancel`
-        match PATTERN_PERMIT_FOOTER. Semantically this is a free-
-        navigation slash menu (Enter toggles/selects a skill, user
-        can leave anytime), NOT a blocked decision — IDLE is the
-        correct classification. Verified empirically 2026-04-24
-        with Claude Code 2.1.119."""
+        """`/skills` uses its own footer — neither the `Enter to
+        confirm` prefix nor the bare `Esc to cancel` matches
+        PATTERN_PERMIT_FOOTER. Semantically this is a free-
+        navigation slash menu (Enter toggles/selects a skill,
+        user can leave anytime), NOT a blocked decision — IDLE
+        is the correct classification.
+
+        Verified empirically with two Claude Code versions:
+        - 2.1.119 (2026-04-24): `Enter to use, t to sort, Esc to close`
+        - 2.1.121 (2026-04-28): `Enter to use, / to search, t to sort, Esc to close`
+          (search box added by upstream — same Esc-to-close
+          structure, same outcome for ccm)
+
+        Footer text below uses the 2.1.121 format; the old format
+        is exercised by the regex pattern test in TestPermitFooter.
+        """
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         mock_tmux.return_value = (
             "Skills\n"
-            "10 skills · Enter to use, t to sort, Esc to close\n"
+            "10 skills · Enter to use, / to search, t to sort, Esc to close\n"
             "\n"
             "  ❯ ✔ on         clip · user · ~11 tok\n"
             "      ✔ on         commit · user · ~11 tok"
