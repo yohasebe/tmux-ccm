@@ -1563,18 +1563,27 @@ def clear_notifications():
     Center. Requires `terminal-notifier` (the only command-line
     way to enumerate / remove macOS notifications).
 
-    Returns the number of removed notifications, or -1 if
-    terminal-notifier is not installed.
+    `notify()` sends with `-sender com.apple.Terminal`, and
+    terminal-notifier scopes -remove to the matching sender, so
+    the call here must pass the same `-sender` value or the
+    remove silently no-ops. Notifications that pre-date the
+    terminal-notifier integration (delivered via `osascript`)
+    have no programmatic remove path and remain in Notification
+    Center until the user dismisses them manually — `osascript
+    display notification` does not expose an identifier the
+    system will accept for later removal.
+
+    Returns 0 on success, -1 if terminal-notifier is not
+    installed.
     """
     tn_path = _terminal_notifier_path()
     if not tn_path:
         return -1
     try:
-        # `terminal-notifier -list ALL` enumerates all notifications
-        # delivered by the same `-sender` bundle. We then call
-        # `-remove ALL` to clear them.
-        subprocess.run([tn_path, "-remove", "ALL"],
-                       capture_output=True, text=True, timeout=5)
+        subprocess.run(
+            [tn_path, "-remove", "ALL", "-sender", "com.apple.Terminal"],
+            capture_output=True, text=True, timeout=5,
+        )
         return 0
     except (subprocess.TimeoutExpired, OSError):
         return -1
