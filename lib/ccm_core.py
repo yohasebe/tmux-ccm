@@ -65,12 +65,11 @@ BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600")
 # JSONL real-activity filter — whitelist. Only records whose
 # top-level `type` is in this set count as conversation activity
 # in `_parse_jsonl_tail`. Whitelist is preferable to a blacklist
-# because Claude Code adds new housekeeping record types over
-# time (e.g. v2.1.108 `away_summary`, v2.1.117 `permission-mode`
-# / `file-history-snapshot` / `last-prompt`) — a blacklist needs
-# a code change for each new type, while the whitelist absorbs
-# them automatically. New activity types (rare) are the only
-# case that needs explicit addition here.
+# because Claude Code adds housekeeping record types over time
+# (recap / `away_summary`, `permission-mode`, `file-history-snapshot`,
+# `last-prompt`, …): a blacklist needs a code change for each new
+# type, while the whitelist absorbs them automatically. New
+# activity types are the only case that needs explicit addition.
 JSONL_ACTIVITY_TYPES = frozenset({"user", "assistant"})
 # Tail size (bytes) read from each JSONL when looking for the most
 # recent real activity record. Needs to accommodate a single large
@@ -94,10 +93,10 @@ JSONL_TAIL_MAX_LINES = 200
 JSONL_HOOK_GAP_TOLERANCE = int(os.environ.get("CCM_JSONL_HOOK_GAP_TOLERANCE", "60"))
 # Cluster-SHELL-transition detection: surface a warning when a project
 # drops back to SHELL too many times in a short window. The canonical
-# trigger is anthropics/claude-code#48069 (macOS silent exits in
-# v2.1.107+), where Claude Code dies every 1-5 minutes and ccm
-# observes SHELL → (user re-attaches) → BUSY → IDLE → SHELL loops.
-# Defaults: 3 transitions in 10 minutes.
+# trigger is anthropics/claude-code#48069 (macOS silent-exit), where
+# Claude Code dies every 1-5 minutes and ccm observes SHELL → (user
+# re-attaches) → BUSY → IDLE → SHELL loops. Defaults: 3 transitions
+# in 10 minutes.
 SHELL_CLUSTER_WINDOW = int(os.environ.get("CCM_SHELL_CLUSTER_WINDOW", "600"))
 SHELL_CLUSTER_COUNT = int(os.environ.get("CCM_SHELL_CLUSTER_COUNT", "3"))
 # Upstream issue tag surfaced in the cluster-SHELL warning. Centralised
@@ -145,8 +144,8 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 #
 #   - "Esc to cancel · Tab to amend"          (permission dialog)
 #   - "Esc to cancel · ctrl+e to explain"     (permission dialog alt)
-#   - "Enter to confirm · Esc to cancel"      (session-resume modal, v2.1.117+)
-#   - "Enter to confirm · Esc to exit"        (/model picker, v2.1.119)
+#   - "Enter to confirm · Esc to cancel"      (session-resume modal)
+#   - "Enter to confirm · Esc to exit"        (/model picker)
 #
 # All map to the PERMIT state because semantically Claude is blocked
 # pending a single user action — the UX is the same as a permission
@@ -1053,10 +1052,10 @@ def disable_all_hooks_warning() -> str:
     """Return a warning string if `disableAllHooks: true` is set in
     ~/.claude/settings.json, otherwise "".
 
-    Per Claude Code v2.1.104 docs, this setting disables ALL hooks AND
-    any custom statusLine — ccm's entire fast-path signal goes dark
-    with no error. Same class of silent failure as the hooks.log
-    bloat canary.
+    Per Claude Code's docs, this setting disables ALL hooks AND any
+    custom statusLine — ccm's entire fast-path signal goes dark with
+    no error. Same class of silent failure as the hooks.log bloat
+    canary.
 
     Scope: only the user-level file `~/.claude/settings.json` is
     checked. Project-scope settings (`<project>/.claude/settings.json`)
@@ -1087,9 +1086,9 @@ def managed_hooks_only_warning() -> str:
     """Return a warning string if `allowManagedHooksOnly: true` is set
     in ~/.claude/settings.json, otherwise "".
 
-    Per Claude Code v2.1.107 docs, when this is set in *managed*
-    settings, every user-scope hook (which is exactly where ccm
-    installs all 14 of its hooks) is silently blocked with no error.
+    Per Claude Code's docs, when this is set in *managed* settings,
+    every user-scope hook (which is exactly where ccm installs all
+    14 of its hooks) is silently blocked with no error.
     The result looks identical to a broken Claude Code install from
     ccm's perspective: no hooks fire, ever.
 
@@ -1123,8 +1122,8 @@ def managed_hooks_only_warning() -> str:
 
 
 # ─── Cluster-SHELL-transition detection ───
-# When Claude Code dies repeatedly (most commonly the v2.1.107+ macOS
-# silent-exit regression, anthropics/claude-code#48069), ccm observes a
+# When Claude Code dies repeatedly (most commonly the macOS silent-
+# exit regression, anthropics/claude-code#48069), ccm observes a
 # rapid SHELL → (user or ccm re-attach) → BUSY → IDLE → SHELL loop.
 # We record each SHELL transition timestamp in a per-window tmux
 # option `@ccm_shell_history` and surface a warning if the count in
@@ -2013,7 +2012,7 @@ from ccm_detection import (  # noqa: E402
     evaluate_rules,
     find_claude_pid,
     has_children,
-    _event_log_mode,
+    _event_log_enabled,
     _set_win_state,
     _FAST_PREV_TO_RAW,
 )

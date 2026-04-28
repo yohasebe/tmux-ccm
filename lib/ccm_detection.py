@@ -948,7 +948,7 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     Returns the resolved state string.
 
     `event_log_state` is the result of `derive_state_from_events`
-    when the event-log path is active (observe or primary); it is
+    when the event-log path is enabled (the default); it is
     forwarded to `_trace_scan` so the debug trace records both
     states on every scan regardless of which one is committed.
     """
@@ -1006,24 +1006,18 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     return state
 
 
-def _event_log_mode():
-    """Read CCM_USE_EVENT_LOG env var. Returns one of:
-      "auto"  — commit event-log state when `derive_state_from_events`
-                returns non-None; otherwise fall back to legacy.
-                Default when the env var is unset.
-      "off"   — diagnostic kill-switch. Legacy path only, no
-                event-log read. Set when troubleshooting a
-                suspected event-log regression.
+def _event_log_enabled():
+    """Return True if the event-log detection path should run.
 
-    Falsy values (`""` / `"0"` / `"off"` / `"no"` / `"false"`) → "off".
-    Anything else → "auto".
+    Reads CCM_USE_EVENT_LOG. Unset (the default) and any truthy
+    value enable the event-log path; falsy values (``""`` / ``"0"``
+    / ``"off"`` / ``"no"`` / ``"false"``, case-insensitive) act as
+    a diagnostic kill-switch that forces legacy-only operation.
     """
     raw_env = os.environ.get("CCM_USE_EVENT_LOG")
     if raw_env is None:
-        return "auto"
-    if raw_env.strip().lower() in ("", "0", "off", "no", "false"):
-        return "off"
-    return "auto"
+        return True
+    return raw_env.strip().lower() not in ("", "0", "off", "no", "false")
 
 
 def detect_window_state(win_target, project_dir, prev_state,
@@ -1052,7 +1046,7 @@ def detect_window_state(win_target, project_dir, prev_state,
     rule, legacy_state = evaluate_rules(ctx)
 
     event_log_state = None
-    if _event_log_mode() != "off":
+    if _event_log_enabled():
         events = ccm_core.read_events_tail(project_dir)
         # pid_present: the legacy raw detection already resolved
         # SHELL when no claude process is present, so raw not in
@@ -1112,7 +1106,7 @@ def _trace_scan(win_target, ctx, rule, state, event_log_state=None):
 
     `CCM_TRACE_ONLY_DIFF=1` (any truthy value) restricts writes to
     rows where the legacy and event-log derivations disagree. Lets
-    observe-mode run for days on a busy multi-project tmux without
+    long-running traces sit on a busy multi-project tmux without
     hitting the size cap — the file only grows when a diff actually
     shows up. Has no effect when the event-log path is disabled
     (nothing to diff against, so the file would stay empty).

@@ -236,3 +236,32 @@ class TestPaneCountSuffixInStatusBar:
         assert entries[0].index("#[fg=cyan]2") < entries[0].index("(10m)")
 
 
+# ─── Mode 2 helpers ───
+
+class TestClearMode2SlotsAbove:
+    def test_returns_unset_commands_above_threshold(self):
+        cmds = inject_status._clear_mode2_slots_above(2)
+        slots = [c[3] for c in cmds]
+        assert slots[0] == "status-format[3]"
+        assert slots[-1] == f"status-format[{inject_status._MODE2_MAX_SLOTS}]"
+        assert all(c[:3] == ("set", "-g", "-u") for c in cmds)
+
+    def test_threshold_at_or_above_max_returns_empty(self):
+        assert inject_status._clear_mode2_slots_above(inject_status._MODE2_MAX_SLOTS) == []
+        assert inject_status._clear_mode2_slots_above(inject_status._MODE2_MAX_SLOTS + 5) == []
+
+
+class TestOptColor:
+    def test_returns_default_when_option_unset(self, monkeypatch):
+        monkeypatch.setattr(inject_status, "tmux_cmd", lambda *a, **k: "")
+        assert inject_status._opt_color("@ccm-status-bg", "#262626") == "#262626"
+
+    def test_returns_default_when_whitespace_only(self, monkeypatch):
+        monkeypatch.setattr(inject_status, "tmux_cmd", lambda *a, **k: "   ")
+        assert inject_status._opt_color("@ccm-status-bg", "#262626") == "#262626"
+
+    def test_returns_user_value_when_set(self, monkeypatch):
+        monkeypatch.setattr(inject_status, "tmux_cmd", lambda *a, **k: "  #ffffff  ")
+        assert inject_status._opt_color("@ccm-status-bg", "#262626") == "#ffffff"
+
+

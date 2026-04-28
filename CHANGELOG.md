@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`terminal-notifier` integration for macOS notifications** — when installed (`brew install terminal-notifier`), ccm sends notifications with `-group ccm-<project>` so a fresh notification for a project replaces the previous one in Notification Center rather than accumulating. Without this, long-running multi-project sessions can pile up hundreds of stale notifications and drive WindowServer / NotificationCenter to high CPU. Falls back to `osascript` when `terminal-notifier` is absent.
 - **`ccm clear-notifications`** — bulk-removes ccm notifications from macOS Notification Center. Requires `terminal-notifier`.
 - **`CCM_STATUS_INTERVAL` env var** lets users tune how often tmux invokes `ccm inject-status` (default 5 s, was 2 s). Hook-driven `@ccm-permit-pending` keeps PERMIT-axis responsiveness independent of the polling cadence.
+- **Themable mode-2 colours** via `@ccm-status-bg` / `@ccm-status-gutter-bg` / `@ccm-status-fg` / `@ccm-status-fg-dim` tmux options. Defaults match the dark-grey palette; override any subset to integrate with light themes or custom dark schemes without forking ccm.
 
 ### Changed
 - **Claude Code v2.1.107+ is now required.** `ccm setup-hooks` hard-fails on older clients (or when `claude` is not on PATH) instead of silently skipping the `elicitation_dialog` Notification matcher. The matcher is registered unconditionally; `ccm_hooks_configured` always requires it.

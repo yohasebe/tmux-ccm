@@ -447,31 +447,33 @@ def _inject_status_impl():
         all_projects = scan_active_windows(projects, include_all=True)
         entries = build_detail_entries(all_projects, with_extras=True, current_win_target=current_win_target)
 
-        # Visual palette for the dedicated mode-2 line(s).
-        # `BG` (slightly darker than the main bar) keeps the ccm
-        # rows visually settled below. `GUTTER_BG` is a single
-        # near-black row inserted between the main bar and the
-        # entry rows so the boundary reads as two distinct
-        # regions rather than a continuation of the main bar.
+        # Visual palette for the dedicated mode-2 line(s). `BG`
+        # (slightly darker than the main bar) keeps the ccm rows
+        # visually settled below. `GUTTER_BG` is a single near-
+        # black row inserted between the main bar and the entry
+        # rows so the boundary reads as two distinct regions
+        # rather than a continuation. Each colour can be overridden
+        # via tmux options (`@ccm-status-bg`, `@ccm-status-gutter-bg`,
+        # `@ccm-status-fg`, `@ccm-status-fg-dim`) so light-theme or
+        # accessibility-tuned setups can adjust without forking.
         # Separator `·` with 2-space padding either side.
-        BG = "#262626"
-        GUTTER_BG = "#1a1a1a"
-        FG_DEFAULT = "#9E9E9E"
-        FG_DIM = "#5a5a5a"
+        BG = _opt_color("@ccm-status-bg", "#262626")
+        GUTTER_BG = _opt_color("@ccm-status-gutter-bg", "#1a1a1a")
+        FG_DEFAULT = _opt_color("@ccm-status-fg", "#9E9E9E")
+        FG_DIM = _opt_color("@ccm-status-fg-dim", "#5a5a5a")
         SEP = f"  #[fg={FG_DIM}]·#[fg={FG_DEFAULT}]  "
         SEP_VISIBLE_W = 5  # "  ·  "
         GUTTER_FMT = f"#[fill={GUTTER_BG}]#[bg={GUTTER_BG}] "
 
         if not entries:
             fmt = f"#[fill={BG}]#[fg={FG_DIM},bg={BG}] ≡ ccm: no projects  "
-            tmux_batch(
+            cmds = [
                 ("set", "-g", "status", "3"),
                 ("set", "-g", "status-format[1]", GUTTER_FMT),
                 ("set", "-g", "status-format[2]", fmt),
-                ("set", "-g", "-u", "status-format[3]"),
-                ("set", "-g", "-u", "status-format[4]"),
-                ("set", "-g", "-u", "status-format[5]"),
-            )
+            ]
+            cmds.extend(_clear_mode2_slots_above(2))
+            tmux_batch(*cmds)
         else:
             term_width = 120
             try:
@@ -511,9 +513,10 @@ def _inject_status_impl():
                 # slot 2 is first entry line.
                 cmds.append(("set", "-g", f"status-format[{line_idx + 2}]", fmt))
 
-            # Clear extra lines beyond gutter + entries.
-            for extra in range(num_lines + 2, 6):
-                cmds.append(("set", "-g", "-u", f"status-format[{extra}]"))
+            # Clear any leftover slots from a previous render with
+            # more lines (e.g. user closed projects or the terminal
+            # widened so entries now fit on fewer rows).
+            cmds.extend(_clear_mode2_slots_above(num_lines + 1))
             tmux_batch(*cmds)
 
     else:
@@ -535,10 +538,38 @@ def _inject_status_impl():
             tmux_cmd("set", "-g", "status-right", new_status)
 
 
+# Upper bound on mode-2 status-format slots ccm will manage.
+# tmux supports indexed status-format entries indefinitely, but in
+# practice mode-2 needs at most a few rows (gutter + entry lines).
+# 16 covers the most extreme realistic case (very narrow terminal +
+# many projects) with plenty of headroom; cheap to over-clear since
+# unsetting an unset option is a no-op.
+_MODE2_MAX_SLOTS = 16
+
+
+def _clear_mode2_slots_above(highest_used: int):
+    """Return tmux `-u` commands that clear every status-format
+    slot above `highest_used` (1-indexed), up to `_MODE2_MAX_SLOTS`.
+    Used after a mode-2 render to wipe rows left over from a
+    previous frame that needed more lines.
+    """
+    return [
+        ("set", "-g", "-u", f"status-format[{n}]")
+        for n in range(highest_used + 1, _MODE2_MAX_SLOTS + 1)
+    ]
+
+
+def _opt_color(name: str, default: str) -> str:
+    """Return tmux global option `name` if set, else `default`.
+    Used for the user-overridable mode-2 colour palette.
+    """
+    val = tmux_cmd("show-option", "-gqv", name)
+    return val.strip() if val and val.strip() else default
+
+
 def _cleanup_extra_lines():
     cmds = [("set", "-g", "status", "on")]
-    for n in range(1, 6):
-        cmds.append(("set", "-g", "-u", f"status-format[{n}]"))
+    cmds.extend(_clear_mode2_slots_above(0))
     tmux_batch(*cmds)
 
 
@@ -554,8 +585,7 @@ def _cleanup_mode02():
             ("set", "-g", "-u", "window-status-current-format"),
             ("set", "-g", "status", "on"),
         ]
-        for n in range(1, 6):
-            cmds.append(("set", "-g", "-u", f"status-format[{n}]"))
+        cmds.extend(_clear_mode2_slots_above(0))
         tmux_batch(*cmds)
     orig_len = tmux_cmd("show-option", "-gqv", "@ccm-orig-sr-length")
     if orig_len:

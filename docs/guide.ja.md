@@ -238,8 +238,8 @@ ccm setup-hooks
 | 状態 | 検出方法 | 詳細 |
 |------|----------|------|
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
-| **BUSY** | フック / JSONL / プロセスツリー | 主経路: UserPromptSubmit / PreToolUse / SubagentStart フック。フォールバック（いずれか1つでマッチ）: (a) プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` に **user/assistant レコード**が `JSONL_FRESH_THRESHOLD`（5秒）以内に書き込まれている — Claude Code は会話のターン境界ごとにレコードを追記するため、フックが沈黙していてもセッション活動の証拠になる（[#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）。システムメタデータレコード（v2.1.108+ recap / `system/away_summary`、`turn_duration`、`attachment/task_reminder` 等）はフィルタされるため、recap 生成が偽の活動として検出されない。(b) `claude` の孫プロセス（Bashツール実行中の `bash → xcodebuild` 等）— v2.1+ UI が末尾に `❯ ` を表示していても BUSY 判定。(c) `claude` が非MCP の直接の子プロセスを持つ場合 |
-| **IDLE** | プロセスツリー | `claude` が直接の子（MCP / 言語サーバー）のみを持ち、入力プロンプトが見え、新鮮な BUSY フック信号がない |
+| **BUSY** | event-log + JSONL stop_reason | 主経路: BUSY 系フック (`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`SubagentStart`/`Stop`、`PreCompact`/`PostCompact`) が追記する per-project event log (`hooks/<md5>.events.jsonl`)。`derive_state_from_events` が tail を純関数で評価し、最新エントリが start-class なら BUSY を返す。フック沈黙（#16047 / #25655）は JSONL `stop_reason` で橋渡し: 直近の `tool_use` ならツールターン境界の Stop を超えて BUSY を維持、`end_turn` / `max_tokens` / `stop_sequence` が最新 event より新しければ数秒以内に IDLE へ release。システムメタデータレコード（`system/away_summary`、`turn_duration`、`attachment/task_reminder`、`permission-mode`、`file-history-snapshot`、`last-prompt`）は JSONL 活動から除外され、recap や起動時 housekeeping が偽の活動として検出されない |
+| **IDLE** | event-log + capture-pane | event log の最新エントリが end-class（`stop` / `notify_idle` / `notify_permit` 解消後）で、入力プロンプト `❯ ` が表示されており、PERMIT フッターにマッチしない状態。フックなし時は legacy fallback がプロセスツリー + プロンプト可視性のみで判定 |
 | **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: フッター `Esc to cancel · Tab to amend · ctrl+e to explain` をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能（[#16047](https://github.com/anthropics/claude-code/issues/16047)） |
 | **完了（`* elapsed`）** | 表示レイヤー | 一時的マーカー: BUSY/PERMIT → IDLE遷移後に30秒間表示、その後クリア。アスタリスクは緑（直近の完了に視線を誘導）、経過時間は dim |
 | **マルチペイン（`[N]`）** | ウィンドウ検査 | tmux ペインを 2 つ以上含むウィンドウに対し、全レンダラー（dashboard / status bar / `ccm status`）でプロジェクト名直後に表示。角括弧 dim、数字 cyan。集約状態が非アクティブペインのものである可能性をユーザーが認識できるようにする。詳細（sliver 保護と PERMIT 自動フォーカス）は下記「Agent Teamsとの併用」を参照 |
@@ -524,17 +524,17 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 ### チューニング例
 
 ```bash
-# Stop後の遷移をより素早く（BUSY余韻を短く）
-export CCM_JSONL_ACTIVE_THRESHOLD=10
-
-# 完了後の ✔ マーカー表示時間を延長
+# 完了後の "* elapsed" マーカー表示時間を延長
 export CCM_COMPLETED_AT_TIMEOUT=60
-
-# recap phantom をより積極的に拒否
-export CCM_JSONL_HOOK_GAP_TOLERANCE=30
 
 # hooks.log 肥大化警告を早めに（10 MB）
 export CCM_HOOKS_LOG_WARN_BYTES=10485760
+
+# 低速マシンやバッテリー駆動時のポーリングコスト削減
+export CCM_STATUS_INTERVAL=10
+
+# 診断用 kill-switch: event-log path をバイパス
+export CCM_USE_EVENT_LOG=off
 ```
 
 ### Claude Code 自身の環境変数との相互作用

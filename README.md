@@ -227,8 +227,17 @@ Adds one or more tmux status lines below the main bar. Shows all projects includ
 
 Lines auto-expand based on terminal width and project count.
 
+Override the default colour palette via tmux options if the dark-grey gutter clashes with your theme:
+
+```tmux
+set -g @ccm-status-bg         "#262626"   # entry-row background
+set -g @ccm-status-gutter-bg  "#1a1a1a"   # one-row gutter between main bar and entries
+set -g @ccm-status-fg         "#9E9E9E"   # default foreground
+set -g @ccm-status-fg-dim     "#5a5a5a"   # separators / hints
+```
+
 > [!NOTE]
-> Mode 2 uses additional `status-format` lines (up to `status-format[5]` depending on project count). If other plugins also use these indices, conflicts may occur.
+> Mode 2 uses additional `status-format` slots (one gutter row plus one row per layout line, up to slot 16). If other plugins also use those indices, conflicts may occur.
 
 ### Dashboard Controls
 

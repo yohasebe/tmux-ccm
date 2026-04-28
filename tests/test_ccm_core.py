@@ -4795,44 +4795,35 @@ class TestDeriveStateFromEvents:
 
 # ─── Event log env-var switch ───
 
-class TestEventLogMode:
+class TestEventLogEnabled:
     @pytest.mark.parametrize("raw,expected", [
-        # Falsy values → explicit "off" (diagnostic kill-switch)
-        ("", "off"),
-        ("0", "off"),
-        ("off", "off"),
-        ("OFF", "off"),
-        ("no", "off"),
-        ("false", "off"),
-        # Anything else → "auto" (the default behaviour)
-        ("auto", "auto"),
-        ("AUTO", "auto"),
-        ("1", "auto"),
-        ("true", "auto"),
-        ("yes", "auto"),
-        ("on", "auto"),
-        ("garbage", "auto"),
+        # Falsy values → False (diagnostic kill-switch)
+        ("", False),
+        ("0", False),
+        ("off", False),
+        ("OFF", False),
+        ("no", False),
+        ("false", False),
+        # Anything else → True (the default behaviour)
+        ("auto", True),
+        ("AUTO", True),
+        ("1", True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        ("garbage", True),
     ])
     def test_normalizes_env_value(self, raw, expected, monkeypatch):
         monkeypatch.setenv("CCM_USE_EVENT_LOG", raw)
-        assert ccm_core._event_log_mode() == expected
+        assert ccm_core._event_log_enabled() is expected
 
-    def test_unset_defaults_to_auto(self, monkeypatch):
+    def test_unset_defaults_to_enabled(self, monkeypatch):
         monkeypatch.delenv("CCM_USE_EVENT_LOG", raising=False)
-        assert ccm_core._event_log_mode() == "auto"
+        assert ccm_core._event_log_enabled() is True
 
     def test_whitespace_trimmed_off(self, monkeypatch):
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "  off  ")
-        assert ccm_core._event_log_mode() == "off"
-
-    def test_explicit_off_is_distinct_from_unset(self, monkeypatch):
-        """`off` and unset must produce different results: unset
-        means "use the new default" (auto), explicit off means
-        "use legacy only". detect_window_state keys off this
-        distinction to skip the events.jsonl read entirely on
-        `off`."""
-        monkeypatch.setenv("CCM_USE_EVENT_LOG", "off")
-        assert ccm_core._event_log_mode() == "off"
+        assert ccm_core._event_log_enabled() is False
 
 
 # ─── auto-mode detect_window_state integration ───

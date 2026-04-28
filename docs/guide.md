@@ -238,8 +238,8 @@ To remove: `ccm remove-hooks`
 | State | Method | Details |
 |-------|--------|---------|
 | **SHELL** | Process check | No `claude` process found among window's child processes |
-| **BUSY** | Hook / JSONL / Process tree | Primary: UserPromptSubmit / PreToolUse / SubagentStart hooks. Fallbacks (any one wins): (a) the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` has a **user/assistant record** newer than `JSONL_FRESH_THRESHOLD` (5s) — Claude Code appends a record at every conversation turn boundary, so this is positive evidence the session is alive even when hooks are silent ([#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)). System metadata records (v2.1.108+ recap / `system/away_summary`, `turn_duration`, `attachment/task_reminder`, ...) are filtered out so recap generation does not register as fresh activity; (b) `claude` has a grandchild process (e.g. `bash → xcodebuild` from the Bash tool) — works around the v2.1+ UI showing an empty `❯ ` prompt above an active tool; (c) any non-MCP direct child of `claude` |
-| **IDLE** | Process tree | `claude` exists with only direct children (MCP / language servers) and a visible input prompt, with no fresh BUSY hook |
+| **BUSY** | Event log + JSONL stop_reason | Primary: the per-project event log (`hooks/<md5>.events.jsonl`) appended by every BUSY-class hook (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`/`Stop`, `PreCompact`/`PostCompact`). `derive_state_from_events` evaluates the tail as a pure function and returns BUSY while the most recent entry is start-class. Hook silence (#16047, #25655) is bridged by JSONL `stop_reason`: a fresh `tool_use` keeps BUSY across the tool-turn Stop boundary; an `end_turn` / `max_tokens` / `stop_sequence` newer than the latest event releases to IDLE within seconds. System metadata records (`system/away_summary`, `turn_duration`, `attachment/task_reminder`, `permission-mode`, `file-history-snapshot`, `last-prompt`) are filtered from JSONL activity so recap / startup housekeeping does not register as fresh activity |
+| **IDLE** | Event log + capture-pane | The event log's most recent entry is end-class (`stop`, `notify_idle`, `notify_permit`-resolved), the input prompt `❯ ` is visible, and no PERMIT footer matches. With hooks disabled the legacy fallback uses process tree + prompt visibility only |
 | **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
 | **Completion (`* elapsed`)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears. Asterisk renders green (drawing the eye to the just-completed transition); the elapsed time is dim |
 | **Multi-pane (`[N]`)** | Window inspection | Marker on every renderer (dashboard, status bar, `ccm status`) when a window holds more than one tmux pane (Agent Teams, casual splits, leftover orphan panes). Brackets dim, digit cyan. Lets you spot windows whose aggregated state may belong to a non-active pane. See "Using with Agent Teams" below for related details (sliver protection and PERMIT auto-focus) |
@@ -524,17 +524,17 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 ### Tuning examples
 
 ```bash
-# Snappier post-Stop transition (shorter BUSY lingering)
-export CCM_JSONL_ACTIVE_THRESHOLD=10
-
-# Longer ✔ marker visibility after completion
+# Longer "* elapsed" marker visibility after completion
 export CCM_COMPLETED_AT_TIMEOUT=60
-
-# More aggressive recap-phantom rejection
-export CCM_JSONL_HOOK_GAP_TOLERANCE=30
 
 # Earlier hooks.log bloat warning (10 MB)
 export CCM_HOOKS_LOG_WARN_BYTES=10485760
+
+# Lower polling cost on slow / battery-bound machines
+export CCM_STATUS_INTERVAL=10
+
+# Diagnostic kill-switch: bypass the event-log path entirely
+export CCM_USE_EVENT_LOG=off
 ```
 
 ### Interactions with Claude Code's own environment variables
