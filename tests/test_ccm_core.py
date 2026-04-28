@@ -282,10 +282,11 @@ class TestJsonlRealActivityFilter:
         jsonl_age ≈ 0 and make `jsonl_fresh_activity` fire with
         state=BUSY for the 10 s of MCP loading after every attach.
 
-        The fix is twofold: the specific housekeeping types are on
-        JSONL_NON_ACTIVITY_TYPES, AND any record lacking a parseable
-        timestamp is skipped regardless of type. This test asserts
-        the second guard directly.
+        The fix: only records whose `type` is in the
+        `JSONL_ACTIVITY_TYPES` whitelist count as activity, AND
+        records lacking a parseable timestamp are skipped even
+        within the whitelist as defence-in-depth. This test
+        asserts the timestamp guard directly.
         """
         f = self._setup_project(tmp_path, monkeypatch)
         # Hypothetical future "real" type with a malformed record
