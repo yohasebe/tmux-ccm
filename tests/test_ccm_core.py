@@ -650,94 +650,6 @@ class TestJsonlTailStopReason:
 # fired by Claude Code v2.1.108+ recap (`away_summary`) which write
 # to JSONL and fire a BUSY hook with no surrounding real activity.
 
-class TestHookBusyIdleGapDiscriminator:
-    def test_genuine_long_thinking_holds_busy(self):
-        """Long-thinking phase: hook and real activity age TOGETHER.
-        At any age, the gap stays ~0 < 60 → rule matches → BUSY."""
-        for age in (5, 30, 60, 120, 300, 599):
-            rule, state = ccm_core.evaluate_rules(
-                make_ctx(raw="IDLE", hook_state="BUSY",
-                         hook_age=age, jsonl_age=age)
-            )
-            assert (rule.name, state) == ("hook_busy_idle", "BUSY"), (
-                f"hook=jsonl={age} should still match hook_busy_idle"
-            )
-
-    def test_recap_phantom_hook_releases_busy(self):
-        """The treefold scenario: hook just fired (recap), but the last
-        real activity is several minutes old. Gap is large → rule does
-        NOT match → fall through → release."""
-        rule, state = ccm_core.evaluate_rules(
-            # Mirror the screenshot timing: BUSY hook fired ~6 minutes
-            # ago (recap), real activity is ~9.5 minutes ago.
-            make_ctx(raw="IDLE", hook_state="BUSY",
-                     hook_age=380, jsonl_age=569)
-        )
-        assert rule.name != "hook_busy_idle"
-
-    def test_recap_phantom_hook_immediately_released(self):
-        """Right at the moment recap fires: hook age 0, real activity
-        from minutes ago. Gap is the entire idle interval → release."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY",
-                     hook_age=1, jsonl_age=180)
-        )
-        assert rule.name != "hook_busy_idle"
-
-    def test_busy_within_tolerance_holds(self):
-        """real_activity slightly older than hook (within tolerance)
-        is still treated as genuine."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY",
-                     hook_age=5, jsonl_age=64)  # gap = 59 < 60
-        )
-        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
-
-    def test_busy_just_past_tolerance_releases(self):
-        """One second past the tolerance → rule does not match."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY",
-                     hook_age=5, jsonl_age=66)  # gap = 61 >= 60
-        )
-        assert rule.name != "hook_busy_idle"
-
-    def test_real_activity_newer_than_hook_holds(self):
-        """The classic case: a tool turn just produced an assistant
-        record AFTER the BUSY hook fired. real_activity_age <
-        hook_age → gap is negative → rule matches."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY",
-                     hook_age=300, jsonl_age=5)
-        )
-        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
-
-    def test_no_jsonl_path_routes_to_no_jsonl_rule(self):
-        """jsonl_age=-1 (no JSONL file) must NOT cause this rule to
-        match — the gap check requires jsonl_age >= 0. Falls through
-        to hook_busy_idle_no_jsonl instead."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY",
-                     hook_age=5, jsonl_age=-1)
-        )
-        assert rule.name == "hook_busy_idle_no_jsonl"
-        assert state == "BUSY"
-
-    def test_fresh_busy_no_jsonl_falls_through(self):
-        """hook_fresh_busy now also requires jsonl_age >= 0 (the gap
-        discriminator can't run without it). When JSONL is missing,
-        the fall-through hits hook_busy_idle_no_jsonl which still
-        produces BUSY for any age — preserving the no-JSONL safety
-        net for older Claude Code or test environments."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY",
-                     hook_age=0, jsonl_age=-1)
-        )
-        # Not hook_fresh_busy anymore (gap check needs JSONL), but
-        # state is still BUSY via the no-jsonl fallback rule.
-        assert rule.name == "hook_busy_idle_no_jsonl"
-        assert state == "BUSY"
-
-
 # ─── hooks.log canary ───
 
 class TestHooksLogWarning:
@@ -1300,40 +1212,6 @@ class TestDetectWindowRaw:
 class TestDetectWindowStateHooks:
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_idle_plus_hook_busy_returns_busy(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=BUSY → BUSY (text generation)."""
-        mock_hook.return_value = (int(time.time()), "BUSY", "")
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
-
-        state = ccm_core.detect_window_state(
-            "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
-        )
-        assert state == "BUSY"
-
-    @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.read_hook_signal")
-    def test_hook_permit_with_raw_busy(self, mock_hook, mock_tmux):
-        """raw=BUSY + hook=PERMIT → PERMIT.
-
-        During permission dialog, process tree reports BUSY (background
-        MCP servers etc.) and input prompt is not visible. PERMIT overrides.
-        """
-        hook_ts = int(time.time())
-        mock_hook.return_value = (hook_ts, "PERMIT", "")
-        mock_tmux.return_value = ""  # capture-pane: no input prompt visible
-        # claude (200) has child process (300) → raw=BUSY
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"),
-                           (300, 200, 100, "node"))
-        panes = [("0:1", "100", "%0")]
-
-        state = ccm_core.detect_window_state(
-            "0:1", "/tmp/project", "BUSY", panes, ps, "99999"
-        )
-        assert state == "PERMIT"
-
-    @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.read_hook_signal")
     def test_raw_permit_overrides_stale_busy_hook(self, mock_hook, mock_tmux):
         """capture-pane detects PERMIT footer + stale BUSY hook → PERMIT.
 
@@ -1371,45 +1249,6 @@ class TestDetectWindowStateHooks:
             "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
         )
         assert state == "PERMIT"
-
-    @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.read_hook_signal")
-    def test_permit_persists_when_raw_idle(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=PERMIT + prev=PERMIT → still PERMIT.
-
-        After user responds to permission dialog, there's a brief IDLE gap
-        before the tool subprocess starts. The fallback must NOT convert
-        this to IDLE — keep PERMIT until a hook signal (BUSY) arrives.
-        """
-        hook_ts = int(time.time()) - 3
-        mock_hook.return_value = (hook_ts, "PERMIT", "")
-        mock_tmux.return_value = ""
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
-
-        state = ccm_core.detect_window_state(
-            "0:1", "/tmp/project", "PERMIT", panes, ps, "99999"
-        )
-        assert state == "PERMIT"
-
-    @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.read_hook_signal")
-    def test_hook_busy_stays_busy_even_with_permit_text(self, mock_hook, mock_tmux):
-        """raw=IDLE + hook=BUSY + generic permission text (no footer marker) → BUSY.
-
-        The v2.1+ capture-pane PERMIT fallback only triggers on 'Tab to amend'
-        or 'ctrl+e to explain' — plain 'Do you want to proceed?' text still
-        defers to the hook signal.
-        """
-        mock_hook.return_value = (int(time.time()), "BUSY", "")
-        mock_tmux.return_value = "Do you want to proceed?\n  1. Yes\n  2. No"
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
-
-        state = ccm_core.detect_window_state(
-            "0:1", "/tmp/project", "BUSY", panes, ps, "99999"
-        )
-        assert state == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
@@ -1508,26 +1347,6 @@ class TestDetectWindowStateHooks:
 
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.read_hook_signal")
-    def test_permit_overrides_raw_busy(self, mock_hook, mock_tmux):
-        """raw=BUSY + hook=PERMIT → PERMIT (background processes don't mask permission prompt)."""
-        hook_ts = int(time.time())
-        mock_hook.return_value = (hook_ts, "PERMIT", "")
-        # window_activity is older (no user response yet)
-        mock_tmux.return_value = str(hook_ts - 5)
-        # Claude has child processes → raw would be BUSY
-        ps = make_ps_lines(
-            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
-            (300, 200, 200, "node"),  # MCP server or other child
-        )
-        panes = [("0:1", "100", "%0")]
-
-        state = ccm_core.detect_window_state(
-            "0:1", "/tmp/project", "BUSY", panes, ps, "99999"
-        )
-        assert state == "PERMIT"
-
-    @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.read_hook_signal")
     def test_permit_expires_after_max_timeout(self, mock_hook, mock_tmux):
         """Stale PERMIT signal (older than PERMIT_MAX_TIMEOUT) is ignored in hook path.
 
@@ -1546,19 +1365,6 @@ class TestDetectWindowStateHooks:
             "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
         )
         assert state == "IDLE"
-
-    @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.read_hook_signal")
-    def test_busy_signal_clears_stale_permit(self, mock_hook, mock_tmux):
-        """prev_state=PERMIT + hook=BUSY → BUSY (new signal clears old PERMIT)."""
-        mock_hook.return_value = (int(time.time()), "BUSY", "")
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
-        panes = [("0:1", "100", "%0")]
-
-        state = ccm_core.detect_window_state(
-            "0:1", "/tmp/project", "PERMIT", panes, ps, "99999"
-        )
-        assert state == "BUSY"
 
 
 
@@ -1588,223 +1394,8 @@ def make_ctx(**overrides):
 
 
 class TestFourStateModel:
-    """Tests defining the target 4-state detection model (PERMIT/BUSY/IDLE/SHELL).
-    DONE is no longer a detection state. These tests must pass after the refactor."""
-
-    def test_stop_hook_clears_busy_signal(self):
-        """After Stop fires and deletes the signal file, hook_state becomes
-        empty. With fresh JSONL (< 5s), jsonl_fresh_activity keeps BUSY
-        briefly. After JSONL ages, state transitions to IDLE."""
-        # hook_state="" (signal deleted by Stop), raw=IDLE, jsonl=2 (fresh)
-        # -> jsonl_fresh_activity -> BUSY (bridging window)
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="", jsonl_age=2)
-        )
-        assert (rule.name, state) == ("jsonl_fresh_activity", "BUSY")
-
-        # hook_state="", raw=IDLE, jsonl=10 (stale)
-        # -> default -> IDLE
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="", jsonl_age=10)
-        )
-        assert state == "IDLE"
-
-    def test_multi_turn_natural_bridge(self):
-        """Between tool calls, Stop fires (deletes signal) but JSONL is
-        fresh from the tool result. jsonl_fresh_activity bridges the gap.
-        Next PreToolUse fires BUSY hook immediately."""
-        # Tool 1 complete: hook="", jsonl=1 (tool result just written)
-        # -> jsonl_fresh_activity -> BUSY
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="", jsonl_age=1, prev_state="BUSY")
-        )
-        assert (rule.name, state) == ("jsonl_fresh_activity", "BUSY")
-
-        # Next tool starts: hook=BUSY, jsonl=0
-        # -> hook_fresh_busy -> BUSY
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=0, jsonl_age=0,
-                     prev_state="BUSY")
-        )
-        assert (rule.name, state) == ("hook_fresh_busy", "BUSY")
-
-    def test_hook_busy_jsonl_terminal_release_fires_on_esc(self):
-        """Esc-interrupt scenario for the legacy path. Mirror of the
-        derive_state_from_events Esc-fallback: stale BUSY signal +
-        raw=IDLE + JSONL terminal stop_reason fresher than the hook
-        → IDLE. Without this rule the dashboard stays stuck BUSY for
-        up to 9.5 minutes after Esc (the 60 s ESC fallback expires
-        but the legacy hook_busy_idle's 600 s window holds)."""
-        # hook fired 30 s ago, JSONL terminal stop_reason 5 s ago.
-        # JSONL is fresher than the hook → ESC-class scenario.
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=30,
-                     jsonl_age=5, jsonl_last_stop_reason="end_turn",
-                     prev_state="BUSY")
-        )
-        assert (rule.name, state) == (
-            "hook_busy_jsonl_terminal_release", "IDLE",
-        )
-
-    def test_hook_busy_jsonl_terminal_release_skipped_for_fresh_prompt(self):
-        """Regression guard: a fresh prompt right after a previous
-        turn ended must NOT trigger the release rule. The JSONL
-        terminal in that scenario belongs to the prior turn, while
-        the BUSY hook is fresh from the new prompt — hook is
-        FRESHER than JSONL, so the rule should not match. Falls
-        through to hook_busy_idle which holds BUSY normally."""
-        # New prompt: hook=BUSY just fired (age=2 s), but JSONL still
-        # carries the prior turn's end_turn from 7 s ago.
-        # hook_age (2) < jsonl_age (7) → hook is fresher than JSONL
-        # → release rule must NOT fire.
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=2,
-                     jsonl_age=7, jsonl_last_stop_reason="end_turn",
-                     prev_state="IDLE")
-        )
-        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
-
-    def test_hook_permit_jsonl_terminal_release_fires_on_accept_edits_stuck(self):
-        """Live regression caught on monadic-chat 2026-04-26 evening:
-        user accepted a permission dialog while in `accept edits on`
-        mode (raw=BUSY via PATTERN_ACCEPT_EDITS), Claude Code did
-        not fire any "permission resolved" hook, the PERMIT signal
-        stayed for 5 minutes despite a fresh JSONL end_turn. The
-        new release rule must fire and commit IDLE."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=90,
-                     jsonl_age=30, jsonl_last_stop_reason="end_turn",
-                     prev_state="PERMIT")
-        )
-        assert (rule.name, state) == (
-            "hook_permit_jsonl_terminal_release", "IDLE",
-        )
-
-    def test_hook_permit_jsonl_terminal_release_fires_on_idle_pane(self):
-        """Same release with raw=IDLE (e.g. plain `❯` mode after
-        the permission was accepted). Confirms the rule covers
-        both raw=BUSY (accept edits) and raw=IDLE."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="PERMIT", hook_age=90,
-                     jsonl_age=30, jsonl_last_stop_reason="end_turn",
-                     prev_state="PERMIT")
-        )
-        assert (rule.name, state) == (
-            "hook_permit_jsonl_terminal_release", "IDLE",
-        )
-
-    def test_hook_permit_tool_use_active_promotes_to_busy(self):
-        """Auto-approved permit case: hook=PERMIT lingers because
-        Claude Code does not fire a "permission resolved" hook, but
-        no modal is on screen (raw not PERMIT) and the JSONL shows
-        the tool is in flight (`tool_use` fresher than the hook).
-        Should show BUSY (claude responding) not PERMIT (waiting
-        on user).
-
-        Live regression caught on ccm-dev 2026-04-27 morning."""
-        # JSONL fresher than hook = tool ran AFTER permit fired
-        # (auto-approved), so claude is currently executing.
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=100,
-                     jsonl_age=20, jsonl_last_stop_reason="tool_use",
-                     prev_state="PERMIT")
-        )
-        assert (rule.name, state) == (
-            "hook_permit_tool_use_active", "BUSY",
-        )
-
-    def test_hook_permit_tool_use_active_skipped_when_modal_visible(self):
-        """raw=PERMIT (modal physically on screen) is the
-        authoritative signal — must NOT down-classify to BUSY just
-        because JSONL says tool_use. The modal is literally waiting
-        for user keypress."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="PERMIT", hook_state="PERMIT", hook_age=10,
-                     jsonl_age=5, jsonl_last_stop_reason="tool_use",
-                     prev_state="BUSY")
-        )
-        assert (rule.name, state) == ("hook_permit_blocking", "PERMIT")
-
-    def test_hook_permit_tool_use_active_skipped_when_jsonl_terminal(self):
-        """JSONL terminal stop_reason → response ended →
-        hook_permit_jsonl_terminal_release fires first (releases
-        to IDLE). The tool_use rule must not shadow it."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=100,
-                     jsonl_age=30, jsonl_last_stop_reason="end_turn",
-                     prev_state="PERMIT")
-        )
-        assert (rule.name, state) == (
-            "hook_permit_jsonl_terminal_release", "IDLE",
-        )
-
-    def test_hook_permit_tool_use_active_capped_by_window(self):
-        """Tool_use beyond BUSY_HOOK_JSONL_WINDOW (10 min) is too
-        stale to trust as an active tool — the new rule does not
-        fire, falls through to hook_permit_blocking which keeps
-        PERMIT (cosmetic stuck state, surfaced via the (Nm) UI
-        suffix)."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=120,
-                     jsonl_age=ccm_core.BUSY_HOOK_JSONL_WINDOW + 10,
-                     jsonl_last_stop_reason="tool_use",
-                     prev_state="PERMIT")
-        )
-        assert (rule.name, state) == ("hook_permit_blocking", "PERMIT")
-
-    def test_hook_permit_tool_use_active_skipped_for_dismiss_case(self):
-        """In the realistic dismiss case, PermissionRequest fired
-        AFTER the prior assistant tool_use write to JSONL — so hook
-        is FRESHER than JSONL (hook_age < jsonl_age). The new
-        rule's `hook_after_real_activity_lt=0` discriminator
-        rejects this case, falling through to the chain's IDLE
-        catch-all (default / fallback)."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="PERMIT", hook_age=10,
-                     jsonl_age=120,
-                     jsonl_last_stop_reason="tool_use",
-                     prev_state="BUSY")
-        )
-        # New rule must NOT fire; final state is IDLE
-        # (rule name varies — could be default or another fallback).
-        assert rule.name != "hook_permit_tool_use_active"
-        assert state == "IDLE"
-
-    def test_hook_permit_jsonl_terminal_release_skipped_for_fresh_permit(self):
-        """A freshly-fired PERMIT (a new permission dialog just
-        appeared) is fresher than the prior turn's JSONL terminal —
-        rule must NOT fire, hook_permit_blocking holds PERMIT."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=2,
-                     jsonl_age=10, jsonl_last_stop_reason="end_turn",
-                     prev_state="BUSY")
-        )
-        assert (rule.name, state) == ("hook_permit_blocking", "PERMIT")
-
-    def test_hook_busy_jsonl_terminal_release_skipped_for_tool_use(self):
-        """Tool execution in flight (stop_reason=tool_use) is NOT
-        a completion signal. Release rule must skip, normal BUSY hold."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=30,
-                     jsonl_age=5, jsonl_last_stop_reason="tool_use",
-                     prev_state="BUSY")
-        )
-        # Falls through past the release rule (stop_reason mismatch),
-        # then hook_busy_idle holds BUSY (jsonl_age - hook_age = -25,
-        # which is < JSONL_HOOK_GAP_TOLERANCE=60, so it matches).
-        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
-
-    def test_busy_to_idle_direct_transition(self):
-        """When Claude finishes and JSONL ages past threshold, BUSY
-        transitions directly to IDLE without passing through DONE."""
-        # prev=BUSY, raw=IDLE, hook="", jsonl past JSONL_ACTIVE_THRESHOLD
-        # -> fallback_busy_to_idle -> IDLE (not "DONE")
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="BUSY", hook_state="",
-                     jsonl_age=ccm_core.JSONL_ACTIVE_THRESHOLD + 10)
-        )
-        assert (rule.name, state) == ("fallback_busy_to_idle", "IDLE")
-        assert state != "DONE"
+    """Tests defining the 4-state detection model (PERMIT/BUSY/IDLE/SHELL).
+    DONE is not a detection state."""
 
     def test_no_done_in_state_priority(self):
         """DONE should not appear in STATE_PRIORITY or STATE_ICONS."""
@@ -1812,8 +1403,8 @@ class TestFourStateModel:
         assert "DONE" not in ccm_core.STATE_ICONS
 
     def test_no_done_in_valid_hook_states(self):
-        """DONE is no longer a valid hook state (Stop hook deletes
-        the signal file rather than writing DONE)."""
+        """DONE is not a valid hook state (Stop hook deletes the
+        signal file rather than writing DONE)."""
         assert "DONE" not in ccm_core.VALID_HOOK_STATES
 
     def test_completed_at_set_on_busy_to_idle(self):
@@ -1821,10 +1412,9 @@ class TestFourStateModel:
         from BUSY to IDLE."""
         rule = ccm_core.Rule(name="t", result="IDLE", action=ccm_core.Action.DEFAULT)
         ctx = make_ctx(prev_state="BUSY")
-        with patch.object(ccm_core, "_set_win_state") as mock_set:
+        with patch.object(ccm_core, "_set_win_state"):
             with patch.object(ccm_core, "tmux_cmd") as mock_tmux:
                 ccm_core.apply_actions("0:1", "/tmp/proj", ctx, rule, "IDLE")
-        # Should have set @ccm_completed_at
         completed_calls = [c for c in mock_tmux.call_args_list
                            if len(c[0]) > 3 and "@ccm_completed_at" in str(c[0])]
         assert len(completed_calls) > 0
@@ -1833,7 +1423,7 @@ class TestFourStateModel:
         """PERMIT -> IDLE also sets the completion marker."""
         rule = ccm_core.Rule(name="t", result="IDLE", action=ccm_core.Action.DEFAULT)
         ctx = make_ctx(prev_state="PERMIT")
-        with patch.object(ccm_core, "_set_win_state") as mock_set:
+        with patch.object(ccm_core, "_set_win_state"):
             with patch.object(ccm_core, "tmux_cmd") as mock_tmux:
                 ccm_core.apply_actions("0:1", "/tmp/proj", ctx, rule, "IDLE")
         completed_calls = [c for c in mock_tmux.call_args_list
@@ -1844,39 +1434,12 @@ class TestFourStateModel:
         """IDLE -> IDLE does NOT set the marker (no transition)."""
         rule = ccm_core.Rule(name="t", result="IDLE", action=ccm_core.Action.DEFAULT)
         ctx = make_ctx(prev_state="IDLE")
-        with patch.object(ccm_core, "_set_win_state") as mock_set:
+        with patch.object(ccm_core, "_set_win_state"):
             with patch.object(ccm_core, "tmux_cmd") as mock_tmux:
                 ccm_core.apply_actions("0:1", "/tmp/proj", ctx, rule, "IDLE")
         completed_calls = [c for c in mock_tmux.call_args_list
                            if len(c[0]) > 3 and "@ccm_completed_at" in str(c[0])]
         assert len(completed_calls) == 0
-
-    def test_permit_lifecycle_without_done(self):
-        """PERMIT -> (user approves) -> BUSY (tool runs) -> IDLE.
-        No DONE intermediate."""
-        # PERMIT dialog visible
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="BUSY", prev_state="BUSY", hook_state="PERMIT", hook_age=0)
-        )
-        assert state == "PERMIT"
-        # User approves; brief IDLE gap
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="PERMIT", hook_state="PERMIT", hook_age=6)
-        )
-        assert state == "PERMIT"  # held by fallback_permit_hold
-        # Tool runs: fresh BUSY hook
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="PERMIT", hook_state="BUSY",
-                     hook_age=0, jsonl_age=0)
-        )
-        assert state == "BUSY"
-        # Tool finishes, JSONL ages past active threshold
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="BUSY", hook_state="",
-                     jsonl_age=ccm_core.JSONL_ACTIVE_THRESHOLD + 10)
-        )
-        assert state == "IDLE"
-        assert state != "DONE"
 
 
 class TestRulePhaseAnnotations:
@@ -1925,17 +1488,6 @@ class TestRulePhaseAnnotations:
             "process_down": "shell",
             "process_shell": "shell",
             "hook_fresh_busy": "midturn",
-            "hook_permit_blocking": "permit",
-            "hook_permit_jsonl_terminal_release": "permit",
-            "hook_permit_tool_use_active": "permit",
-            "hook_busy_jsonl_terminal_release": "midturn",
-            "hook_busy_idle": "midturn",
-            "hook_busy_idle_no_jsonl": "midturn",
-            "jsonl_tool_use_pending": "between_tools",
-            "jsonl_fresh_activity": "midturn",
-            "jsonl_holds_busy": "midturn",
-            "fallback_busy_to_idle": "idle",
-            "fallback_permit_hold": "permit",
             "startup_transient_raw_busy": "startup",
             "raw_busy_passthrough": "midturn",
             "raw_permit_passthrough": "permit",
@@ -1988,281 +1540,6 @@ class TestEvaluateRules:
             make_ctx(raw="BUSY", hook_state="BUSY", hook_age=0, jsonl_age=0)
         )
         assert (rule.name, state) == ("hook_fresh_busy", "BUSY")
-
-    def test_hook_stale_busy_slow_path(self):
-        """Age >= 2 → slow path rule (hook_busy_idle).
-
-        Requires a fresh JSONL so the staleness guard does not
-        release the rule — mirrors a real session mid-activity.
-        """
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="BUSY", hook_age=5, jsonl_age=3)
-        )
-        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
-
-    def test_hook_busy_trusted_when_jsonl_keeps_up(self):
-        """Long-running tool / text generation: BUSY hook stays trusted
-        as long as JSONL is also writing records — which Claude Code
-        does continuously across tool turn boundaries.
-
-        Regression guard: previously HOOK_TIMEOUT=300 capped this rule,
-        causing fallback_busy_to_idle to fire false IDLE on long tasks.
-        Now the rule is capped by BUSY_HOOK_JSONL_WINDOW — but with
-        JSONL kept fresh by ongoing tool activity, the effective hook
-        age is irrelevant.
-        """
-        for age in (60, 299, 400, 900, 3600, 86400):
-            rule, state = ccm_core.evaluate_rules(
-                make_ctx(raw="IDLE", hook_state="BUSY", hook_age=age,
-                         prev_state="BUSY", jsonl_age=5)
-            )
-            assert (rule.name, state) == ("hook_busy_idle", "BUSY"), (
-                f"age={age} should still match hook_busy_idle"
-            )
-
-    def test_hook_busy_no_jsonl_trusted_regardless_of_age(self):
-        """When JSONL is absent entirely (edge case) there is no
-        counterevidence — the BUSY hook is trusted indefinitely via
-        the separate `hook_busy_idle_no_jsonl` rule."""
-        for age in (60, 299, 400, 900, 3600, 86400):
-            rule, state = ccm_core.evaluate_rules(
-                make_ctx(raw="IDLE", hook_state="BUSY", hook_age=age,
-                         prev_state="BUSY", jsonl_age=-1)
-            )
-            assert (rule.name, state) == ("hook_busy_idle_no_jsonl", "BUSY"), (
-                f"age={age} should match hook_busy_idle_no_jsonl"
-            )
-
-    # --- PERMIT ---
-
-    def test_hook_permit_blocking_raw_busy(self):
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="BUSY", hook_state="PERMIT", hook_age=3)
-        )
-        assert (rule.name, state) == ("hook_permit_blocking", "PERMIT")
-
-    def test_hook_permit_idle_falls_through_to_fallback(self):
-        """raw=IDLE means user moved past dialog; don't force PERMIT via rule 4."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", hook_state="PERMIT", hook_age=3, prev_state="PERMIT")
-        )
-        assert rule.name == "fallback_permit_hold"
-        assert state == "PERMIT"
-
-    def test_hook_permit_expired_no_hold(self):
-        """Expired PERMIT + prev=IDLE → default rule, state=IDLE."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE",
-                hook_state="PERMIT",
-                hook_age=ccm_core.PERMIT_MAX_TIMEOUT + 10,
-                prev_state="IDLE",
-            )
-        )
-        assert rule.name == "default"
-        assert state == "IDLE"
-
-    # --- JSONL session-log signal ---
-
-    def test_jsonl_fresh_overrides_idle_with_no_hook(self):
-        """raw=IDLE + no hook + JSONL fresh → BUSY (turn boundary just happened)."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="BUSY", jsonl_age=2)
-        )
-        assert (rule.name, state) == ("jsonl_fresh_activity", "BUSY")
-
-    def test_jsonl_stale_does_not_fire(self):
-        """JSONL stale → rule does not match, fallback wins."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="IDLE", jsonl_age=120)
-        )
-        assert rule.name == "default"
-
-    def test_jsonl_missing_does_not_fire(self):
-        """No JSONL file → rule does not match."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="BUSY", jsonl_age=-1)
-        )
-        assert rule.name == "fallback_busy_to_idle"
-
-    def test_jsonl_fresh_overrides_no_hook(self):
-        """JSONL fresh + no hook signal → BUSY (turn boundary just happened)."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE", hook_state="", hook_age=-1,
-                prev_state="IDLE", jsonl_age=1,
-            )
-        )
-        assert (rule.name, state) == ("jsonl_fresh_activity", "BUSY")
-
-    def test_jsonl_does_not_override_hook_busy(self):
-        """hook=BUSY already wins via hook_busy_idle; JSONL has nothing to add."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE", hook_state="BUSY", hook_age=10,
-                prev_state="BUSY", jsonl_age=1,
-            )
-        )
-        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
-
-    def test_jsonl_only_overrides_when_raw_idle(self):
-        """If raw is already BUSY/PERMIT, the JSONL rule must not interfere."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="BUSY", jsonl_age=1)
-        )
-        assert rule.name == "raw_busy_passthrough"
-        assert state == "BUSY"
-
-    def test_jsonl_holds_busy_through_thinking_gap(self):
-        """Short post-JSONL-fresh hold: prev=BUSY + JSONL within
-        JSONL_ACTIVE_THRESHOLD but past JSONL_FRESH_THRESHOLD.
-        Bridges the couple of seconds between "JSONL fresh" and
-        the final IDLE transition so we don't flash IDLE right
-        after a session finishes streaming.
-        """
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE",
-                prev_state="BUSY",
-                jsonl_age=10,  # past the 5s fresh threshold, within 15s hold window
-            )
-        )
-        assert (rule.name, state) == ("jsonl_holds_busy", "BUSY")
-
-    def test_jsonl_hold_stops_at_threshold(self):
-        """Beyond JSONL_ACTIVE_THRESHOLD, the hold rule releases and
-        fallback_busy_to_idle fires."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE",
-                prev_state="BUSY",
-                jsonl_age=ccm_core.JSONL_ACTIVE_THRESHOLD + 10,
-            )
-        )
-        assert (rule.name, state) == ("fallback_busy_to_idle", "IDLE")
-
-    def test_jsonl_hold_requires_prev_busy(self):
-        """The hold is scoped to BUSY continuation only — it should not
-        promote an IDLE session to BUSY just because a record was
-        written a minute ago."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="IDLE", jsonl_age=60)
-        )
-        # Should NOT match jsonl_holds_busy (prev != BUSY)
-        assert rule.name != "jsonl_holds_busy"
-
-    # --- hook_busy_idle staleness guard ---
-
-    def test_hook_busy_idle_fresh_jsonl_holds(self):
-        """hook=BUSY + JSONL fresh (well under window) → BUSY."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE",
-                hook_state="BUSY",
-                hook_age=200,
-                prev_state="BUSY",
-                jsonl_age=30,
-            )
-        )
-        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
-
-    def test_hook_busy_idle_releases_when_jsonl_stale(self):
-        """hook=BUSY for a long time + JSONL also stale past the
-        BUSY_HOOK_JSONL_WINDOW → stop trusting the hook.
-
-        Reproduces the rsyntaxtree scenario: Stop hook never fired
-        after a completed turn 16 minutes ago, the BUSY signal from
-        the last PreToolUse is ancient, and the session is actually
-        idle (visible `❯ ` prompt, no tool activity in JSONL).
-        """
-        stale = ccm_core.BUSY_HOOK_JSONL_WINDOW + 300
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE",
-                hook_state="BUSY",
-                hook_age=stale,
-                prev_state="BUSY",
-                jsonl_age=stale,
-            )
-        )
-        # Falls through to fallback_busy_to_idle → IDLE.
-        assert (rule.name, state) == ("fallback_busy_to_idle", "IDLE")
-
-    def test_hook_busy_idle_edge_just_under_window(self):
-        """Exactly 1 second under the window still counts as fresh."""
-        age = ccm_core.BUSY_HOOK_JSONL_WINDOW - 1
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE",
-                hook_state="BUSY",
-                hook_age=age,
-                prev_state="BUSY",
-                jsonl_age=age,
-            )
-        )
-        assert (rule.name, state) == ("hook_busy_idle", "BUSY")
-
-    def test_hook_busy_idle_no_jsonl_always_trusts_hook(self):
-        """If there is no JSONL file at all (jsonl_age=-1), we have
-        no counterevidence and must trust the BUSY hook regardless
-        of how old it is. Covers projects without a Claude Code
-        session log (e.g. older Claude Code or edge cases)."""
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE",
-                hook_state="BUSY",
-                hook_age=9999,       # ancient
-                prev_state="BUSY",
-                jsonl_age=-1,        # no file
-            )
-        )
-        assert (rule.name, state) == ("hook_busy_idle_no_jsonl", "BUSY")
-
-    # --- fallback (no hooks) ---
-
-    def test_fallback_busy_to_idle(self):
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="BUSY")
-        )
-        assert (rule.name, state) == ("fallback_busy_to_idle", "IDLE")
-
-    def test_fallback_permit_hold(self):
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE", prev_state="PERMIT",
-                hook_state="PERMIT", hook_age=5,
-            )
-        )
-        assert (rule.name, state) == ("fallback_permit_hold", "PERMIT")
-        assert rule.action == ccm_core.Action.HOLD_NO_WRITE
-
-    def test_fallback_permit_hold_requires_hook_signal(self):
-        """Without an active PERMIT hook, do not hold PERMIT indefinitely.
-
-        Regression guard: if Claude Code crashes during a permission
-        dialog, the PERMIT hook eventually ages out but prev_state stays
-        PERMIT in tmux. The old unconditional fallback_permit_hold would
-        keep PERMIT forever. Now we require the hook signal to still be
-        present and within PERMIT_MAX_TIMEOUT.
-        """
-        # No hook signal at all → fall through to default (IDLE)
-        rule, state = ccm_core.evaluate_rules(
-            make_ctx(raw="IDLE", prev_state="PERMIT")
-        )
-        assert rule.name == "default"
-        assert state == "IDLE"
-
-        # PERMIT hook present but expired → fall through
-        rule2, state2 = ccm_core.evaluate_rules(
-            make_ctx(
-                raw="IDLE",
-                prev_state="PERMIT",
-                hook_state="PERMIT",
-                hook_age=ccm_core.PERMIT_MAX_TIMEOUT + 10,
-            )
-        )
-        assert rule2.name == "default"
-        assert state2 == "IDLE"
 
     # --- raw_busy_passthrough / raw_permit_passthrough ---
 
@@ -2389,19 +1666,6 @@ class TestFastPath:
 
     # --- hook overrides ---
 
-    def test_hook_busy_overrides_idle(self, project_dir):
-        self._write_hook(project_dir, "BUSY", age=1)
-        assert ccm_core.evaluate_fast("IDLE", project_dir) == "BUSY"
-
-    def test_hook_permit_overrides_busy(self, project_dir):
-        self._write_hook(project_dir, "PERMIT", age=2)
-        assert ccm_core.evaluate_fast("BUSY", project_dir) == "PERMIT"
-
-    def test_hook_busy_trusted_regardless_of_age(self, project_dir):
-        """Regression guard: no HOOK_TIMEOUT cap in fast path either."""
-        self._write_hook(project_dir, "BUSY", age=900)
-        assert ccm_core.evaluate_fast("IDLE", project_dir) == "BUSY"
-
     def test_hook_permit_expired(self, project_dir):
         """Stale PERMIT hook + prev=IDLE → IDLE (not stuck PERMIT)."""
         self._write_hook(
@@ -2430,130 +1694,6 @@ class TestLifecycleSequences:
         rule, state = ccm_core.evaluate_rules(make_ctx(**ctx_kwargs))
         return rule.name, state
 
-    def test_simple_turn(self):
-        """IDLE → BUSY(fresh) → BUSY(slow) → IDLE (direct, no DONE)."""
-        # Initial idle
-        assert self._eval(raw="IDLE", prev_state="IDLE") == ("default", "IDLE")
-        # UserPromptSubmit fires BUSY hook (< 2s).
-        assert self._eval(
-            raw="IDLE", prev_state="IDLE", hook_state="BUSY", hook_age=0,
-            jsonl_age=0,
-        ) == ("hook_fresh_busy", "BUSY")
-        # Text generation continues, pipeline still sees IDLE.
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="BUSY", hook_age=5,
-            jsonl_age=3,
-        ) == ("hook_busy_idle", "BUSY")
-        # Stop fires — deletes signal file. JSONL still fresh (bridging).
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="", jsonl_age=1,
-        ) == ("jsonl_fresh_activity", "BUSY")
-        # JSONL ages past active threshold → IDLE directly
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="",
-            jsonl_age=ccm_core.JSONL_ACTIVE_THRESHOLD + 10,
-        ) == ("fallback_busy_to_idle", "IDLE")
-
-    def test_multi_turn_natural_bridge(self):
-        """BUSY → (Stop deletes signal) → JSONL bridges → BUSY continues.
-
-        Real scenario: Claude uses Bash, Stop fires (deletes signal),
-        but JSONL is fresh from the tool result. jsonl_fresh_activity
-        bridges the gap. Next PreToolUse fires BUSY hook immediately.
-        """
-        # Tool execution in progress
-        assert self._eval(
-            raw="BUSY", prev_state="BUSY", hook_state="BUSY", hook_age=0,
-            jsonl_age=0,
-        ) == ("hook_fresh_busy", "BUSY")
-        # Stop fires — deletes signal. JSONL fresh from tool result.
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="", jsonl_age=1,
-        ) == ("jsonl_fresh_activity", "BUSY")
-        # Next PreToolUse immediately fires BUSY again
-        assert self._eval(
-            raw="BUSY", prev_state="BUSY", hook_state="BUSY", hook_age=0,
-            jsonl_age=0,
-        ) == ("hook_fresh_busy", "BUSY")
-
-    def test_permit_lifecycle(self):
-        """BUSY → PERMIT → (user approves) → BUSY → IDLE (no DONE)."""
-        # Tool wants permission
-        assert self._eval(
-            raw="BUSY", prev_state="BUSY", hook_state="PERMIT", hook_age=0,
-        ) == ("hook_permit_blocking", "PERMIT")
-        # User sees dialog for a while
-        assert self._eval(
-            raw="BUSY", prev_state="PERMIT", hook_state="PERMIT", hook_age=5,
-        ) == ("hook_permit_blocking", "PERMIT")
-        # User approves; brief IDLE gap before tool actually runs.
-        assert self._eval(
-            raw="IDLE", prev_state="PERMIT", hook_state="PERMIT", hook_age=6,
-        ) == ("fallback_permit_hold", "PERMIT")
-        # Tool runs: PreToolUse fires BUSY. JSONL fresh from tool start.
-        assert self._eval(
-            raw="IDLE", prev_state="PERMIT", hook_state="BUSY",
-            hook_age=0, jsonl_age=0,
-        ) == ("hook_fresh_busy", "BUSY")
-        # Tool finishes: Stop deletes signal, JSONL ages past active threshold.
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="",
-            jsonl_age=ccm_core.JSONL_ACTIVE_THRESHOLD + 10,
-        ) == ("fallback_busy_to_idle", "IDLE")
-
-    def test_fallback_no_hooks(self):
-        """Hook signals absent entirely (old config or disabled)."""
-        # Text generation: raw=BUSY from process tree
-        assert self._eval(raw="BUSY", prev_state="IDLE") == (
-            "raw_busy_passthrough", "BUSY",
-        )
-        # Prompt returns: raw=IDLE, prev=BUSY → IDLE directly
-        assert self._eval(raw="IDLE", prev_state="BUSY") == (
-            "fallback_busy_to_idle", "IDLE",
-        )
-
-    def test_long_running_tool_stays_busy(self):
-        """Long bash / text generation: BUSY hook goes stale but state must stay BUSY.
-
-        Real incident (jwriter, 2026-04-10): a multi-minute tool chain
-        produced no PreToolUse refresh for >5 min. With the old HOOK_TIMEOUT
-        cap, the hook path failed and fallback_busy_to_done fired false DONE,
-        then fallback_done_expired → IDLE.
-
-        In the real incident, Claude Code's JSONL session log is
-        updated at every conversation turn boundary independently of
-        the hook pipeline (#25655 kills hooks but not JSONL writes).
-        So while the hook ages, JSONL stays fresh as tool calls and
-        message records accumulate. hook_busy_idle remains matched
-        because the BUSY_HOOK_JSONL_WINDOW staleness guard is scoped
-        to JSONL age, not hook age.
-        """
-        # Tool starts: fresh BUSY
-        assert self._eval(
-            raw="IDLE", hook_state="BUSY", hook_age=0, prev_state="BUSY",
-            jsonl_age=0,
-        ) == ("hook_fresh_busy", "BUSY")
-        # 1 min in — JSONL bumped by a recent tool turn boundary.
-        assert self._eval(
-            raw="IDLE", hook_state="BUSY", hook_age=60, prev_state="BUSY",
-            jsonl_age=10,
-        ) == ("hook_busy_idle", "BUSY")
-        # Past old HOOK_TIMEOUT boundary (was the regression).
-        assert self._eval(
-            raw="IDLE", hook_state="BUSY", hook_age=301, prev_state="BUSY",
-            jsonl_age=20,
-        ) == ("hook_busy_idle", "BUSY")
-        # 15 minutes in, JSONL still being written by ongoing turns.
-        assert self._eval(
-            raw="IDLE", hook_state="BUSY", hook_age=900, prev_state="BUSY",
-            jsonl_age=15,
-        ) == ("hook_busy_idle", "BUSY")
-        # Finally Stop fires — deletes signal. JSONL ages past active threshold.
-        assert self._eval(
-            raw="IDLE", hook_state="", prev_state="BUSY",
-            jsonl_age=ccm_core.JSONL_ACTIVE_THRESHOLD + 10,
-        ) == ("fallback_busy_to_idle", "IDLE")
-
     def test_shell_override_anywhere(self):
         """SHELL from process tree wins over any hook state, any prev."""
         for prev in ("IDLE", "BUSY", "PERMIT"):
@@ -2562,100 +1702,6 @@ class TestLifecycleSequences:
                     raw="SHELL", prev_state=prev, hook_state=hook, hook_age=0,
                 )
                 assert state == "SHELL", f"prev={prev} hook={hook}"
-
-    def test_tool_chain_holds_busy_via_stop_reason(self):
-        """Between-tools gap with long tool execution: BUSY must hold.
-
-        Real incident (monadic-chat, 2026-04-22): Claude runs a 1m22s
-        Ruby test suite. Sequence:
-          1. PreToolUse fires → hook=BUSY, grandchild present.
-          2. Tool runs without JSONL writes for >15s.
-          3. Tool completes → Stop deletes signal. Grandchild may
-             momentarily disappear before the next PreToolUse fires.
-          4. ccm scan at this exact moment sees raw=IDLE, hook="",
-             grandchild absent. With only the old rules, neither
-             jsonl_fresh_activity (<5s) nor jsonl_holds_busy (<15s)
-             matched → fallback_busy_to_idle → false IDLE.
-
-        The authoritative fix is `jsonl_tool_use_pending`: the latest
-        assistant record's stop_reason is "tool_use" for the whole
-        in-flight turn, so we can hold BUSY until the JSONL shows
-        "end_turn" (or some other terminal reason).
-        """
-        # Mid-tool-chain: Stop deleted the hook signal, JSONL is stale
-        # past the 15s fresh/active windows, but the assistant
-        # stop_reason is still "tool_use".
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="",
-            jsonl_age=45,
-            jsonl_last_stop_reason="tool_use",
-        ) == ("jsonl_tool_use_pending", "BUSY")
-        # Stale PERMIT signal left by a dismissed permission dialog
-        # MUST NOT keep firing this rule via the inherited tool_use
-        # tail. Regression case from 2026-04-24 (live monadic-chat
-        # trace): after the (now-fixed) PERMIT_GAP_TOLERANCE released
-        # PERMIT, the rule used to grab the still-tool_use JSONL tail
-        # and hold BUSY for the full 600 s, producing the same stuck-
-        # state symptom on the BUSY axis. The hook_missing=True gate
-        # forces fall-through when any hook signal is still present.
-        # Updated 2026-04-27: the realistic dismiss scenario has hook
-        # FRESHER than JSONL (PermissionRequest fired AFTER the prior
-        # tool_use write). With the new hook_permit_tool_use_active
-        # rule's `hook_after_real_activity_lt=0` discriminator, a
-        # dismiss with hook fresher than JSONL falls through correctly
-        # to the chain's terminal IDLE catch-all.
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="PERMIT",
-            hook_age=10,   # PermissionRequest just fired
-            jsonl_age=120, # last tool_use record was 2 min ago
-            jsonl_last_stop_reason="tool_use",
-        )[1] == "IDLE"  # rule name varies (default / fallback) but state must be IDLE
-        # Response truly ends: last assistant is end_turn → IDLE.
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="",
-            jsonl_age=45,
-            jsonl_last_stop_reason="end_turn",
-        ) == ("fallback_busy_to_idle", "IDLE")
-        # max_tokens / stop_sequence are also terminal → IDLE.
-        for terminal in ("max_tokens", "stop_sequence"):
-            assert self._eval(
-                raw="IDLE", prev_state="BUSY", hook_state="",
-                jsonl_age=45, jsonl_last_stop_reason=terminal,
-            ) == ("fallback_busy_to_idle", "IDLE"), terminal
-        # Safety cap: tool_use pending but JSONL ages beyond
-        # BUSY_HOOK_JSONL_WINDOW → give up, do not hold BUSY forever
-        # on an abandoned session.
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="",
-            jsonl_age=ccm_core.BUSY_HOOK_JSONL_WINDOW + 10,
-            jsonl_last_stop_reason="tool_use",
-        ) == ("fallback_busy_to_idle", "IDLE")
-
-    def test_tool_use_pending_does_not_override_fresh_hook(self):
-        """A fresh BUSY hook should still win — higher priority than
-        the stop_reason hold. This preserves the existing multi-project
-        race guarantee (hook_fresh_busy at priority 3)."""
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY",
-            hook_state="BUSY", hook_age=0, jsonl_age=2,
-            jsonl_last_stop_reason="tool_use",
-        ) == ("hook_fresh_busy", "BUSY")
-
-    def test_tool_use_pending_requires_prev_busy(self):
-        """We only hold BUSY across tool turns when we were BUSY
-        before. From a fresh/reset prev_state='' (e.g. just after
-        reset_window_after_attach), the stop_reason hold does NOT
-        fire — it would be wrong to promote a newly-attached window
-        to BUSY based purely on a stale JSONL assistant record.
-        With jsonl_age=60 (past the 5s/15s freshness windows) and
-        prev_state='', the match falls through to `default` → IDLE."""
-        rule, state = self._eval(
-            raw="IDLE", prev_state="",  # post-attach reset
-            hook_state="",
-            jsonl_age=60, jsonl_last_stop_reason="tool_use",
-        )
-        assert rule == "default"
-        assert state == "IDLE"
 
     def test_startup_transient_young_claude_shows_idle(self):
         """Real scenario: user `ccm attach`es to a SHELL window;
@@ -2765,91 +1811,6 @@ class TestLifecycleSequences:
         assert state == "IDLE"
 
     # ─── 2026-04-26 fix lifecycles ───
-
-    def test_esc_interrupt_release_lifecycle(self):
-        """User submits prompt, claude responds for a few seconds,
-        user presses Esc to interrupt. Claude Code does NOT fire
-        Stop / StopFailure on Esc, so the BUSY hook signal stays
-        active and the latest event log entry remains start-class.
-        Without the release rules the dashboard would stay BUSY for
-        up to 10 minutes; with them it lands on IDLE within seconds.
-
-        Walks the legacy path (event log not consulted here — that
-        is the derive_state_from_events scope, covered separately).
-        """
-        # T0: prompt submitted, hook=BUSY just fired.
-        assert self._eval(
-            raw="IDLE", prev_state="IDLE", hook_state="BUSY",
-            hook_age=0, jsonl_age=0,
-        ) == ("hook_fresh_busy", "BUSY")
-        # T0+5: claude streaming response, hook still active.
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="BUSY",
-            hook_age=5, jsonl_age=2,
-        ) == ("hook_busy_idle", "BUSY")
-        # T0+10: user presses Esc. Claude writes "Interrupted"
-        # message with stop_reason=stop_sequence to JSONL. Stop
-        # hook does NOT fire — BUSY signal stays.
-        # T0+30: jsonl_age=20 (terminal stop_reason 20s ago),
-        # hook_age=30 (BUSY signal 30s ago, fresher? no, OLDER).
-        # → release rule fires: hook_busy_jsonl_terminal_release.
-        assert self._eval(
-            raw="IDLE", prev_state="BUSY", hook_state="BUSY",
-            hook_age=30, jsonl_age=20,
-            jsonl_last_stop_reason="stop_sequence",
-        ) == ("hook_busy_jsonl_terminal_release", "IDLE")
-
-    def test_permit_release_after_silent_resolution_lifecycle(self):
-        """User accepts a permission dialog in `accept edits on`
-        mode (raw=BUSY via PATTERN_ACCEPT_EDITS). Claude Code does
-        not fire a "permission resolved" hook to clear the PERMIT
-        signal. Claude completes the response. Without the release
-        rule, the dashboard stays stuck on PERMIT (the live
-        regression observed on monadic-chat 2026-04-26 evening).
-        """
-        # T0: tool wants permission, dialog shown.
-        assert self._eval(
-            raw="PERMIT", prev_state="BUSY", hook_state="PERMIT",
-            hook_age=0,
-        ) == ("hook_permit_blocking", "PERMIT")
-        # T0+30: user accepts, modal disappears, accept-edits keeps
-        # raw=BUSY. PERMIT hook NOT cleared by Claude Code. Tool runs
-        # but no further hook events for the response (silence).
-        # T0+60: claude finishes with end_turn in JSONL.
-        # T0+90 scan: hook_age=90 (PERMIT signal stale), jsonl_age=30
-        # (terminal end_turn 30s ago, fresher than the permit hook).
-        # → release rule fires: hook_permit_jsonl_terminal_release.
-        assert self._eval(
-            raw="BUSY", prev_state="PERMIT", hook_state="PERMIT",
-            hook_age=90, jsonl_age=30,
-            jsonl_last_stop_reason="end_turn",
-        ) == ("hook_permit_jsonl_terminal_release", "IDLE")
-
-    def test_fresh_prompt_after_terminal_does_not_release(self):
-        """Regression guard for both release rules. A new prompt
-        submitted right after a previous turn ended must NOT fire
-        the release rules — the JSONL terminal in that case belongs
-        to the prior turn, not to anything related to the fresh
-        hook. Both rules use `hook_after_real_activity_lt=0` to
-        require the JSONL terminal to be fresher than the hook.
-        """
-        # New prompt: hook=BUSY just fired (age=1s, within HOOK_FRESH_THRESHOLD=2).
-        # JSONL still carries prior turn's end_turn from 8s ago.
-        # hook_age (1) < jsonl_age (8) → hook FRESHER than JSONL terminal
-        # → hook_busy_jsonl_terminal_release must NOT fire.
-        assert self._eval(
-            raw="IDLE", prev_state="IDLE", hook_state="BUSY",
-            hook_age=1, jsonl_age=8,
-            jsonl_last_stop_reason="end_turn",
-        ) == ("hook_fresh_busy", "BUSY")
-        # Same scenario but PERMIT axis: a fresh permit_req fired
-        # just after a prior turn ended. Must hold PERMIT, not release.
-        assert self._eval(
-            raw="BUSY", prev_state="BUSY", hook_state="PERMIT",
-            hook_age=2, jsonl_age=8,
-            jsonl_last_stop_reason="end_turn",
-        ) == ("hook_permit_blocking", "PERMIT")
-
 
 # ─── Property / invariant tests ───
 #
@@ -5957,18 +4918,25 @@ class TestDetectWindowStateAutoMode:
         self, mock_events, mock_hook, mock_tmux, monkeypatch
     ):
         """No event log file (or empty file) → legacy state wins.
-        Legacy detection here returns BUSY because hook_state=BUSY;
-        the event-log derive on empty events would have returned
-        IDLE, which would be wrong for an actively-running Claude."""
+        With raw=BUSY (process tree shows children + no `❯`), the
+        legacy `raw_busy_passthrough` rule commits BUSY. The
+        event-log derive on empty events would have returned None
+        (defer to legacy), so the dispatch must not short-circuit
+        on the empty-events case."""
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "auto")
         mock_events.return_value = ()  # no events recorded
-        mock_hook.return_value = (int(time.time()), "BUSY", "")
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_hook.return_value = None
+        # capture-pane: no input prompt → raw=BUSY (children exist).
+        mock_tmux.return_value = "Some output"
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "node"),  # claude grandchild → raw=BUSY
+        )
         panes = [("0:1", "100", "%0")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
-        # Legacy hook_busy_idle path → BUSY.
+        # Legacy raw_busy_passthrough → BUSY.
         assert state == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
@@ -6026,22 +4994,22 @@ class TestDetectWindowStateAutoMode:
     def test_primary_falls_back_to_legacy_on_empty_events(
         self, mock_events, mock_hook, mock_tmux, monkeypatch
     ):
-        """primary mode used to commit the empty-events IDLE
-        unconditionally; that is unsafe (see the 2026-04-25
-        observation where a 2.7-hour event-log outage would have
-        produced false IDLE for a pane actually showing a PERMIT
-        modal). primary now shares auto's None-aware dispatch:
-        when derive returns None, the legacy state wins."""
+        """primary mode shares auto's None-aware dispatch: when
+        derive returns None on empty events, the legacy state
+        wins — same outcome as auto."""
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "primary")
         mock_events.return_value = ()
-        mock_hook.return_value = (int(time.time()), "BUSY", "")
-        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_hook.return_value = None
+        mock_tmux.return_value = "Some output"
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "node"),  # raw=BUSY via grandchild
+        )
         panes = [("0:1", "100", "%0")]
         state = ccm_core.detect_window_state(
             "0:1", "/tmp/proj", "IDLE", panes, ps, "99999"
         )
-        # Empty events → derive returns None → legacy hook_busy_idle
-        # commits BUSY, the same outcome auto mode would produce.
+        # Empty events → derive returns None → legacy raw_busy_passthrough.
         assert state == "BUSY"
 
     @patch("ccm_core.tmux_cmd")

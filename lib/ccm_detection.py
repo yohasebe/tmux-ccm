@@ -189,9 +189,9 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
         # Input prompt visible → Claude is waiting for user input.
         # Even if grandchildren exist (e.g. a dev server started by
         # a previous Bash tool that is still running), Claude itself
-        # is idle. The v2.1+ case where `❯ ` appears above a STILL-
-        # ACTIVE tool is handled at the window level by hook_busy_idle
-        # and jsonl_fresh_activity rules, not here.
+        # is idle. The v2.1+ case where `❯ ` appears above a still-
+        # active tool is resolved at the window level by the event-
+        # log path, not here.
         for line in bottom:
             if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
                 return "IDLE"
@@ -485,25 +485,31 @@ TERMINAL_STOP_REASONS_TUPLE = tuple(sorted(TERMINAL_STOP_REASONS))
 
 # Priority-ordered rule table. First match wins.
 #
-# Priority rationale (4-state model: PERMIT/BUSY/IDLE/SHELL):
-#   1-2   process tree authoritative for SHELL/DOWN
-#   3     fresh BUSY hook beats stale pipeline (multi-project race)
-#   4     PERMIT blocks BUSY when dialog actually visible
-#   5-6   BUSY hook overrides idle pipeline (text generation)
-#   7     authoritative tool_use hold across tool-turn boundaries
-#   8-9   JSONL freshness signals (5 s fresh, 15 s safety net)
-#   10    BUSY → IDLE fallback (direct, no DONE intermediate)
-#   11    PERMIT hold (brief IDLE gap after user approves)
-#   12    startup transient: demote raw=BUSY during MCP loading
-#   13    raw BUSY/PERMIT passthrough
-#   14    default: trust raw state
+# The legacy rule table is the safety net for cases where the
+# event-log path (`derive_state_from_events`) returns None: empty
+# event log (no hook ever fired for this project), malformed
+# records, unknown event types, post-`session_end` transient with
+# a live pid. For projects with hooks installed and an active
+# session, the event-log path is authoritative and these rules
+# never fire.
+#
+# Priority rationale:
+#   1-2  process tree authoritative for SHELL/DOWN
+#   3    fresh BUSY hook beats stale pipeline (rare race
+#        where event-log is empty but hook just fired)
+#   4    startup transient: demote raw=BUSY during MCP loading
+#        (pid-age based, monotonic discriminator)
+#   5-6  raw BUSY/PERMIT passthrough (process-tree fallback for
+#        hook-less detection)
+#   7    default: trust raw state
 DETECTION_RULES: Tuple[Rule, ...] = (
     Rule(name="process_down", raw_in=("DOWN",), result="DOWN", phase="shell"),
     Rule(name="process_shell", raw_in=("SHELL",), result="SHELL", phase="shell"),
     Rule(
-        # Fast path: very fresh BUSY hook is trusted over any raw state.
-        # The recap discriminator (hook_after_real_activity_lt) rejects
-        # phantom hooks from v2.1.108+ recap events.
+        # Fast path: very fresh BUSY hook is trusted over any raw
+        # state. The recap discriminator
+        # (`hook_after_real_activity_lt`) rejects phantom hooks from
+        # upstream's housekeeping records (e.g. `away_summary`).
         name="hook_fresh_busy",
         hook_in=("BUSY",),
         hook_age_lt=HOOK_FRESH_THRESHOLD,
@@ -512,292 +518,15 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         phase="midturn",
     ),
     Rule(
-        # PERMIT-axis mirror of hook_busy_jsonl_terminal_release.
-        # When the user accepts a permission dialog (or the dialog
-        # disappears for any reason — Esc dismissal, auto-approval,
-        # parent process resolution) Claude Code does not always fire
-        # a "permission resolved" hook to clear the PERMIT signal.
-        # The stale PERMIT then locks `hook_permit_blocking` (which
-        # accepts raw in (BUSY, PERMIT)) — and `accept edits on` mode
-        # keeps raw=BUSY via PATTERN_ACCEPT_EDITS, so even after
-        # claude completes the response the dashboard stays stuck on
-        # ⚠ PERMIT. Observed live on monadic-chat 2026-04-26 evening
-        # after permission approval in accept-edits mode: hook stayed
-        # PERMIT for 5 minutes despite a fresh JSONL end_turn.
-        #
-        # Discriminator and threshold mirror the BUSY-axis rule.
-        # hook_after_real_activity_lt=0 keeps a freshly-fired permit_req
-        # (which is newer than any prior turn's JSONL terminal) on
-        # PERMIT — only stale PERMIT signals overtaken by a newer
-        # JSONL terminal release to IDLE. Falls through to the
-        # `hook_permit_blocking` rule below otherwise.
-        name="hook_permit_jsonl_terminal_release",
-        hook_in=("PERMIT",),
-        raw_in=("BUSY", "IDLE"),
-        jsonl_missing=False,
-        jsonl_age_lt=JSONL_HOOK_GAP_TOLERANCE,
-        jsonl_last_stop_reason_in=TERMINAL_STOP_REASONS_TUPLE,
-        hook_after_real_activity_lt=0,
-        result="IDLE",
-        phase="permit",
-    ),
-    Rule(
-        # PERMIT signal lingers but the modal is NOT on screen (raw
-        # is BUSY or IDLE, not PERMIT) AND the JSONL shows the
-        # response is actively running a tool (`stop_reason=tool_use`
-        # within the 10-minute long-tool window). This is the auto-
-        # approved permit case: Claude Code fired permit_req for a
-        # tool that the user has pre-approved (or accepted in
-        # accept-edits mode), the dialog flashed and dismissed
-        # without firing a "permission resolved" hook, and the tool
-        # is now executing. From the user's perspective they are
-        # being attended to (claude is responding) — show BUSY, not
-        # PERMIT, because PERMIT semantically means "waiting on user
-        # input" and there is nothing for the user to do.
-        #
-        # Discriminator: raw==PERMIT (modal physically visible) is
-        # still the authoritative PERMIT signal — that case falls
-        # through to `hook_permit_blocking` below. Only when the
-        # capture-pane confirms no modal AND JSONL says a tool is
-        # in flight do we re-classify as BUSY.
-        name="hook_permit_tool_use_active",
-        hook_in=("PERMIT",),
-        # raw is BUSY or IDLE — modal NOT physically on screen
-        # (raw=PERMIT is handled by hook_permit_blocking below
-        # which is the authoritative on-screen-modal signal). The
-        # `⏵⏵ accept edits on` line is on a SEPARATE line from
-        # the `❯` input prompt, so detect_pane_state can return
-        # raw=IDLE even when accept-edits is active — covering
-        # both raw values catches both rendering layouts.
-        raw_in=("BUSY", "IDLE"),
-        jsonl_missing=False,
-        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
-        jsonl_last_stop_reason_in=("tool_use",),
-        # The discriminator against "user dismissed dialog with
-        # Esc, claude is genuinely idle" (the 2026-04-24 case):
-        # in a real dismiss scenario the PermissionRequest hook
-        # fired AFTER the last assistant tool_use write to JSONL,
-        # so hook_age < jsonl_age (hook is fresher). Auto-approved
-        # case is the opposite — tool runs AFTER permit, JSONL
-        # gets updated with new records, so jsonl_age < hook_age
-        # (JSONL fresher than hook). hook_after_real_activity_lt=0
-        # encodes "JSONL strictly fresher than hook".
-        hook_after_real_activity_lt=0,
-        result="BUSY",
-        phase="permit",
-    ),
-    Rule(
-        # PERMIT dialog visible (raw != IDLE means input prompt is not
-        # showing, so the permission UI is still active).
-        name="hook_permit_blocking",
-        hook_in=("PERMIT",),
-        hook_age_lt=PERMIT_MAX_TIMEOUT,
-        raw_in=("BUSY", "PERMIT"),
-        result="PERMIT",
-        phase="permit",
-    ),
-    Rule(
-        # Symmetric to derive_state_from_events's Esc-interrupt fallback:
-        # when the BUSY hook signal is stale (the Stop hook never fired
-        # to clear it because the user pressed Esc, or the hook pipeline
-        # went silent under #16047) and the JSONL tail shows the response
-        # actually completed (terminal stop_reason fresher than the hook
-        # itself), release BUSY → IDLE. The 60 s `BUSY_HOOK_JSONL_WINDOW`
-        # cap on `hook_busy_idle` would otherwise leave the dashboard
-        # stuck for up to 9.5 minutes after an Esc interrupt — observed
-        # gap on 2026-04-26.
-        #
-        # The discriminator against "fresh prompt right after a previous
-        # turn ended" (which would have a fresh hook=BUSY but stale
-        # JSONL terminal from the prior turn) is `hook_after_real_activity_lt=0`:
-        # this rule matches only when `jsonl_age < hook_age`, i.e. the
-        # JSONL terminal is strictly fresher than the BUSY hook. A new
-        # prompt's hook=BUSY is fresher than the prior turn's terminal,
-        # so this rule will not fire for it; the existing `hook_busy_idle`
-        # rule handles it normally.
-        name="hook_busy_jsonl_terminal_release",
-        hook_in=("BUSY",),
-        raw_in=("IDLE",),
-        jsonl_missing=False,
-        jsonl_age_lt=JSONL_HOOK_GAP_TOLERANCE,
-        jsonl_last_stop_reason_in=TERMINAL_STOP_REASONS_TUPLE,
-        hook_after_real_activity_lt=0,
-        result="IDLE",
-        phase="midturn",
-    ),
-    Rule(
-        # Slow path: trust a BUSY hook signal while raw=IDLE, as long as
-        # the session's JSONL has been written within BUSY_HOOK_JSONL_WINDOW
-        # AND the BUSY hook fired within JSONL_HOOK_GAP_TOLERANCE of the
-        # last real conversation activity. Stale BUSY hooks (no JSONL
-        # corroboration) fall through to fallback_busy_to_idle.
-        name="hook_busy_idle",
-        hook_in=("BUSY",),
-        raw_in=("IDLE",),
-        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
-        jsonl_missing=False,
-        hook_after_real_activity_lt=JSONL_HOOK_GAP_TOLERANCE,
-        result="BUSY",
-        phase="midturn",
-    ),
-    Rule(
-        # Same BUSY-hook-trust path for the edge case where no JSONL
-        # exists for this project at all. Trust the BUSY hook
-        # unconditionally without JSONL corroboration.
-        name="hook_busy_idle_no_jsonl",
-        hook_in=("BUSY",),
-        raw_in=("IDLE",),
-        jsonl_missing=True,
-        result="BUSY",
-        phase="midturn",
-    ),
-    Rule(
-        # Authoritative BUSY hold across tool-turn boundaries. Claude
-        # Code fires a Stop hook at every tool boundary (not just at
-        # the true end of a response), which deletes the BUSY signal
-        # file. For long tools (> JSONL_ACTIVE_THRESHOLD), both
-        # jsonl_fresh_activity and jsonl_holds_busy expire before the
-        # next PreToolUse refreshes the signal, leaving detection to
-        # rely on the grandchild-process heuristic alone — which
-        # flickers between tools and is worse under multi-project
-        # concurrent load. The authoritative answer is in the JSONL
-        # itself: the most recent assistant record carries a
-        # stop_reason of "tool_use" whenever Claude is paused waiting
-        # on a tool result mid-response, and switches to "end_turn"
-        # (or "max_tokens" / "stop_sequence") only when the response
-        # truly ended. Hold BUSY for as long as stop_reason=tool_use
-        # is the latest signal, capped at BUSY_HOOK_JSONL_WINDOW so a
-        # phantom abandoned session cannot hold BUSY forever.
-        # Genuine between-tools gap: Claude Code's Stop hook has
-        # cleared the signal file and the next PreToolUse has not
-        # yet fired, but the JSONL tail still shows
-        # `stop_reason="tool_use"` so the response is mid-flight.
-        # Hold BUSY until the JSONL flips to a terminal stop_reason
-        # (`end_turn` / `max_tokens` / `stop_sequence`).
-        #
-        # CRITICAL: hook_missing=True is what gates this safely.
-        # When the hook signal IS present:
-        #   - hook=BUSY → `hook_busy_idle` (earlier in the chain)
-        #     handles it, with the same gap-tolerance guard against
-        #     recap-style phantom hooks.
-        #   - hook=PERMIT → must NOT trigger this rule. Allowing it
-        #     would re-create the 600 s BUSY-stuck symptom on the
-        #     mirror axis of the (just-fixed) PERMIT-stuck case:
-        #     after a user dismisses a permission dialog with Esc,
-        #     the PERMIT signal stays stale AND the JSONL tail still
-        #     carries the old tool_use stop_reason from the assistant
-        #     turn that triggered the dismissed permission. With
-        #     hook_missing=True the rule correctly falls through to
-        #     fallback_busy_to_idle in that scenario. Verified
-        #     empirically 2026-04-24 (live monadic-chat trace).
-        name="jsonl_tool_use_pending",
-        raw_in=("IDLE",),
-        prev_in=("BUSY",),
-        hook_missing=True,
-        jsonl_missing=False,
-        jsonl_last_stop_reason_in=("tool_use",),
-        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
-        result="BUSY",
-        phase="between_tools",
-    ),
-    Rule(
-        # JSONL session log shows fresh activity (within 5s). Independent
-        # of hooks — Claude Code writes records at conversation turn
-        # boundaries. Also serves as the natural multi-turn bridge: when
-        # Stop deletes the signal file, JSONL freshness keeps BUSY for
-        # a few seconds until the next PreToolUse fires.
-        name="jsonl_fresh_activity",
-        raw_in=("IDLE",),
-        jsonl_age_lt=JSONL_FRESH_THRESHOLD,
-        result="BUSY",
-        phase="midturn",
-    ),
-    Rule(
-        # Short safety net between the 5 s fresh window and the
-        # authoritative tool_use hold above: holds BUSY for
-        # JSONL_ACTIVE_THRESHOLD when the JSONL is still warm but
-        # either (a) no assistant stop_reason has been written yet
-        # (brand-new turn, user record only) or (b) the record is
-        # older schema without stop_reason. Keeps the legacy
-        # behavior as a defensive fallback for edge cases
-        # jsonl_tool_use_pending does not cover.
-        name="jsonl_holds_busy",
-        raw_in=("IDLE",),
-        prev_in=("BUSY",),
-        jsonl_age_lt=JSONL_ACTIVE_THRESHOLD,
-        result="BUSY",
-        phase="midturn",
-    ),
-    Rule(
-        # Fallback: BUSY → IDLE direct transition (no DONE intermediate).
-        # Fires when all BUSY evidence has aged out.
-        name="fallback_busy_to_idle",
-        raw_in=("IDLE",),
-        prev_in=("BUSY",),
-        result="IDLE",
-        phase="idle",
-    ),
-    Rule(
-        # Fallback: keep PERMIT for a brief grace window after the modal
-        # footer disappears (raw transitioned to IDLE). Covers the
-        # normal approve→PreToolUse handoff (sub-second, sometimes a
-        # few seconds on slow machines).
-        #
-        # Critically NOT bounded by PERMIT_MAX_TIMEOUT (600 s): if the
-        # user dismisses a permission dialog with Esc / No / Tab to
-        # amend, Claude Code does NOT fire any follow-up hook to clear
-        # the PermissionRequest signal — the hook file stays PERMIT
-        # for 10 minutes, and a 10-minute hold here would leave the
-        # dashboard frozen on PERMIT for the full window even though
-        # the modal is long gone. With PERMIT_GAP_TOLERANCE (60 s)
-        # the dashboard recovers to IDLE within a minute, while still
-        # bridging the genuine approve→PreToolUse gap. The longer
-        # PERMIT_MAX_TIMEOUT remains in effect for hook_permit_blocking,
-        # which only fires while raw is still BUSY/PERMIT (modal still
-        # visible — trust the hook signal in that case).
-        #
-        # HOLD_NO_WRITE: do not touch tmux state — preserve prior PERMIT.
-        name="fallback_permit_hold",
-        raw_in=("IDLE",),
-        prev_in=("PERMIT",),
-        hook_in=("PERMIT",),
-        hook_age_lt=PERMIT_GAP_TOLERANCE,
-        result="PERMIT",
-        action=Action.HOLD_NO_WRITE,
-        phase="permit",
-    ),
-    Rule(
-        # Startup transient: `detect_pane_state` reports raw=BUSY when
-        # the `claude` process has children (MCP servers, LSP, etc.)
-        # and the `❯` prompt has not yet been rendered. During
-        # Claude's 5–30 s startup window this signature looks
-        # identical to an in-flight streaming response, so the pane-
-        # tree heuristic returns BUSY either way.
-        #
-        # Authoritative discriminator: the `claude` process's own age
-        # from the kernel. If the pid started less than
-        # STARTUP_GRACE_SEC seconds ago and no hook signal has been
-        # written yet (no UserPromptSubmit / PreToolUse for this
-        # session), we are still in MCP-loading startup — real work
-        # cannot have begun without a hook firing. An earlier version
-        # of this rule keyed on prev_state, but during startup
-        # prev_state briefly transitions SHELL → IDLE → BUSY as raw
-        # flips (claude with no children → IDLE → MCP children
-        # appear → BUSY), making prev_state an unstable
-        # discriminator. The process age is monotonic.
-        #
-        # When the two conditions match, override the raw BUSY to
-        # IDLE so the dashboard doesn't show 10 s of false BUSY after
-        # every attach. Use HOLD_NO_WRITE so prev_state stays at
-        # whatever the detection pipeline last wrote — rewriting to
-        # IDLE here is not strictly required (the claude_pid_age
-        # check doesn't depend on prev_state) but keeps the write
-        # pattern consistent with other "this rule asserts the UI
-        # state without committing it" cases.
-        #
-        # After STARTUP_GRACE_SEC the rule stops firing; if Claude is
-        # genuinely hung during startup the state will fall back to
-        # BUSY via `raw_busy_passthrough`, which is the right outcome.
+        # Startup transient: `detect_pane_state` reports raw=BUSY
+        # when `claude` has children (MCP servers, LSP) but the `❯`
+        # prompt has not yet been rendered. During Claude's 5–30 s
+        # startup this signature is indistinguishable from a
+        # streaming response. Authoritative discriminator: the
+        # `claude` pid's own age from the kernel — if it started
+        # less than `STARTUP_GRACE_SEC` ago and no hook signal has
+        # been written yet, we are still in MCP-loading startup.
+        # HOLD_NO_WRITE preserves prev_state.
         name="startup_transient_raw_busy",
         raw_in=("BUSY",),
         hook_missing=True,
@@ -807,27 +536,19 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         phase="startup",
     ),
     Rule(
-        # raw=BUSY passthrough. Reached when none of the more
-        # specific BUSY-promoting / IDLE-demoting rules above
-        # matched — typically the no-hooks fallback path where the
-        # process tree shows BUSY (claude has children, no `❯`
-        # prompt) but neither the JSONL nor any hook signal can
-        # be consulted. Phase is `midturn` because that is what
-        # raw=BUSY actually represents at this point in the
-        # priority chain (the post-grace startup case is split off
-        # by `startup_transient_raw_busy` above; once we reach
-        # here the BUSY is a real mid-turn signal).
+        # raw=BUSY passthrough. Reached when no specific BUSY-
+        # promoting / IDLE-demoting rule above matched — typically
+        # the no-hooks process-tree fallback where claude has
+        # children but the `❯` prompt is not visible.
         name="raw_busy_passthrough",
         raw_in=("BUSY",),
         result="BUSY",
         phase="midturn",
     ),
     Rule(
-        # raw=PERMIT passthrough. Reached when none of the more
-        # specific PERMIT rules above matched — typically the no-
-        # hooks fallback where the capture-pane footer detected
-        # a permission modal but no PermissionRequest hook fired
-        # (or fired but was already cleared). Phase is `permit`.
+        # raw=PERMIT passthrough. capture-pane footer detected a
+        # permission modal but no PermissionRequest hook fired (or
+        # fired but was already cleared by the time we read).
         name="raw_permit_passthrough",
         raw_in=("PERMIT",),
         result="PERMIT",
@@ -835,10 +556,8 @@ DETECTION_RULES: Tuple[Rule, ...] = (
     ),
     Rule(
         # Default: trust raw state. Always matches (terminal rule).
-        # No phase — this fires in any unmatched case, typically
-        # for raw=IDLE from prev=IDLE/SHELL/"" where no promoting
-        # evidence exists. The surrounding context determines
-        # semantic phase.
+        # No phase — fires in any unmatched case (typically raw=IDLE
+        # from prev=IDLE/SHELL/"" with no promoting evidence).
         name="default",
         result=USE_RAW,
     ),
@@ -929,18 +648,12 @@ def evaluate_fast(prev_state, project_dir, now=None) -> str:
     return state
 
 
-# ─── Event-log state derivation (detection redesign phase 2+) ───
-# Phase 2 of the event-log redesign: state is a pure function of the
-# event-log tail plus JSONL stop_reason and process lifecycle signals.
-# The time-window heuristics that gate the legacy DETECTION_RULES
-# (JSONL_FRESH_THRESHOLD, JSONL_ACTIVE_THRESHOLD, JSONL_HOOK_GAP_TOLERANCE,
-# BUSY_HOOK_JSONL_WINDOW, and the implicit fallback_busy_to_idle timing)
-# all collapse down to a single STARTUP_GRACE_SEC pid-age check here.
-#
-# Activated by `CCM_USE_EVENT_LOG` env var:
-#   unset    — legacy DETECTION_RULES path only (no event-log read)
-#   observe  — compute both, log to trace, still use legacy (diff study)
-#   1 / primary — compute both, log, use event-log state as authoritative
+# ─── Event-log state derivation ───
+# State as a pure function of the event-log tail plus JSONL
+# stop_reason and process lifecycle signals. This is the primary
+# detection path; the legacy `DETECTION_RULES` table is the safety
+# net for projects whose event log is empty / malformed / in a
+# post-`session_end` transient.
 #
 # Event type → state class mapping. Keep in sync with the normalized
 # vocabulary emitted by `hooks/lib.sh::ccm_append_event`. Adding a
@@ -1154,19 +867,15 @@ def derive_state_from_events(events, jsonl_stop_reason,
                 if prev_t == "notify_idle":
                     return None  # phantom chain after idle
                 break  # crossed a real event; legitimate context
-        # Esc-interrupt / hook-silence fallback (2026-04-26).
-        # Latest event is start-class (prompt / pretool / posttool /
-        # subagent / compact) but JSONL shows the assistant just
-        # completed with a terminal stop_reason. The response really
-        # ended, but the Stop hook failed to fire — either the user
-        # pressed Esc to interrupt mid-stream (Esc bypasses Stop in
-        # current Claude Code), or the hook pipeline went silent
-        # (anthropics/claude-code#16047 class). The naive "defer to
-        # legacy" doesn't help here: legacy's hook_busy_idle rule
-        # holds BUSY off the stale BUSY signal that the Stop hook
-        # would have cleared, so deferring would still report BUSY.
-        # Commit IDLE directly — JSONL is the authoritative
-        # completion signal.
+        # Esc-interrupt / hook-silence fallback. Latest event is
+        # start-class (prompt / pretool / posttool / subagent /
+        # compact) but JSONL shows the assistant just completed
+        # with a terminal stop_reason. The response really ended,
+        # but the Stop hook failed to fire — either the user
+        # pressed Esc to interrupt mid-stream (Esc bypasses Stop
+        # in current Claude Code), or the hook pipeline went
+        # silent (anthropics/claude-code#16047 class). Commit IDLE
+        # directly — JSONL is the authoritative completion signal.
         # raw=="PERMIT" is the one exception — A' (capture-pane
         # footer match) wins because a modal literally on screen is
         # more authoritative than a pre-modal JSONL completion.

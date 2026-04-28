@@ -59,39 +59,19 @@ Inactive panes also drive the `(bg)` UI affordance (state=IDLE with raw=BUSY fro
 
 ## Detection backbones
 
-ccm runs two detection paths in parallel; the one that wins depends on the `CCM_USE_EVENT_LOG` env var:
-
-| Mode | Resolved state | When |
-|---|---|---|
-| `auto` (default since 2026-04-25) | event-log if `derive_state_from_events` returns non-`None`, else legacy | normal production use |
-| `off` | legacy only | explicit opt-out |
-| `observe` | legacy (event-log computed for debug trace only) | observation runs paired with `CCM_DEBUG_TRACE` |
-| `primary` | same as `auto` | reserved for future diagnostic use |
+The event-log path (`derive_state_from_events`) is the primary detection mechanism. The legacy `DETECTION_RULES` table is the safety net for cases where the event log is empty / malformed / in a post-`session_end` transient — the dispatcher commits the event-log state when derive returns non-`None`, and falls back to legacy otherwise. `CCM_USE_EVENT_LOG` selects between `auto` (default; the dispatcher above), `off` (legacy only — diagnostic opt-out), `observe` (legacy committed, event-log computed for trace diff), and `primary` (alias for `auto`).
 
 ### Legacy backbone — `DETECTION_RULES` table
 
-A priority-ordered list of `Rule` records evaluated top-to-bottom; first match wins. Each rule constrains the input `DetectionContext` (raw, hook_state, hook_age, prev_state, jsonl_age, jsonl_last_stop_reason, claude_pid_age) and emits a resolved state.
-
-Current rules (order matters — see `lib/ccm_detection.py` for the live table):
+The legacy table is intentionally minimal: it exists only to produce a sensible state when the event-log path declines to answer. All hook / JSONL freshness reasoning lives in the event-log path. Each rule constrains the input `DetectionContext` (raw, hook_state, hook_age, prev_state, jsonl_age, jsonl_last_stop_reason, claude_pid_age) and emits a resolved state. First match wins.
 
 1. `process_down` — raw=DOWN → DOWN
 2. `process_shell` — raw=SHELL → SHELL
-3. `hook_fresh_busy` — fresh BUSY hook (< 2 s) → BUSY
-4. `hook_permit_jsonl_terminal_release` — stale PERMIT hook + JSONL terminal fresher than the hook → IDLE
-5. `hook_permit_tool_use_active` — stale PERMIT hook + raw in (BUSY, IDLE) + JSONL `tool_use` fresher than the hook → BUSY (auto-approved permit, claude actively running tools)
-6. `hook_permit_blocking` — hook=PERMIT + raw in (BUSY, PERMIT) → PERMIT
-7. `hook_busy_jsonl_terminal_release` — stale BUSY hook + JSONL terminal fresher than the hook → IDLE
-8. `hook_busy_idle` — hook=BUSY + raw=IDLE + JSONL fresh enough + recap-gap guard → BUSY
-9. `hook_busy_idle_no_jsonl` — same but no JSONL exists yet → BUSY
-10. `jsonl_tool_use_pending` — between-tools gap with stop_reason=tool_use → BUSY
-11. `jsonl_fresh_activity` — JSONL written within 5 s → BUSY
-12. `jsonl_holds_busy` — JSONL within 15 s + prev=BUSY → BUSY
-13. `fallback_busy_to_idle` — prev=BUSY + JSONL aged → IDLE
-14. `fallback_permit_hold` — prev=PERMIT + raw=IDLE within `PERMIT_GAP_TOLERANCE` → PERMIT
-15. `startup_transient_raw_busy` — raw=BUSY + young pid + no hook → IDLE (MCP loading)
-16. `raw_busy_passthrough` — raw=BUSY with no other rule matched → BUSY (phase: midturn)
-17. `raw_permit_passthrough` — raw=PERMIT with no other rule matched → PERMIT (phase: permit)
-18. `default` — final catch-all → IDLE
+3. `hook_fresh_busy` — fresh BUSY hook (< 2 s) + recap-gap guard → BUSY
+4. `startup_transient_raw_busy` — raw=BUSY + young pid + no hook → IDLE (MCP loading window)
+5. `raw_busy_passthrough` — raw=BUSY → BUSY (no-hooks process-tree fallback)
+6. `raw_permit_passthrough` — raw=PERMIT → PERMIT (capture-pane modal footer fallback)
+7. `default` — final catch-all → trust raw state
 
 ### Event-log backbone — `derive_state_from_events`
 
