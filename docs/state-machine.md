@@ -27,8 +27,6 @@ When choosing between adding a new state, a new rule, or a new suffix, ask the p
 
 `STATE_PRIORITY` (used for dashboard sorting and status-bar collapsed indicator): `PERMIT < BUSY < IDLE < SHELL < DOWN`. Smaller number = higher priority.
 
-Pre-v0.3.0 the model carried a sixth detection state `CONT` (Claude paused with `stop_reason=tool_use`) emitted only by the event-log backbone. It was collapsed into `BUSY` because the user-action axis (the design principle above) does not distinguish "actively running tool" from "between tools" — both are "wait, the ball is on Claude's side". Removing the distinction simplified the state machine, the priority table, and the `ccm send` dispatcher without losing actionable information.
-
 ## Window-to-pane projection
 
 A tmux window can host multiple panes, but ccm reports a single state per window (per project). The projection rule is **aggregation with sliver exclusion**:
@@ -37,17 +35,10 @@ A tmux window can host multiple panes, but ccm reports a single state per window
 2. Aggregate the remaining panes by priority: `PERMIT > BUSY > IDLE > SHELL`. The window state is the most attention-needing pane's state.
 3. If every pane is below the threshold (impossible in practice), bypass the filter — better to give a possibly-wrong answer than fall through to SHELL on a window full of slivers.
 
-This rule satisfies two competing requirements:
+This rule satisfies two competing requirements simultaneously:
 
-- **Multi-pane Agent Teams** (and any deliberate `prefix " ` / `prefix %` split): the user can see all panes simultaneously and wants the window's reported state to surface attention-needing panes even when focus is on a different teammate. A single PERMIT teammate must show `⚠ PERMIT` for the whole window.
-- **Sliver / orphan panes** (the personal regression that motivated the rewrite): a 1-row sliver pane holding a long-idle `claude --continue` falsely reads BUSY because the prompt can't render in 1 row. Pre-fix that BUSY infected the whole window; post-fix the sliver is excluded and the visible panes drive the result.
-
-The two earlier designs were both wrong:
-
-- Pre-2026-04-27 "most-active-wins aggregation": correct for Agent Teams, broken for slivers.
-- 2026-04-27 morning's "active-pane authoritative" (commit `2024c30`, reverted): correct for slivers, broken for Agent Teams (a non-active teammate's PERMIT was invisible).
-
-Sliver-exclusion is the discriminator that lets one rule serve both cases.
+- **Multi-pane Agent Teams** (and any deliberate `prefix " ` / `prefix %` split): the user can see all panes at once and wants the window's reported state to surface attention-needing panes even when focus is on a different teammate. A single PERMIT teammate shows `⚠ PERMIT` for the whole window.
+- **Sliver / orphan panes**: a 1-row pane holding a long-idle `claude --continue` falsely reads BUSY because the prompt cannot render in 1 row. Excluding it from aggregation prevents the invisible pane from infecting the visible window state.
 
 ### Auto-focus on attach
 
@@ -88,7 +79,7 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
 5. Latest event is start-class (`prompt` / `pretool` / `posttool` / `subagent` / `compact`):
    - if `latest.type == "subagent"` AND the immediately-preceding non-subagent event is `notify_idle` AND `raw≠"PERMIT"` → `None` (phantom-subagent shortcut — Claude Code's upstream fires occasional spurious `subagent` events in idle periods; legitimate subagent invocations always come mid-conversation, never after the explicit idle marker. Walks back through stacked phantom subagent events to handle the chain case)
    - else if JSONL terminal stop_reason is fresher than the event AND `raw≠"PERMIT"` → `IDLE` (Esc interrupt or hook silence within 60 s)
-   - else if both event_age AND jsonl_age exceed `BUSY_HOOK_JSONL_WINDOW` (10 min) AND `raw≠"PERMIT"` → `None` (combined-stale fallback — defer to legacy, which resolves via `fallback_busy_to_idle` → `IDLE`. Catches other spurious upstream firings beyond the specific subagent shortcut above)
+   - else if both event_age AND jsonl_age exceed `BUSY_HOOK_JSONL_WINDOW` (10 min) AND `raw≠"PERMIT"` → `None` (combined-stale fallback — defer to legacy, which resolves to IDLE via `default`. Catches other spurious upstream firings beyond the specific subagent shortcut above)
    - else → `BUSY`
 6. Latest event is `notify_idle` → `IDLE`
 7. Latest event is `stop`:
@@ -109,11 +100,11 @@ These are tested by `TestPipelineInvariants` and `TestDeriveInvariants`:
 
 ## Key discriminators (and why they exist)
 
-### `event_age > jsonl_age` / `hook_after_real_activity_lt=0`
+### `event_age > jsonl_age`
 
-Used by both the start-class and permit-class release branches in derive, and by `hook_busy_jsonl_terminal_release` and `hook_permit_jsonl_terminal_release` in the legacy table.
+Used by the start-class and permit-class release branches in `derive_state_from_events`.
 
-The discriminator: a JSONL terminal stop_reason is treated as "this hook/event was actually resolved" only when the JSONL terminal happened **strictly after** the hook/event in question. Without this guard, a fresh prompt or a fresh permit_req fired right after a previous turn ended would falsely flip to IDLE — the JSONL terminal in that case belongs to the prior turn, not to anything related to the new event.
+The discriminator: a JSONL terminal stop_reason is treated as "this event was actually resolved" only when the JSONL terminal happened **strictly after** the event in question. Without this guard, a fresh prompt or a fresh permit_req fired right after a previous turn ended would falsely flip to IDLE — the JSONL terminal in that case belongs to the prior turn, not to anything related to the new event.
 
 This is an information-theoretic invariant ("a completion signal must post-date the event it claims to complete"), not a heuristic threshold.
 
@@ -134,8 +125,8 @@ Two parenthesised suffixes communicate sub-state context that does not warrant a
 When a `BUSY` or `PERMIT` state survives past `JSONL_HOOK_GAP_TOLERANCE` (60 s) and the auto-release rules cannot safely fire (e.g. JSONL `stop_reason=tool_use` rather than terminal), the dashboard, `ccm status`, and status bar (mode 1 / 2) append a parenthesised hook-signal age to the state cell:
 
 ```
-⚠ PERMIT (8m)  monadic-chat
-◉ BUSY  (2m)  ccm-dev
+⚠ PERMIT (8m)  myproject
+◉ BUSY  (2m)  another-project
 ```
 
 This is the principled response to the limitation — when ccm cannot prove the signal is stuck, it surfaces the age so the user can judge. Implementation: [`ccm_core.signal_age_suffix(project_dir, state)`](../lib/ccm_core.py) is the single source of truth, used by all three renderers. Threshold is bound directly to `JSONL_HOOK_GAP_TOLERANCE` so the affordance appears exactly when the auto-release window has lapsed. Other states (`IDLE` / `SHELL` / `DOWN`) suppress the suffix — their hook signals are either absent or freshness-irrelevant.
@@ -145,7 +136,7 @@ This is the principled response to the limitation — when ccm cannot prove the 
 When the committed state is `IDLE` (the conversation turn has returned to the user) but `raw=BUSY` (the process tree still shows tool / dev-server grandchildren), the renderers append `(bg)` to indicate "Claude is at rest, but something it spawned is still running":
 
 ```
-● IDLE (bg)  monadic-chat
+● IDLE (bg)  myproject
 ```
 
 Conceptually distinct from `(Nm)`: the stale-signal suffix is a "this might be stuck" hint, while `(bg)` is a positive statement about leftover processes. They are mutually exclusive — `(Nm)` only fires for `BUSY` / `PERMIT`, `(bg)` only fires for `IDLE`. `apply_actions` writes the `@ccm_bg_active` tmux window option whenever `state == "IDLE"` and `ctx.raw == "BUSY"`; clears it otherwise. `Project.bg_active` carries the flag to the renderers. `ccm send` treats `IDLE (bg)` exactly like plain `IDLE` — the user has the conversation ball regardless of background processes.
@@ -155,70 +146,68 @@ Conceptually distinct from `(Nm)`: the stale-signal suffix is a "this might be s
 When a window has more than one pane (`Project.pane_count > 1`), the dashboard, `ccm status`, and status bar (mode 1 / 2) append `[N]` (where N is the pane count) immediately after the project name:
 
 ```
-ccm-dev [3]    ⚠ PERMIT (8m)
-teaching [2]   ● IDLE
+myproject [3]    ⚠ PERMIT (8m)
+sideproject [2]  ● IDLE
 ```
 
-Brackets render dim, the digit cyan, so the eye lands on the count without reading the chrome. Surfaces the multi-pane case (Agent Teams workflow, casual `prefix " ` / `prefix %` splits, leftover orphan panes from earlier ad-hoc work) so the user can spot windows whose aggregated state may belong to a non-active pane. Combines freely with `(Nm)`, `(bg)`, and `*elapsed` — a stuck-PERMIT split-pane window reads `monadic-chat [3]   ⚠ PERMIT (8m)`. Independent of state semantics; populated unconditionally from `panes_cache` in `build_project_list`. The marker is plain ASCII (rather than a Unicode glyph like `⊞`) so column math is identical across all terminals and font configurations.
+Brackets render dim, the digit cyan, so the eye lands on the count without reading the chrome. Surfaces the multi-pane case (Agent Teams workflow, casual `prefix " ` / `prefix %` splits, leftover orphan panes from prior ad-hoc work) so the user can spot windows whose aggregated state may belong to a non-active pane. Combines freely with `(Nm)`, `(bg)`, and `*elapsed` — a stuck-PERMIT split-pane window reads `myproject [3]   ⚠ PERMIT (8m)`. Independent of state semantics; populated unconditionally from `panes_cache` in `build_project_list`. The marker is plain ASCII so column math is identical across all terminals and font configurations.
 
 ### `* elapsed` — recently completed turn
 
 When a project transitions out of BUSY / PERMIT into IDLE, the dashboard records the timestamp in `@ccm_completed_at`. For `COMPLETED_AT_TIMEOUT` seconds afterward, the rendered row carries a `* <elapsed>` annotation right after the project name (and after `[N]` if the window has multiple panes):
 
 ```
-ccm-dev * 25s   …/code/ccm
+myproject * 25s   ~/code/myproject
 ```
 
 The asterisk renders green to draw attention to the just-completed transition; the elapsed time itself is dim. Display-only — the marker does not feed back into the state machine. ASCII so column math is consistent.
 
 ## Time-window heuristics
 
-These are tunable thresholds with empirically-chosen defaults:
+Tunable thresholds with empirically-chosen defaults:
 
 | Constant | Default | Purpose |
 |---|---|---|
-| `HOOK_FRESH_THRESHOLD` | 2 s | "Hook just fired" gate for `hook_fresh_busy` |
-| `JSONL_FRESH_THRESHOLD` | 5 s | `jsonl_fresh_activity` window |
-| `JSONL_ACTIVE_THRESHOLD` | 15 s | `jsonl_holds_busy` post-Stop bridge |
-| `JSONL_HOOK_GAP_TOLERANCE` | 60 s | recap-defense gap; also the freshness window for the new release rules |
-| `PERMIT_GAP_TOLERANCE` | 60 s | `fallback_permit_hold` after-IDLE permit hold |
-| `BUSY_HOOK_JSONL_WINDOW` | 600 s | `hook_busy_idle` long-tool tolerance + final stuck-BUSY release cap |
-| `STARTUP_GRACE_SEC` | 60 s | startup transient pid-age window |
+| `HOOK_FRESH_THRESHOLD` | 2 s | legacy `hook_fresh_busy` rule's "hook just fired" gate |
+| `JSONL_HOOK_GAP_TOLERANCE` | 60 s | recap-phantom guard + Esc-release / silent-completion freshness window in derive |
+| `BUSY_HOOK_JSONL_WINDOW` | 600 s | combined-stale fallback in derive (event AND jsonl both stale → defer to legacy) |
+| `STARTUP_GRACE_SEC` | 60 s | startup transient pid-age window (legacy `startup_transient_raw_busy`) |
 | `SLIVER_HEIGHT_THRESHOLD` | 4 rows | minimum pane height to participate in window aggregation |
 
 ## Transition examples (lifecycle walk-through)
 
-### Normal turn (hooks healthy, no Esc)
+These walk the event-log path. The event sequence is the per-project tail of `$HOOK_DIR/<md5>.events.jsonl`; `jsonl_stop_reason` is the stop_reason on the most recent assistant record in `~/.claude/projects/<slug>/<sessionId>.jsonl`.
 
-| Step | Inputs | State | Rule |
+### Normal turn
+
+| Step | Latest event | jsonl_stop_reason | State |
 |---|---|---|---|
-| Start | raw=IDLE, hook=, prev=IDLE | IDLE | `default` |
-| User submits | raw=IDLE, hook=BUSY age 0, jsonl=0, prev=IDLE | BUSY | `hook_fresh_busy` |
-| Streaming | raw=IDLE, hook=BUSY age 5, jsonl=2, prev=BUSY | BUSY | `hook_busy_idle` |
-| Stop fires | raw=IDLE, hook=, jsonl=1, prev=BUSY | BUSY | `jsonl_fresh_activity` |
-| Settled | raw=IDLE, hook=, jsonl=20, prev=BUSY | IDLE | `fallback_busy_to_idle` |
+| Start | (empty) | — | (legacy) IDLE via `default` |
+| User submits | `prompt` | — | BUSY (start-class branch) |
+| Tool runs | `pretool` | `tool_use` | BUSY |
+| Stop fires | `stop` | `end_turn` | IDLE |
 
-### Esc interrupt (no Stop hook fires)
+### Esc interrupt (Stop hook does not fire)
 
-| Step | Inputs | State | Rule |
-|---|---|---|---|
-| User submits | raw=IDLE, hook=BUSY age 0, jsonl=0, prev=IDLE | BUSY | `hook_fresh_busy` |
-| Streaming | raw=IDLE, hook=BUSY age 5, jsonl=2, prev=BUSY | BUSY | `hook_busy_idle` |
-| Esc + JSONL terminal | raw=IDLE, hook=BUSY age 30, jsonl=20, jsonl_stop=stop_sequence | IDLE | `hook_busy_jsonl_terminal_release` |
+| Step | Latest event | jsonl_stop_reason | jsonl_age | State |
+|---|---|---|---|---|
+| Streaming | `prompt` | (none yet) | 2 s | BUSY |
+| User hits Esc, JSONL writes terminal | `prompt` | `stop_sequence` | 5 s (fresher than event) | IDLE (start-class release branch) |
 
-### Permission accepted, then silent completion (the monadic-chat regression)
+### Permission auto-resolves silently
 
-| Step | Inputs | State | Rule |
-|---|---|---|---|
-| Tool wants permission | raw=PERMIT, hook=PERMIT age 0 | PERMIT | `hook_permit_blocking` |
-| User accepts (modal gone, accept-edits keeps raw=BUSY) | raw=BUSY, hook=PERMIT age 30 | PERMIT | `hook_permit_blocking` |
-| Claude completes silently (no permission-resolved hook) | raw=BUSY, hook=PERMIT age 90, jsonl=30, jsonl_stop=end_turn | IDLE | `hook_permit_jsonl_terminal_release` |
+| Step | Latest event | jsonl_stop_reason | raw | State |
+|---|---|---|---|---|
+| Modal appears | `permit_req` | — | PERMIT | PERMIT |
+| User accepts, tool runs | `permit_req` | `tool_use` (fresher than event) | BUSY | BUSY (permit branch tool-use override) |
+| Tool finishes silently | `permit_req` | `end_turn` (fresher than event) | IDLE | IDLE (permit branch terminal release) |
 
 ## When editing the state machine
 
-1. Edit the rule in `DETECTION_RULES` (legacy) or the relevant branch of `derive_state_from_events` (event-log).
-2. Set the `phase` field on any new legacy rule (`shell` / `startup` / `midturn` / `between_tools` / `idle` / `permit`, or `None` for genuine catch-alls).
-3. Update `TestRulePhaseAnnotations.test_specific_rule_phase_classifications` to register the new rule.
-4. Add a parametrized test in `TestEvaluateRules` (Context built directly, no mocks).
-5. If the change introduces a new lifecycle, add a scenario test in `TestLifecycleSequences`.
-6. Run `python3 -m pytest tests/test_ccm_core.py -v` and verify both the new test and the property invariants in `TestPipelineInvariants` / `TestDeriveInvariants` still pass.
+1. Edit the relevant branch of `derive_state_from_events` (primary path) or `DETECTION_RULES` (legacy fallback).
+2. Set the `phase` field on any new legacy rule (`shell` / `startup` / `midturn` / `between_tools` / `idle` / `permit`, or `None` for genuine catch-alls). Update `TestRulePhaseAnnotations.test_specific_rule_phase_classifications` to register it.
+3. Add tests:
+   - `TestDeriveStateFromEvents` for event-log changes (Context built directly, no mocks).
+   - `TestEvaluateRules` for legacy-rule changes.
+   - `TestLifecycleSequences` for end-to-end scenarios.
+4. Run `python3 -m pytest tests/test_ccm_core.py -v` and verify property invariants in `TestPipelineInvariants` / `TestDeriveInvariants` still pass.

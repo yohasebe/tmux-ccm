@@ -128,16 +128,14 @@ JSONL_NON_ACTIVITY_TYPES = frozenset({
 JSONL_TAIL_BYTES = 32768
 # Safety cap on how many lines from the tail we will JSON-parse.
 JSONL_TAIL_MAX_LINES = 200
-# Hook-vs-real-activity gap discriminator (Phase 2 of the recap fix).
-# A BUSY hook signal fired more than this many seconds AFTER the last
-# real conversation activity is treated as a phantom hook (no
-# surrounding real work) — this is the v2.1.108 recap pattern, where
-# `away_summary` generation fires a BUSY-class hook with no
-# corresponding Stop. The `hook_busy_idle` rule uses this to release
-# stale BUSY without breaking long-thinking detection: in real
-# long-thinking, both hook_age and real_activity_age grow together
-# (the gap stays ~0), but in recap the hook is brand new while
-# real_activity is minutes old (gap >> threshold).
+# Hook-vs-real-activity gap discriminator. A BUSY hook fired more
+# than this many seconds AFTER the last real conversation activity
+# is treated as a phantom hook (no surrounding real work) — the
+# upstream `away_summary` recap fires a BUSY-class hook with no
+# corresponding Stop, and this guard rejects it. In real long-
+# thinking, hook_age and real_activity_age grow together (gap ~0);
+# in recap, the hook is brand new while real_activity is minutes
+# old (gap >> threshold).
 JSONL_HOOK_GAP_TOLERANCE = int(os.environ.get("CCM_JSONL_HOOK_GAP_TOLERANCE", "60"))
 # Cluster-SHELL-transition detection: surface a warning when a project
 # drops back to SHELL too many times in a short window. The canonical
@@ -182,11 +180,10 @@ STARTUP_GRACE_SEC = int(os.environ.get("CCM_STARTUP_GRACE_SEC", "60"))
 # render Claude's `❯` prompt + accept-edits indicator + footer, so
 # capture-pane–based prompt detection silently fails and the pane
 # falsely reads BUSY (has children, no prompt visible). Excluding
-# them from aggregation prevents an invisible sliver from infecting
-# the whole window — observed live 2026-04-27 on a `personal` window
-# whose 1-row sliver pane held a long-idle `claude --continue`. If
-# every pane is below the threshold (impossible in practice), the
-# filter is bypassed so detection still produces an answer.
+# them from aggregation prevents an invisible sliver from
+# infecting the whole window. If every pane is below the
+# threshold (impossible in practice), the filter is bypassed so
+# detection still produces an answer.
 SLIVER_HEIGHT_THRESHOLD = int(os.environ.get("CCM_SLIVER_HEIGHT_THRESHOLD", "4"))
 
 # ─── Claude Code UI patterns (update when Claude Code UI changes) ───
@@ -262,16 +259,15 @@ CLAUDE_PROCESS_NAME = "claude"
 # Processes that are always children of Claude Code and should be ignored
 # when checking for meaningful child processes (tool execution).
 IGNORED_CHILDREN = {"caffeinate"}
-# Foreground commands (`tmux #{pane_current_command}`) that indicate
-# the pane is at a shell prompt — claude may exist somewhere in the
-# process tree but is not the active foreground process. Detected
-# 2026-04-27 on a `personal` pane where the user had backgrounded
-# claude (Ctrl-Z + new shell). Used to override the process-tree
-# heuristic (which would otherwise return BUSY for the lingering
-# claude pid). Editors / pagers (vim, less, etc.) are intentionally
-# NOT in this set — those mean the user is actively doing something,
-# even if not in claude, and ccm's auto-start should not fire over
-# them.
+# Foreground commands (`tmux #{pane_current_command}`) that
+# indicate the pane is at a shell prompt — claude may exist
+# somewhere in the process tree but is not the active foreground
+# process (e.g. user did Ctrl-Z + new shell). Used to override
+# the process-tree heuristic (which would otherwise return BUSY
+# for the lingering claude pid). Editors / pagers (vim, less,
+# etc.) are intentionally NOT in this set — those mean the user
+# is actively doing something, even if not in claude, and ccm's
+# auto-start should not fire over them.
 SHELL_FOREGROUND_COMMANDS = frozenset({
     "zsh", "bash", "sh", "fish", "ksh", "csh", "tcsh", "dash", "ash",
 })
@@ -949,12 +945,14 @@ def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
     return age
 
 
-# ─── Event log reader (detection redesign phase 2+) ───
-# The per-project event log is written by `hooks/lib.sh::ccm_append_event`
-# as append-only JSONL at `$HOOK_DIR/<md5>.events.jsonl`. Each record is
+# ─── Event log reader ───
+# The per-project event log is written by
+# `hooks/lib.sh::ccm_append_event` as append-only JSONL at
+# `$HOOK_DIR/<md5>.events.jsonl`. Each record is
 # `{"ts": unix_seconds, "type": <normalized_type>}`, one per hook
-# invocation. Phase 2+ of the detection redesign derives state as a
-# pure function of the event tail; this reader is the input side.
+# invocation. State is derived as a pure function of the event
+# tail by `derive_state_from_events`; this reader is the input
+# side.
 #
 # The reader shares the tail-read + bounded-cache pattern used by
 # `_parse_jsonl_tail` so per-cycle overhead is ~0 on cache hit and a
@@ -2093,19 +2091,14 @@ def reset_window_after_attach(win_target):
        (#48069) is acknowledged. The warning will reappear only if
        NEW transitions cluster after the attach.
 
-    Notably, `@ccm_prev_state` is NOT wiped. Earlier versions cleared
-    it to force "fresh" detection, but that created a bug: attaching
-    to a SHELL window auto-starts Claude, MCP servers spawn before
-    the `❯` prompt renders, and the pane-tree heuristic reports
-    raw=BUSY for the 5–30 s startup window. Wiping prev_state to ""
-    made that transient indistinguishable from a real in-flight
-    response (both had raw=BUSY + prev=""), producing 10 s+ of
-    false BUSY on every attach. The `startup_transient_raw_busy`
-    rule in `DETECTION_RULES` relies on prev_state ∈ ("", "SHELL")
-    to identify startup authoritatively — keeping prev_state as the
-    apply_actions-written value preserves that discriminator. The
-    other wipes are cosmetic (completed_at) or per-canary
-    (shell_history); they do not participate in rule evaluation.
+    `@ccm_prev_state` is intentionally NOT wiped: the
+    `startup_transient_raw_busy` rule uses pid age as the
+    monotonic discriminator and prev_state as a corroborating
+    signal. Wiping it would conflate startup transients with
+    real in-flight responses (both raw=BUSY + prev="") and
+    produce ~10 s of false BUSY on every attach. The other wipes
+    are cosmetic (completed_at) or per-canary (shell_history);
+    they do not participate in rule evaluation.
 
     Symmetric across all attach paths — do not duplicate these
     set-option calls inline elsewhere.
@@ -2122,11 +2115,11 @@ def auto_focus_attention_pane(win_target):
     """If the window has a pane in PERMIT state and that pane is
     not currently the active one, switch focus to it.
 
-    Rationale (2026-04-27): `detect_window_raw` aggregates state
-    across panes and surfaces `⚠ PERMIT` for the whole window when
-    any pane has a permission modal up. The user attaches to that
-    window expecting to deal with the modal — but tmux drops them
-    on whichever pane was last active, which may not be the one
+    Rationale: `detect_window_raw` aggregates state across panes
+    and surfaces `⚠ PERMIT` for the whole window when any pane
+    has a permission modal up. The user attaches to that window
+    expecting to deal with the modal — but tmux drops them on
+    whichever pane was last active, which may not be the one
     actually waiting. Auto-focusing on attach saves a manual
     `prefix + arrow` step and prevents the user from typing into
     the wrong pane.

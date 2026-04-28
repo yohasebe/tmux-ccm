@@ -124,18 +124,17 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
     if not claude_pid:
         return "SHELL"
 
-    # Foreground-process override (2026-04-27, after observed personal
-    # pane stuck-BUSY): claude may exist somewhere in the process tree
-    # while the pane's foreground is actually a shell — e.g. user did
-    # Ctrl-Z on claude and dropped to a fresh zsh, or the claude pid
-    # was inherited from a parent shell but is no longer the active
-    # process. tmux's pane_current_command reports the actual
-    # foreground; if it is a shell command, the user is at a shell
-    # prompt regardless of the leftover claude pid. Auto-start can
-    # then trigger normally on the SHELL state. Editor / pager
-    # foregrounds (vim, less, etc.) are NOT in this set — those mean
-    # the user is actively doing something else and ccm should not
-    # auto-start over them.
+    # Foreground-process override: claude may exist somewhere in
+    # the process tree while the pane's foreground is actually a
+    # shell — e.g. the user did Ctrl-Z on claude and dropped to a
+    # fresh zsh, or the claude pid was inherited from a parent
+    # shell but is no longer the active process. tmux's
+    # pane_current_command reports the actual foreground; if it is
+    # a shell, the user is at a shell prompt regardless of the
+    # leftover claude pid, and auto-start can fire normally on the
+    # SHELL state. Editor / pager foregrounds (vim, less, etc.)
+    # are NOT in this set — those mean the user is actively doing
+    # something else and ccm should not auto-start over them.
     if current_command in ccm_core.SHELL_FOREGROUND_COMMANDS:
         return "SHELL"
 
@@ -367,12 +366,13 @@ class Rule:
     # than a true completion. Other stop_reasons (`end_turn`,
     # `max_tokens`, `stop_sequence`) indicate the response truly ended.
     jsonl_last_stop_reason_in: Optional[Tuple[str, ...]] = None
-    # Recap discriminator (Phase 2 of the v2.1.108 recap fix). When
-    # set, the rule matches only if the BUSY hook signal was fired
-    # within `value` seconds AFTER the last real conversation activity
+    # Recap-phantom discriminator. When set, the rule matches only
+    # if the BUSY hook signal was fired within `value` seconds
+    # AFTER the last real conversation activity
     # (`ctx.jsonl_age - ctx.hook_age < value`). Both hook_age and
     # jsonl_age must be valid (>= 0); otherwise the rule does NOT
-    # match.
+    # match. Rejects phantom hooks fired by Claude Code's recap
+    # housekeeping records.
     hook_after_real_activity_lt: Optional[int] = None
     # Session-lifecycle phase this rule belongs to. Must be one of
     # `PHASES` above, or None for genuine catch-all passthroughs
@@ -730,13 +730,11 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # No hook activity recorded yet. Could be (a) fresh Claude
         # session before first UserPromptSubmit, (b) hooks never
         # installed on this project, (c) event log file was cleaned
-        # up out from under us. The previous behaviour was to return
-        # IDLE here, which masked a 2.7-hour real outage observed
-        # 2026-04-25 where the file went missing and `ccm send` would
-        # have happily injected into a pane that was actually showing
-        # a PERMIT modal. Returning None forces caller fallback to
-        # legacy detection (capture-pane footer + JSONL heartbeat),
-        # which keeps the modal visible to the dashboard.
+        # up out from under us. Returning None forces caller
+        # fallback to legacy detection (capture-pane footer +
+        # JSONL heartbeat) so a PERMIT modal on screen stays
+        # visible to the dashboard even when the event log is
+        # silent.
         return None
 
     latest = events_seq[-1]
@@ -795,18 +793,18 @@ def derive_state_from_events(events, jsonl_stop_reason,
                 and _jsonl_fresher_than_event(latest, jsonl_age, now)):
             return "BUSY"
     elif klass == EVENT_CLASS_START:
-        # Phantom-subagent shortcut (2026-04-27). The Claude Code
-        # upstream fires occasional spurious `SubagentStart` /
-        # `SubagentStop` hooks during otherwise-idle periods (status
-        # line refresh? auto-memory? — root cause filed in memory
-        # `project_phantom_subagent`). Pattern: `... stop, notify_idle,
-        # subagent` with no follow-up activity. Legitimate subagent
-        # events always come mid-conversation (after a `prompt` or
-        # tool event); only the phantom case appears AFTER a
-        # `notify_idle` with no intervening start-class event. Walk
-        # back through any stacked subagent events; if we land on a
-        # `notify_idle` without crossing a `prompt` or tool event,
-        # the latest is phantom — defer to legacy.
+        # Phantom-subagent shortcut. Claude Code upstream
+        # occasionally fires spurious `SubagentStart` /
+        # `SubagentStop` hooks during otherwise-idle periods
+        # (cause unconfirmed; possibly status-line refresh or
+        # auto-memory). Pattern: `... stop, notify_idle, subagent`
+        # with no follow-up activity. Legitimate subagent events
+        # always come mid-conversation (after a `prompt` or tool
+        # event); only the phantom case appears AFTER a
+        # `notify_idle` with no intervening start-class event.
+        # Walk back through stacked subagent events; if we land on
+        # a `notify_idle` without crossing a `prompt` or tool
+        # event, the latest is phantom — defer to legacy.
         if t == "subagent" and raw != "PERMIT":
             for i in range(len(events_seq) - 2, -1, -1):
                 prev_event = events_seq[i]
@@ -836,10 +834,10 @@ def derive_state_from_events(events, jsonl_stop_reason,
         if (raw != "PERMIT" and _jsonl_terminal_fresher_than_event(
                 latest, jsonl_stop_reason, jsonl_age, now)):
             return "IDLE"
-        # Combined-stale fallback (2026-04-27): a start-class event
-        # with no follow-up for >BUSY_HOOK_JSONL_WINDOW (10 min)
-        # AND a similarly stale JSONL is the long-tail signature of
-        # any other spurious upstream firing (not just subagent).
+        # Combined-stale fallback: a start-class event with no
+        # follow-up for >BUSY_HOOK_JSONL_WINDOW (10 min) AND a
+        # similarly stale JSONL is the long-tail signature of any
+        # other spurious upstream firing (not just subagent).
         # Defer to legacy.
         if raw != "PERMIT":
             event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
@@ -859,15 +857,6 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # (older schema or no assistant record in tail) is
         # conservative → BUSY so that long-running tools without
         # clear evidence do not flip to false IDLE.
-        # Pre-v0.3.0 this branch returned "CONT" for the tool-use
-        # case to give the dashboard a visual hint. Removed for
-        # state-model purity: per the user-centered principle
-        # (docs/state-machine.md), state captures "does the user
-        # need to act" — and CONT and BUSY were both "wait", so
-        # they collapse into BUSY. The diagnostic distinction (was
-        # claude streaming or paused?) lives in the pane itself
-        # (look at the spinner / capture-pane) rather than in the
-        # state label.
         if jsonl_stop_reason in TERMINAL_STOP_REASONS:
             candidate = "IDLE"
         else:
@@ -910,7 +899,6 @@ def build_detection_context(win_target, project_dir, prev_state,
     claude_pid = None
     claude_pid_age = -1
     for entry in panes_cache:
-        # 3-tuple (legacy) or 4-tuple (with current_command, 2026-04-27)
         wt = entry[0]
         pane_pid = entry[1]
         if wt != win_target:
@@ -1003,20 +991,16 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     if state == "IDLE" and ctx.prev_state in ("BUSY", "PERMIT"):
         ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_completed_at", str(ctx.now))
 
-    # Background-activity affordance (option C, 2026-04-27).
-    # Conceptually: state captures "whose turn it is" (BUSY = claude
-    # is responding, IDLE = user has the ball). But process-tree
-    # detection sets raw=BUSY whenever a tool grandchild exists —
-    # including leftover dev servers / background scripts that
-    # claude started but no longer owns. The event-log path now
-    # correctly overrides those to IDLE (via the rule chain that
-    # trusts JSONL stop_reason terminal), but the background
-    # processes are still running. Surface the discrepancy as a
-    # `(bg)` UI suffix so the user knows "claude is at rest, but
-    # something it spawned is still alive". Written when the
-    # committed state is IDLE but raw says BUSY (process tree has
-    # active children/grandchildren). Cleared whenever the two
-    # agree, so a stale flag cannot survive a state change.
+    # Background-activity affordance. State captures "whose turn
+    # it is" (BUSY = claude is responding, IDLE = user has the
+    # ball). But process-tree detection sets raw=BUSY whenever a
+    # tool grandchild exists — including leftover dev servers /
+    # background scripts claude started but no longer owns.
+    # Surface the discrepancy as a `(bg)` UI suffix so the user
+    # knows "claude is at rest, but something it spawned is still
+    # alive". Written when committed state is IDLE but raw says
+    # BUSY; cleared whenever they agree, so a stale flag cannot
+    # survive a state change.
     if state == "IDLE" and ctx.raw == "BUSY":
         ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_bg_active", "1")
     elif state != "IDLE" or ctx.raw != "BUSY":
