@@ -55,11 +55,20 @@ tmux bind-key -n MouseDown1Status \
 # ccm's capture-pane handles both normal and alternate screen modes
 tmux set-environment -g CLAUDE_CODE_NO_FLICKER 1
 
-# Set status-interval to match dashboard refresh (2s) for synchronized updates.
-# inject-status runs each cycle (~0.1-0.3s per invocation, negligible CPU impact).
-_current_interval=$(tmux show-option -gv status-interval 2>/dev/null || echo 5)
-if [[ "$_current_interval" -gt 2 ]] 2>/dev/null; then
-    tmux set -g status-interval 2
+# Status-interval drives how often tmux invokes `ccm inject-status`.
+# 5 seconds keeps the steady-state CPU cost negligible (each
+# invocation is ~150-200ms, so 5 s polling is ~3-4% of one core).
+# The PERMIT-axis instant path bypasses polling entirely: hooks
+# write @ccm-permit-pending which inject-status promotes on the
+# next tick, so the actionable "user must approve a tool" signal
+# surfaces within ~hook latency, not within status-interval.
+# Override CCM_STATUS_INTERVAL in your tmux env to tune (e.g.
+# `tmux set-environment -g CCM_STATUS_INTERVAL 10`).
+_target_interval=$(tmux show-environment -g CCM_STATUS_INTERVAL 2>/dev/null | sed -n 's/^CCM_STATUS_INTERVAL=//p')
+[[ -z "$_target_interval" ]] && _target_interval=5
+_current_interval=$(tmux show-option -gv status-interval 2>/dev/null || echo 15)
+if [[ "$_current_interval" -gt "$_target_interval" ]] 2>/dev/null; then
+    tmux set -g status-interval "$_target_interval"
 fi
 
 # Restore prefix + w to default (choose-tree)
