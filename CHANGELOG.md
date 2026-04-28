@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`/model` picker / session-resume modal misclassified as BUSY.** `PATTERN_PERMIT_FOOTER` now matches `Esc to <verb>` (cancel / exit / close / quit / dismiss) so any future modal-author wording lands on PERMIT consistently. Bare `Esc to cancel` slash-menu navigation (`/hooks`, `/skills`) remains non-PERMIT.
 - **Phantom "very late" COMPLETED desktop notification.** `on-notification.sh` no longer fires `_ccm_instant_notify` on the `idle_prompt` branch (anthropics/claude-code#5186 documents 10–60s+ delay; the per-project 10 s dedup window was too short to absorb the late echo). The on-stop.sh grace-scheduled notification is now the single authoritative completion ping.
 - **`@ccm-notify` parity** — Python `notify()` and bash `_ccm_instant_notify` reach identical fire/skip decisions for every `@ccm-notify` × state combination, enforced by `tests/test_notify_parity.bats`.
+- **Mode 2 stale `status-format` slots.** The leftover-slot cleanup capped at slot 5, so a layout that previously expanded past 4 entry rows (extreme narrow terminal + many projects) could leave `status-format[6+]` populated after the row count shrank. Cleanup now extends to a `_MODE2_MAX_SLOTS=16` ceiling, covering any realistic configuration.
 
 ## [0.2.0] - 2026-04-18
 
