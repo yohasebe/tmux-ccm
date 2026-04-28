@@ -447,11 +447,32 @@ def _inject_status_impl():
         all_projects = scan_active_windows(projects, include_all=True)
         entries = build_detail_entries(all_projects, with_extras=True, current_win_target=current_win_target)
 
+        # Visual palette for the dedicated mode-2 line(s).
+        # `BG` (slightly darker than the main bar) keeps the ccm
+        # rows visually settled below. The "gutter" row uses the
+        # SAME bg as the entries plus a row of `▔` (UPPER ONE
+        # EIGHTH BLOCK) glyphs in `RULE_FG`, so visually only the
+        # top 1/8 of the row is occupied — a thin separator line
+        # rather than a full black bar. The remaining 7/8 reads
+        # as continuous bg with the entries below.
+        BG = "#262626"
+        FG_DEFAULT = "#9E9E9E"
+        FG_DIM = "#5a5a5a"
+        RULE_FG = "#3a3a3a"
+        SEP = f"  #[fg={FG_DIM}]·#[fg={FG_DEFAULT}]  "
+        SEP_VISIBLE_W = 5  # "  ·  "
+        # 200 chars covers any sane terminal; tmux truncates extra.
+        GUTTER_FMT = f"#[fill={BG}]#[fg={RULE_FG},bg={BG}]" + ("▔" * 200)
+
         if not entries:
-            fmt = "#[fill=#3a3a3a]#[fg=#666666,bg=#3a3a3a] ≡ ccm: no projects  "
+            fmt = f"#[fill={BG}]#[fg={FG_DIM},bg={BG}] ≡ ccm: no projects  "
             tmux_batch(
-                ("set", "-g", "status", "2"),
-                ("set", "-g", "status-format[1]", fmt),
+                ("set", "-g", "status", "3"),
+                ("set", "-g", "status-format[1]", GUTTER_FMT),
+                ("set", "-g", "status-format[2]", fmt),
+                ("set", "-g", "-u", "status-format[3]"),
+                ("set", "-g", "-u", "status-format[4]"),
+                ("set", "-g", "-u", "status-format[5]"),
             )
         else:
             term_width = 120
@@ -465,12 +486,15 @@ def _inject_status_impl():
             for e in entries:
                 stripped = re.sub(r'#\[[^\]]*\]', '', e)
                 total_visible_width += len(stripped) + 1  # +1 for leading space
-            # Add separators between entries (" │ " = 3 chars)
-            total_visible_width += (len(entries) - 1) * 3 if len(entries) > 1 else 0
+            total_visible_width += (len(entries) - 1) * SEP_VISIBLE_W if len(entries) > 1 else 0
             entries_per_line = max(1, len(entries) * term_width // max(total_visible_width, 1))
             num_lines = max(1, (len(entries) + entries_per_line - 1) // entries_per_line)
 
-            cmds = [("set", "-g", "status", str(num_lines + 1))]
+            # Layout: main bar + 1 gutter + N entry lines.
+            cmds = [
+                ("set", "-g", "status", str(num_lines + 2)),
+                ("set", "-g", "status-format[1]", GUTTER_FMT),
+            ]
 
             entry_idx = 0
             for line_idx in range(num_lines):
@@ -478,15 +502,19 @@ def _inject_status_impl():
                 count = 0
                 while entry_idx < len(entries) and count < entries_per_line:
                     if count > 0:
-                        line_str += " #[fg=#666666]│#[fg=#9E9E9E]"
-                    line_str += f" {entries[entry_idx]}"
+                        line_str += SEP
+                    else:
+                        line_str += " "
+                    line_str += entries[entry_idx]
                     entry_idx += 1
                     count += 1
-                fmt = f"#[fill=#3a3a3a]#[fg=#9E9E9E,bg=#3a3a3a]{line_str}  "
-                cmds.append(("set", "-g", f"status-format[{line_idx + 1}]", fmt))
+                fmt = f"#[fill={BG}]#[fg={FG_DEFAULT},bg={BG}]{line_str}  "
+                # +2 because slot 0 is main bar, slot 1 is gutter,
+                # slot 2 is first entry line.
+                cmds.append(("set", "-g", f"status-format[{line_idx + 2}]", fmt))
 
-            # Clear extra lines
-            for extra in range(num_lines + 1, 6):
+            # Clear extra lines beyond gutter + entries.
+            for extra in range(num_lines + 2, 6):
                 cmds.append(("set", "-g", "-u", f"status-format[{extra}]"))
             tmux_batch(*cmds)
 
