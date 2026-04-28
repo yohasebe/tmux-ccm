@@ -1446,87 +1446,6 @@ def build_project_list(fast=False):
     return projects
 
 
-# ─── Formatting helpers ───
-
-# Threshold above which a hook signal counts as "stale" enough to
-# surface in the UI. Bound to `JSONL_HOOK_GAP_TOLERANCE` directly
-# (not an independent constant) so the dashboard's "stale" affordance
-# automatically tracks the threshold the detection rules use to
-# decide whether to release a stuck state. Visually flagging
-# staleness BEFORE the release rules can release would be confusing
-# — the user would see the hint, do nothing, and the rule would
-# silently un-stick anyway.
-SIGNAL_STALE_DISPLAY_THRESHOLD = JSONL_HOOK_GAP_TOLERANCE  # seconds
-
-
-def signal_age_suffix(project_dir, state):
-    """Returns a parenthesised stale-signal age (e.g. " (8m)") when
-    the hook signal for this project is old enough to be worth
-    surfacing in the UI, or "" otherwise.
-
-    Only returns a non-empty string for state in {BUSY, PERMIT} —
-    those are the states where a stale hook signal can mask a real
-    state change (IDLE) that the release rules cannot confidently
-    make. SHELL / IDLE / DOWN either have no associated hook signal
-    or the signal is freshness-irrelevant.
-
-    Best-effort: never raises; returns "" on any error reading the
-    signal file."""
-    if state not in ("BUSY", "PERMIT"):
-        return ""
-    if not project_dir:
-        return ""
-    try:
-        sig = read_hook_signal(project_dir)
-    except Exception:
-        return ""
-    if sig is None:
-        return ""
-    ts = sig[0]
-    age = int(time.time()) - ts
-    if age < SIGNAL_STALE_DISPLAY_THRESHOLD:
-        return ""
-    if age < 60:
-        return f" ({age}s)"
-    if age < 3600:
-        return f" ({age // 60}m)"
-    if age < 86400:
-        return f" ({age // 3600}h)"
-    return f" ({age // 86400}d)"
-
-
-def format_elapsed(ts):
-    if not ts or ts == 0:
-        return ""
-    elapsed = int(time.time()) - ts
-    if elapsed < 0:
-        return ""
-    if elapsed < 60:
-        return f"{elapsed}s"
-    if elapsed < 3600:
-        return f"{elapsed // 60}m"
-    if elapsed < 86400:
-        return f"{elapsed // 3600}h"
-    return f"{elapsed // 86400}d"
-
-
-def format_dir(directory, prefix_len, cols):
-    d = directory.replace(os.path.expanduser("~"), "~")
-    avail = cols - prefix_len - 4
-    if avail < 10:
-        return ""
-    if len(d) <= avail:
-        return d
-    base = os.path.basename(d)
-    parent = os.path.basename(os.path.dirname(d))
-    short = f"…/{parent}/{base}"
-    if len(short) <= avail:
-        return short
-    if len(base) <= avail:
-        return base
-    return ""
-
-
 def hooks_configured():
     settings_file = os.path.expanduser("~/.claude/settings.json")
     try:
@@ -1773,187 +1692,16 @@ def periodic_autosave():
         pass
 
 
-# ─── CLI output helpers ───
+# ─── CLI helpers ───
 
-# ANSI color codes for terminal output
+# Minimal ANSI palette for ccm_core's own die/warn/info output and
+# for `ccm_commands` (`_C_BOLD` / `_C_RESET` for table headers).
+# `ccm_render` carries its own copy for the print_* helpers; the
+# duplication is intentional to keep ccm_render's import direction
+# strictly downstream of ccm_core (no circular dep).
 _C_RESET = "\033[0m"
 _C_BOLD = "\033[1m"
 _C_DIM = "\033[2m"
-_C_CYAN_CLI = "\033[36m"          # for [N] pane-count digit
-_C_GREEN_CLI = "\033[1;32m"       # for "*" completed marker
-_C_STATE = {
-    "PERMIT": "\033[1;33m",      # bold yellow
-    "BUSY": "\033[38;5;209m",    # salmon
-    "IDLE": "\033[0;34m",        # blue
-    "SHELL": "\033[38;5;245m",   # gray
-    "DOWN": "\033[2m",           # dim
-}
-
-
-def print_status():
-    """Print status of all ccm projects (for `ccm status` CLI command)."""
-    projects = build_project_list(fast=False)
-
-    if not projects:
-        print("No active projects.")
-        return
-
-    # Hooks status
-    if hooks_configured():
-        print(f"{_C_DIM}Hooks: ON{_C_RESET}")
-    else:
-        print(f"{_C_DIM}Hooks: OFF (run 'ccm setup-hooks' for improved detection){_C_RESET}")
-    warning = hooks_log_warning()
-    if warning:
-        print(f"\033[33m⚠ {warning}\033[0m")
-    disable_warning = disable_all_hooks_warning()
-    if disable_warning:
-        print(f"\033[33m⚠ {disable_warning}\033[0m")
-    managed_warning = managed_hooks_only_warning()
-    if managed_warning:
-        print(f"\033[33m⚠ {managed_warning}\033[0m")
-    for cluster_msg in shell_cluster_warnings(projects):
-        print(f"\033[33m⚠ {cluster_msg}\033[0m")
-    print()
-
-    # Header
-    print(f"{_C_BOLD}{'STATUS':<12} {'PROJECT':<20} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{_C_RESET}")
-    print(f"{'------':<12} {'-------':<20} {'------':<16} {'-----':<12} {'---------'}")
-
-    for p in projects:
-        color = _C_STATE.get(p.state, _C_DIM)
-        icon = STATE_ICONS.get(p.state, "?")
-        # State-modifier suffixes (stale-age / bg) attach to the
-        # STATUS column right after the state name. Mutually
-        # exclusive — stale only fires for BUSY/PERMIT, bg only
-        # for IDLE.
-        suffix = signal_age_suffix(p.dir, p.state)
-        if p.bg_active:
-            suffix += " (bg)"
-        status = f"{color}{icon} {p.state}{suffix}{_C_RESET}"
-        # Pane-count marker `[N]` belongs to the PROJECT column
-        # (it describes the window's pane layout, not the state)
-        # — same convention as the dashboard and status bar.
-        # Brackets dim, digit cyan to draw the eye to the count.
-        if p.pane_count > 1:
-            n = str(p.pane_count)
-            pane_marker = (
-                f" {_C_DIM}[{_C_RESET}{_C_CYAN_CLI}{n}{_C_RESET}"
-                f"{_C_DIM}]{_C_RESET}"
-            )
-            pane_marker_visible_w = 1 + 2 + len(n)  # " [N]"
-        else:
-            pane_marker = ""
-            pane_marker_visible_w = 0
-        branch = p.branch or "-"
-        ports = p.ports or "-"
-        d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
-        # ANSI codes inflate len() past visible width; reserve the
-        # extra characters in the format spec so columns still
-        # line up.
-        status_w = 22 + len(suffix)
-        name_w = 20 + (len(pane_marker) - pane_marker_visible_w if pane_marker else 0)
-        name_field = f"{p.name}{pane_marker}"
-        print(f"{status:<{status_w}} {name_field:<{name_w}} {branch:<16} {ports:<12} {d}")
-
-
-def print_ports():
-    """Print listening ports per project (for `ccm ports` CLI command)."""
-    projects = build_project_list(fast=True)
-    if not projects:
-        print("No active projects.")
-        return
-
-    print(f"{_C_BOLD}{'PROJECT':<20} {'PORTS':<16} {'DIRECTORY'}{_C_RESET}")
-    print(f"{'-------':<20} {'-----':<16} {'---------'}")
-
-    for p in projects:
-        ports = p.ports or "-"
-        d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
-        print(f"{p.name:<20} {ports:<16} {d}")
-
-
-def print_tree():
-    """Print hierarchical tree of all sessions/windows/panes (for `ccm tree`)."""
-    sessions_raw = tmux_cmd("list-sessions", "-F", "#{session_name}")
-    if not sessions_raw:
-        print("No tmux sessions.")
-        return
-
-    sessions = sorted(sessions_raw.split("\n"))
-    current_session = get_session()
-
-    # Build project state lookup
-    projects = build_project_list(fast=True)
-    project_map = {p.win_target: p for p in projects}
-
-    for si, sess in enumerate(sessions):
-        is_last_s = si == len(sessions) - 1
-        s_pre = "└── " if is_last_s else "├── "
-        s_cont = "    " if is_last_s else "│   "
-        marker = " ◀" if sess == current_session else ""
-        print(f"{s_pre}{_C_BOLD}{sess}{_C_RESET}{marker}")
-
-        windows_raw = tmux_cmd("list-windows", "-t", sess, "-F",
-                               "#{window_index}\t#{window_name}\t#{@ccm_project}\t#{@ccm_dir}")
-        if not windows_raw:
-            continue
-        windows = windows_raw.split("\n")
-
-        for wi, wline in enumerate(windows):
-            parts = wline.split("\t")
-            while len(parts) < 4:
-                parts.append("")
-            win_idx, win_name, project, wdir = parts[:4]
-            win_target = f"{sess}:{win_idx}"
-            is_last_w = wi == len(windows) - 1
-            w_pre = f"{s_cont}└── " if is_last_w else f"{s_cont}├── "
-
-            proj = project_map.get(win_target)
-            if proj:
-                color = _C_STATE.get(proj.state, _C_DIM)
-                icon = STATE_ICONS.get(proj.state, "?")
-                name = proj.name
-                extra = ""
-                if proj.branch:
-                    extra += f" ({proj.branch})"
-                if proj.ports:
-                    extra += f" [:{proj.ports}]"
-            else:
-                color = _C_DIM
-                icon = ""
-                name = win_name
-                extra = ""
-
-            d = ""
-            if wdir:
-                d = f" {wdir.replace(os.path.expanduser('~'), '~')}"
-            elif not project:
-                pane_path = tmux_cmd("display-message", "-t", win_target, "-p", "#{pane_current_path}")
-                if pane_path:
-                    d = f" {pane_path.replace(os.path.expanduser('~'), '~')}"
-
-            icon_str = f"{color}{icon}{_C_RESET} " if icon else ""
-            print(f"{w_pre}{icon_str}{name}{extra}{_C_DIM}{d}{_C_RESET}")
-
-
-def print_statusline():
-    """Print one-line status for tmux status bar (for `ccm statusline`)."""
-    projects = build_project_list(fast=True)
-    active = [p for p in projects if p.state in ("BUSY", "PERMIT")]
-    if not active:
-        return
-
-    parts = []
-    for p in active:
-        icon = STATE_ICONS.get(p.state, "?")
-        parts.append(f"{p.name}:{icon}")
-
-    print(f"| {' '.join(parts)} |")
-
-
-# ─── CLI helpers ───
-
 _C_RED = "\033[0;31m"
 _C_GREEN = "\033[0;32m"
 _C_YELLOW = "\033[1;33m"
@@ -2265,6 +2013,22 @@ from ccm_commands import (  # noqa: E402
     cmd_snapshot_save,
     cmd_stop,
     cmd_unregister,
+)
+
+
+# ─── Re-exported render API ───
+# Same pattern: ccm_render imports from ccm_core, then we re-export
+# its public surface so existing callers can keep using
+# `ccm_core.print_status` / `ccm_core.signal_age_suffix` etc.
+from ccm_render import (  # noqa: E402
+    SIGNAL_STALE_DISPLAY_THRESHOLD,
+    format_dir,
+    format_elapsed,
+    print_ports,
+    print_status,
+    print_statusline,
+    print_tree,
+    signal_age_suffix,
 )
 
 
