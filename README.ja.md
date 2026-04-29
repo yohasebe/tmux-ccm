@@ -167,6 +167,9 @@ brew install terminal-notifier
 
 ccm が `PATH` 上の有無を自動検出して優先使用します。設定不要。
 
+> [!IMPORTANT]
+> `terminal-notifier` が初めて通知を送る際、macOS は通知許可ダイアログを表示することがあります — 許可してください。導入後に ccm 通知が届かない場合は「システム設定 → 通知 → terminal-notifier」を開き「通知を許可」が ON になっているか確認してください。通知は terminal-notifier 自身の bundle id 名義で配送されるため（使用しているターミナルエミュレータには非依存）、許可は一度で済み、Terminal.app / iTerm2 / WezTerm / kitty / ghostty いずれでも同じ動作になります。
+
 通知センターに残った ccm 通知を一括削除（`terminal-notifier` が必要）:
 
 ```bash

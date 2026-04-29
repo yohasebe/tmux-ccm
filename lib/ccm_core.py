@@ -1515,11 +1515,17 @@ def notify(state, project, detail=""):
 
     tn_path = _terminal_notifier_path()
     if tn_path:
+        # Intentionally NO `-sender com.apple.Terminal`. Specifying
+        # a sender bundle id makes macOS deliver the notification
+        # under that app's identity, which silently drops it for
+        # every user not actually running Terminal.app (iTerm2,
+        # WezTerm, kitty, ghostty, …). Letting terminal-notifier
+        # use its own bundle id means the user grants notification
+        # permission once and it works regardless of terminal.
         cmd_args = [tn_path,
                     "-message", body,
                     "-title", title,
-                    "-group", group_id,
-                    "-sender", "com.apple.Terminal"]
+                    "-group", group_id]
         if sound:
             cmd_args.extend(["-sound", sound])
         try:
@@ -1554,15 +1560,16 @@ def clear_notifications():
     Center. Requires `terminal-notifier` (the only command-line
     way to enumerate / remove macOS notifications).
 
-    `notify()` sends with `-sender com.apple.Terminal`, and
-    terminal-notifier scopes -remove to the matching sender, so
-    the call here must pass the same `-sender` value or the
-    remove silently no-ops. Notifications that pre-date the
-    terminal-notifier integration (delivered via `osascript`)
-    have no programmatic remove path and remain in Notification
-    Center until the user dismisses them manually — `osascript
-    display notification` does not expose an identifier the
-    system will accept for later removal.
+    `notify()` sends without `-sender`, so the notification flows
+    under terminal-notifier's own bundle id. `-remove ALL` (without
+    a `-sender` filter) likewise scopes to that same identity, so
+    the send and remove sides match without any explicit sender
+    coupling. Notifications that pre-date the terminal-notifier
+    integration (delivered via `osascript`) have no programmatic
+    remove path and remain in Notification Center until the user
+    dismisses them manually — `osascript display notification`
+    does not expose an identifier the system will accept for later
+    removal.
 
     Returns 0 on success, -1 if terminal-notifier is not
     installed.
@@ -1572,7 +1579,7 @@ def clear_notifications():
         return -1
     try:
         subprocess.run(
-            [tn_path, "-remove", "ALL", "-sender", "com.apple.Terminal"],
+            [tn_path, "-remove", "ALL"],
             capture_output=True, text=True, timeout=5,
         )
         return 0

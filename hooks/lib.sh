@@ -347,10 +347,19 @@ _ccm_instant_notify() {
     # than accumulate in macOS Notification Center, which prevents
     # the WindowServer / NotificationCenter CPU drain that long-
     # running ccm sessions can otherwise produce.
+    #
+    # Notably we do NOT pass `-sender com.apple.Terminal`. Earlier
+    # versions did, intending to render the notification with the
+    # Terminal.app icon, but that meant the notification was
+    # delivered under Terminal.app's bundle identity — and macOS
+    # silently drops it for every user not running Terminal.app
+    # (iTerm2, WezTerm, kitty, ghostty, ...). Without the flag the
+    # notification flows under terminal-notifier's own bundle id,
+    # which the user authorises once and is independent of which
+    # terminal emulator they actually use.
     if command -v terminal-notifier &>/dev/null; then
         local tn_args=(-message "$body" -title "$title"
-                       -group "ccm-${project}"
-                       -sender "com.apple.Terminal")
+                       -group "ccm-${project}")
         if [[ "$sound_setting" == "on" ]]; then
             local sound_name
             sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null)
