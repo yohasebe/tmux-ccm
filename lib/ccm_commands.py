@@ -220,11 +220,16 @@ def cmd_snapshot_delete(name=""):
 
 
 def _autosave_trigger():
-    """Trigger autosave in background (non-blocking)."""
+    """Trigger autosave in background (non-blocking).
+
+    Autosave is best-effort — its failure should not crash the
+    caller. We do, however, surface the failure as a warning so
+    the user is not left silently believing a snapshot exists.
+    """
     try:
         cmd_snapshot_save("_autosave", quiet=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        ccm_core.ccm_warn(f"Autosave failed: {exc}")
 
 
 def cmd_add(directory, name="", start_claude=True, _loading=False):
@@ -610,13 +615,16 @@ def cmd_stop(target):
             print("No active projects.")
             return
 
-        # Auto-save before stopping
+        # Auto-save before stopping. Best-effort: if it fails, warn
+        # the user but proceed with the stop — the previous behaviour
+        # of silently swallowing the error left users believing a
+        # snapshot existed when it did not.
         ccm_core.init_dirs()
         try:
             cmd_snapshot_save("_autosave", quiet=True)
             ccm_core.ccm_info("Auto-saved snapshot: _autosave")
-        except Exception:
-            pass
+        except Exception as exc:
+            ccm_core.ccm_warn(f"Autosave failed: {exc} — proceeding with stop")
 
         for w_idx, _, project, _ in windows:
             ccm_core.tmux_cmd("kill-window", "-t", f"{session}:{w_idx}")

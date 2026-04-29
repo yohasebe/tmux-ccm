@@ -489,6 +489,20 @@ def _inject_status_impl():
             total_visible_width += (len(entries) - 1) * SEP_VISIBLE_W if len(entries) > 1 else 0
             entries_per_line = max(1, len(entries) * term_width // max(total_visible_width, 1))
             num_lines = max(1, (len(entries) + entries_per_line - 1) // entries_per_line)
+            # Cap num_lines at what `_clear_mode2_slots_above` can
+            # actually clean up. Without this, an extreme degenerate
+            # case (very narrow terminal × many projects) could write
+            # to slots beyond `_MODE2_MAX_SLOTS`, and the next render
+            # with a smaller layout would leave the high slots stale.
+            # Slot 1 is the gutter, so `num_lines + 1 == _MODE2_MAX_SLOTS`
+            # is the highest entry slot we may write.
+            max_entry_lines = _MODE2_MAX_SLOTS - 1
+            if num_lines > max_entry_lines:
+                num_lines = max_entry_lines
+                # Pack remaining entries into the last visible line so
+                # nothing silently disappears — better to render the
+                # last row crowded than to drop projects from view.
+                entries_per_line = max(1, (len(entries) + num_lines - 1) // num_lines)
 
             # Layout: main bar + 1 gutter + N entry lines.
             cmds = [
@@ -559,12 +573,49 @@ def _clear_mode2_slots_above(highest_used: int):
     ]
 
 
+_TMUX_COLOR_NAMES = frozenset({
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    "default", "terminal", "brightblack", "brightred", "brightgreen",
+    "brightyellow", "brightblue", "brightmagenta", "brightcyan", "brightwhite",
+})
+
+_TMUX_COLOR_RE = re.compile(
+    r"^(?:"
+    r"#[0-9a-fA-F]{3}"        # #RGB
+    r"|#[0-9a-fA-F]{6}"       # #RRGGBB
+    r"|colour\d{1,3}"         # colourN (palette index, tmux spelling)
+    r"|color\d{1,3}"          # colorN (alias accepted by tmux)
+    r")$"
+)
+
+
+def _is_valid_color(value: str) -> bool:
+    """Return True if `value` is something tmux's `bg=` / `fg=` will
+    accept. Accepts hex (`#RGB` / `#RRGGBB`), `colour123` palette
+    indices, and the named colours tmux understands. Rejects everything
+    else so a typo'd `@ccm-status-bg` does not silently produce a
+    blank status bar.
+    """
+    if not value:
+        return False
+    if value.lower() in _TMUX_COLOR_NAMES:
+        return True
+    return bool(_TMUX_COLOR_RE.match(value))
+
+
 def _opt_color(name: str, default: str) -> str:
-    """Return tmux global option `name` if set, else `default`.
-    Used for the user-overridable mode-2 colour palette.
+    """Return tmux global option `name` if set to a valid colour,
+    else `default`. Used for the user-overridable mode-2 colour
+    palette. Validates the value against tmux's accepted colour
+    syntax — invalid input falls back to the default rather than
+    being passed through to a malformed `#[bg=garbage]` directive.
     """
     val = tmux_cmd("show-option", "-gqv", name)
-    return val.strip() if val and val.strip() else default
+    if val:
+        candidate = val.strip()
+        if _is_valid_color(candidate):
+            return candidate
+    return default
 
 
 def _cleanup_extra_lines():

@@ -264,4 +264,27 @@ class TestOptColor:
         monkeypatch.setattr(inject_status, "tmux_cmd", lambda *a, **k: "  #ffffff  ")
         assert inject_status._opt_color("@ccm-status-bg", "#262626") == "#ffffff"
 
+    @pytest.mark.parametrize("color", [
+        "#fff", "#FFF", "#000", "#abc",                # 3-digit hex
+        "#ffffff", "#FFFFFF", "#000000", "#1a1a1a",    # 6-digit hex
+        "colour0", "colour255", "colour123",            # palette index
+        "color128",                                     # alias
+        "red", "green", "blue", "yellow", "default",    # named
+        "BRIGHTBLUE", "Cyan", "Magenta",                # case-insensitive named
+    ])
+    def test_accepts_valid_colors(self, color, monkeypatch):
+        monkeypatch.setattr(inject_status, "tmux_cmd", lambda *a, **k: color)
+        assert inject_status._opt_color("@ccm-status-bg", "#262626") == color
+
+    @pytest.mark.parametrize("garbage", [
+        "garbage", "#abcd", "#abcdefg", "#1234",        # malformed hex
+        "colour", "colour-1", "colour9999",             # malformed palette index
+        "rgb(0,0,0)", "rgba(1,1,1,1)",                  # CSS syntax (tmux rejects)
+        "  blue extra  ",                                # extra tokens
+        ";echo pwned",                                   # injection attempt
+    ])
+    def test_rejects_invalid_colors_falls_back_to_default(self, garbage, monkeypatch):
+        monkeypatch.setattr(inject_status, "tmux_cmd", lambda *a, **k: garbage)
+        assert inject_status._opt_color("@ccm-status-bg", "#262626") == "#262626"
+
 

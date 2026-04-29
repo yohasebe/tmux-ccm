@@ -1556,35 +1556,54 @@ def notify(state, project, detail=""):
 
 
 def clear_notifications():
-    """Remove all ccm notifications from the macOS Notification
+    """Remove ccm-sent notifications from the macOS Notification
     Center. Requires `terminal-notifier` (the only command-line
     way to enumerate / remove macOS notifications).
 
-    `notify()` sends without `-sender`, so the notification flows
-    under terminal-notifier's own bundle id. `-remove ALL` (without
-    a `-sender` filter) likewise scopes to that same identity, so
-    the send and remove sides match without any explicit sender
-    coupling. Notifications that pre-date the terminal-notifier
-    integration (delivered via `osascript`) have no programmatic
-    remove path and remain in Notification Center until the user
-    dismisses them manually — `osascript display notification`
-    does not expose an identifier the system will accept for later
-    removal.
+    Scopes the removal to ccm by enumerating `-list ALL` and
+    deleting only group ids prefixed with `ccm-` (the convention
+    `notify()` uses). `-remove ALL` was tempting but would also
+    delete notifications a user has sent via terminal-notifier
+    from unrelated scripts (deploy alerts, monitoring, …). The
+    enumerate-then-filter approach pays one extra subprocess but
+    keeps the user's other notifications intact.
 
-    Returns 0 on success, -1 if terminal-notifier is not
-    installed.
+    Notifications that pre-date the terminal-notifier integration
+    (delivered via `osascript`) have no programmatic remove path
+    and remain in Notification Center until the user dismisses
+    them manually — `osascript display notification` does not
+    expose an identifier the system will accept for later removal.
+
+    Returns the count of removed notifications on success, -1 if
+    terminal-notifier is not installed or the enumeration failed.
     """
     tn_path = _terminal_notifier_path()
     if not tn_path:
         return -1
     try:
-        subprocess.run(
-            [tn_path, "-remove", "ALL"],
+        listing = subprocess.run(
+            [tn_path, "-list", "ALL"],
             capture_output=True, text=True, timeout=5,
         )
-        return 0
     except (subprocess.TimeoutExpired, OSError):
         return -1
+
+    removed = 0
+    for line in (listing.stdout or "").splitlines()[1:]:  # skip header
+        # `-list ALL` emits a TSV: GroupID<TAB>Title<TAB>...
+        group_id = line.split("\t", 1)[0].strip()
+        if not group_id.startswith("ccm-"):
+            continue
+        try:
+            subprocess.run(
+                [tn_path, "-remove", group_id],
+                capture_output=True, text=True, timeout=5,
+            )
+            removed += 1
+        except (subprocess.TimeoutExpired, OSError):
+            # Best-effort: log nothing, continue with remaining ids
+            continue
+    return removed
 
 
 # ─── Window name update ───
@@ -2115,10 +2134,11 @@ if __name__ == "__main__":
     elif cmd == "reset-window":
         cmd_reset_window()
     elif cmd == "clear-notifications":
-        # `ccm clear-notifications` — bulk-remove notifications
-        # ccm sent that are still sitting in macOS Notification
-        # Center. Only works when terminal-notifier is installed
-        # (the only command-line way to remove macOS notifications).
+        # `ccm clear-notifications` — remove only ccm-prefixed
+        # notifications from macOS Notification Center. Other
+        # terminal-notifier notifications (from unrelated scripts)
+        # are left alone. Returns -1 if terminal-notifier is not
+        # installed; otherwise the count of removed notifications.
         rc = clear_notifications()
         if rc < 0:
             ccm_warn(
@@ -2126,7 +2146,10 @@ if __name__ == "__main__":
                 "Install with: brew install terminal-notifier"
             )
             sys.exit(1)
-        ccm_info("Cleared ccm notifications from Notification Center")
+        if rc == 0:
+            ccm_info("No ccm notifications were in Notification Center")
+        else:
+            ccm_info(f"Cleared {rc} ccm notification(s) from Notification Center")
     elif cmd == "debug":
         # `ccm debug trace <project> [interval]`
         sub = args[0] if args else ""

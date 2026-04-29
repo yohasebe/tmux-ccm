@@ -2606,6 +2606,80 @@ class TestCmdRename:
 # marker is now keyed on md5-of-cwd; these tests lock in that
 # per-project isolation.
 
+# ─── clear_notifications scoping ───
+#
+# Regression: clear_notifications() must remove only `ccm-`-prefixed
+# group ids, never the user's other terminal-notifier notifications
+# (deploy alerts, monitoring, …).
+
+class TestClearNotificationsScope:
+    def test_returns_minus_one_when_terminal_notifier_missing(self, monkeypatch):
+        monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: None)
+        assert ccm_core.clear_notifications() == -1
+
+    def test_removes_only_ccm_prefixed_groups(self, monkeypatch):
+        listing_stdout = (
+            "GroupID\tTitle\tSubtitle\tMessage\tDelivered At\n"
+            "ccm-monadic-chat\tccm ⚠ monadic-chat\t\tPermission required\t2026-04-29 05:41:21 +0000\n"
+            "ccm-ccm-dev\tccm ⚠ ccm-dev\t\tPermission required\t2026-04-29 05:44:09 +0000\n"
+            "deploy-alert\tDeploy succeeded\t\tprod\t2026-04-29 05:42:00 +0000\n"
+            "monitoring-cpu\tHigh CPU\t\t\t2026-04-29 05:43:00 +0000\n"
+        )
+        monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
+
+        calls = []
+
+        class _Result:
+            def __init__(self, stdout=""):
+                self.stdout = stdout
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ["-list", "ALL"]:
+                return _Result(stdout=listing_stdout)
+            return _Result(stdout="")
+
+        monkeypatch.setattr(ccm_core.subprocess, "run", fake_run)
+
+        rc = ccm_core.clear_notifications()
+        assert rc == 2  # only 2 ccm-prefixed groups
+        # First call enumerates
+        assert calls[0][1:3] == ["-list", "ALL"]
+        # Subsequent removes target only ccm- ids — `[tn_path, "-remove", group_id]`
+        remove_targets = [c[2] for c in calls[1:]]
+        assert remove_targets == ["ccm-monadic-chat", "ccm-ccm-dev"]
+        assert "deploy-alert" not in remove_targets
+        assert "monitoring-cpu" not in remove_targets
+
+    def test_returns_zero_when_no_ccm_notifications(self, monkeypatch):
+        listing_stdout = (
+            "GroupID\tTitle\tSubtitle\tMessage\tDelivered At\n"
+            "deploy-alert\tDeploy succeeded\t\tprod\t2026-04-29 05:42:00 +0000\n"
+        )
+        monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
+
+        class _Result:
+            def __init__(self, stdout=""):
+                self.stdout = stdout
+
+        def fake_run(args, **kwargs):
+            if args[1:3] == ["-list", "ALL"]:
+                return _Result(stdout=listing_stdout)
+            return _Result(stdout="")
+
+        monkeypatch.setattr(ccm_core.subprocess, "run", fake_run)
+        assert ccm_core.clear_notifications() == 0
+
+    def test_returns_minus_one_when_listing_fails(self, monkeypatch):
+        monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
+
+        def fake_run(args, **kwargs):
+            raise OSError("simulated")
+
+        monkeypatch.setattr(ccm_core.subprocess, "run", fake_run)
+        assert ccm_core.clear_notifications() == -1
+
+
 class TestProjectNotifyMarker:
     def _setup_tmp(self, tmp_path, monkeypatch):
         marker_dir = tmp_path / "notified"
