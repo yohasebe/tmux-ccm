@@ -121,8 +121,16 @@ ccm_init() {
         local answer
         read -r answer
         if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
-            ccm_setup_hooks 2>/dev/null
-            echo "    ${COLOR_GREEN}✔${COLOR_RESET} Installed"
+            # Run setup-hooks in a subshell so its `ccm_die`-on-error
+            # path does not kill the wizard. Show stderr live (the user
+            # needs to see "Claude Code too old" / "claude not on PATH"
+            # if it happens) and route stdout to /dev/null to keep the
+            # wizard's progress output uncluttered.
+            if ( ccm_setup_hooks >/dev/null ); then
+                echo "    ${COLOR_GREEN}✔${COLOR_RESET} Installed"
+            else
+                echo "    ${COLOR_RED}✘${COLOR_RESET} Hook install failed — see message above. Continuing with the wizard; rerun 'ccm setup-hooks' once resolved."
+            fi
         else
             echo "    ${COLOR_DIM}Skipped (you can run 'ccm setup-hooks' later)${COLOR_RESET}"
         fi

@@ -2228,6 +2228,49 @@ class TestSnapshotSave:
         data = json.loads((tmp_path / "test2.json").read_text())
         assert len(data["projects"]) == 1
 
+    @patch("ccm_core.tmux_cmd")
+    def test_round_trip_preserves_project_fields(self, mock_tmux, tmp_path):
+        """Save a snapshot from a synthetic project list and verify
+        every field needed by the load path round-trips through the
+        on-disk JSON. Catches drift in either the save serialization
+        or the load schema expectations.
+
+        Format mirrors `tmux list-windows -a -F` with the four fields
+        the saver requests:
+          window_index <TAB> window_name <TAB> @ccm_project <TAB> @ccm_dir
+        """
+        mock_tmux.return_value = (
+            "1\twin-α\tα-プロジェクト\t/tmp/with spaces/proj-a\n"
+            "2\twin-β\tproj-β\t/tmp/proj b\n"
+            "3\twin-γ\tregular\t/tmp/regular"
+        )
+        ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
+        ccm_core.cmd_snapshot_save("rt-snap", quiet=True)
+
+        import json
+        on_disk = json.loads((tmp_path / "rt-snap.json").read_text())
+
+        # Schema invariants
+        assert on_disk["version"] == 1
+        assert on_disk["name"] == "rt-snap"
+        assert "created" in on_disk
+        assert isinstance(on_disk["projects"], list)
+        assert len(on_disk["projects"]) == 3
+
+        # Field round-trip — names with non-ASCII, dirs with spaces
+        names = [p["name"] for p in on_disk["projects"]]
+        dirs = [p["dir"] for p in on_disk["projects"]]
+        assert "α-プロジェクト" in names
+        assert "proj-β" in names
+        assert "regular" in names
+        assert "/tmp/with spaces/proj-a" in dirs
+        assert "/tmp/proj b" in dirs
+
+        # Every project entry must carry the keys load expects
+        for p in on_disk["projects"]:
+            assert "name" in p and p["name"]
+            assert "dir" in p and p["dir"]
+
 
 # ─── cmd_snapshot_load ───
 

@@ -61,6 +61,15 @@ Each new Claude Code release can shift detection assumptions (modal footer wordi
 3. If a modal's footer wording changed, update `PATTERN_PERMIT_FOOTER` in `lib/ccm_core.py` and the corresponding fixture in `tests/test_ccm_core.py`.
 4. If a JSONL housekeeping record type was added, no code change is required — the activity-type whitelist (`JSONL_ACTIVITY_TYPES`) in `lib/ccm_core.py` rejects unknown types by default.
 
+## Dev-only flags
+
+These are not user-facing — they exist for screenshots, debugging, and test instrumentation. Do not document them in user-facing READMEs:
+
+- **`@ccm-mock-state`** (tmux option) / **`CCM_MOCK_STATE=1`** (env var) — forces fast-path detection that reads only `@ccm_prev_state`. Useful for screenshots where you want a stable BUSY/PERMIT/IDLE icon mix without running real Claude Code sessions. Skips ps/capture-pane entirely.
+- **`CCM_DEBUG_TRACE=<path>`** — JSONL trace of every slow-path detection scan. Set via `tmux set-environment -g`, not shell `export`, so the tmux-spawned subprocesses see it.
+- **`CCM_TRACE_ONLY_DIFF=1`** — restricts the above to scans where the legacy and event-log derivations disagree. Lets long-running traces stay small.
+- **`CCM_USE_EVENT_LOG=off`** — diagnostic kill-switch for the event-log path; forces legacy `DETECTION_RULES` only.
+
 ## Pull requests
 
 - Keep PRs focused on one change. Refactors and behaviour changes go in separate PRs.

@@ -180,6 +180,12 @@ This only removes notifications whose group id is prefixed with `ccm-` — notif
 
 If you cannot install `terminal-notifier` and notice the accumulation problem, set `@ccm-notify "permit"` to receive only the actionable PERMIT notifications and skip the more-frequent COMPLETED ones.
 
+#### Linux — `notify-send`
+
+ccm uses `notify-send` (libnotify) on Linux. Most distributions ship it; if your minimal install does not, your DE will pull it in along with a notification daemon. There is no per-project dedup equivalent of macOS's `-group`, so long-running multi-project sessions will accumulate notifications. The same `@ccm-notify "permit"` workaround applies — pin to PERMIT-only to keep volume low.
+
+`ccm clear-notifications` is macOS-only; on Linux there is no command-line API to enumerate or remove existing notifications, so the command reports "terminal-notifier is not installed" and exits.
+
 ### Status Bar
 
 ccm shows active project status in the tmux status bar. Configure the display mode:

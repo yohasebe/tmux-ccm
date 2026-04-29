@@ -180,6 +180,12 @@ ccm clear-notifications
 
 `terminal-notifier` を導入できず蓄積問題に当たった場合は、`@ccm-notify "permit"` に設定して頻度の高い COMPLETED 通知をスキップし、要対応の PERMIT 通知のみ受け取るのが良いでしょう。
 
+#### Linux — `notify-send`
+
+Linux では ccm は `notify-send`（libnotify）を使用します。多くのディストリビューションには標準で入っていますが、最小構成で含まれていない場合はデスクトップ環境が通知デーモンと一緒に取り込みます。macOS の `-group` のようなプロジェクト単位の重複防止機構は無いため、長時間のマルチプロジェクト運用では通知が蓄積します。`@ccm-notify "permit"` に設定して PERMIT 通知のみに絞るワークアラウンドが有効です。
+
+`ccm clear-notifications` は macOS 専用です。Linux には既存通知を一覧/削除するコマンドラインAPIがないため、コマンドは「terminal-notifier is not installed」と表示して終了します。
+
 ### ステータスバー
 
 tmuxステータスバーにプロジェクト状態を表示します。表示モードを設定：

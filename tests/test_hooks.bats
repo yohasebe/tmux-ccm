@@ -227,6 +227,36 @@ teardown() {
     done
 }
 
+@test "remove-hooks: strips all 3 Notification matchers (permission_prompt/idle_prompt/elicitation_dialog)" {
+    ccm_setup_hooks >/dev/null 2>&1
+    ccm_remove_hooks >/dev/null 2>&1
+    # Notification section itself should be gone (or contain no ccm matchers)
+    local has_notification
+    has_notification=$(jq -r '.hooks.Notification // "absent" | if . == "absent" then "absent" else "present" end' \
+        "${MOCK_DIR}/.claude/settings.json")
+    [[ "$has_notification" == "absent" ]] || {
+        # If still present, ensure no ccm-pointing matcher remains
+        local n_ccm
+        n_ccm=$(jq '[.hooks.Notification[]? | select(.hooks | any(.command | test("on-notification\\.sh")))] | length' \
+            "${MOCK_DIR}/.claude/settings.json")
+        [[ "$n_ccm" -eq 0 ]] || { echo "leftover Notification matcher pointing to on-notification.sh"; return 1; }
+    }
+}
+
+@test "remove-hooks: preserves non-ccm Notification matchers when removing" {
+    ccm_setup_hooks >/dev/null 2>&1
+    # Inject a foreign Notification matcher that points elsewhere
+    jq '.hooks.Notification += [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "/usr/local/bin/my-foreign-notify.sh"}]}]' \
+        "${MOCK_DIR}/.claude/settings.json" > "${MOCK_DIR}/.claude/settings.json.tmp"
+    mv "${MOCK_DIR}/.claude/settings.json.tmp" "${MOCK_DIR}/.claude/settings.json"
+    ccm_remove_hooks >/dev/null 2>&1
+    # Foreign matcher must survive
+    local n_foreign
+    n_foreign=$(jq '[.hooks.Notification[]? | select(.hooks | any(.command | test("my-foreign-notify\\.sh")))] | length' \
+        "${MOCK_DIR}/.claude/settings.json")
+    [[ "$n_foreign" -eq 1 ]] || { echo "expected 1 foreign matcher, got $n_foreign"; return 1; }
+}
+
 @test "setup-hooks: registers Notification elicitation_dialog matcher" {
     ccm_setup_hooks >/dev/null 2>&1
     local n
