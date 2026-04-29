@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -3066,6 +3067,28 @@ class TestShellClusterDetection:
                 value = args[4]
                 store[f"{target}/{opt}"] = value
                 return ""
+            # list-windows -a -F '#{session_name}:#{window_index}\t#{<opt>}'
+            # Used by `_read_all_shell_histories` (batch path). Parse the
+            # opt name from the format string and emit one line per
+            # known target in the store that has that option set.
+            if (len(args) >= 4 and args[0] == "list-windows"
+                    and "-a" in args and "-F" in args):
+                fmt = args[args.index("-F") + 1]
+                # Format always looks like "...{<opt>}" — extract the
+                # last `@<...>` reference.
+                m = re.search(r"#\{(@[^}]+)\}$", fmt)
+                if not m:
+                    return ""
+                opt = m.group(1)
+                lines = []
+                seen_targets = set()
+                for k, v in store.items():
+                    target, _, key = k.partition("/")
+                    if key != opt or target in seen_targets:
+                        continue
+                    seen_targets.add(target)
+                    lines.append(f"{target}\t{v}")
+                return "\n".join(lines)
             return ""
 
         return fake_tmux, store

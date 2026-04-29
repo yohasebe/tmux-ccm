@@ -1132,17 +1132,15 @@ def managed_hooks_only_warning() -> str:
 _SHELL_HISTORY_OPT = "@ccm_shell_history"
 
 
-def _read_shell_history(win_target: str) -> list:
-    """Read the SHELL transition timestamp history for a window.
-
-    Returns a list of unix timestamps, newest first. Entries older
-    than SHELL_CLUSTER_WINDOW seconds are filtered out on read.
+def _parse_shell_history_raw(raw: str) -> list:
+    """Parse a raw `@ccm_shell_history` value (comma-separated unix
+    timestamps) into a list of ints, newest first, with entries
+    older than SHELL_CLUSTER_WINDOW filtered out. Shared by the
+    per-window read and the batch read.
     """
-    raw = tmux_cmd("show-option", "-wqv", "-t", win_target, _SHELL_HISTORY_OPT)
     if not raw:
         return []
-    now = int(time.time())
-    horizon = now - SHELL_CLUSTER_WINDOW
+    horizon = int(time.time()) - SHELL_CLUSTER_WINDOW
     out = []
     for item in raw.split(","):
         item = item.strip()
@@ -1155,6 +1153,41 @@ def _read_shell_history(win_target: str) -> list:
         if ts >= horizon:
             out.append(ts)
     return out
+
+
+def _read_shell_history(win_target: str) -> list:
+    """Read the SHELL transition timestamp history for a single window.
+
+    Used by the rare write path (`_push_shell_transition`). The hot
+    read path (`shell_cluster_warnings`) goes through
+    `_read_all_shell_histories` to amortise the subprocess cost
+    across windows.
+    """
+    raw = tmux_cmd("show-option", "-wqv", "-t", win_target, _SHELL_HISTORY_OPT)
+    return _parse_shell_history_raw(raw)
+
+
+def _read_all_shell_histories() -> dict:
+    """Return `{win_target: history_list}` for every window in one
+    `tmux list-windows -a` subprocess instead of one show-option
+    per window. The hot path
+    (`shell_cluster_warnings → shell_cluster_warning` in a loop
+    over projects) used to pay 13+ subprocess fork-execs per
+    refresh; this collapses it to a single one.
+    """
+    raw = tmux_cmd(
+        "list-windows", "-a",
+        "-F", "#{session_name}:#{window_index}\t#{" + _SHELL_HISTORY_OPT + "}",
+    )
+    histories = {}
+    if not raw:
+        return histories
+    for line in raw.splitlines():
+        if "\t" not in line:
+            continue
+        win_target, _, history_raw = line.partition("\t")
+        histories[win_target] = _parse_shell_history_raw(history_raw)
+    return histories
 
 
 def _push_shell_transition(win_target: str) -> None:
@@ -1187,35 +1220,42 @@ def _push_shell_transition(win_target: str) -> None:
     )
 
 
-def shell_cluster_warning(win_target: str, project_name: str = "") -> str:
-    """Return a one-line warning if this window has hit the SHELL
-    cluster threshold, otherwise "".
-
-    The caller typically iterates over projects and collects the
-    non-empty warnings for display in the dashboard footer and
-    `ccm status` output.
-    """
-    history = _read_shell_history(win_target)
-    if len(history) < SHELL_CLUSTER_COUNT:
-        return ""
+def _format_cluster_warning(history_len: int, project_name: str) -> str:
     label = f"{project_name}: " if project_name else ""
     return (
-        f"{label}Claude Code exited {len(history)}+ times in "
+        f"{label}Claude Code exited {history_len}+ times in "
         f"{SHELL_CLUSTER_WINDOW // 60} min — likely "
         f"{SHELL_CLUSTER_ISSUE} ({SHELL_CLUSTER_ISSUE_NOTE}). "
         f"The conversation auto-restores via `claude --continue`."
     )
 
 
+def shell_cluster_warning(win_target: str, project_name: str = "") -> str:
+    """Return a one-line warning if this window has hit the SHELL
+    cluster threshold, otherwise "". Per-window read; for bulk
+    use prefer `shell_cluster_warnings` which batches.
+    """
+    history = _read_shell_history(win_target)
+    if len(history) < SHELL_CLUSTER_COUNT:
+        return ""
+    return _format_cluster_warning(len(history), project_name)
+
+
 def shell_cluster_warnings(projects) -> list:
     """Return a list of warning strings, one per project that has
     crossed the SHELL cluster threshold. Empty list if all quiet.
+
+    Reads every window's `@ccm_shell_history` in a single
+    `tmux list-windows` subprocess instead of one per project, so
+    the cost is O(1) subprocess regardless of project count.
     """
+    histories = _read_all_shell_histories()
     out = []
     for p in projects:
-        msg = shell_cluster_warning(p.win_target, p.name)
-        if msg:
-            out.append(msg)
+        history = histories.get(p.win_target, [])
+        if len(history) < SHELL_CLUSTER_COUNT:
+            continue
+        out.append(_format_cluster_warning(len(history), p.name))
     return out
 
 
@@ -1355,7 +1395,8 @@ def build_project_list(fast=False):
         else:
             state = detect_window_state(
                 win_target, proj_dir, prev_state,
-                panes_cache, ps_lines, own_pgid
+                panes_cache, ps_lines, own_pgid,
+                prev_bg_active=bool(bg_active_str),
             )
 
         sort_ts = max(completed_at, win_activity) if win_activity else completed_at

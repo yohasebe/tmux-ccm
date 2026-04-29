@@ -296,6 +296,11 @@ class DetectionContext:
     # expected (rules that do not specify `jsonl_last_stop_reason_in`
     # ignore this field entirely).
     jsonl_last_stop_reason: Optional[str] = None
+    # Whether `@ccm_bg_active` is currently set on the window.
+    # `apply_actions` consults this to skip the per-window
+    # `set-option -wut @ccm_bg_active` subprocess when the option is
+    # already unset (the steady-state case for nearly every window).
+    prev_bg_active: bool = False
 
 
 class Action(Enum):
@@ -878,7 +883,8 @@ def derive_state_from_events(events, jsonl_stop_reason,
 
 
 def build_detection_context(win_target, project_dir, prev_state,
-                            panes_cache, ps_lines, own_pgid
+                            panes_cache, ps_lines, own_pgid,
+                            prev_bg_active: bool = False,
                             ) -> DetectionContext:
     """Gather all inputs needed for rule evaluation.
 
@@ -938,6 +944,7 @@ def build_detection_context(win_target, project_dir, prev_state,
         jsonl_last_stop_reason=jsonl_last_stop_reason,
         claude_pid_age=claude_pid_age,
         now=now,
+        prev_bg_active=prev_bg_active,
     )
 
 
@@ -979,7 +986,15 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     # Dispatched via the `ccm_core` module so that tests which patch
     # `ccm_core._set_win_state` observe the call site (direct local
     # reference would bypass the mock).
-    ccm_core._set_win_state(win_target, state)
+    #
+    # Skip the write when the value is already what we'd set. On a
+    # 13-window dashboard refreshing twice a second, a tmux subprocess
+    # per window dominates the slow path — and the steady state is
+    # mostly "everyone IDLE", so the overwhelming majority of writes
+    # are no-ops. The hot path now pays one tmux subprocess only when
+    # a state actually transitions.
+    if state != ctx.prev_state:
+        ccm_core._set_win_state(win_target, state)
 
     # Set @ccm_completed_at when transitioning from BUSY/PERMIT to IDLE.
     # This is a display-layer marker — the `* elapsed` indicator
@@ -998,9 +1013,14 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     # BUSY; cleared whenever they agree, so a stale flag cannot
     # survive a state change.
     if state == "IDLE" and ctx.raw == "BUSY":
-        ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_bg_active", "1")
-    elif state != "IDLE" or ctx.raw != "BUSY":
-        # Clear when no longer applicable. -u unsets the option.
+        # Only write when transitioning into bg-active mode.
+        if not ctx.prev_bg_active:
+            ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_bg_active", "1")
+    elif ctx.prev_bg_active:
+        # Clear when no longer applicable, but only when actually
+        # set — most windows never enter bg-active mode, and the
+        # unconditional unset cost one tmux subprocess per window
+        # per refresh cycle.
         ccm_core.tmux_cmd("set-option", "-wut", win_target, "@ccm_bg_active")
 
     return state
@@ -1021,7 +1041,8 @@ def _event_log_enabled():
 
 
 def detect_window_state(win_target, project_dir, prev_state,
-                        panes_cache, ps_lines, own_pgid):
+                        panes_cache, ps_lines, own_pgid,
+                        prev_bg_active: bool = False):
     """Full detection pipeline. Returns the resolved state string.
 
     Thin orchestration layer:
@@ -1042,6 +1063,7 @@ def detect_window_state(win_target, project_dir, prev_state,
     ctx = build_detection_context(
         win_target, project_dir, prev_state,
         panes_cache, ps_lines, own_pgid,
+        prev_bg_active=prev_bg_active,
     )
     rule, legacy_state = evaluate_rules(ctx)
 
