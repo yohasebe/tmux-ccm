@@ -176,6 +176,8 @@ To bulk-clear ccm notifications from Notification Center (requires `terminal-not
 ccm clear-notifications
 ```
 
+This only removes notifications whose group id is prefixed with `ccm-` — notifications from your other terminal-notifier-using scripts (deploy alerts, monitoring, …) are left intact. The command reports the count it removed.
+
 If you cannot install `terminal-notifier` and notice the accumulation problem, set `@ccm-notify "permit"` to receive only the actionable PERMIT notifications and skip the more-frequent COMPLETED ones.
 
 ### Status Bar
@@ -238,6 +240,8 @@ set -g @ccm-status-gutter-bg  "#1a1a1a"   # one-row gutter between main bar and 
 set -g @ccm-status-fg         "#9E9E9E"   # default foreground
 set -g @ccm-status-fg-dim     "#5a5a5a"   # separators / hints
 ```
+
+Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named colours (`red`, `blue`, `default`, …). Invalid values silently fall back to the default rather than producing a malformed status bar.
 
 > [!NOTE]
 > Mode 2 uses additional `status-format` slots (one gutter row plus one row per layout line, up to slot 16). If other plugins also use those indices, conflicts may occur.
