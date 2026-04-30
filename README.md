@@ -10,13 +10,9 @@ Run multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessi
 
 ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with a live dashboard, state detection, and snapshot restore.
 
-**Dashboard** (`prefix + Tab`):
+**Dashboard** (`prefix + Tab`) with the mode-2 status bar visible at the bottom:
 
 ![ccm dashboard](assets/dashboard.png)
-
-**Status bar** (mode 2 shown):
-
-![ccm status bar mode 2](assets/statusbar-mode2.png)
 
 ## Features
 
@@ -206,7 +202,11 @@ Mode 2 is the default because installing ccm signals "I want to track Claude Cod
 
 Appends a priority icon with window indices to your existing status-right. Your clock, battery, etc. are preserved. When active projects exist, window numbers are shown (e.g., `5: PERMIT ⚠`). When all are IDLE, a single `≡` icon is shown:
 
-![status bar mode 0](assets/statusbar-mode0.png)
+```
+ ... your existing status-right ...   5: PERMIT ⚠   14:32
+                                      └────────────┘
+                                  window# + highest-priority state
+```
 
 | Priority | Condition | Icon | Color |
 |----------|-----------|------|-------|
@@ -220,13 +220,20 @@ Click the icon to open the dashboard for full details.
 
 Replaces the standard tmux window list with ccm-style colored entries showing project name and status icon. Your existing status-right (clock, etc.) is preserved.
 
-![status bar mode 1](assets/statusbar-mode1.png)
+```
+ 2:weather-cli ●   3:recipe-blog ◉   4:todo-react ◉   5:api-server ⚠
+```
 
 #### Mode 2 — Dedicated status line
 
-Adds one or more tmux status lines below the main bar. Shows all projects including idle ones, with git branch and port details when available. The main status bar is not modified.
+Adds one or more tmux status lines below the main bar. Shows all projects including idle ones, with git branch and port details when available. The main status bar is not modified. (See the dashboard screenshot above — the bottom rows show mode 2 in action.)
 
-![status bar mode 2](assets/statusbar-mode2.png)
+```
+ ... your normal status row, untouched ...                       14:32
+ ────────────────────────────────────────────────────────────────────── (gutter)
+ 5:api-server (main) ⚠ PERMIT  ·  3:recipe-blog (main) ◉ BUSY
+   ·  4:todo-react ◉ BUSY  ·  2:weather-cli ● IDLE * 20s
+```
 
 | State | Icon | Color |
 |-------|------|-------|

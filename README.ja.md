@@ -10,13 +10,9 @@
 
 ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmuxプラグインです。ライブダッシュボード、状態検出、スナップショット復元機能を備えています。
 
-**ダッシュボード** (`prefix + Tab`):
+**ダッシュボード** (`prefix + Tab`) — 画面下部のモード 2 ステータスバーも同時に映っています:
 
 ![ccm dashboard](assets/dashboard.png)
-
-**ステータスバー**（モード2）:
-
-![ccm status bar mode 2](assets/statusbar-mode2.png)
 
 ## 機能
 
@@ -206,7 +202,11 @@ ccm をインストールするのは「Claude Code 状態を常時追跡した�
 
 既存のstatus-rightにウィンドウ番号付きアイコンを追加。時計やバッテリー表示はそのまま保持。アクティブなプロジェクトがある場合はウィンドウ番号も表示（例: `5: PERMIT ⚠`）。全てIDLEの場合は `≡` アイコンのみ：
 
-![status bar mode 0](assets/statusbar-mode0.png)
+```
+ ... 既存のstatus-right ...   5: PERMIT ⚠   14:32
+                              └────────────┘
+                          ウィンドウ番号 + 最高優先度の状態
+```
 
 | 優先度 | 条件 | アイコン | 色 |
 |--------|------|---------|-----|
@@ -220,13 +220,20 @@ ccm をインストールするのは「Claude Code 状態を常時追跡した�
 
 tmux標準のウィンドウリストをccm形式の色付きエントリに置換。既存のstatus-right（時計等）は保持。
 
-![status bar mode 1](assets/statusbar-mode1.png)
+```
+ 2:weather-cli ●   3:recipe-blog ◉   4:todo-react ◉   5:api-server ⚠
+```
 
 #### モード2 — 専用ステータス行
 
-メインバーの下に専用ステータス行を追加。IDLEを含む全プロジェクトをgitブランチ・ポート情報付きで表示。メインバーは変更しない。
+メインバーの下に専用ステータス行を追加。IDLEを含む全プロジェクトをgitブランチ・ポート情報付きで表示。メインバーは変更しない（上のダッシュボード画像下部にも mode 2 が映っています）。
 
-![status bar mode 2](assets/statusbar-mode2.png)
+```
+ ... 通常のステータス行はそのまま ...                            14:32
+ ────────────────────────────────────────────────────────────────── (ガター)
+ 5:api-server (main) ⚠ PERMIT  ·  3:recipe-blog (main) ◉ BUSY
+   ·  4:todo-react ◉ BUSY  ·  2:weather-cli ● IDLE * 20s
+```
 
 | 状態 | アイコン | 色 |
 |------|---------|-----|
