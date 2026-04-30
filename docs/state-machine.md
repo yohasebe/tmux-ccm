@@ -154,11 +154,13 @@ Brackets render dim, the digit cyan, so the eye lands on the count without readi
 
 ### `* elapsed` — recently completed turn
 
-When a project transitions out of BUSY / PERMIT into IDLE, the dashboard records the timestamp in `@ccm_completed_at`. For `COMPLETED_AT_TIMEOUT` seconds afterward, the rendered row carries a `* <elapsed>` annotation right after the project name (and after `[N]` if the window has multiple panes):
+When a project transitions out of BUSY / PERMIT into IDLE, `apply_actions` records the timestamp in `@ccm_completed_at`. For `COMPLETED_AT_TIMEOUT` seconds afterward, the rendered row carries a `* <elapsed>` annotation right after the project name (and after `[N]` if the window has multiple panes):
 
 ```
 myproject * 25s   ~/code/myproject
 ```
+
+The marker is rendered only while `state == "IDLE"`. The dashboard suppresses it on BUSY / PERMIT rows (a project that bounced IDLE → BUSY within `COMPLETED_AT_TIMEOUT` would otherwise read `◉ BUSY * 5s`, which contradicts itself). As a defence-in-depth `apply_actions` also clears `@ccm_completed_at` whenever the project leaves IDLE — covers the rare IDLE → SHELL → IDLE bounce (claude crash + restart with no user attach) where no BUSY/PERMIT → IDLE rewrite would happen. Mode 1 / 2 status bars and `ccm status` do not render this marker at all.
 
 The asterisk renders green to draw attention to the just-completed transition; the elapsed time itself is dim. Display-only — the marker does not feed back into the state machine. ASCII so column math is consistent.
 
