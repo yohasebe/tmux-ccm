@@ -88,6 +88,50 @@ class TestRenderSmoke:
         ]
         d.render(_make_mock_stdscr())
 
+    def test_render_suppresses_completed_marker_for_non_idle(self, monkeypatch):
+        """Regression guard: `* elapsed` is the "recently completed"
+        marker. It must only render for IDLE projects. The rendering
+        code previously checked only `proj.completed_at` without
+        filtering on state, so a project whose @ccm_completed_at was
+        set on a BUSY/PERMIT → IDLE transition and then bounced back
+        to BUSY (new prompt within COMPLETED_AT_TIMEOUT) would render
+        a misleading `◉ BUSY * 5s`.
+
+        We inject a counting stub for `format_elapsed` so the call
+        count proves whether the renderer attempted to format the
+        marker for non-IDLE projects.
+        """
+        _stub_dashboard_environment(monkeypatch)
+
+        calls = {"format_elapsed": []}
+        monkeypatch.setattr(
+            "dashboard.format_elapsed",
+            lambda ts: (calls["format_elapsed"].append(ts), "5s")[1],
+        )
+
+        import ccm_core
+        recent = int(__import__("time").time()) - 5  # 5 seconds ago
+
+        d = Dashboard(initial_mode="dashboard")
+        # IDLE with completed_at — should call format_elapsed
+        # BUSY with completed_at — must NOT call format_elapsed
+        # PERMIT with completed_at — must NOT call format_elapsed
+        d.projects = [
+            ccm_core.Project("0:1", "1", "idle-recent", "/tmp/a",
+                             "IDLE", completed_at=recent),
+            ccm_core.Project("0:2", "2", "busy-stale-marker", "/tmp/b",
+                             "BUSY", completed_at=recent),
+            ccm_core.Project("0:3", "3", "permit-stale-marker", "/tmp/c",
+                             "PERMIT", completed_at=recent),
+        ]
+        d.render(_make_mock_stdscr())
+
+        # Only the IDLE project should have triggered format_elapsed
+        assert len(calls["format_elapsed"]) == 1, (
+            f"format_elapsed should be called exactly once (for the "
+            f"IDLE project); got {len(calls['format_elapsed'])} calls"
+        )
+
     def test_render_with_canary_warnings_active(self, monkeypatch):
         """Exercises every canary banner row at once. Catches off-by-one
         layout bugs and references-before-assignment in the canary block.

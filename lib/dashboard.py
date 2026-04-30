@@ -553,7 +553,17 @@ class Dashboard:
                 for proj in projects:
                     pieces = []  # widths for COL_DIR calc
                     elapsed_str = ""
-                    if proj.completed_at:
+                    # `* elapsed` is the "recently completed" marker —
+                    # only meaningful when the project is currently
+                    # IDLE. `@ccm_completed_at` is written on
+                    # BUSY/PERMIT → IDLE transitions and is NOT cleared
+                    # on subsequent transitions, so a project that just
+                    # moved IDLE → BUSY (new prompt within
+                    # COMPLETED_AT_TIMEOUT) would otherwise render
+                    # `◉ BUSY * 5s` — confusing, since the * implies
+                    # "finished 5s ago" but the project is busy now.
+                    # Suppressing on non-IDLE keeps the marker honest.
+                    if proj.state == "IDLE" and proj.completed_at:
                         age = now_ts - proj.completed_at
                         if 0 <= age < COMPLETED_AT_TIMEOUT:
                             elapsed_str = format_elapsed(proj.completed_at) or ""
