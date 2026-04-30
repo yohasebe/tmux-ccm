@@ -23,7 +23,7 @@ def make_project(win_target, win_idx, name, state):
 # ─── build_detail_entries: active highlighting ───
 
 class TestBuildDetailEntriesActive:
-    """Regression: indices alone collide across sessions, so the
+    """Window indices alone collide across tmux sessions, so the
     active-window comparison must use the full session:index target.
     """
 

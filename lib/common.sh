@@ -316,10 +316,9 @@ _ccm_write_settings() {
 
 # ─── Claude Code version detection ───
 #
-# ccm requires Claude Code v2.1.107+. This is the version that
-# introduced the `elicitation_dialog` Notification matcher; ccm
-# registers it unconditionally and assumes the running client
-# accepts it.
+# ccm requires Claude Code v2.1.107+. The `elicitation_dialog`
+# Notification matcher ccm registers is only accepted from that
+# version onward.
 
 CCM_MIN_CLAUDE_VERSION="2.1.107"
 
@@ -360,10 +359,10 @@ ccm_hooks_configured() {
     grep -q 'SubagentStop' "$settings_file" 2>/dev/null || return 1
     grep -q 'PreCompact' "$settings_file" 2>/dev/null || return 1
     grep -q 'PostCompact' "$settings_file" 2>/dev/null || return 1
-    # The elicitation_dialog Notification matcher (v2.1.107+) is
-    # required. Scope the check to a `"matcher": "elicitation_dialog"`
-    # literal rather than a bare string so we cannot false-positive
-    # on the word appearing elsewhere in the file.
+    # The elicitation_dialog Notification matcher is required.
+    # Scope the check to a `"matcher": "elicitation_dialog"` literal
+    # rather than a bare string so we cannot false-positive on the
+    # word appearing elsewhere in the file.
     grep -qE '"matcher"[[:space:]]*:[[:space:]]*"elicitation_dialog"' \
         "$settings_file" 2>/dev/null || return 1
 }

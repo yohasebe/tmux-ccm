@@ -33,7 +33,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 - [TPM](https://github.com/tmux-plugins/tpm) (for plugin installation; or use manual install)
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 or later required**. ccm registers the `elicitation_dialog` Notification matcher (added in v2.1.107) for MCP elicitation prompts. `ccm setup-hooks` checks `claude --version` and refuses to install on older clients
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 or later required**. ccm registers the `elicitation_dialog` Notification matcher for MCP elicitation prompts; older clients reject it. `ccm setup-hooks` checks `claude --version` and refuses to install on older versions
 
 ## Installation
 
@@ -343,7 +343,7 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 
 ccm has multiple hook-independent fallbacks so detection still works when Claude Code stops firing hooks mid-session ([anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)):
 
-- **JSONL session log heartbeat**: ccm reads the timestamp of the most recent **user/assistant record** in the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` file. System metadata records (Claude Code v2.1.108+ recap / `system/away_summary`, `system/turn_duration`, `attachment/task_reminder`, etc.) are filtered out, so recap generation and other internal events do not register as fresh activity. A real user/assistant record within the freshness window is positive evidence the session is alive.
+- **JSONL session log heartbeat**: ccm reads the timestamp of the most recent **user/assistant record** in the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` file. Claude Code housekeeping records (`system/away_summary`, `system/turn_duration`, `attachment/task_reminder`, etc.) are filtered out, so recap generation and other internal events do not register as fresh activity. A real user/assistant record within the freshness window is positive evidence the session is alive.
 - **Process grandchild detection**: A grandchild process under `claude` (e.g. `claude → bash → xcodebuild`) is unambiguous evidence that a foreground tool is running, even if the input prompt is visible (the v2.1+ "ctrl+b ctrl+b to background" UI).
 - **Permission dialog footer match**: ccm recognizes the permission footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) directly from the visible pane.
 - **`~/.claude/hooks.log` size canary**: ccm warns in `ccm status` and the dashboard footer when this file exceeds 100 MB — the documented root cause of #16047 is silent hook failure due to log bloat. The fix is `: > ~/.claude/hooks.log`.

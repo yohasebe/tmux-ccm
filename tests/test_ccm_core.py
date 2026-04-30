@@ -189,10 +189,9 @@ class TestJsonlFreshness:
 
 # ─── JSONL real-activity filter ───
 #
-# These tests exercise read_jsonl_age()'s filtering of system metadata
-# records (Claude Code v2.1.108+ recap, turn_duration, attachment, ...)
-# so that recap and similar internal events do not register as fresh
-# activity. See the recap interaction notes in CHANGELOG and CLAUDE.md.
+# These tests exercise read_jsonl_age()'s filtering of Claude Code
+# housekeeping records (recap / `away_summary`, `turn_duration`,
+# `attachment`, …) so that they do not register as fresh activity.
 
 class TestJsonlRealActivityFilter:
     def setup_method(self):
@@ -274,20 +273,13 @@ class TestJsonlRealActivityFilter:
 
     def test_no_timestamp_record_is_skipped(self, tmp_path, monkeypatch):
         """Records without a parseable `timestamp` are NOT counted as
-        real activity. Claude Code v2.1.117+ writes
-        `permission-mode` / `file-history-snapshot` / `last-prompt`
-        records at `--continue` startup; none of them carry a
-        timestamp field. An earlier implementation fell back to the
-        file mtime when a record "looked real" but had no timestamp,
-        which caused these housekeeping bursts to report
-        jsonl_age ≈ 0 and make a fresh-JSONL detection rule fire with
-        state=BUSY for the 10 s of MCP loading after every attach.
-
-        The fix: only records whose `type` is in the
-        `JSONL_ACTIVITY_TYPES` whitelist count as activity, AND
-        records lacking a parseable timestamp are skipped even
-        within the whitelist as defence-in-depth. This test
-        asserts the timestamp guard directly.
+        real activity. Claude Code emits housekeeping records
+        (`permission-mode`, `file-history-snapshot`, `last-prompt`)
+        at `--continue` startup that lack a timestamp field. ccm
+        only treats records in the `JSONL_ACTIVITY_TYPES` whitelist
+        with a parseable timestamp as activity; this test asserts
+        the timestamp guard directly so a whitelisted record that
+        somehow loses its timestamp cannot promote via mtime.
         """
         f = self._setup_project(tmp_path, monkeypatch)
         # Hypothetical future "real" type with a malformed record
@@ -348,14 +340,11 @@ class TestJsonlRealActivityFilter:
         assert 4 <= age <= 8
 
     def test_skips_startup_housekeeping_records(self, tmp_path, monkeypatch):
-        """Regression test for the attach-startup false-BUSY bug:
-        Claude Code v2.1.117+ writes a burst of `permission-mode`,
+        """Claude Code writes a burst of `permission-mode`,
         `file-history-snapshot`, and `last-prompt` records (none of
-        which carry timestamps) at `--continue` startup. Before the
-        fix, these were treated as real activity, the mtime fallback
-        made jsonl_age ≈ 0 and the fresh-JSONL rule promoted
-        state=BUSY, and the dashboard showed ~10 s of false BUSY
-        after every attach to a SHELL window.
+        which carry timestamps) at `--continue` startup. ccm must not
+        treat them as real activity, otherwise an attach to a SHELL
+        window would show ~10 s of false BUSY while MCP loads.
         """
         f = self._setup_project(tmp_path, monkeypatch)
         now = time.time()
@@ -429,9 +418,9 @@ class TestParseEtime:
 
 
 class TestFindProcessAge:
-    """Regression test for `find_process_age` reading the etime column
-    from `ps_snapshot` output. The key is column position: etime is
-    `parts[4]` in the `pid ppid pgid comm etime` format."""
+    """`find_process_age` reads the etime column from `ps_snapshot`
+    output. Pin the expected column position: etime is `parts[4]` in
+    the `pid ppid pgid comm etime` format."""
 
     def test_returns_age_for_matching_pid(self):
         ps_lines = [
@@ -590,12 +579,12 @@ class TestJsonlTailStopReason:
 
 # ─── recap-phantom gap discriminator ───
 #
-# These tests exercise the new `hook_after_real_activity_lt` Rule
-# on the legacy `hook_fresh_busy` rule. Trust BUSY hook only
-# when it fired within JSONL_HOOK_GAP_TOLERANCE seconds of (or after)
-# the last real conversation activity. This rejects phantom BUSY hooks
-# fired by Claude Code v2.1.108+ recap (`away_summary`) which write
-# to JSONL and fire a BUSY hook with no surrounding real activity.
+# These tests exercise the `hook_after_real_activity_lt` field on
+# the legacy `hook_fresh_busy` rule. Trust BUSY hook only when it
+# fired within JSONL_HOOK_GAP_TOLERANCE seconds of (or after) the
+# last real conversation activity. Rejects phantom BUSY hooks fired
+# by Claude Code's recap (`away_summary`) which writes to JSONL and
+# fires a BUSY hook with no surrounding real activity.
 
 # ─── hooks.log canary ───
 
@@ -649,9 +638,9 @@ class TestDisableAllHooksWarning:
         msg = ccm_core.disable_all_hooks_warning()
         assert "disableAllHooks" in msg
         assert "settings.json" in msg
-        # v2.1.108 docs clarified that disableAllHooks also kills the
-        # custom statusLine. The warning must tell the user so they
-        # can correlate a missing embedded statusLine with this flag.
+        # disableAllHooks also kills the custom statusLine. The
+        # warning must tell the user so they can correlate a missing
+        # embedded statusLine with this flag.
         assert "statusLine" in msg
 
     def test_malformed_json(self, tmp_path, monkeypatch):
@@ -661,7 +650,7 @@ class TestDisableAllHooksWarning:
         assert ccm_core.disable_all_hooks_warning() == ""
 
 
-# ─── allowManagedHooksOnly canary (Claude Code v2.1.107) ───
+# ─── allowManagedHooksOnly canary ───
 
 class TestManagedHooksOnlyWarning:
     def test_no_settings_file(self, tmp_path, monkeypatch):
@@ -898,12 +887,12 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_permit_from_model_picker_exit_footer(self, mock_tmux):
-        """Regression test for the `/model` picker footer wording:
-        the verb can be `Esc to cancel`, `Esc to exit`, or any
-        future variant. The widened `Esc to \\w+` branch in
-        PATTERN_PERMIT_FOOTER is what this test guards. Without the
-        widening, `ccm status` reported BUSY for any pane showing
-        the `/model` dialog."""
+        """The `/model` picker footer can carry any Esc-verb
+        (`Esc to cancel`, `Esc to exit`, `Esc to close`, ...). The
+        permissive `Esc to \\w+` branch in PATTERN_PERMIT_FOOTER must
+        keep matching every variant so the dialog always classifies
+        as PERMIT.
+        """
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         mock_tmux.return_value = (
             "Select model\n"
@@ -922,13 +911,13 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_permit_from_session_resume_modal(self, mock_tmux):
-        """Regression test for the v2.1.117+ session-resume modal:
-        the `❯` cursor is indented (so PATTERN_INPUT_PROMPT does
-        NOT match at column 0) and the footer is
-        'Enter to confirm · Esc to cancel'. Without the
-        pattern extension ccm sees has_child + no prompt → raw=BUSY,
-        producing dashboard BUSY for a modal actually awaiting user
-        input."""
+        """The session-resume modal indents its `❯` cursor (so
+        PATTERN_INPUT_PROMPT does NOT match at column 0) and uses
+        the footer `Enter to confirm · Esc to cancel`. ccm must
+        classify it as PERMIT via the modal-footer pattern; without
+        that, has_child + no prompt would yield BUSY for a modal
+        actually awaiting user input.
+        """
         ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
         mock_tmux.return_value = (
             "This session is 1h 58m old and 732.6k tokens.\n"
@@ -2737,13 +2726,11 @@ class TestCmdRename:
         mock_auto.assert_called_once()
 
 
-# ─── Per-project notification marker (cross-project collision fix) ───
+# ─── Per-project notification marker ───
 #
-# Before v0.2.0 the hook instant-notify path wrote a SINGLE global
-# marker `${TMPDIR}/ccm-${UID}/hook-notified`, so any two ccm projects
-# completing within 10 seconds of each other would silently dedup —
-# the second project's COMPLETED notification was suppressed. The
-# marker is now keyed on md5-of-cwd; these tests lock in that
+# The hook instant-notify path keys its dedup marker on md5-of-cwd
+# so two ccm projects completing within the dedup window never
+# suppress each other's notifications. These tests lock in that
 # per-project isolation.
 
 # ─── clear_notifications scoping ───

@@ -89,17 +89,14 @@ class TestRenderSmoke:
         d.render(_make_mock_stdscr())
 
     def test_render_suppresses_completed_marker_for_non_idle(self, monkeypatch):
-        """Regression guard: `* elapsed` is the "recently completed"
-        marker. It must only render for IDLE projects. The rendering
-        code previously checked only `proj.completed_at` without
-        filtering on state, so a project whose @ccm_completed_at was
-        set on a BUSY/PERMIT → IDLE transition and then bounced back
-        to BUSY (new prompt within COMPLETED_AT_TIMEOUT) would render
-        a misleading `◉ BUSY * 5s`.
-
-        We inject a counting stub for `format_elapsed` so the call
-        count proves whether the renderer attempted to format the
-        marker for non-IDLE projects.
+        """`* elapsed` is the "recently completed" marker — it must
+        render only for IDLE projects. A project whose
+        `@ccm_completed_at` was set on a BUSY/PERMIT → IDLE
+        transition and then bounced back to BUSY (new prompt within
+        COMPLETED_AT_TIMEOUT) would otherwise render a misleading
+        `◉ BUSY * 5s`. We inject a counting stub for `format_elapsed`
+        so the call count proves whether the renderer attempted to
+        format the marker for non-IDLE projects.
         """
         _stub_dashboard_environment(monkeypatch)
 
@@ -133,13 +130,11 @@ class TestRenderSmoke:
         )
 
     def test_render_with_canary_warnings_active(self, monkeypatch):
-        """Exercises every canary banner row at once. Catches off-by-one
-        layout bugs and references-before-assignment in the canary block.
-
-        Regression guard: a previous edit referenced `projects` in the
-        SHELL cluster canary loop before the variable was bound, raising
-        UnboundLocalError on every dashboard open. This test would have
-        caught it immediately.
+        """Exercises every canary banner row at once. Catches
+        off-by-one layout bugs and reference-before-assignment errors
+        in the canary block — a stray edit that touches a variable
+        before it is bound would raise UnboundLocalError on every
+        dashboard open, and this test makes that immediate.
         """
         _stub_dashboard_environment(monkeypatch)
         # Re-stub three of the canaries to return non-empty messages

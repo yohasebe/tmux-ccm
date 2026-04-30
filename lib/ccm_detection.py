@@ -35,15 +35,6 @@ merged on purpose — see `project_r4_r5_decision` memo.
    would add 30–80 ms of interpreter startup per hook event,
    which defeats the purpose of instant status updates.
 
-Historical note: `reset_window_after_attach` used to be a third
-writer (wiping prev_state to "") but that made the startup-after-
-attach signature indistinguishable from an in-flight response.
-The wipe was removed so the new `startup_transient_raw_busy` rule
-can key on `prev_state ∈ ("", "SHELL")` to identify MCP-loading
-transients authoritatively. See the docstring of
-`reset_window_after_attach` in `ccm_core.py` for the full
-rationale.
-
 When changing state-transition semantics, audit both sites.
 """
 
@@ -708,7 +699,7 @@ def derive_state_from_events(events, jsonl_stop_reason,
     the latest event is `session_end` (claude has been restarted and
     the new session has not yet emitted any event).
 
-    Semantics (see project_event_log_redesign memo for the decision log):
+    Semantics:
       - pid absent → SHELL (authoritative from process tree)
       - latest event permit-class → PERMIT (no time limit; ONLY an
         event clears PERMIT, not a timer)
@@ -1029,9 +1020,9 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
             ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_bg_active", "1")
     elif ctx.prev_bg_active:
         # Clear when no longer applicable, but only when actually
-        # set — most windows never enter bg-active mode, and the
-        # unconditional unset cost one tmux subprocess per window
-        # per refresh cycle.
+        # set. Most windows never enter bg-active mode; unconditional
+        # unset would add one tmux subprocess per window per refresh
+        # cycle for no benefit.
         ccm_core.tmux_cmd("set-option", "-wut", win_target, "@ccm_bg_active")
 
     return state

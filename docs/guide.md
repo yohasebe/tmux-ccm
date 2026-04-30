@@ -238,9 +238,9 @@ To remove: `ccm remove-hooks`
 | State | Method | Details |
 |-------|--------|---------|
 | **SHELL** | Process check | No `claude` process found among window's child processes |
-| **BUSY** | Event log + JSONL stop_reason | Primary: the per-project event log (`hooks/<md5>.events.jsonl`) appended by every BUSY-class hook (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`/`Stop`, `PreCompact`/`PostCompact`). `derive_state_from_events` evaluates the tail as a pure function and returns BUSY while the most recent entry is start-class. Hook silence (#16047, #25655) is bridged by JSONL `stop_reason`: a fresh `tool_use` keeps BUSY across the tool-turn Stop boundary; an `end_turn` / `max_tokens` / `stop_sequence` newer than the latest event releases to IDLE within seconds. System metadata records (`system/away_summary`, `turn_duration`, `attachment/task_reminder`, `permission-mode`, `file-history-snapshot`, `last-prompt`) are filtered from JSONL activity so recap / startup housekeeping does not register as fresh activity |
+| **BUSY** | Event log + JSONL stop_reason | Primary: the per-project event log (`hooks/<md5>.events.jsonl`) appended by every BUSY-class hook (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`/`Stop`, `PreCompact`/`PostCompact`). `derive_state_from_events` evaluates the tail as a pure function and returns BUSY while the most recent entry is start-class. Hook silence is bridged by JSONL `stop_reason`: a fresh `tool_use` keeps BUSY across the tool-turn Stop boundary; an `end_turn` / `max_tokens` / `stop_sequence` newer than the latest event releases to IDLE within seconds. Claude Code housekeeping records (`system/away_summary`, `turn_duration`, `attachment/task_reminder`, `permission-mode`, `file-history-snapshot`, `last-prompt`) are filtered from JSONL activity so recap and startup housekeeping do not register as fresh activity |
 | **IDLE** | Event log + capture-pane | The event log's most recent entry is end-class (`stop`, `notify_idle`, `notify_permit`-resolved), the input prompt `❯ ` is visible, and no PERMIT footer matches. With hooks disabled the legacy fallback uses process tree + prompt visibility only |
-| **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the footer `Esc to cancel · Tab to amend · ctrl+e to explain` — catches hung hook sessions ([#16047](https://github.com/anthropics/claude-code/issues/16047)) |
+| **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the modal footer (`Esc to cancel · Tab to amend`, `Enter to confirm · Esc to <verb>`) — catches sessions where hooks have stopped firing |
 | **Completion (`* elapsed`)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears. Asterisk renders green (drawing the eye to the just-completed transition); the elapsed time is dim |
 | **Multi-pane (`[N]`)** | Window inspection | Marker on every renderer (dashboard, status bar, `ccm status`) when a window holds more than one tmux pane (Agent Teams, casual splits, leftover orphan panes). Brackets dim, digit cyan. Lets you spot windows whose aggregated state may belong to a non-active pane. See "Using with Agent Teams" below for related details (sliver protection and PERMIT auto-focus) |
 
@@ -271,7 +271,7 @@ Configure with `set -g @ccm-status-line` in your `~/.tmux.conf`. See the [README
 Appends one icon to your existing status-right. The icon shows the highest-priority state:
 
 > ```
-> 5: PERMIT ⚠   13:30  2026-04-28
+> 5: PERMIT ⚠   13:30
 > ```
 
 Priority order: `⚠` PERMIT (yellow) > `◉` BUSY (orange) > `≡` all idle (gray)
@@ -549,8 +549,8 @@ A few undocumented Claude Code env vars overlap with ccm's behavior. If you set 
 | `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` | Emits authoritative `session_state_changed` events (states: `idle` / `running` / `requires_action`) but only via `--print --output-format=stream-json` stdout. ccm cannot consume them in interactive mode; they are listed here because you may see ccm adopt them in the future if Claude Code exposes a file or hook channel |
 | `CLAUDE_CODE_NO_FLICKER` | Already handled by ccm. Preview capture falls back to `tmux capture-pane -a` when the pane uses the alternate screen buffer |
 | `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` | No conflict. If you dislike Claude Code rewriting your tmux window title, set this to `1` in your shell rc — ccm's own window naming (state icons) takes precedence either way |
-| `DISABLE_UPDATES` | No conflict. Blocks all Claude Code update paths including manual `claude update` (stricter than `DISABLE_AUTOUPDATER`, added in v2.1.118). Useful if you pin Claude Code versions in snapshots and want to avoid surprise upgrades mid-session |
-| `CLAUDE_CODE_HIDE_CWD` | No conflict. Hides the working directory in Claude Code's startup logo (added in v2.1.119). ccm already displays the directory under each project in `ccm status` and the dashboard, so you can safely hide it from the in-pane logo to reduce visual redundancy |
+| `DISABLE_UPDATES` | No conflict. Blocks all Claude Code update paths including manual `claude update` (stricter than `DISABLE_AUTOUPDATER`). Useful if you pin Claude Code versions in snapshots and want to avoid surprise upgrades mid-session |
+| `CLAUDE_CODE_HIDE_CWD` | No conflict. Hides the working directory in Claude Code's startup logo. ccm already displays the directory under each project in `ccm status` and the dashboard, so you can safely hide it from the in-pane logo to reduce visual redundancy |
 
 These are not required for ccm to work. They are listed only so that users who customize Claude Code can predict overlaps.
 

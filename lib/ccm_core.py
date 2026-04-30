@@ -2,12 +2,10 @@
 """ccm core — shared constants, helpers, state detection, and project list building."""
 
 import contextlib
-import glob as _glob_mod
 import hashlib
 import json
 import os
 import re
-import shlex
 import subprocess
 import sys
 import threading
@@ -1170,10 +1168,8 @@ def _read_shell_history(win_target: str) -> list:
 def _read_all_shell_histories() -> dict:
     """Return `{win_target: history_list}` for every window in one
     `tmux list-windows -a` subprocess instead of one show-option
-    per window. The hot path
-    (`shell_cluster_warnings → shell_cluster_warning` in a loop
-    over projects) used to pay 13+ subprocess fork-execs per
-    refresh; this collapses it to a single one.
+    per window. Keeps `shell_cluster_warnings` O(1) subprocess
+    regardless of project count.
     """
     raw = tmux_cmd(
         "list-windows", "-a",
@@ -1286,12 +1282,11 @@ class Project:
         self.ports = ports
         self.completed_at = completed_at
         self.bg_active = bg_active
-        # Number of tmux panes in this window. Used to surface a
-        # `[N]` marker (brackets dim, digit cyan) on multi-pane
-        # windows so users notice split-pane windows (Agent Teams,
-        # leftover splits, orphan panes from earlier ad-hoc work).
-        # Always >= 1; populated by build_project_list from
-        # panes_cache.
+        # Number of tmux panes in this window. Surfaces a `[N]`
+        # marker (brackets dim, digit cyan) on multi-pane windows
+        # so users notice split-pane windows (Agent Teams, casual
+        # splits, orphan panes). Always >= 1; populated by
+        # build_project_list from panes_cache.
         self.pane_count = pane_count
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 

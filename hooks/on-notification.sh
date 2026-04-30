@@ -43,15 +43,12 @@ case "$NOTIFY_TYPE" in
         rm -f "$SIGNAL_FILE" "$SIGNAL_FILE.busy"
 
         # Intentionally do NOT fire a COMPLETED desktop notification
-        # here. Claude Code's idle_prompt has a documented 10-60s+
+        # here. Claude Code's idle_prompt carries a documented 10-60s+
         # delay (anthropics/claude-code#5186), so a notification on
         # this path arrives long after the response actually finished
-        # and reads as a phantom "very late" alert. on-stop.sh's
-        # grace-scheduled notification is the authoritative
-        # completion ping; it fires within CCM_COMPLETION_GRACE_SEC
-        # (default 3) of the real Stop event. Stop hook reliability
-        # regressions that this idle_prompt fallback was guarding
-        # against (#16047, #25655) are both fixed upstream, so the
-        # backup is no longer worth the late-echo cost.
+        # and reads as a phantom "very late" alert. The authoritative
+        # completion ping comes from on-stop.sh's grace-scheduled
+        # notification, which fires within CCM_COMPLETION_GRACE_SEC
+        # (default 3) of the real Stop event.
         ;;
 esac

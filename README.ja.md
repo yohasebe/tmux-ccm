@@ -33,7 +33,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 - [TPM](https://github.com/tmux-plugins/tpm)（プラグインインストール用。手動インストールも可）
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 以上が必須**。ccm は v2.1.107 で追加された `elicitation_dialog` Notification matcher(MCP elicitation 用)を登録します。`ccm setup-hooks` は `claude --version` を確認し、古いバージョンでは installation を拒否します
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 以上が必須**。ccm は MCP elicitation 用の `elicitation_dialog` Notification matcher を登録しますが、古いバージョンはこれを受け付けません。`ccm setup-hooks` は `claude --version` を確認し、古いバージョンでは installation を拒否します
 
 ## インストール
 
@@ -345,9 +345,9 @@ ccm setup-hooks
 
 ccm は Claude Code がセッション途中でフック発火を停止する既知の不具合（[anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）に備えて、複数のフック非依存フォールバックを実装しています:
 
-- **JSONL セッションログ心拍**: プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` ファイルから、最新の **user/assistant レコード** の timestamp を読み取る。システムメタデータレコード（Claude Code v2.1.108+ の recap / `system/away_summary`、`system/turn_duration`、`attachment/task_reminder` 等）はフィルタされるため、recap 生成等の内部イベントが偽の活動として検出されない。実 user/assistant レコードが freshness window 以内ならセッションがアクティブな証拠
+- **JSONL セッションログ心拍**: プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` ファイルから、最新の **user/assistant レコード** の timestamp を読み取る。Claude Code housekeeping レコード（`system/away_summary`、`system/turn_duration`、`attachment/task_reminder` 等）はフィルタされるため、recap 生成等の内部イベントが偽の活動として検出されない。実 user/assistant レコードが freshness window 以内ならセッションがアクティブな証拠
 - **プロセス孫検出**: `claude` の孫プロセス（例: `claude → bash → xcodebuild`）が存在すれば、入力プロンプトが見えていてもフォアグラウンドツール実行中とみなして BUSY 判定（v2.1+ の「ctrl+b ctrl+b で background」UI 対応）
-- **許可ダイアログのフッター検出**: v2.1.101+ の許可フッター（`Esc to cancel · Tab to amend · ctrl+e to explain`）をペインから直接検出
+- **許可ダイアログのフッター検出**: 許可フッター（`Esc to cancel · Tab to amend · ctrl+e to explain`）をペインから直接検出
 - **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えるとフック書き込みが silent fail するため、`ccm status` とダッシュボードに警告表示。修復: `: > ~/.claude/hooks.log`
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。

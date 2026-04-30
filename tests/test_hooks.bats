@@ -365,24 +365,18 @@ STUB
 }
 
 @test "on-notification.sh: idle_prompt clears signal but never notifies" {
-    # Regression for the "very late COMPLETED notification" bug.
-    # Claude Code's idle_prompt notification has a documented 10-60s+
-    # delay (anthropics/claude-code#5186). When this hook fired
-    # _ccm_instant_notify on idle_prompt, users got a phantom
-    # "Response complete" alert long after the response actually
-    # finished — on-stop.sh's grace-scheduled notification had
-    # already fired, and the late echo was outside the 10s dedup
-    # window so it leaked through. The fix is to drop the
-    # notification call from this branch entirely; the signal-file
-    # clear (which drives the IDLE state transition) must still happen.
+    # Claude Code's idle_prompt notification carries a documented
+    # 10-60s+ delay (anthropics/claude-code#5186), so any notification
+    # fired from this branch arrives long after the response actually
+    # finished and reads as a phantom "very late" alert. The hook
+    # therefore clears the signal file (driving the IDLE transition)
+    # without firing _ccm_instant_notify; the authoritative completion
+    # ping comes from on-stop.sh's grace-scheduled notification.
     #
-    # We can't reliably stub osascript here — the production code
-    # backgrounds both `_ccm_instant_notify ... &` and `osascript ... &`,
-    # and the bg subshells often die before a stub can write to the log
-    # under bats. Instead we observe the per-project notify *marker*
-    # that `_ccm_instant_notify` writes SYNCHRONOUSLY before any fork.
-    # If the marker exists after the hook runs, the function was
-    # called — the regression we're guarding against.
+    # We observe the per-project notify *marker* that
+    # `_ccm_instant_notify` writes SYNCHRONOUSLY before any fork. If
+    # the marker exists after the hook runs, the function was called
+    # — the contract we're guarding.
     local cwd="/tmp/test-idle-${RANDOM}"
     local key
     key=$(printf '%s' "$cwd" | md5)

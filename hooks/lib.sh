@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ccm hook library — shared functions for all hook scripts
 
-# State icon table lives in one place; pull it in here so the two
-# notification-path call sites (`ccm_write_signal`,
-# `_ccm_instant_notify`) no longer carry their own inline copy.
+# State icon table is shared with the Python detector via
+# state_meta.sh. Both notification-path call sites
+# (`ccm_write_signal`, `_ccm_instant_notify`) source it from here.
 # `BASH_SOURCE` resolves to hooks/lib.sh, so its sibling lib/
 # directory holds state_meta.sh via ../lib.
 _CCM_HOOK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

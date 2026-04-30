@@ -238,9 +238,9 @@ ccm setup-hooks
 | 状態 | 検出方法 | 詳細 |
 |------|----------|------|
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
-| **BUSY** | event-log + JSONL stop_reason | 主経路: BUSY 系フック (`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`SubagentStart`/`Stop`、`PreCompact`/`PostCompact`) が追記する per-project event log (`hooks/<md5>.events.jsonl`)。`derive_state_from_events` が tail を純関数で評価し、最新エントリが start-class なら BUSY を返す。フック沈黙（#16047 / #25655）は JSONL `stop_reason` で橋渡し: 直近の `tool_use` ならツールターン境界の Stop を超えて BUSY を維持、`end_turn` / `max_tokens` / `stop_sequence` が最新 event より新しければ数秒以内に IDLE へ release。システムメタデータレコード（`system/away_summary`、`turn_duration`、`attachment/task_reminder`、`permission-mode`、`file-history-snapshot`、`last-prompt`）は JSONL 活動から除外され、recap や起動時 housekeeping が偽の活動として検出されない |
+| **BUSY** | event-log + JSONL stop_reason | 主経路: BUSY 系フック (`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`SubagentStart`/`Stop`、`PreCompact`/`PostCompact`) が追記する per-project event log (`hooks/<md5>.events.jsonl`)。`derive_state_from_events` が tail を純関数で評価し、最新エントリが start-class なら BUSY を返す。フック沈黙時は JSONL `stop_reason` で橋渡し: 直近の `tool_use` ならツールターン境界の Stop を超えて BUSY を維持、`end_turn` / `max_tokens` / `stop_sequence` が最新 event より新しければ数秒以内に IDLE へ release。Claude Code housekeeping レコード（`system/away_summary`、`turn_duration`、`attachment/task_reminder`、`permission-mode`、`file-history-snapshot`、`last-prompt`）は JSONL 活動から除外され、recap や起動時 housekeeping が偽の活動として検出されない |
 | **IDLE** | event-log + capture-pane | event log の最新エントリが end-class（`stop` / `notify_idle` / `notify_permit` 解消後）で、入力プロンプト `❯ ` が表示されており、PERMIT フッターにマッチしない状態。フックなし時は legacy fallback がプロセスツリー + プロンプト可視性のみで判定 |
-| **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: フッター `Esc to cancel · Tab to amend · ctrl+e to explain` をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能（[#16047](https://github.com/anthropics/claude-code/issues/16047)） |
+| **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: モーダルフッター（`Esc to cancel · Tab to amend`、`Enter to confirm · Esc to <verb>`）をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能 |
 | **完了（`* elapsed`）** | 表示レイヤー | 一時的マーカー: BUSY/PERMIT → IDLE遷移後に30秒間表示、その後クリア。アスタリスクは緑（直近の完了に視線を誘導）、経過時間は dim |
 | **マルチペイン（`[N]`）** | ウィンドウ検査 | tmux ペインを 2 つ以上含むウィンドウに対し、全レンダラー（dashboard / status bar / `ccm status`）でプロジェクト名直後に表示。角括弧 dim、数字 cyan。集約状態が非アクティブペインのものである可能性をユーザーが認識できるようにする。詳細（sliver 保護と PERMIT 自動フォーカス）は下記「Agent Teamsとの併用」を参照 |
 
@@ -271,7 +271,7 @@ Claude Codeが処理を完了すると、ccmは：
 既存の status-right にアイコン 1 つを追加。時計やバッテリー表示はそのまま保持されます。全プロジェクトのうち最優先の状態を表示：
 
 > ```
-> 5: PERMIT ⚠   13:30  2026-04-28
+> 5: PERMIT ⚠   13:30
 > ```
 
 優先順: `⚠` PERMIT（黄） > `◉` BUSY（オレンジ） > `≡` 全IDLE（グレー）
@@ -549,8 +549,8 @@ Claude Code には ccm と機能的に重なる非公開の環境変数がいく
 | `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS` | authoritative な `session_state_changed` イベント（状態値は `idle` / `running` / `requires_action`）を emit するが、`--print --output-format=stream-json` の stdout のみ。ccm は interactive mode なので現状取得不可。将来 Claude Code 側がファイル / hook 経由の配信を追加すれば、ccm の検出ヒューリスティックを統合できる可能性があるため監視対象として記載 |
 | `CLAUDE_CODE_NO_FLICKER` | ccm 対応済。alternate screen buffer を使うペインのプレビューキャプチャで自動的に `tmux capture-pane -a` にフォールバック |
 | `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` | 競合なし。Claude Code による tmux ウィンドウタイトル書き換えが嫌な場合はシェル rc で `1` に設定するとよい。ccm 側のウィンドウ名 (state アイコン) の命名はどちらの場合も優先される |
-| `DISABLE_UPDATES` | 競合なし。Claude Code のすべての更新経路 (手動 `claude update` 含む) をブロックする (v2.1.118 で追加、`DISABLE_AUTOUPDATER` より厳格)。スナップショットで Claude Code のバージョンを固定したい、セッション途中での予期せぬアップグレードを避けたいユーザー向け |
-| `CLAUDE_CODE_HIDE_CWD` | 競合なし。Claude Code 起動時のロゴに表示される作業ディレクトリを非表示にする (v2.1.119 で追加)。ccm は `ccm status` とダッシュボードで各プロジェクトのディレクトリを既に表示しているため、ペイン内のロゴ側は安全に非表示にして視覚的な重複を減らせる |
+| `DISABLE_UPDATES` | 競合なし。Claude Code のすべての更新経路（手動 `claude update` 含む）をブロックする（`DISABLE_AUTOUPDATER` より厳格）。スナップショットで Claude Code のバージョンを固定したい、セッション途中での予期せぬアップグレードを避けたいユーザー向け |
+| `CLAUDE_CODE_HIDE_CWD` | 競合なし。Claude Code 起動時のロゴに表示される作業ディレクトリを非表示にする。ccm は `ccm status` とダッシュボードで各プロジェクトのディレクトリを既に表示しているため、ペイン内のロゴ側は安全に非表示にして視覚的な重複を減らせる |
 
 これらは ccm の動作に必須ではありません。Claude Code をカスタマイズしているユーザーが機能の重なりを事前に把握できるようにするための記載です。
 
