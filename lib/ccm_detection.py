@@ -1001,6 +1001,17 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     # shows for COMPLETED_AT_TIMEOUT seconds after the transition.
     if state == "IDLE" and ctx.prev_state in ("BUSY", "PERMIT"):
         ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_completed_at", str(ctx.now))
+    elif state != "IDLE" and ctx.prev_state == "IDLE":
+        # Clear `@ccm_completed_at` when the project leaves IDLE.
+        # The display layer already suppresses the marker for
+        # non-IDLE states, but we also clear the stored value so
+        # that an unusual sequence — e.g. IDLE → SHELL → IDLE
+        # without going through BUSY (claude crash + restart) —
+        # cannot resurrect a stale "* 5s" from the previous session
+        # when the project returns to IDLE. Fires at most once per
+        # transition, so the perf cost is one tmux subprocess on
+        # IDLE→non-IDLE edges only.
+        ccm_core.tmux_cmd("set-option", "-wut", win_target, "@ccm_completed_at")
 
     # Background-activity affordance. State captures "whose turn
     # it is" (BUSY = claude is responding, IDLE = user has the

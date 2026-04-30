@@ -1576,6 +1576,42 @@ class TestApplyActions:
                            if len(c[0]) > 3 and "@ccm_completed_at" in str(c[0])]
         assert len(completed_calls) > 0
 
+    def test_completed_at_cleared_on_idle_to_busy(self, project_dir):
+        """When the project leaves IDLE, the stored @ccm_completed_at is
+        cleared with `set-option -wut`. Display already filters by
+        state, but clearing the stored value defends against a fresh
+        IDLE re-entry that didn't go through BUSY/PERMIT (e.g. claude
+        crash + restart) reviving a stale '* 5s' marker.
+        """
+        rule = ccm_core.Rule(name="t", result="BUSY", action=ccm_core.Action.DEFAULT)
+        ctx = make_ctx(prev_state="IDLE", now=12345)
+        state, _set_win, mock_tmux = self._run(rule, ctx, project_dir=project_dir)
+        assert state == "BUSY"
+        clear_calls = [
+            c for c in mock_tmux.call_args_list
+            if c[0][:2] == ("set-option", "-wut")
+            and "@ccm_completed_at" in c[0]
+        ]
+        assert len(clear_calls) == 1, (
+            f"Expected one `set-option -wut @ccm_completed_at` call on "
+            f"IDLE→BUSY transition, got {len(clear_calls)}"
+        )
+
+    def test_completed_at_cleared_on_idle_to_shell(self, project_dir):
+        """The clear also fires on IDLE→SHELL, covering the claude-crash
+        edge case the rule was added for.
+        """
+        rule = ccm_core.Rule(name="t", result="SHELL", action=ccm_core.Action.DEFAULT)
+        ctx = make_ctx(prev_state="IDLE", raw="SHELL", now=12345)
+        state, _set_win, mock_tmux = self._run(rule, ctx, project_dir=project_dir)
+        assert state == "SHELL"
+        clear_calls = [
+            c for c in mock_tmux.call_args_list
+            if c[0][:2] == ("set-option", "-wut")
+            and "@ccm_completed_at" in c[0]
+        ]
+        assert len(clear_calls) == 1
+
 
 class TestFastPath:
     """evaluate_fast uses the same DETECTION_RULES as the slow path,
@@ -2281,6 +2317,66 @@ class TestSnapshotLoad:
                 "projects": projects}
         fp = tmp_path / f"{name}.json"
         fp.write_text(json.dumps(snap))
+
+    @patch("ccm_core._autosave_trigger")
+    @patch("ccm_core.hooks_configured", return_value=True)
+    @patch("ccm_core.tmux_batch")
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.get_session", return_value="main")
+    def test_save_load_round_trip_via_disk(
+        self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path
+    ):
+        """End-to-end round trip: save a snapshot from a synthetic
+        project list, then load the same file back and assert the
+        load path creates the expected windows. Catches schema drift
+        between save and load that the JSON-only round trip
+        (`test_round_trip_preserves_project_fields`) cannot see —
+        e.g. if `cmd_snapshot_save` started writing `path` while
+        `cmd_snapshot_load` still reads `dir`.
+        """
+        ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
+        proj_dir_a = tmp_path / "alpha"
+        proj_dir_b = tmp_path / "beta"
+        proj_dir_a.mkdir()
+        proj_dir_b.mkdir()
+
+        save_listing = (
+            f"1\twin1\talpha\t{proj_dir_a}\n"
+            f"2\twin2\tbeta\t{proj_dir_b}"
+        )
+
+        def tmux_side_effect(*args, **kwargs):
+            if args[0] == "list-windows" and "-a" in args:
+                # Save phase asks for ccm windows; subsequent calls during
+                # load also hit this. Return the same listing for save,
+                # empty for load (so windows are seen as "missing").
+                return save_listing if not load_phase["active"] else ""
+            if args[0] == "list-windows":
+                return ""
+            if args[0] == "new-window":
+                load_phase["new_windows"].append(kwargs.get("input", "") or " ".join(args))
+                return "9"
+            if args[0] == "display-message":
+                return ""
+            return ""
+
+        load_phase = {"active": False, "new_windows": []}
+        mock_tmux.side_effect = tmux_side_effect
+
+        # SAVE
+        ccm_core.cmd_snapshot_save("rt-disk", quiet=True)
+        snap_path = tmp_path / "rt-disk.json"
+        assert snap_path.exists()
+
+        # LOAD the file we just wrote
+        load_phase["active"] = True
+        ccm_core.cmd_snapshot_load("rt-disk")
+
+        # Two `new-window` calls expected (one per saved project)
+        new_window_calls = [c for c in mock_tmux.call_args_list if c[0][0] == "new-window"]
+        assert len(new_window_calls) == 2, (
+            f"Expected 2 new-window calls during load, got {len(new_window_calls)}"
+        )
 
     @patch("ccm_core._autosave_trigger")
     @patch("ccm_core.hooks_configured", return_value=True)
