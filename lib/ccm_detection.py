@@ -823,14 +823,15 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # occasionally fires spurious `SubagentStart` /
         # `SubagentStop` hooks during otherwise-idle periods
         # (cause unconfirmed; possibly status-line refresh or
-        # auto-memory). Pattern: `... stop, notify_idle, subagent`
-        # with no follow-up activity. Legitimate subagent events
-        # always come mid-conversation (after a `prompt` or tool
-        # event); only the phantom case appears AFTER a
-        # `notify_idle` with no intervening start-class event.
-        # Walk back through stacked subagent events; if we land on
-        # a `notify_idle` without crossing a `prompt` or tool
-        # event, the latest is phantom — defer to legacy.
+        # auto-memory). Legitimate subagent events always come
+        # mid-conversation (between `prompt` and `stop`, alongside
+        # tool events); a subagent that lands AFTER the
+        # conversation has reached a rest state — `stop` (turn
+        # ended), `notify_idle` (idle-prompt fired), or
+        # `session_end` (claude exited) — is necessarily phantom.
+        # Walk back through stacked subagent events; if we land
+        # on any rest-state marker before a real activity event,
+        # defer to legacy.
         if t == "subagent" and raw != "PERMIT":
             for i in range(len(events_seq) - 2, -1, -1):
                 prev_event = events_seq[i]
@@ -838,9 +839,9 @@ def derive_state_from_events(events, jsonl_stop_reason,
                           if isinstance(prev_event, dict) else None)
                 if prev_t == "subagent":
                     continue  # walk past stacked phantoms
-                if prev_t == "notify_idle":
-                    return None  # phantom chain after idle
-                break  # crossed a real event; legitimate context
+                if prev_t in ("notify_idle", "stop", "session_end"):
+                    return None  # phantom: subagent after rest state
+                break  # crossed a real activity event; legitimate context
         # Esc-interrupt / hook-silence fallback. Latest event is
         # start-class (prompt / pretool / posttool / subagent /
         # compact) but JSONL shows the assistant just completed

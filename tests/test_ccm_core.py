@@ -5042,6 +5042,44 @@ class TestDeriveStateFromEvents:
         )
         assert result is None  # defer to legacy
 
+    def test_phantom_subagent_directly_after_stop_defers(self):
+        """`stop` is itself a "session at rest" marker — claude has
+        finished the turn. A `subagent` immediately after `stop`
+        (without an intervening `prompt` or tool event) is phantom
+        regardless of whether `notify_idle` fired in between.
+        Observed in the wild: idle_prompt has documented latency
+        (anthropics/claude-code#5186), so claude can sit at rest
+        for many minutes after `stop` without `notify_idle` ever
+        landing — yet phantom subagent events still fire."""
+        events = (
+            {"ts": 100, "type": "stop"},
+            {"ts": 200, "type": "subagent"},  # phantom; no notify_idle yet
+        )
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=300, now=400,
+            raw="IDLE",
+        )
+        assert result is None  # defer to legacy
+
+    def test_phantom_subagent_after_session_end_defers(self):
+        """`session_end` is also a rest-state marker. Subagent after
+        session_end is anomalous (claude has exited)."""
+        events = (
+            {"ts": 100, "type": "session_end"},
+            {"ts": 200, "type": "subagent"},
+        )
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=200, now=300,
+            raw="IDLE",
+        )
+        assert result is None
+
     def test_phantom_subagent_stacked_chain_defers(self):
         """Multiple phantom subagent events stack up over time.
         Walk back through them; if we reach `notify_idle` without
