@@ -64,7 +64,6 @@ from ccm_core import (
     BUSY_HOOK_JSONL_WINDOW,
     HOOK_FRESH_THRESHOLD,
     JSONL_HOOK_GAP_TOLERANCE,
-    PERMIT_TOOL_USE_FALLBACK_SEC,
     STARTUP_GRACE_SEC,
 )
 
@@ -768,34 +767,38 @@ def derive_state_from_events(events, jsonl_stop_reason,
         if _jsonl_terminal_fresher_than_event(
                 latest, jsonl_stop_reason, jsonl_age, now):
             return "IDLE"
-        # raw is not PERMIT (modal gone). Two scenarios produce this
-        # state:
-        #   (a) User granted the permit; tool is now running. The
-        #       assistant's `tool_use` JSONL record landed milliseconds
-        #       BEFORE the permit event (it's what triggered the
-        #       modal). PreToolUse should rewrite the latest event to
-        #       `pretool`, but if that hook falls silent
-        #       (anthropics/claude-code#16047 class) we land here.
-        #       Correct state: BUSY.
-        #   (b) User dismissed (Esc) the permit. Claude is genuinely
-        #       paused. idle_prompt should advance the log to
-        #       `notify_idle`, but it is documented to fire 10-60 s+
-        #       late (anthropics/claude-code#5186). During that gap
-        #       the JSONL still carries the prior `tool_use` record.
-        #       Correct state: PERMIT.
+        # raw is not PERMIT (modal gone). When JSONL still carries
+        # `tool_use` as the latest assistant stop_reason, the capture-
+        # pane classification (`raw`) discriminates the underlying
+        # state. raw is observed in the same scan as this evaluation,
+        # so it reflects the pane right now.
         #
-        # A simple discriminator: time since the permit event. The
-        # dismiss case (b) only needs ~60 s for idle_prompt to advance
-        # the log; the grant-with-hook-silence case (a) is otherwise
-        # stuck indefinitely. Once the permit event is older than
-        # PERMIT_TOOL_USE_FALLBACK_SEC and JSONL still says tool_use
-        # within the long-tool window, classify as BUSY — it can no
-        # longer be the dismiss-not-yet-corrected case.
-        event_age = now - int(latest.get("ts") or 0)
-        if (jsonl_stop_reason == "tool_use"
-                and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW
-                and event_age >= PERMIT_TOOL_USE_FALLBACK_SEC):
-            return "BUSY"
+        # raw=BUSY → tool output filling the pane (no `❯` at col 0
+        #   or `⏵⏵` accept-edits banner). Tool is running, regardless
+        #   of whether JSONL has been touched since the permit event.
+        #   This catches the post-grant case where PreToolUse hooks
+        #   silently failed (anthropics/claude-code#16047 class) and
+        #   the latest event is still permit-class.
+        #
+        # raw=IDLE → `❯` is visible at col 0. Two sub-cases:
+        #   - accept-edits mode where the tool is running but the
+        #     prompt remains visible: JSONL gets a fresh assistant
+        #     record AFTER the permit event when the tool produces
+        #     output. _jsonl_fresher_than_event True → BUSY.
+        #   - user dismissed (Esc) the modal and is back at the
+        #     prompt: JSONL still carries the prior `tool_use` record
+        #     (claude has not written anything new). _jsonl_fresher
+        #     _than_event False → IDLE. We commit IDLE immediately
+        #     rather than wait for idle_prompt to advance the log.
+        if jsonl_stop_reason == "tool_use" and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW:
+            if raw == "BUSY":
+                return "BUSY"
+            if raw == "IDLE":
+                if _jsonl_fresher_than_event(latest, jsonl_age, now):
+                    return "BUSY"
+                return "IDLE"
+            # raw is None (caller did not provide) or an unexpected
+            # value: keep PERMIT (no positive evidence either way).
     elif klass == EVENT_CLASS_START:
         # Phantom-subagent shortcut. Claude Code upstream
         # occasionally fires spurious `SubagentStart` /

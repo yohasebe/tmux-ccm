@@ -4321,44 +4321,62 @@ class TestDeriveStateFromEvents:
             pid_present=True, claude_pid_age=4000,
         ) == "PERMIT"
 
-    def test_permit_with_running_tool_returns_busy_after_fallback_window(self):
-        """The user grants the permission and Claude starts a tool
-        (Bash, etc.). The assistant `tool_use` record in JSONL was
-        written BEFORE the permit event by milliseconds (the request
-        is what triggered the modal). When PreToolUse hooks fall
-        silent afterwards, the latest event stays at `notify_permit`.
-        Once the permit event is older than
-        PERMIT_TOOL_USE_FALLBACK_SEC, we classify as BUSY because the
-        dismiss-not-yet-corrected window has closed.
+    def test_permit_with_running_tool_and_raw_busy_returns_busy(self):
+        """The user grants the permission and Claude starts a tool.
+        The pane now shows tool output (no `❯` prompt at column 0,
+        claude has children) so the capture-pane classifier returns
+        raw=BUSY. We trust raw to discriminate "tool running" from
+        "user back at prompt", regardless of whether PreToolUse
+        hooks have fired.
+
+        Without this branch the latest event stays at `notify_permit`
+        (PreToolUse silently failed) and the dashboard would show a
+        stale PERMIT for the entire duration of the tool execution.
         """
         now = int(time.time())
-        # Permit event landed 90 s ago (> PERMIT_TOOL_USE_FALLBACK_SEC).
-        # The `tool_use` JSONL record landed 91 s ago — older than the
-        # permit event. PreToolUse never fired.
         assert ccm_core.derive_state_from_events(
-            events=({"ts": now - 90, "type": "notify_permit"},),
+            events=({"ts": now - 30, "type": "notify_permit"},),
             jsonl_stop_reason="tool_use",
-            jsonl_age=91,
+            jsonl_age=31,                     # JSONL just before permit
             pid_present=True,
             claude_pid_age=400,
+            raw="BUSY",
             now=now,
         ) == "BUSY"
 
-    def test_permit_within_fallback_window_keeps_permit(self):
-        """Within PERMIT_TOOL_USE_FALLBACK_SEC of the permit event
-        we cannot tell "tool running after grant" from "user dismissed
-        and idle_prompt is still on its way". Stay in PERMIT until
-        the window closes.
+    def test_permit_with_dismissed_modal_and_stale_jsonl_returns_idle(self):
+        """The user dismissed the permit modal (Esc). The pane is now
+        back at the input prompt (raw=IDLE) and JSONL has not been
+        touched since the dismiss (jsonl_age > permit event age, so
+        not fresher). We commit IDLE directly, without waiting for
+        `notify_idle` to advance the event log.
         """
         now = int(time.time())
-        # Permit event landed 5 s ago (< PERMIT_TOOL_USE_FALLBACK_SEC).
         assert ccm_core.derive_state_from_events(
-            events=({"ts": now - 5, "type": "permit_req"},),
-            jsonl_stop_reason="tool_use",
-            jsonl_age=120,
+            events=({"ts": now - 30, "type": "permit_req"},),
+            jsonl_stop_reason="tool_use",     # stale tool_use record
+            jsonl_age=35,                      # older than event_age=30
             pid_present=True,
-            claude_pid_age=300,
+            claude_pid_age=400,
+            raw="IDLE",
             now=now,
+        ) == "IDLE"
+
+    def test_permit_with_running_tool_and_no_raw_keeps_permit(self):
+        """When the caller does not provide a `raw` value (None) we
+        cannot discriminate between grant and dismiss. Keep PERMIT
+        — the (Nm) stale-signal age suffix surfaces the "stuck"
+        nature of the state to the user.
+        """
+        now = int(time.time())
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": now - 30, "type": "notify_permit"},),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=31,
+            pid_present=True,
+            claude_pid_age=400,
+            now=now,
+            # no raw passed
         ) == "PERMIT"
 
     def test_permit_with_stale_tool_use_stays_permit(self):
@@ -4906,20 +4924,25 @@ class TestDeriveStateFromEvents:
             raw="IDLE",
         ) == "BUSY"
 
-    def test_permit_event_with_dismiss_case_keeps_permit(self):
-        """Real dismiss case: hook fresher than JSONL (Permission-
-        Request fired AFTER the prior assistant tool_use record).
-        Must NOT promote to BUSY — claude is genuinely paused."""
+    def test_permit_event_with_dismiss_case_returns_idle(self):
+        """Real dismiss case: PermissionRequest fired AFTER the prior
+        assistant tool_use record (so JSONL is older than the permit
+        event), the user dismissed (Esc), and the pane is now back at
+        the input prompt → raw=IDLE. We commit IDLE directly via raw,
+        rather than waiting for `notify_idle` to advance the event
+        log. The (now stale) `permit_req` event is no longer the
+        active state — the user has moved on.
+        """
         # event_ts=200, now=205 → event_age=5
         # jsonl_age=120 → JSONL OLDER than event (older by 115s)
-        # → tool_use rule rejects (event fresher than JSONL)
+        # → _jsonl_fresher_than_event False → raw=IDLE branch returns IDLE
         assert ccm_core.derive_state_from_events(
             events=({"ts": 200, "type": "permit_req"},),
             jsonl_stop_reason="tool_use",
             pid_present=True, claude_pid_age=300,
             jsonl_age=120, now=205,
             raw="IDLE",
-        ) == "PERMIT"
+        ) == "IDLE"
 
     def test_phantom_subagent_after_notify_idle_defers(self):
         """Concrete scenario:
