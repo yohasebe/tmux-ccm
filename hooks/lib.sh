@@ -12,12 +12,20 @@ source "${_CCM_HOOK_LIB_DIR}/../lib/state_meta.sh"
 
 # Run the boilerplate preamble common to every on-*.sh hook: sets up
 # HOOK_DIR, consumes Claude Code's JSON payload from stdin into
-# `INPUT`, extracts `CWD`, resolves symlinks when possible, and
-# computes the md5-of-cwd `KEY`. All four variables are set in the
-# caller's scope (bash function-local is opt-in via `local`, so the
-# plain assignments below propagate). Returns 0 on success and 1
-# when the payload lacks a cwd or no md5 implementation is available
-# — hook scripts should `ccm_hook_init || exit 0` to short-circuit.
+# `INPUT`, extracts `CWD` (still useful for project-name lookup) and
+# `SESSION_ID`, and uses session_id as the file `KEY`. All variables
+# are set in the caller's scope. Returns 0 on success and 1 when the
+# payload lacks a session id — hook scripts should
+# `ccm_hook_init || exit 0` to short-circuit.
+#
+# session_id is the natural primary key for hook artefacts:
+#   - stable for the lifetime of a Claude Code session (UUID per
+#     session, written by the runtime)
+#   - distinct across sessions, so a fresh `claude --continue` cannot
+#     read state left by a prior session in the same cwd
+#   - unaffected by cwd drift (`cd` mid-session does not move it)
+# This eliminates the cwd-drift sidecar and cross-session pid-age
+# filter that earlier `md5(cwd)` keying needed as patches.
 #
 # Reads stdin exactly once. If a script needs additional fields from
 # the payload, parse them from "$INPUT" after calling ccm_hook_init.
@@ -26,27 +34,24 @@ ccm_hook_init() {
     mkdir -p "$HOOK_DIR" 2>/dev/null || true
 
     INPUT=$(cat)
+
+    # session_id: the new primary KEY. Try snake_case then camelCase
+    # — upstream payload schema has used both at different points.
+    SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || \
+        SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"sessionI?d?_?i?d?" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    [[ -z "$SESSION_ID" ]] && return 1
+    KEY="$SESSION_ID"
+
+    # cwd is still used by `_ccm_instant_notify` to find the matching
+    # tmux window for project-name lookup, and by the project-name
+    # cache file. Best-effort extraction; a missing cwd is tolerable
+    # (instant notification falls back to "ccm" as group name).
     CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || \
         CWD=$(printf '%s' "$INPUT" | grep -o '"cwd" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
-    [[ -z "$CWD" ]] && return 1
-
-    if command -v realpath &>/dev/null && [[ -e "$CWD" ]]; then
+    if [[ -n "$CWD" ]] && command -v realpath &>/dev/null && [[ -e "$CWD" ]]; then
         CWD=$(realpath "$CWD" 2>/dev/null) || true
     fi
 
-    if command -v md5 &>/dev/null; then
-        KEY=$(printf '%s' "$CWD" | md5)
-    elif command -v md5sum &>/dev/null; then
-        KEY=$(printf '%s' "$CWD" | md5sum | cut -d' ' -f1)
-    else
-        return 1
-    fi
-    # Sidecar: literal cwd indexed by KEY. ccm reads this when its
-    # @ccm_dir's md5 has no signal, so a session that has cd'd into
-    # a subdirectory mid-conversation can still be matched to its
-    # parent ccm window. Best-effort: a write failure must not block
-    # the hook itself.
-    printf '%s\n' "$CWD" > "${HOOK_DIR}/${KEY}.cwd" 2>/dev/null || true
     return 0
 }
 

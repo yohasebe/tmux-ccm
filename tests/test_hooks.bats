@@ -327,20 +327,20 @@ STUB
 @test "on-notification.sh: elicitation_dialog writes PERMIT signal" {
     # End-to-end: feed the actual hook script the JSON Claude Code would
     # send for an elicitation event, and verify the signal file content.
+    # Hook signal files are now keyed on the session_id from the payload,
+    # not md5(cwd) — so we pass an explicit session_id and check that
+    # specific path.
     local hook_dir="${MOCK_DIR}/hooks-tap"
+    local sid="11111111-1111-1111-1111-111111111111"
     mkdir -p "$hook_dir"
     TMPDIR="${MOCK_DIR}" \
         bash -c "cd '${CCM_ROOT}' && \
                  export TMPDIR='${MOCK_DIR}' && \
                  mkdir -p \"\$TMPDIR/ccm-\$UID/hooks\" && \
-                 echo '{\"cwd\":\"/tmp/test-proj\",\"notification_type\":\"elicitation_dialog\"}' \
+                 echo '{\"cwd\":\"/tmp/test-proj\",\"session_id\":\"${sid}\",\"notification_type\":\"elicitation_dialog\"}' \
                      | hooks/on-notification.sh"
 
-    # Compute the expected signal file path
-    local cwd="/tmp/test-proj"
-    local key
-    key=$(printf '%s' "$cwd" | md5)
-    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${key}"
+    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${sid}"
     [[ -f "$signal_file" ]] || { echo "signal file not written: $signal_file"; return 1; }
     grep -q ' PERMIT' "$signal_file" || { echo "expected PERMIT in signal file"; cat "$signal_file"; return 1; }
 }
@@ -349,17 +349,16 @@ STUB
     # Regression: ensure the existing matcher path still works after
     # the elicitation_dialog addition.
     local hook_dir="${MOCK_DIR}/hooks-tap2"
+    local sid="22222222-2222-2222-2222-222222222222"
     mkdir -p "$hook_dir"
     TMPDIR="${MOCK_DIR}" \
         bash -c "cd '${CCM_ROOT}' && \
                  export TMPDIR='${MOCK_DIR}' && \
                  mkdir -p \"\$TMPDIR/ccm-\$UID/hooks\" && \
-                 echo '{\"cwd\":\"/tmp/test-proj2\",\"notification_type\":\"permission_prompt\"}' \
+                 echo '{\"cwd\":\"/tmp/test-proj2\",\"session_id\":\"${sid}\",\"notification_type\":\"permission_prompt\"}' \
                      | hooks/on-notification.sh"
 
-    local key
-    key=$(printf '%s' "/tmp/test-proj2" | md5)
-    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${key}"
+    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${sid}"
     [[ -f "$signal_file" ]] || { echo "signal file not written"; return 1; }
     grep -q ' PERMIT' "$signal_file" || { echo "expected PERMIT"; return 1; }
 }
@@ -378,26 +377,25 @@ STUB
     # the marker exists after the hook runs, the function was called
     # — the contract we're guarding.
     local cwd="/tmp/test-idle-${RANDOM}"
-    local key
-    key=$(printf '%s' "$cwd" | md5)
+    local sid="33333333-3333-3333-3333-333333333333"
 
     # Pre-populate the signal file as if a prior BUSY hook wrote it,
     # so the test exercises the file-clear path. Use a stale ts so
     # the "skip if BUSY-and-future" guard doesn't short-circuit.
     mkdir -p "${MOCK_DIR}/ccm-${UID}/hooks"
-    printf '%s BUSY' "$(($(date +%s) - 60))" > "${MOCK_DIR}/ccm-${UID}/hooks/${key}"
+    printf '%s BUSY' "$(($(date +%s) - 60))" > "${MOCK_DIR}/ccm-${UID}/hooks/${sid}"
 
     TMPDIR="${MOCK_DIR}" \
         bash -c "cd '${CCM_ROOT}' && \
                  export TMPDIR='${MOCK_DIR}' && \
-                 echo '{\"cwd\":\"${cwd}\",\"notification_type\":\"idle_prompt\"}' \
+                 echo '{\"cwd\":\"${cwd}\",\"session_id\":\"${sid}\",\"notification_type\":\"idle_prompt\"}' \
                      | hooks/on-notification.sh"
 
     # Brief wait to let any backgrounded `_ccm_instant_notify ... &`
     # write its marker (synchronous within the function).
     sleep 0.2
 
-    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${key}"
+    local signal_file="${MOCK_DIR}/ccm-${UID}/hooks/${sid}"
     [[ ! -f "$signal_file" ]] || { echo "signal file should be deleted: $signal_file"; cat "$signal_file"; return 1; }
 
     local marker_file="${MOCK_DIR}/ccm-${UID}/notified/${key}"
@@ -497,6 +495,7 @@ STUB
     local shim_dir="${MOCK_DIR}/stop-shim"
     mkdir -p "$tmp_home" "$shim_dir"
     local cwd="/tmp/stop-proj-a"
+    local sid="44444444-4444-4444-4444-444444444444"
     cat > "${shim_dir}/tmux" << EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "list-windows" ]]; then
@@ -513,30 +512,27 @@ EOF
         CCM_COMPLETION_GRACE_SEC=99 \
         bash -c "cd '${CCM_ROOT}' && \
                  mkdir -p \"\$TMPDIR/ccm-\$UID/hooks\" && \
-                 echo '{\"cwd\":\"$cwd\"}' | hooks/on-stop.sh"
+                 echo '{\"cwd\":\"$cwd\",\"session_id\":\"${sid}\"}' | hooks/on-stop.sh"
 
-    local key
-    key=$(printf '%s' "$cwd" | md5)
-    local pending="${tmp_home}/ccm-${UID}/hooks/${key}.pending"
+    local pending="${tmp_home}/ccm-${UID}/hooks/${sid}.pending"
     [[ -f "$pending" ]] || { echo "pending sentinel not written: $pending"; return 1; }
 }
 
 @test "on-pre-tool-use.sh: cancels pending sentinel from prior Stop" {
     local tmp_home="${MOCK_DIR}/pretool-home"
     local cwd="/tmp/pretool-proj"
-    local key
-    key=$(printf '%s' "$cwd" | md5)
+    local sid="55555555-5555-5555-5555-555555555555"
     local hook_dir="${tmp_home}/ccm-${UID}/hooks"
     mkdir -p "$hook_dir"
     # Pre-seed the pending sentinel as if a Stop just fired
-    printf '%s' "$(date +%s)" > "${hook_dir}/${key}.pending"
-    [[ -f "${hook_dir}/${key}.pending" ]] || { echo "setup: pending missing"; return 1; }
+    printf '%s' "$(date +%s)" > "${hook_dir}/${sid}.pending"
+    [[ -f "${hook_dir}/${sid}.pending" ]] || { echo "setup: pending missing"; return 1; }
 
     TMPDIR="$tmp_home" HOME="$tmp_home" \
         bash -c "cd '${CCM_ROOT}' && \
-                 echo '{\"cwd\":\"$cwd\"}' | hooks/on-pre-tool-use.sh"
+                 echo '{\"cwd\":\"$cwd\",\"session_id\":\"${sid}\"}' | hooks/on-pre-tool-use.sh"
 
-    [[ ! -f "${hook_dir}/${key}.pending" ]] || {
+    [[ ! -f "${hook_dir}/${sid}.pending" ]] || {
         echo "pending should have been cancelled"; return 1;
     }
 }
@@ -586,17 +582,16 @@ for k, v in STATE_ICONS.items():
 @test "on-prompt-submit.sh: cancels pending sentinel on new turn" {
     local tmp_home="${MOCK_DIR}/prompt-home"
     local cwd="/tmp/prompt-proj"
-    local key
-    key=$(printf '%s' "$cwd" | md5)
+    local sid="66666666-6666-6666-6666-666666666666"
     local hook_dir="${tmp_home}/ccm-${UID}/hooks"
     mkdir -p "$hook_dir"
-    printf '%s' "$(date +%s)" > "${hook_dir}/${key}.pending"
+    printf '%s' "$(date +%s)" > "${hook_dir}/${sid}.pending"
 
     TMPDIR="$tmp_home" HOME="$tmp_home" \
         bash -c "cd '${CCM_ROOT}' && \
-                 echo '{\"cwd\":\"$cwd\"}' | hooks/on-prompt-submit.sh"
+                 echo '{\"cwd\":\"$cwd\",\"session_id\":\"${sid}\"}' | hooks/on-prompt-submit.sh"
 
-    [[ ! -f "${hook_dir}/${key}.pending" ]] || {
+    [[ ! -f "${hook_dir}/${sid}.pending" ]] || {
         echo "pending should have been cancelled by UserPromptSubmit"; return 1;
     }
 }

@@ -286,6 +286,13 @@ class DetectionContext:
     # `set-option -wut @ccm_bg_active` subprocess when the option is
     # already unset (the steady-state case for nearly every window).
     prev_bg_active: bool = False
+    # Claude Code session_id (UUID) for the live claude in this
+    # window's pane, derived from the runtime session_info file
+    # `~/.claude/sessions/<pid>.json`. Used by readers (read_hook_signal,
+    # read_events_tail) to address the correct hook artefacts without
+    # repeating the pid-chain lookup. None when no live claude is
+    # running, or when session_info has not been written yet.
+    session_id: Optional[str] = None
 
 
 class Action(Enum):
@@ -751,25 +758,6 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # silently committing IDLE.
         return None
 
-    # Cross-session events filter: an event whose timestamp predates
-    # the current claude process's start time cannot belong to the
-    # live session. This happens when a project's events.jsonl
-    # accumulates records from previous sessions (the file is keyed
-    # on cwd, not session id, and is append-only) — typical when a
-    # user `cd`'s from a subdirectory back to @ccm_dir between
-    # sessions. The new session re-uses the parent-key events file
-    # which still holds the prior session's tail, and without this
-    # filter derive would commit a stale BUSY/PERMIT/etc. as the
-    # current state until the new session writes its first hook.
-    # `claude_pid_age` comes from the kernel's monotonic etime, so
-    # `now - claude_pid_age` is the authoritative session start
-    # time. Only apply when both values are available; an unknown
-    # pid age (-1) or now=0 leaves the original behavior intact.
-    latest_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
-    if (claude_pid_age >= 0 and now > 0 and latest_ts > 0
-            and latest_ts < now - claude_pid_age):
-        return None
-
     klass = EVENT_CLASSES.get(t)
     if klass is None:
         # Unknown event type (upstream schema drift) — defer to legacy.
@@ -975,11 +963,38 @@ def build_detection_context(win_target, project_dir, prev_state,
             claude_pid_age = ccm_core.find_process_age(cp, ps_lines)
             break
 
+    # Session_id resolution: claude_pid → ~/.claude/sessions/<pid>.json
+    # → sessionId. This is the primary key for hook signal / events
+    # files. Cache on the @ccm_session_id tmux window option so the
+    # fast path (statusline, evaluate_fast) can read it without
+    # repeating the pid chain. Re-write only when the value changes
+    # to avoid pointless tmux churn on every scan.
+    session_id = None
+    if claude_pid is not None:
+        info = ccm_core.read_session_info(claude_pid)
+        if info:
+            session_id = info.get("sessionId") or info.get("session_id")
+    if win_target:
+        prev_sid = ccm_core.tmux_cmd(
+            "show-option", "-w", "-t", win_target, "-qv", "@ccm_session_id"
+        )
+        if session_id and session_id != prev_sid:
+            ccm_core.tmux_cmd(
+                "set-option", "-w", "-t", win_target,
+                "@ccm_session_id", session_id,
+            )
+        elif not session_id and prev_sid:
+            # claude exited / no session yet — clear cached value so
+            # the fast path doesn't read a stale session_id's signal
+            ccm_core.tmux_cmd(
+                "set-option", "-w", "-t", win_target, "-u", "@ccm_session_id"
+            )
+
     hook_state = ""
     hook_ts = 0
     hook_age = -1
     if project_dir:
-        sig = ccm_core.read_hook_signal(project_dir)
+        sig = ccm_core.read_hook_signal(project_dir, session_id=session_id)
         if sig is not None:
             hook_ts, hook_state, _detail = sig
             # SHELL hook signal is ignored: process tree is authoritative
@@ -1009,6 +1024,7 @@ def build_detection_context(win_target, project_dir, prev_state,
         claude_pid_age=claude_pid_age,
         now=now,
         prev_bg_active=prev_bg_active,
+        session_id=session_id,
     )
 
 
@@ -1144,7 +1160,7 @@ def detect_window_state(win_target, project_dir, prev_state,
 
     event_log_state = None
     if _event_log_enabled():
-        events = ccm_core.read_events_tail(project_dir)
+        events = ccm_core.read_events_tail(project_dir, session_id=ctx.session_id)
         # pid_present: the legacy raw detection already resolved
         # SHELL when no claude process is present, so raw not in
         # ("SHELL", "DOWN") is a reliable "pid present" proxy

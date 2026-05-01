@@ -546,105 +546,66 @@ def _resolve_project_dir(project_dir):
     return expanded
 
 
-# ─── cwd-drift resolution ───
-# Each Claude Code hook keys its signal / events file on the
-# session's *current* cwd, not the @ccm_dir of the tmux window the
-# session lives in. If the user `cd`s into a subdirectory mid-
-# conversation (common Claude Code workflow: `cd docker/services/ruby`
-# then proceed) the hook's md5 diverges from md5(@ccm_dir). The hook
-# writes a `<KEY>.cwd` sidecar containing the literal cwd; this index
-# lets ccm match a drifted hook KEY back to the parent @ccm_dir.
+# ─── session_id resolution ───
+# Hook signal / events files are keyed on the Claude Code session_id
+# (UUID per session, present in every hook payload). This is the
+# natural primary key:
+#   - stable for the lifetime of one Claude session
+#   - distinct across sessions, so a fresh `claude --continue` cannot
+#     read state left by a prior session in the same cwd
+#   - unaffected by `cd` mid-session
+# Earlier `md5(cwd)` keying needed sidecar files and a pid-age filter
+# to patch around cwd drift and cross-session contamination; both
+# vanish under session_id keying.
 #
-# Cache: per process, a {project_dir: (resolved_key, scan_signature)}
-# map. The scan signature is a cheap (mtime, size) summary of the
-# hooks dir so a fresh sidecar invalidates the cache without per-call
-# directory scans.
-_HOOK_KEY_CACHE: "dict[str, Tuple[str, Tuple[int, int]]]" = {}
+# ccm resolves session_id for a tmux project window via the chain:
+#   @ccm_dir → tmux pane → claude pid → ~/.claude/sessions/<pid>.json
+#                                       → sessionId
+# The slow detection path computes this once and caches it on the
+# tmux window option `@ccm_session_id`; the fast path (statusline)
+# reads the cached value without a process-tree walk.
+
+_CCM_SESSION_ID_OPTION = "@ccm_session_id"
 
 
-def _hooks_dir_signature() -> Tuple[int, int]:
-    """Cheap fingerprint of the hooks dir for cache invalidation."""
-    try:
-        st = os.stat(CCM_HOOK_DIR)
-        return (int(st.st_mtime), st.st_size)
-    except OSError:
-        return (0, 0)
-
-
-def _resolve_hook_key(project_dir: str) -> str:
-    """Return the md5 key the hooks are actively writing for this
-    project, accounting for cwd drift.
-
-    Tries `md5(@ccm_dir)` first (the common, no-drift case — answered
-    by a single `os.path.exists` with no directory scan). If that
-    signal file is missing, scan `*.cwd` sidecars in `CCM_HOOK_DIR`
-    for any whose content equals or is a descendant of `project_dir`,
-    and return the KEY whose companion (signal file or events log)
-    has the freshest mtime. Picking the freshest companion — rather
-    than the first match `os.listdir` returns — is the deterministic
-    answer when multiple sidecars match, e.g. a session that has
-    `cd`'d through several subdirectories or stale sidecars from a
-    prior session in the same project tree. Falls back to the
-    original `md5(@ccm_dir)` when no descendant sidecar has a live
-    companion — callers handle "no signal" downstream.
-
-    The fast path is O(1); the fallback is O(active sessions in the
-    project tree) and runs only when the primary signal is absent.
-    Result is cached per `project_dir` and invalidated on hooks-dir
-    change.
-    """
+def _session_id_from_tmux(project_dir: str) -> Optional[str]:
+    """Look up the cached session_id for a project window via the
+    `@ccm_session_id` tmux option. Returns None when no window
+    matches (project removed) or no slow-path scan has populated
+    the cache yet."""
+    if not project_dir:
+        return None
     expanded = _resolve_project_dir(project_dir)
-    primary = md5_hash(expanded)
-    primary_path = os.path.join(CCM_HOOK_DIR, primary)
-    if os.path.exists(primary_path):
-        return primary
-    sig = _hooks_dir_signature()
-    cached = _HOOK_KEY_CACHE.get(expanded)
-    if cached is not None and cached[1] == sig:
-        return cached[0]
-    resolved = primary
-    best_mtime = -1.0
-    try:
-        prefix = expanded.rstrip("/") + "/"
-        for fname in os.listdir(CCM_HOOK_DIR):
-            if not fname.endswith(".cwd"):
-                continue
-            full = os.path.join(CCM_HOOK_DIR, fname)
-            try:
-                with open(full, encoding="utf-8") as f:
-                    cwd = f.read().strip()
-            except OSError:
-                continue
-            if cwd != expanded and not cwd.startswith(prefix):
-                continue
-            key = fname[: -len(".cwd")]
-            # Companion freshness: the most recently-touched signal
-            # / events file wins. A sidecar whose companions are all
-            # missing is a stale leftover (post-cleanup) and is
-            # ignored entirely.
-            companion_mtime = -1.0
-            for companion in (
-                os.path.join(CCM_HOOK_DIR, key),
-                os.path.join(CCM_HOOK_DIR, key + ".events.jsonl"),
-            ):
-                try:
-                    m = os.path.getmtime(companion)
-                except OSError:
-                    continue
-                if m > companion_mtime:
-                    companion_mtime = m
-            if companion_mtime > best_mtime:
-                best_mtime = companion_mtime
-                resolved = key
-    except OSError:
-        pass
-    _HOOK_KEY_CACHE[expanded] = (resolved, sig)
-    return resolved
+    raw = tmux_cmd(
+        "list-windows", "-a", "-F",
+        "#{@ccm_dir}\t#{" + _CCM_SESSION_ID_OPTION + "}",
+    )
+    if not raw:
+        return None
+    for line in raw.split("\n"):
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        d, sid = parts[0], parts[1]
+        if not d:
+            continue
+        if _resolve_project_dir(d) == expanded:
+            return sid or None
+    return None
 
 
-def _hook_signal_path(project_dir):
-    """Get the hook signal file path for a project directory."""
-    return os.path.join(CCM_HOOK_DIR, _resolve_hook_key(project_dir))
+def _hook_signal_path(project_dir, session_id: Optional[str] = None):
+    """Get the hook signal file path for a project window.
+
+    Caller may pass `session_id` directly (slow path, after computing
+    via the pid chain). Otherwise resolved from the `@ccm_session_id`
+    tmux option populated by the most recent slow path. Returns None
+    when no session_id is known — callers must treat that as "no
+    signal available" rather than reading a default path."""
+    sid = session_id or _session_id_from_tmux(project_dir)
+    if not sid:
+        return None
+    return os.path.join(CCM_HOOK_DIR, sid)
 
 
 # Directory used for per-project "instant notification already
@@ -686,26 +647,24 @@ def read_project_notify_marker(project_dir):
 
 
 def cleanup_project_runtime_files(project_dir):
-    """Remove all runtime files keyed on a project's md5-of-cwd hash.
+    """Remove all runtime files for a project window.
 
-    Called from `cmd_unregister` and `cmd_remove` so a project's
-    transient state does not leak into the next project created at
-    the same directory (or accumulate as long-term disk clutter on
-    heavy-rotation setups).
+    Called from `cmd_unregister` and `cmd_remove`. Targets two
+    distinct keying schemes:
 
-    Covers:
-      - hook signal file (`$HOOK_DIR/<key>`) and its companions
-        (`.busy` from the pre-4-state era, `.pending` from the
-        multi-turn Stop delayed-notify mechanism, `.events.jsonl`
-        from the event-log redesign, `.cwd` sidecar from the
-        cwd-drift index)
-      - notification dedup marker (`$NOTIFY_MARKER_DIR/<key>`)
-      - git branch cache and listening-port cache
-      - any drifted hook files keyed by a subdirectory cwd —
-        discovered by scanning `<key>.cwd` sidecars whose content
-        is a descendant of `project_dir`. Without this sweep, a
-        session that had `cd`'d into `project_dir/foo` would leave
-        orphan signal/events files behind.
+    1. Hook artefacts keyed on Claude Code session_id
+       (`$HOOK_DIR/<sessionId>`, `.events.jsonl`, `.busy`, `.pending`).
+       Discovered via the cached `@ccm_session_id` tmux option for
+       this project's window plus a sweep of any session_id files
+       whose owning session has exited (no companion files remain
+       elsewhere). For an active project being unregistered, the
+       cached session_id catches its current session; the sweep
+       picks up prior sessions whose hooks accumulated.
+
+    2. Caches keyed on `md5(project_dir)` (git-cache, port-cache,
+       notify-marker). These were already cwd-keyed on the ccm
+       side and stay that way — they identify the project window,
+       not the session.
 
     Each removal is independent and guarded against OSError so a
     missing file (normal case for inactive projects) is a silent
@@ -714,48 +673,54 @@ def cleanup_project_runtime_files(project_dir):
     if not project_dir:
         return
     expanded = _resolve_project_dir(project_dir)
-    primary_key = md5_hash(expanded)
-    keys_to_clean = {primary_key}
-    # Sweep any drifted keys that have cwd-sidecars pointing into
-    # this project's tree.
-    try:
-        prefix = expanded.rstrip("/") + "/"
-        for fname in os.listdir(CCM_HOOK_DIR):
-            if not fname.endswith(".cwd"):
-                continue
-            full = os.path.join(CCM_HOOK_DIR, fname)
+    cwd_key = md5_hash(expanded)
+
+    # Hook-side: find session_ids that belong to this project.
+    # Active session: the cached @ccm_session_id (if the window is
+    # still tagged). Past sessions accumulate in $HOOK_DIR but are
+    # not project-attributed by themselves; we cannot cleanly sweep
+    # them without a per-session cwd record (which we deliberately
+    # removed), so we only clear the active session's files. Stale
+    # past-session files persist until macOS $TMPDIR auto-cleanup
+    # or a manual `ccm errors --clear`-style action in the future.
+    session_ids = set()
+    cached_sid = _session_id_from_tmux(project_dir)
+    if cached_sid:
+        session_ids.add(cached_sid)
+
+    for sid in session_ids:
+        for suffix in ("", ".busy", ".pending", ".events.jsonl"):
+            path = os.path.join(CCM_HOOK_DIR, sid + suffix)
             try:
-                with open(full, encoding="utf-8") as f:
-                    cwd = f.read().strip()
+                os.unlink(path)
             except OSError:
-                continue
-            if cwd == expanded or cwd.startswith(prefix):
-                keys_to_clean.add(fname[: -len(".cwd")])
-    except OSError:
-        pass
-    # Drop any cached resolution for this project so the next
-    # detection cycle re-resolves from scratch.
-    _HOOK_KEY_CACHE.pop(expanded, None)
-    for key in keys_to_clean:
-        for directory, suffixes in (
-            (CCM_HOOK_DIR, ("", ".busy", ".pending", ".events.jsonl", ".cwd")),
-            (CCM_NOTIFY_MARKER_DIR, ("",)),
-            (CCM_GIT_CACHE_DIR, ("",)),
-            (CCM_PORT_CACHE_DIR, ("",)),
-        ):
-            for suffix in suffixes:
-                path = os.path.join(directory, key + suffix)
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+                pass
+
+    # Caches keyed on cwd: notification marker, git branch, ports.
+    for directory in (
+        CCM_NOTIFY_MARKER_DIR,
+        CCM_GIT_CACHE_DIR,
+        CCM_PORT_CACHE_DIR,
+    ):
+        try:
+            os.unlink(os.path.join(directory, cwd_key))
+        except OSError:
+            pass
 
 
-def read_hook_signal(project_dir):
+def read_hook_signal(project_dir, session_id: Optional[str] = None):
     """Read hook signal file. Returns (timestamp, state, detail) or None.
     Detail is optional extra info (e.g., tool name for PERMIT).
+
+    Caller may pass `session_id` directly (slow path, after resolving
+    via pid chain). Otherwise resolved via the `@ccm_session_id`
+    tmux option set by the most recent slow path. Returns None when
+    no session_id is yet known for this project — fresh sessions
+    before the first hook fire fall through to legacy detection.
     """
-    hook_file = _hook_signal_path(project_dir)
+    hook_file = _hook_signal_path(project_dir, session_id=session_id)
+    if not hook_file:
+        return None
     try:
         with open(hook_file, encoding="utf-8") as f:
             content = f.read().strip()
@@ -1139,15 +1104,18 @@ EVENTS_CACHE_MAX = 128
 _events_cache: "OrderedDict[str, Tuple[Tuple[int, int], Tuple[dict, ...]]]" = OrderedDict()
 
 
-def _events_log_path(project_dir: str) -> str:
+def _events_log_path(project_dir: str,
+                     session_id: Optional[str] = None) -> Optional[str]:
     """Return the absolute path of a project's event log file.
 
-    Uses `_resolve_hook_key` so a session that has cd'd into a
-    subdirectory still resolves to its actual hook-key (which is
-    keyed on the current cwd, not the @ccm_dir root)."""
-    return os.path.join(
-        CCM_HOOK_DIR, _resolve_hook_key(project_dir) + ".events.jsonl"
-    )
+    Keyed on Claude Code's session_id (UUID per session, stable for
+    the session's lifetime). Returns None when no session_id is yet
+    known — pre-first-hook windows fall back to legacy detection.
+    """
+    sid = session_id or _session_id_from_tmux(project_dir)
+    if not sid:
+        return None
+    return os.path.join(CCM_HOOK_DIR, sid + ".events.jsonl")
 
 
 def _cache_events(path: str, key: Tuple[int, int],
@@ -1158,12 +1126,17 @@ def _cache_events(path: str, key: Tuple[int, int],
         _events_cache.popitem(last=False)
 
 
-def read_events_tail(project_dir: str, limit: int = 20) -> Tuple[dict, ...]:
+def read_events_tail(project_dir: str, limit: int = 20,
+                     session_id: Optional[str] = None) -> Tuple[dict, ...]:
     """Return the last `limit` events from a project's event log.
 
     Each event is a dict `{"ts": int, "type": str}`. Malformed lines
     are silently skipped. Returns an empty tuple when no log exists
-    for the project (hook not installed, or no event yet written).
+    for the project (hook not installed, no event yet written, or
+    session_id not yet resolved).
+
+    Caller may pass `session_id` directly (slow path) or rely on the
+    `@ccm_session_id` tmux option set by the most recent slow path.
 
     Why a tuple rather than a list: the result is cached and must be
     immutable against accidental caller mutation.
@@ -1175,7 +1148,9 @@ def read_events_tail(project_dir: str, limit: int = 20) -> Tuple[dict, ...]:
     """
     if not project_dir:
         return ()
-    path = _events_log_path(project_dir)
+    path = _events_log_path(project_dir, session_id=session_id)
+    if not path:
+        return ()
     try:
         st = os.stat(path)
     except OSError:

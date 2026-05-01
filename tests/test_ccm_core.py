@@ -1678,11 +1678,22 @@ class TestFastPath:
     so the statusline and dashboard can never disagree on state logic.
     """
 
+    # Synthetic session_id used by every TestFastPath case. The
+    # fixture monkeypatches `_session_id_from_tmux` to return this
+    # for any project_dir, so `_hook_signal_path(project_dir)`
+    # consistently maps to `<HOOK_DIR>/<TEST_SESSION_ID>` without
+    # needing a real tmux window with a cached `@ccm_session_id`.
+    TEST_SESSION_ID = "test-session-fastpath"
+
     @pytest.fixture
     def project_dir(self, tmp_path, monkeypatch):
         hook_dir = tmp_path / "hooks"
         hook_dir.mkdir()
         monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        monkeypatch.setattr(
+            ccm_core, "_session_id_from_tmux",
+            lambda _project_dir: self.TEST_SESSION_ID,
+        )
         proj = tmp_path / "proj"
         proj.mkdir()
         return str(proj)
@@ -3262,56 +3273,69 @@ class TestCleanupProjectRuntimeFiles:
             d.mkdir()
             monkeypatch.setattr(ccm_core, attr, str(d))
 
-    def _populate(self, tmp_path, project_dir):
-        """Create all runtime files for a project and return the md5 key."""
-        key = ccm_core.md5_hash(ccm_core._resolve_project_dir(project_dir))
-        (tmp_path / "hooks" / key).write_text("0 BUSY")
-        (tmp_path / "hooks" / f"{key}.busy").write_text("0")
-        (tmp_path / "hooks" / f"{key}.pending").write_text("0")
-        (tmp_path / "hooks" / f"{key}.events.jsonl").write_text(
+    def _populate(self, tmp_path, project_dir, session_id):
+        """Create all runtime files for a project. Hook artefacts
+        keyed by `session_id`; cwd-keyed caches by `md5(project_dir)`."""
+        cwd_key = ccm_core.md5_hash(ccm_core._resolve_project_dir(project_dir))
+        (tmp_path / "hooks" / session_id).write_text("0 BUSY")
+        (tmp_path / "hooks" / f"{session_id}.busy").write_text("0")
+        (tmp_path / "hooks" / f"{session_id}.pending").write_text("0")
+        (tmp_path / "hooks" / f"{session_id}.events.jsonl").write_text(
             '{"ts":100,"type":"prompt"}\n{"ts":101,"type":"stop"}\n'
         )
-        (tmp_path / "notified" / key).write_text("0 COMPLETED")
-        (tmp_path / "git-cache" / key).write_text("main")
-        (tmp_path / "port-cache" / key).write_text("3000")
-        return key
+        (tmp_path / "notified" / cwd_key).write_text("0 COMPLETED")
+        (tmp_path / "git-cache" / cwd_key).write_text("main")
+        (tmp_path / "port-cache" / cwd_key).write_text("3000")
+        return cwd_key
 
     def test_removes_all_runtime_files(self, tmp_path, monkeypatch):
         self._setup_tmp(tmp_path, monkeypatch)
         project = "/x/proj-a"
-        key = self._populate(tmp_path, project)
+        sid = "session-uuid-a"
+        monkeypatch.setattr(
+            ccm_core, "_session_id_from_tmux",
+            lambda d: sid if d == project else None,
+        )
+        cwd_key = self._populate(tmp_path, project, sid)
 
         ccm_core.cleanup_project_runtime_files(project)
 
         for rel in (
-            f"hooks/{key}",
-            f"hooks/{key}.busy",
-            f"hooks/{key}.pending",
-            f"hooks/{key}.events.jsonl",
-            f"notified/{key}",
-            f"git-cache/{key}",
-            f"port-cache/{key}",
+            f"hooks/{sid}",
+            f"hooks/{sid}.busy",
+            f"hooks/{sid}.pending",
+            f"hooks/{sid}.events.jsonl",
+            f"notified/{cwd_key}",
+            f"git-cache/{cwd_key}",
+            f"port-cache/{cwd_key}",
         ):
             assert not (tmp_path / rel).exists(), f"{rel} should be deleted"
 
     def test_leaves_other_projects_alone(self, tmp_path, monkeypatch):
-        """Cleanup is keyed on md5-of-cwd; other projects' files
-        must survive unaffected."""
+        """Cleanup uses session_id (hook artefacts) and md5(project_dir)
+        (cwd-keyed caches); other projects' files must survive."""
         self._setup_tmp(tmp_path, monkeypatch)
         project_a = "/x/proj-a"
         project_b = "/x/proj-b"
-        key_a = self._populate(tmp_path, project_a)
-        key_b = self._populate(tmp_path, project_b)
+        sid_a = "session-uuid-a"
+        sid_b = "session-uuid-b"
+        sid_map = {project_a: sid_a, project_b: sid_b}
+        monkeypatch.setattr(
+            ccm_core, "_session_id_from_tmux",
+            lambda d: sid_map.get(d),
+        )
+        cwd_a = self._populate(tmp_path, project_a, sid_a)
+        cwd_b = self._populate(tmp_path, project_b, sid_b)
 
         ccm_core.cleanup_project_runtime_files(project_a)
 
         # Project A files gone
-        assert not (tmp_path / "hooks" / key_a).exists()
-        assert not (tmp_path / "notified" / key_a).exists()
+        assert not (tmp_path / "hooks" / sid_a).exists()
+        assert not (tmp_path / "notified" / cwd_a).exists()
         # Project B files intact
-        assert (tmp_path / "hooks" / key_b).exists()
-        assert (tmp_path / "notified" / key_b).exists()
-        assert (tmp_path / "git-cache" / key_b).exists()
+        assert (tmp_path / "hooks" / sid_b).exists()
+        assert (tmp_path / "notified" / cwd_b).exists()
+        assert (tmp_path / "git-cache" / cwd_b).exists()
 
     def test_missing_files_silent_noop(self, tmp_path, monkeypatch):
         """No files to delete (fresh project) must not raise — this
@@ -3325,147 +3349,27 @@ class TestCleanupProjectRuntimeFiles:
         ccm_core.cleanup_project_runtime_files("")
         ccm_core.cleanup_project_runtime_files(None)
 
-    def test_drifted_subdirectory_keys_also_removed(self, tmp_path, monkeypatch):
-        """If the user `cd`'d into a subdirectory mid-session, hooks
-        write keyed on the deeper cwd. Cleanup must sweep those too
-        via the `.cwd` sidecar — otherwise unregistering a project
-        leaves orphan signal/events files behind."""
+    def test_active_session_hook_files_removed(self, tmp_path, monkeypatch):
+        """Cleanup uses the cached `@ccm_session_id` to find the
+        active session's hook artefacts and unlinks them."""
         self._setup_tmp(tmp_path, monkeypatch)
-        ccm_core._HOOK_KEY_CACHE.clear()
         project = "/x/proj-a"
-        sub = "/x/proj-a/docker/services/ruby"
-
-        primary_key = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
-        drifted_key = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub))
-
-        # Primary signal at @ccm_dir's key + drifted hook files at the
-        # subdirectory key (where Claude is actually running).
-        (tmp_path / "hooks" / primary_key).write_text("0 BUSY")
-        (tmp_path / "hooks" / f"{primary_key}.cwd").write_text(project + "\n")
-        (tmp_path / "hooks" / drifted_key).write_text("100 BUSY")
-        (tmp_path / "hooks" / f"{drifted_key}.events.jsonl").write_text(
+        sid = "active-session-uuid"
+        monkeypatch.setattr(
+            ccm_core, "_session_id_from_tmux",
+            lambda d: sid if d == project else None,
+        )
+        # Hook artefacts under the active session_id
+        (tmp_path / "hooks" / sid).write_text("100 BUSY")
+        (tmp_path / "hooks" / f"{sid}.events.jsonl").write_text(
             '{"ts":100,"type":"pretool"}\n')
-        (tmp_path / "hooks" / f"{drifted_key}.cwd").write_text(sub + "\n")
+        (tmp_path / "hooks" / f"{sid}.pending").write_text("0")
 
         ccm_core.cleanup_project_runtime_files(project)
 
-        # Both keys' hook artefacts gone
-        assert not (tmp_path / "hooks" / primary_key).exists()
-        assert not (tmp_path / "hooks" / f"{primary_key}.cwd").exists()
-        assert not (tmp_path / "hooks" / drifted_key).exists()
-        assert not (tmp_path / "hooks" / f"{drifted_key}.events.jsonl").exists()
-        assert not (tmp_path / "hooks" / f"{drifted_key}.cwd").exists()
-
-
-class TestResolveHookKey:
-    """The `.cwd` sidecar index lets ccm find the active hook key when
-    the user has `cd`'d into a subdirectory mid-conversation, so the
-    detection cycle keeps working across the cwd drift that happens in
-    typical Claude Code workflows."""
-
-    def _setup_hooks_dir(self, tmp_path, monkeypatch):
-        d = tmp_path / "hooks"
-        d.mkdir()
-        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(d))
-        ccm_core._HOOK_KEY_CACHE.clear()
-        return d
-
-    def test_no_drift_returns_primary_key(self, tmp_path, monkeypatch):
-        d = self._setup_hooks_dir(tmp_path, monkeypatch)
-        project = "/x/proj-a"
-        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
-        # Primary signal exists — fast path returns immediately, no scan.
-        (d / primary).write_text("0 BUSY")
-        assert ccm_core._resolve_hook_key(project) == primary
-
-    def test_drift_finds_subdirectory_key(self, tmp_path, monkeypatch):
-        d = self._setup_hooks_dir(tmp_path, monkeypatch)
-        project = "/x/proj-a"
-        sub = "/x/proj-a/docker/services/ruby"
-        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
-        drifted = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub))
-        # No primary signal; only the drifted key has a sidecar +
-        # an actual signal file.
-        (d / drifted).write_text("100 BUSY")
-        (d / f"{drifted}.cwd").write_text(sub + "\n")
-        assert ccm_core._resolve_hook_key(project) == drifted
-        assert primary != drifted
-
-    def test_drift_finds_subdirectory_via_events_only(self, tmp_path, monkeypatch):
-        """Sidecar accepted when an `.events.jsonl` companion exists,
-        even if no separate signal file is present (Stop hook deletes
-        the signal but events log persists)."""
-        d = self._setup_hooks_dir(tmp_path, monkeypatch)
-        project = "/x/proj-a"
-        sub = "/x/proj-a/sub"
-        drifted = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub))
-        (d / f"{drifted}.events.jsonl").write_text(
-            '{"ts":100,"type":"stop"}\n')
-        (d / f"{drifted}.cwd").write_text(sub + "\n")
-        assert ccm_core._resolve_hook_key(project) == drifted
-
-    def test_stale_sidecar_without_companion_ignored(self, tmp_path, monkeypatch):
-        """A leftover `.cwd` after cleanup (no signal, no events) must
-        not be honoured — falling back to the primary key is safer
-        than pointing at a key with no live data."""
-        d = self._setup_hooks_dir(tmp_path, monkeypatch)
-        project = "/x/proj-a"
-        sub = "/x/proj-a/sub"
-        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
-        drifted = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub))
-        # Sidecar present but neither signal nor events exists.
-        (d / f"{drifted}.cwd").write_text(sub + "\n")
-        assert ccm_core._resolve_hook_key(project) == primary
-
-    def test_unrelated_subdirectory_not_matched(self, tmp_path, monkeypatch):
-        """A `.cwd` for a sibling project must not satisfy our
-        descendant check (no false matches across project boundaries)."""
-        d = self._setup_hooks_dir(tmp_path, monkeypatch)
-        project = "/x/proj-a"
-        other = "/x/proj-a-clone"  # name prefix overlap, NOT a child
-        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
-        other_key = ccm_core.md5_hash(ccm_core._resolve_project_dir(other))
-        (d / other_key).write_text("100 BUSY")
-        (d / f"{other_key}.cwd").write_text(other + "\n")
-        assert ccm_core._resolve_hook_key(project) == primary
-
-    def test_exact_match_sidecar(self, tmp_path, monkeypatch):
-        """When `.cwd` contains exactly the project_dir (no
-        subdirectory), the sidecar still resolves cleanly."""
-        d = self._setup_hooks_dir(tmp_path, monkeypatch)
-        project = "/x/proj-a"
-        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
-        (d / primary).write_text("100 BUSY")
-        (d / f"{primary}.cwd").write_text(project + "\n")
-        assert ccm_core._resolve_hook_key(project) == primary
-
-    def test_multiple_matches_picks_freshest_companion(self, tmp_path, monkeypatch):
-        """Two sidecars match the project tree (e.g. session 1 cd'd
-        into sub1, exited; session 2 is now in sub2). Resolver must
-        pick the one whose companion is freshest, NOT whichever
-        os.listdir returns first — otherwise we'd read stale events
-        from the abandoned session."""
-        import time as _time
-        d = self._setup_hooks_dir(tmp_path, monkeypatch)
-        project = "/x/proj-a"
-        sub1 = "/x/proj-a/old-session"
-        sub2 = "/x/proj-a/active-session"
-        key_old = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub1))
-        key_new = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub2))
-
-        # Old session — events log frozen at t=1000
-        old_events = d / f"{key_old}.events.jsonl"
-        old_events.write_text('{"ts":100,"type":"stop"}\n')
-        os.utime(old_events, (1000.0, 1000.0))
-        (d / f"{key_old}.cwd").write_text(sub1 + "\n")
-
-        # New session — events log freshly touched at t=2000
-        new_events = d / f"{key_new}.events.jsonl"
-        new_events.write_text('{"ts":200,"type":"pretool"}\n')
-        os.utime(new_events, (2000.0, 2000.0))
-        (d / f"{key_new}.cwd").write_text(sub2 + "\n")
-
-        assert ccm_core._resolve_hook_key(project) == key_new
+        assert not (tmp_path / "hooks" / sid).exists()
+        assert not (tmp_path / "hooks" / f"{sid}.events.jsonl").exists()
+        assert not (tmp_path / "hooks" / f"{sid}.pending").exists()
 
 
 # ─── raise_on_die / CCMError ───
@@ -4651,11 +4555,21 @@ class TestCmdSend:
 # ─── Event log reader (detection redesign phase 2+) ───
 
 class TestReadEventsTail:
+    # Synthetic session_id used by every test; the fixture registers
+    # it for any project_dir so `_events_log_path(project_dir)` and
+    # `read_events_tail(project_dir)` deterministically map to
+    # `<HOOK_DIR>/<TEST_SESSION_ID>.events.jsonl`.
+    TEST_SESSION_ID = "test-session-events"
+
     def _setup_hook_dir(self, tmp_path, monkeypatch):
         """Redirect CCM_HOOK_DIR to a sandbox and return its path."""
         hook_dir = tmp_path / "hooks"
         hook_dir.mkdir()
         monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        monkeypatch.setattr(
+            ccm_core, "_session_id_from_tmux",
+            lambda _project_dir: self.TEST_SESSION_ID,
+        )
         # Clear the module-level cache so tests do not interfere.
         ccm_core._events_cache.clear()
         return hook_dir
@@ -4959,71 +4873,12 @@ class TestDeriveStateFromEvents:
             pid_present=False, claude_pid_age=-1,
         ) == "SHELL"
 
-    # ─── cross-session events filter ───
-
-    def test_event_older_than_claude_pid_returns_none(self):
-        """events.jsonl is keyed on cwd, not session id, and is
-        append-only. When a user `cd`s out of a subdirectory back
-        to @ccm_dir between sessions, the new claude session re-uses
-        the parent-key events file which still holds the prior
-        session's tail. Without filtering, derive would commit the
-        prior session's last state (e.g. BUSY at a `pretool`) until
-        the new session writes its first hook — a multi-second gap
-        right at startup. The filter: an event whose ts predates the
-        claude process start time (now - claude_pid_age) cannot
-        belong to the live session, so defer to legacy."""
-        now = 1000
-        # claude started 60s ago → session start = ts 940
-        # latest event at ts 500 — long before this session
-        assert ccm_core.derive_state_from_events(
-            events=({"ts": 500, "type": "pretool"},),
-            jsonl_stop_reason="end_turn",
-            pid_present=True, claude_pid_age=60,
-            jsonl_age=10, now=now,
-            raw="IDLE",
-        ) is None
-
-    def test_event_after_claude_pid_start_processed_normally(self):
-        """The cross-session filter must not catch events from the
-        live session. Event ts >= claude session start → derive
-        proceeds with normal rule evaluation."""
-        now = 1000
-        # claude started 60s ago, latest event at ts 970 (within
-        # this session) → derive evaluates normally → BUSY
-        assert ccm_core.derive_state_from_events(
-            events=({"ts": 970, "type": "pretool"},),
-            jsonl_stop_reason="tool_use",
-            pid_present=True, claude_pid_age=60,
-            jsonl_age=5, now=now,
-            raw="BUSY",
-        ) == "BUSY"
-
-    def test_event_at_pid_start_boundary_processed_normally(self):
-        """Event ts exactly equal to claude session start is current-
-        session (just barely). Filter is strict less-than to avoid
-        edge-case dropping legitimate events that fired during
-        process startup."""
-        now = 1000
-        assert ccm_core.derive_state_from_events(
-            events=({"ts": 940, "type": "notify_idle"},),  # exactly at start
-            jsonl_stop_reason="end_turn",
-            pid_present=True, claude_pid_age=60,
-            jsonl_age=5, now=now,
-            raw="IDLE",
-        ) == "IDLE"
-
-    def test_unknown_pid_age_skips_cross_session_filter(self):
-        """When claude_pid_age is -1 (kernel etime parse failed) the
-        filter cannot determine session start, so it must NOT drop
-        events. Falling back to legacy unconditionally would erase
-        the event-log signal whenever ps output is malformed."""
-        assert ccm_core.derive_state_from_events(
-            events=({"ts": 100, "type": "notify_idle"},),
-            jsonl_stop_reason="end_turn",
-            pid_present=True, claude_pid_age=-1,  # unknown
-            jsonl_age=10, now=1000,
-            raw="IDLE",
-        ) == "IDLE"
+    # The previous `cross-session events filter` (claude_pid_age <
+    # latest_ts) was made obsolete by the session_id keying refactor:
+    # each session's events live in their own file keyed on the UUID,
+    # so an old session's records cannot leak into a new session's
+    # detection. The filter, its rule, and its tests were removed
+    # together — see `project_session_id_refactor.md` memory.
 
     # ─── notify_idle → IDLE ───
 

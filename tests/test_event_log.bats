@@ -1,14 +1,20 @@
 #!/usr/bin/env bats
-# Tests for the event log writer added in the detection-redesign P1.
-# Each hook script appends one JSONL record to
-#   $HOOK_DIR/<md5-of-cwd>.events.jsonl
-# in addition to writing the legacy signal file. The existing signal-
-# file behavior is unchanged in P1; this test suite verifies the new
-# append path specifically.
+# Tests for the event log writer added in the detection-redesign P1
+# and migrated to session_id keying in v0.3.0. Each hook script
+# appends one JSONL record to $HOOK_DIR/<session_id>.events.jsonl
+# in addition to writing the legacy signal file. The existing
+# signal-file behavior is unchanged; this test suite verifies the
+# event-log append path specifically.
 
 CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
 load helpers/mock_tmux.bash
+
+# Synthetic session_id used in every hook payload. Bats tests no
+# longer derive KEY from cwd — session_id is the primary key, so we
+# pin a fixed UUID here and inject it into each payload via the
+# `_payload` helper.
+TEST_SESSION_ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 setup() {
     SANDBOX="$(mktemp -d)"
@@ -24,17 +30,20 @@ setup() {
 
     source "${CCM_ROOT}/hooks/lib.sh"
 
-    # Compute the project key the way ccm_hook_init does so tests can
-    # locate the events file without re-running md5 inline.
+    KEY="$TEST_SESSION_ID"
     CWD="/x/test-project"
-    if command -v md5 &>/dev/null; then
-        KEY=$(printf '%s' "$CWD" | md5)
-    else
-        KEY=$(printf '%s' "$CWD" | md5sum | cut -d' ' -f1)
-    fi
     HOOK_DIR="${TMPDIR}/ccm-${UID}/hooks"
     mkdir -p "$HOOK_DIR"
     EVENTS_FILE="${HOOK_DIR}/${KEY}.events.jsonl"
+}
+
+# Inject session_id into a JSON payload string. Used by every
+# end-to-end hook test so payloads always carry the field hooks
+# now require for keying.
+_with_session() {
+    local payload="$1"
+    # Strip the trailing `}` and append the session_id field
+    printf '%s,"session_id":"%s"}' "${payload%\}}" "$TEST_SESSION_ID"
 }
 
 teardown() {
@@ -112,7 +121,9 @@ _run_hook() {
     local script="$1" payload="$2"
     # Hook scripts resolve TMPDIR and write under $TMPDIR/ccm-$UID/hooks,
     # so the sandbox TMPDIR from setup() is already in effect.
-    printf '%s' "$payload" | bash "${CCM_ROOT}/hooks/${script}"
+    # All payloads are augmented with the test session_id since hooks
+    # now key on it.
+    printf '%s' "$(_with_session "$payload")" | bash "${CCM_ROOT}/hooks/${script}"
 }
 
 _latest_type() {
