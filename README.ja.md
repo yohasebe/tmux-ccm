@@ -6,9 +6,7 @@
 <br clear="left">
 <br>
 
-複数の [Claude Code](https://docs.anthropic.com/en/docs/claude-code) セッションを並行して実行。プロジェクトを瞬時に切り替え、どれが注意を必要としているか一目で把握し、ワークスペースを失うことなく作業を続けられます。
-
-ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmuxプラグインです。ライブダッシュボード、状態検出、スナップショット復元機能を備えています。
+ccm は複数の [Claude Code](https://docs.anthropic.com/en/docs/claude-code) セッションを tmux ウィンドウとして管理する tmux プラグインです。ライブダッシュボードで各プロジェクトの状態を表示し、スナップショットで tmux 再起動後にレイアウトを復元、デスクトップ通知で対応が必要なプロジェクトを知らせます。
 
 **ダッシュボード** (`prefix + Tab`) — 画面下部のモード 2 ステータスバーも同時に映っています:
 
