@@ -19,8 +19,8 @@ pytest) continue to do `from ccm_core import ...`.
 ## `@ccm_prev_state` write sites (2, intentionally distributed)
 
 The window option `@ccm_prev_state` has two writers in the
-codebase. They look similar but serve different roles and are not
-merged on purpose — see `project_r4_r5_decision` memo.
+codebase. They look similar but serve different roles and are
+deliberately kept separate.
 
 1. `apply_actions` → `_set_win_state` (this file)
    Detection-pipeline write. Runs every slow-path scan
@@ -228,11 +228,10 @@ def _set_win_state(win_target, state):
 # To add or change a detection rule, edit DETECTION_RULES below.
 # The rule table is the single source of truth for state transitions.
 
-# ─── Phase taxonomy (Step 1 of a phased move toward a phase-machine
-# architecture — see project_phase_machine_roadmap memo) ───
+# ─── Phase taxonomy ───
 #
 # Each rule is annotated with the session-lifecycle "phase" in which
-# it is designed to fire. This is metadata only at Step 1: the rule
+# it is designed to fire. This is metadata only — the rule
 # engine still evaluates rules in priority order without consulting
 # `phase`. The annotation exists so:
 #   * `ccm debug trace` and `CCM_DEBUG_TRACE` log the phase alongside
@@ -243,11 +242,6 @@ def _set_win_state(win_target, state):
 #     a rule into an arbitrary priority.
 #   * A drift-guard test asserts every rule's phase is in PHASES or
 #     explicitly None (for genuine catch-all passthroughs).
-# Step 2 (future) would make the evaluator phase-scoped — only rules
-# whose `phase` matches the current session phase would be evaluated,
-# closing the rule-shadowing class of bugs structurally. That
-# requires an authoritative "what phase are we in?" signal, which is
-# why we're collecting phase data first.
 PHASES = (
     "shell",          # no Claude process (DOWN / SHELL)
     "startup",        # claude pid young, MCP loading, no hooks yet

@@ -1384,9 +1384,7 @@ class TestRulePhaseAnnotations:
     session-lifecycle phase (or explicitly None for catch-all
     passthroughs). Phase metadata is consumed by `ccm debug trace`
     and CCM_DEBUG_TRACE; a missing or typo-ed phase would silently
-    break the debug output grouping. See
-    `project_phase_machine_roadmap` for the roadmap this annotation
-    feeds into.
+    break the debug output grouping.
     """
 
     # Catch-all rules that legitimately lack a fixed phase because
@@ -2054,37 +2052,37 @@ class TestPrintStatus:
         self, monkeypatch, capsys
     ):
         """`[N]` marker belongs to the PROJECT column, not the
-        STATUS column (a previous iteration suffixed it to the
-        state name (e.g. `■ SHELL [2]   teaching`); the
-        dashboard convention puts it after the project name."""
+        STATUS column. The convention is to render it after the
+        project name so the user's eye lands on the count next
+        to the identity it belongs to."""
         projects = [
             ccm_core.Project(
-                win_target="0:1", win_idx="1", name="teaching",
-                directory="/tmp/teaching", state="SHELL",
+                win_target="0:1", win_idx="1", name="myproject",
+                directory="/tmp/myproject", state="SHELL",
                 pane_count=2,
             ),
         ]
         out = self._run_print_status(projects, monkeypatch, capsys)
         row = next(line for line in out.splitlines()
-                   if "teaching" in line)
+                   if "myproject" in line)
         # The bracketed digit appears in the project column
         # (i.e. after the name) — assert by character order.
-        assert "teaching" in row
-        # The digit "2" must appear AFTER "teaching" (project
+        assert "myproject" in row
+        # The digit "2" must appear AFTER "myproject" (project
         # column), and the cyan ANSI code (\033[36m) must wrap
         # the digit so the user's eye lands on the count.
-        teaching_pos = row.index("teaching")
-        # Find the cyan-coded digit "2" after teaching.
+        name_pos = row.index("myproject")
+        # Find the cyan-coded digit "2" after the project name.
         cyan_seg = "\033[36m2"
         assert cyan_seg in row, (
             f"expected cyan-coded '2' in row, got: {row!r}"
         )
-        assert row.index(cyan_seg) > teaching_pos, (
+        assert row.index(cyan_seg) > name_pos, (
             f"[N] marker must follow the project name, got: {row!r}"
         )
         # And the marker must NOT appear inside the STATUS
         # column (before the project name).
-        assert row.index(cyan_seg) > teaching_pos
+        assert row.index(cyan_seg) > name_pos
 
     def test_three_pane_marker_renders_digit_3(
         self, monkeypatch, capsys
@@ -2747,10 +2745,10 @@ class TestClearNotificationsScope:
     def test_removes_only_ccm_prefixed_groups(self, monkeypatch):
         listing_stdout = (
             "GroupID\tTitle\tSubtitle\tMessage\tDelivered At\n"
-            "ccm-monadic-chat\tccm ⚠ monadic-chat\t\tPermission required\t2026-04-29 05:41:21 +0000\n"
-            "ccm-ccm-dev\tccm ⚠ ccm-dev\t\tPermission required\t2026-04-29 05:44:09 +0000\n"
-            "deploy-alert\tDeploy succeeded\t\tprod\t2026-04-29 05:42:00 +0000\n"
-            "monitoring-cpu\tHigh CPU\t\t\t2026-04-29 05:43:00 +0000\n"
+            "ccm-alpha\tccm ⚠ alpha\t\tPermission required\t2024-01-01 10:00:00 +0000\n"
+            "ccm-beta\tccm ⚠ beta\t\tPermission required\t2024-01-01 10:01:00 +0000\n"
+            "deploy-alert\tDeploy succeeded\t\tprod\t2024-01-01 10:02:00 +0000\n"
+            "monitoring-cpu\tHigh CPU\t\t\t2024-01-01 10:03:00 +0000\n"
         )
         monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
 
@@ -2774,14 +2772,14 @@ class TestClearNotificationsScope:
         assert calls[0][1:3] == ["-list", "ALL"]
         # Subsequent removes target only ccm- ids — `[tn_path, "-remove", group_id]`
         remove_targets = [c[2] for c in calls[1:]]
-        assert remove_targets == ["ccm-monadic-chat", "ccm-ccm-dev"]
+        assert remove_targets == ["ccm-alpha", "ccm-beta"]
         assert "deploy-alert" not in remove_targets
         assert "monitoring-cpu" not in remove_targets
 
     def test_returns_zero_when_no_ccm_notifications(self, monkeypatch):
         listing_stdout = (
             "GroupID\tTitle\tSubtitle\tMessage\tDelivered At\n"
-            "deploy-alert\tDeploy succeeded\t\tprod\t2026-04-29 05:42:00 +0000\n"
+            "deploy-alert\tDeploy succeeded\t\tprod\t2024-01-01 10:00:00 +0000\n"
         )
         monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
 

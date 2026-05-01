@@ -884,9 +884,7 @@ def cmd_debug_trace(project_match, interval=0.3):
 
     Useful for answering "why did this project flicker to BUSY for 10
     seconds after attach?" by correlating the rule-firing sequence
-    with the user's observed event timeline. See
-    `.claude/projects/.../memory/feedback_detection_debug_playbook.md`
-    for the full usage recipe.
+    with the user's observed event timeline.
 
     project_match: substring match against @ccm_project or @ccm_dir
     (basename). The first matching ccm window wins.

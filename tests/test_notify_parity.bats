@@ -2,9 +2,9 @@
 # Parity test: Python `notify()` and bash `_ccm_instant_notify` must
 # reach the same fire/skip decision for every (@ccm-notify, state)
 # combination. The two implementations are intentionally NOT merged
-# (see project_r4_r5_decision memo) — the bash hot path cannot
-# tolerate 30-80 ms of Python interpreter startup per hook event.
-# This test is the drift guard that replaces structural unification.
+# — the bash hot path cannot tolerate 30-80 ms of Python interpreter
+# startup per hook event. This test is the drift guard that replaces
+# structural unification.
 #
 # Observation approach: PATH-override. We drop stub `osascript` and
 # `notify-send` executables into a sandbox bin, which log the call

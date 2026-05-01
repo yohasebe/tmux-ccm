@@ -163,7 +163,7 @@ ccm send blog "前回のレビュー結果をまとめてください"
 ccm send research --file /tmp/brief.md
 
 # パイプから — MCP サーバー（Gmail, GitHub 等）から直接渡すのに便利
-echo "rsyntaxtree の Issue #42 の調査をお願いします" | ccm send fzf-workflow --stdin -y
+echo "parser リポジトリの Issue #42 の調査をお願いします" | ccm send fzf-workflow --stdin -y
 
 # 複数行の本文 — \n は Claude の「改行のみ(送信しない)」キーに変換されるので、
 # 複数行プロンプトとして 1 つのメッセージで届きます
