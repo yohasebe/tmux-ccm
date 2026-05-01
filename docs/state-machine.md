@@ -183,7 +183,7 @@ Tunable thresholds with empirically-chosen defaults:
 
 ## Transition examples (lifecycle walk-through)
 
-These walk the event-log path. The event sequence is the per-project tail of `$HOOK_DIR/<md5>.events.jsonl`; `jsonl_stop_reason` is the stop_reason on the most recent assistant record in `~/.claude/projects/<slug>/<sessionId>.jsonl`.
+These walk the event-log path. The event sequence is the per-session tail of `$HOOK_DIR/<sessionId>.events.jsonl` (keyed on Claude Code's session UUID, resolved via `@ccm_dir → tmux pane → claude pid → ~/.claude/sessions/<pid>.json`); `jsonl_stop_reason` is the stop_reason on the most recent assistant record in `~/.claude/projects/<slug>/<sessionId>.jsonl`.
 
 ### Normal turn
 
