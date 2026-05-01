@@ -493,8 +493,8 @@ tmux switch-client -t oss      # Standard tmux session switching
 
 ## Documentation
 
-- **[User Guide](docs/guide.md)**
-- **[日本語版 README](README.ja.md)** / **[ユーザーガイド](docs/guide.ja.md)**
+- [User Guide](docs/guide.md)
+- [日本語版 README](README.ja.md) / [ユーザーガイド](docs/guide.ja.md)
 
 ## License
 

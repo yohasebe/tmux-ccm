@@ -495,8 +495,8 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
 
 ## ドキュメント
 
-- **[ユーザーガイド](docs/guide.ja.md)**
-- **[English README](README.md)** / **[User Guide](docs/guide.md)**
+- [ユーザーガイド](docs/guide.ja.md)
+- [English README](README.md) / [User Guide](docs/guide.md)
 
 ## ライセンス
 
