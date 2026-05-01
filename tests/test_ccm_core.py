@@ -5236,22 +5236,21 @@ class TestDeriveStateFromEvents:
             raw="IDLE",
         ) == "PERMIT"
 
-    def test_phantom_subagent_after_notify_idle_defers(self):
+    def test_phantom_subagent_after_notify_idle_returns_idle(self):
         """Concrete scenario:
         upstream Claude Code fires a spurious `subagent` event in
         an otherwise-idle period (status line / auto-memory / etc).
         Pattern: `... stop, notify_idle, subagent` with no follow-up.
         Real subagent events always come mid-conversation. The
         latest=subagent + prev=notify_idle pattern is exclusive to
-        the phantom case. Defer to legacy → IDLE."""
+        the phantom case. notify_idle is Claude's own "I am idle"
+        signal, so committing IDLE is authoritative even if raw
+        briefly disagrees."""
         events = (
             {"ts": 100, "type": "stop"},
             {"ts": 110, "type": "notify_idle"},
             {"ts": 200, "type": "subagent"},  # phantom
         )
-        # event_age=300, jsonl_age=400, both within 10-min window
-        # so the combined-stale fallback below would NOT fire — the
-        # subagent-specific rule must catch it.
         result = ccm_core.derive_state_from_events(
             events=events,
             jsonl_stop_reason="end_turn",
@@ -5259,13 +5258,32 @@ class TestDeriveStateFromEvents:
             jsonl_age=400, now=500,
             raw="IDLE",
         )
-        assert result is None  # defer to legacy
+        assert result == "IDLE"
 
-    def test_phantom_subagent_directly_after_stop_defers(self):
-        """`stop` is itself a "session at rest" marker — claude has
-        finished the turn. A `subagent` immediately after `stop`
-        (without an intervening `prompt` or tool event) is phantom
-        regardless of whether `notify_idle` fired in between.
+    def test_phantom_subagent_after_notify_idle_overrides_raw_busy(self):
+        """The whole point of returning IDLE explicitly (rather than
+        deferring): if raw=BUSY (e.g. `❯` briefly scrolled off
+        screen), legacy's `raw_busy_passthrough` would otherwise
+        latch BUSY. notify_idle is the strongest-evidence signal
+        Claude is at rest, so we override the visual transient."""
+        events = (
+            {"ts": 100, "type": "stop"},
+            {"ts": 110, "type": "notify_idle"},
+            {"ts": 200, "type": "subagent"},
+        )
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=400, now=500,
+            raw="BUSY",
+        )
+        assert result == "IDLE"
+
+    def test_phantom_subagent_after_terminal_stop_returns_idle(self):
+        """`stop` with terminal `stop_reason` resolves identically to
+        a direct `stop` latest event — the phantom did not change
+        anything. Same logic as EVENT_CLASS_PAUSE handling.
         Observed in the wild: idle_prompt has documented latency
         (anthropics/claude-code#5186), so claude can sit at rest
         for many minutes after `stop` without `notify_idle` ever
@@ -5281,11 +5299,33 @@ class TestDeriveStateFromEvents:
             jsonl_age=300, now=400,
             raw="IDLE",
         )
+        assert result == "IDLE"
+
+    def test_phantom_subagent_after_mid_tool_stop_defers(self):
+        """`stop` with mid-tool stop_reason (`tool_use`) means a tool
+        is still running — Claude is genuinely BUSY. The phantom
+        subagent still doesn't change that, but we defer to legacy
+        rather than committing BUSY ourselves so that raw (which
+        sees the live process tree) gets the authoritative call."""
+        events = (
+            {"ts": 100, "type": "stop"},
+            {"ts": 200, "type": "subagent"},
+        )
+        result = ccm_core.derive_state_from_events(
+            events=events,
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=3000,
+            jsonl_age=10, now=210,
+            raw="BUSY",
+        )
         assert result is None  # defer to legacy
 
     def test_phantom_subagent_after_session_end_defers(self):
-        """`session_end` is also a rest-state marker. Subagent after
-        session_end is anomalous (claude has exited)."""
+        """`session_end` is a rest-state marker indicating claude has
+        exited. With pid_present=True we are in the brief transient
+        between SessionEnd hook and the new session's first event;
+        defer to legacy so raw (which sees the live process tree)
+        is authoritative."""
         events = (
             {"ts": 100, "type": "session_end"},
             {"ts": 200, "type": "subagent"},
@@ -5299,10 +5339,10 @@ class TestDeriveStateFromEvents:
         )
         assert result is None
 
-    def test_phantom_subagent_stacked_chain_defers(self):
+    def test_phantom_subagent_stacked_chain_resolves_via_notify_idle(self):
         """Multiple phantom subagent events stack up over time.
-        Walk back through them; if we reach `notify_idle` without
-        crossing a real event, still defer."""
+        Walk back through them; landing on `notify_idle` gives
+        IDLE just like a single phantom would."""
         events = (
             {"ts": 100, "type": "stop"},
             {"ts": 110, "type": "notify_idle"},
@@ -5317,7 +5357,7 @@ class TestDeriveStateFromEvents:
             jsonl_age=200, now=500,
             raw="IDLE",
         )
-        assert result is None
+        assert result == "IDLE"
 
     def test_legitimate_subagent_after_prompt_stays_busy(self):
         """A `subagent` event after a `prompt` (with no notify_idle

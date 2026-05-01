@@ -826,12 +826,23 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # auto-memory). Legitimate subagent events always come
         # mid-conversation (between `prompt` and `stop`, alongside
         # tool events); a subagent that lands AFTER the
-        # conversation has reached a rest state — `stop` (turn
-        # ended), `notify_idle` (idle-prompt fired), or
-        # `session_end` (claude exited) — is necessarily phantom.
-        # Walk back through stacked subagent events; if we land
-        # on any rest-state marker before a real activity event,
-        # defer to legacy.
+        # conversation has reached a rest state is necessarily
+        # phantom. Walk back through stacked subagent events to
+        # find the underlying rest marker, then resolve as if the
+        # phantom did not exist:
+        #   - notify_idle: Claude self-reported idle. Phantom does
+        #     not invalidate that. Return IDLE.
+        #   - stop: turn ended. Resolve identically to a direct
+        #     `stop` latest event (terminal stop_reason → IDLE,
+        #     mid-tool → defer so legacy can use raw).
+        #   - session_end: claude restarted (pid_present is True).
+        #     Brief transient — defer to legacy (raw is
+        #     authoritative for the new session).
+        # Returning a definite IDLE for the strongest-evidence
+        # cases (notify_idle and terminal stop) prevents legacy's
+        # `raw_busy_passthrough` from wrongly latching BUSY when
+        # `❯` is briefly off-screen (pane scrolled / typing in
+        # progress / etc.).
         if t == "subagent" and raw != "PERMIT":
             for i in range(len(events_seq) - 2, -1, -1):
                 prev_event = events_seq[i]
@@ -839,8 +850,14 @@ def derive_state_from_events(events, jsonl_stop_reason,
                           if isinstance(prev_event, dict) else None)
                 if prev_t == "subagent":
                     continue  # walk past stacked phantoms
-                if prev_t in ("notify_idle", "stop", "session_end"):
-                    return None  # phantom: subagent after rest state
+                if prev_t == "notify_idle":
+                    return "IDLE"
+                if prev_t == "stop":
+                    if jsonl_stop_reason in TERMINAL_STOP_REASONS:
+                        return "IDLE"
+                    return None  # mid-tool: legacy uses raw
+                if prev_t == "session_end":
+                    return None  # restart transient: legacy uses raw
                 break  # crossed a real activity event; legitimate context
         # Esc-interrupt / hook-silence fallback. Latest event is
         # start-class (prompt / pretool / posttool / subagent /
