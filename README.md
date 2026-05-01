@@ -22,6 +22,7 @@ ccm is a tmux plugin that runs multiple [Claude Code](https://docs.anthropic.com
 - **Snapshots** — Save and restore project layouts as JSON
 - **Auto-start** — Claude Code auto-launches when switching to a SHELL-state window
 - **Status Line** — Inject active project status into tmux status bar
+- **Multi-byte text** — Project names containing Japanese, Chinese, or Korean characters, or emoji align correctly in the dashboard, status bar, and CLI tables. Snapshots and config files use explicit UTF-8; subprocess output is decoded permissively so a single malformed byte cannot freeze the detection cycle. CJK-locale terminals can opt into 2-column rendering for East Asian Ambiguous characters via `CCM_AMBIGUOUS_WIDTH=2`
 - **Agent Teams Compatible** — Works alongside Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams): manage projects with ccm while running parallel agents within each project
 
 ## Requirements

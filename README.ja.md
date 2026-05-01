@@ -22,6 +22,7 @@ ccm は複数の [Claude Code](https://docs.anthropic.com/en/docs/claude-code) �
 - **スナップショット** — プロジェクトレイアウトのJSON保存・復元
 - **自動起動** — SHELL状態のウィンドウに切り替えるとClaude Codeを自動起動
 - **ステータスライン** — アクティブプロジェクトの状態をtmuxステータスバーに表示
+- **多バイト文字対応** — 日本語・中国語・韓国語の文字や絵文字を含むプロジェクト名がダッシュボード・ステータスバー・CLIテーブルで正しく整列。スナップショットと設定ファイルは明示的に UTF-8 を使用し、サブプロセス出力のデコードは不正バイトを許容するため、単一の不正バイトで検出サイクルが固まることはない。CJK locale ターミナルは `CCM_AMBIGUOUS_WIDTH=2` で East Asian Ambiguous 文字の 2 列表示を選択可能
 - **Agent Teams対応** — Claude Codeの[Agent Teams](https://code.claude.com/docs/en/agent-teams)と併用可能：ccmでプロジェクトを管理しつつ、各プロジェクト内で並行エージェントを実行
 
 ## 動作要件
