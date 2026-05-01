@@ -751,6 +751,25 @@ def derive_state_from_events(events, jsonl_stop_reason,
         # silently committing IDLE.
         return None
 
+    # Cross-session events filter: an event whose timestamp predates
+    # the current claude process's start time cannot belong to the
+    # live session. This happens when a project's events.jsonl
+    # accumulates records from previous sessions (the file is keyed
+    # on cwd, not session id, and is append-only) — typical when a
+    # user `cd`'s from a subdirectory back to @ccm_dir between
+    # sessions. The new session re-uses the parent-key events file
+    # which still holds the prior session's tail, and without this
+    # filter derive would commit a stale BUSY/PERMIT/etc. as the
+    # current state until the new session writes its first hook.
+    # `claude_pid_age` comes from the kernel's monotonic etime, so
+    # `now - claude_pid_age` is the authoritative session start
+    # time. Only apply when both values are available; an unknown
+    # pid age (-1) or now=0 leaves the original behavior intact.
+    latest_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
+    if (claude_pid_age >= 0 and now > 0 and latest_ts > 0
+            and latest_ts < now - claude_pid_age):
+        return None
+
     klass = EVENT_CLASSES.get(t)
     if klass is None:
         # Unknown event type (upstream schema drift) — defer to legacy.

@@ -4959,6 +4959,72 @@ class TestDeriveStateFromEvents:
             pid_present=False, claude_pid_age=-1,
         ) == "SHELL"
 
+    # ─── cross-session events filter ───
+
+    def test_event_older_than_claude_pid_returns_none(self):
+        """events.jsonl is keyed on cwd, not session id, and is
+        append-only. When a user `cd`s out of a subdirectory back
+        to @ccm_dir between sessions, the new claude session re-uses
+        the parent-key events file which still holds the prior
+        session's tail. Without filtering, derive would commit the
+        prior session's last state (e.g. BUSY at a `pretool`) until
+        the new session writes its first hook — a multi-second gap
+        right at startup. The filter: an event whose ts predates the
+        claude process start time (now - claude_pid_age) cannot
+        belong to the live session, so defer to legacy."""
+        now = 1000
+        # claude started 60s ago → session start = ts 940
+        # latest event at ts 500 — long before this session
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 500, "type": "pretool"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=60,
+            jsonl_age=10, now=now,
+            raw="IDLE",
+        ) is None
+
+    def test_event_after_claude_pid_start_processed_normally(self):
+        """The cross-session filter must not catch events from the
+        live session. Event ts >= claude session start → derive
+        proceeds with normal rule evaluation."""
+        now = 1000
+        # claude started 60s ago, latest event at ts 970 (within
+        # this session) → derive evaluates normally → BUSY
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 970, "type": "pretool"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=60,
+            jsonl_age=5, now=now,
+            raw="BUSY",
+        ) == "BUSY"
+
+    def test_event_at_pid_start_boundary_processed_normally(self):
+        """Event ts exactly equal to claude session start is current-
+        session (just barely). Filter is strict less-than to avoid
+        edge-case dropping legitimate events that fired during
+        process startup."""
+        now = 1000
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 940, "type": "notify_idle"},),  # exactly at start
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=60,
+            jsonl_age=5, now=now,
+            raw="IDLE",
+        ) == "IDLE"
+
+    def test_unknown_pid_age_skips_cross_session_filter(self):
+        """When claude_pid_age is -1 (kernel etime parse failed) the
+        filter cannot determine session start, so it must NOT drop
+        events. Falling back to legacy unconditionally would erase
+        the event-log signal whenever ps output is malformed."""
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 100, "type": "notify_idle"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=-1,  # unknown
+            jsonl_age=10, now=1000,
+            raw="IDLE",
+        ) == "IDLE"
+
     # ─── notify_idle → IDLE ───
 
     def test_notify_idle_event_idle(self):
@@ -5439,11 +5505,14 @@ class TestDeriveStateFromEvents:
         """tool_use beyond BUSY_HOOK_JSONL_WINDOW is too old to
         trust as an active tool — fall through to PERMIT (cosmetic
         stuck state)."""
-        # jsonl_age past the long-tool window
+        # jsonl_age past the long-tool window. claude_pid_age must
+        # be larger than (now - event_ts) so the cross-session
+        # filter doesn't catch the event first; we're testing the
+        # stale-tool_use branch, not the cross-session filter.
         assert ccm_core.derive_state_from_events(
             events=({"ts": 100, "type": "permit_req"},),
             jsonl_stop_reason="tool_use",
-            pid_present=True, claude_pid_age=300,
+            pid_present=True, claude_pid_age=900,
             jsonl_age=700, now=900,
             raw="BUSY",
         ) == "PERMIT"
