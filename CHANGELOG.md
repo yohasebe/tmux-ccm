@@ -58,7 +58,9 @@ Initial public release. ccm is a tmux plugin that manages Claude Code sessions a
 - `disableAllHooks` and `allowManagedHooksOnly` canaries — surface a warning when these Claude Code settings are in effect, since they disable every ccm hook silently.
 - Cluster-SHELL canary — detects rapid SHELL transitions (3 in 10 minutes) and warns the user, surfacing the macOS silent-exit class of regression.
 - `ccm setup-hooks` hard-fails on Claude Code below v2.1.107 and on missing `claude` binary, instead of installing a partial hook set.
-- `ps_snapshot` and `tmux_cmd` decode subprocess output with `errors="replace"`. macOS truncates the `ps comm` column at a fixed byte width, slicing multi-byte characters mid-codepoint (e.g. an app named `⌘英かな` produces orphan UTF-8 bytes); a decode error there would silently kill the entire detection cycle and freeze every project's `@ccm_prev_state`.
+- `ps_snapshot` and `tmux_cmd` decode subprocess output with `errors="replace"`. macOS truncates the `ps comm` column at a fixed byte width, slicing multi-byte characters mid-codepoint (e.g. an app named `⌘英かな` produces orphan UTF-8 bytes); a decode error there would silently kill the entire detection cycle and freeze every project's `@ccm_prev_state`. `clear_notifications` and the `cmd_attach` claude-child probe got the same treatment.
+- Per-project exception barrier in `build_project_list`. A bug in detection for one project no longer freezes every other project's state — the failing project carries forward its previous `@ccm_prev_state` while the rest of the loop continues.
+- Silent-catch sites (`inject_status` top level, `dashboard._refresh_loop`) now record exceptions to `$TMPDIR/ccm-$UID/errors.log` (1 MB cap). Crashing the status refresh is still avoided, but the next detection-cycle regression is debuggable without having to enable `CCM_DEBUG_TRACE` in advance.
 
 ### Setup / integration
 - `ccm init` interactive setup wizard.

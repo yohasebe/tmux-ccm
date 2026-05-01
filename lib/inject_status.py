@@ -676,4 +676,8 @@ if __name__ == "__main__":
     try:
         inject_status()
     except Exception:
-        pass  # Never crash — tmux will retry
+        # Never crash — tmux will retry. But log so the next
+        # detection-cycle regression is debuggable without users
+        # having to enable CCM_DEBUG_TRACE in advance.
+        from ccm_core import log_caught_exception
+        log_caught_exception("inject_status")

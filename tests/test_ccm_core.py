@@ -2235,6 +2235,87 @@ class TestNonUtf8Output:
         assert "line3" in out
 
 
+class TestLogCaughtException:
+    """`log_caught_exception` records silent-catch sites so the next
+    detection-cycle regression is debuggable without enabling
+    CCM_DEBUG_TRACE in advance."""
+
+    def test_writes_one_record_inside_except(self, tmp_path):
+        log_path = tmp_path / "errors.log"
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)):
+            try:
+                raise ValueError("synthetic boom")
+            except ValueError:
+                ccm_core.log_caught_exception("test_scope")
+        text = log_path.read_text()
+        assert text.count("\n") == 1
+        record = json.loads(text)
+        assert record["scope"] == "test_scope"
+        assert record["type"] == "ValueError"
+        assert record["msg"] == "synthetic boom"
+        assert "traceback" in record
+
+    def test_outside_except_block_writes_nothing(self, tmp_path):
+        log_path = tmp_path / "errors.log"
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)):
+            ccm_core.log_caught_exception("never_called")
+        assert not log_path.exists()
+
+    def test_size_cap_stops_appending(self, tmp_path):
+        log_path = tmp_path / "errors.log"
+        # Pre-fill the log past the cap to simulate a long-running
+        # process that has already accumulated errors.
+        log_path.write_text("x" * (ccm_core.ERRORS_LOG_MAX_BYTES + 1))
+        before = log_path.stat().st_size
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)):
+            try:
+                raise RuntimeError("dropped")
+            except RuntimeError:
+                ccm_core.log_caught_exception("over_cap")
+        # Append silently dropped — file size unchanged.
+        assert log_path.stat().st_size == before
+
+
+class TestBuildProjectListIsolation:
+    """A bug in detection for one project must not freeze every
+    other project's state. The per-project barrier carries forward
+    `@ccm_prev_state` on detect-call failure (worst case: that
+    project is stale for a tick) instead of letting the loop die
+    and freezing all projects."""
+
+    @patch.object(ccm_core, "evaluate_fast")
+    @patch.object(ccm_core, "tmux_cmd")
+    def test_one_failing_project_does_not_break_others(
+        self, mock_tmux, mock_evaluate
+    ):
+        # Two projects: first raises, second resolves to IDLE.
+        mock_tmux.return_value = (
+            "0:1\tproj-a\t/p/a\tBUSY\t0\t1234567890\t\n"
+            "0:2\tproj-b\t/p/b\tIDLE\t0\t1234567890\t"
+        )
+
+        def evaluate_side_effect(prev_state, proj_dir, now=None):
+            if proj_dir == "/p/a":
+                raise RuntimeError("synthetic detection failure")
+            return "IDLE"
+
+        mock_evaluate.side_effect = evaluate_side_effect
+
+        with patch.object(ccm_core, "log_caught_exception") as mock_log:
+            projects = ccm_core.build_project_list(fast=True)
+
+        assert len(projects) == 2
+        names = {p.name: p.state for p in projects}
+        # proj-a carries forward prev_state=BUSY (stale, but not lost)
+        assert names["proj-a"] == "BUSY"
+        # proj-b unaffected by proj-a's failure
+        assert names["proj-b"] == "IDLE"
+        # The silent failure was logged for diagnosis
+        scopes = [c.args[0] for c in mock_log.call_args_list]
+        assert any("proj-a" in s for s in scopes)
+        assert not any("proj-b" in s for s in scopes)
+
+
 # ─── validate_name ───
 
 class TestValidateName:
@@ -2851,20 +2932,20 @@ class TestClearNotificationsScope:
             "ccm-beta\tccm ⚠ beta\t\tPermission required\t2024-01-01 10:01:00 +0000\n"
             "deploy-alert\tDeploy succeeded\t\tprod\t2024-01-01 10:02:00 +0000\n"
             "monitoring-cpu\tHigh CPU\t\t\t2024-01-01 10:03:00 +0000\n"
-        )
+        ).encode("utf-8")
         monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
 
         calls = []
 
         class _Result:
-            def __init__(self, stdout=""):
+            def __init__(self, stdout=b""):
                 self.stdout = stdout
 
         def fake_run(args, **kwargs):
             calls.append(args)
             if args[1:3] == ["-list", "ALL"]:
                 return _Result(stdout=listing_stdout)
-            return _Result(stdout="")
+            return _Result(stdout=b"")
 
         monkeypatch.setattr(ccm_core.subprocess, "run", fake_run)
 
@@ -2882,17 +2963,17 @@ class TestClearNotificationsScope:
         listing_stdout = (
             "GroupID\tTitle\tSubtitle\tMessage\tDelivered At\n"
             "deploy-alert\tDeploy succeeded\t\tprod\t2024-01-01 10:00:00 +0000\n"
-        )
+        ).encode("utf-8")
         monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
 
         class _Result:
-            def __init__(self, stdout=""):
+            def __init__(self, stdout=b""):
                 self.stdout = stdout
 
         def fake_run(args, **kwargs):
             if args[1:3] == ["-list", "ALL"]:
                 return _Result(stdout=listing_stdout)
-            return _Result(stdout="")
+            return _Result(stdout=b"")
 
         monkeypatch.setattr(ccm_core.subprocess, "run", fake_run)
         assert ccm_core.clear_notifications() == 0

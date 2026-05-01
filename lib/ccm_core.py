@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from collections import OrderedDict
 from datetime import datetime
 from typing import Optional, Tuple
@@ -430,6 +431,57 @@ def find_process_age(pid, ps_lines):
 
 def md5_hash(s):
     return hashlib.md5(s.encode()).hexdigest()
+
+
+# ─── Silent-exception observability ───
+# `inject_status` and `dashboard._refresh_loop` both wrap their main
+# body in `except Exception: pass` because crashing the tmux status
+# refresh or the dashboard render loop is worse than skipping a tick.
+# But silent swallowing kept the recent UTF-8 decode regression
+# invisible until users noticed states freezing across every project.
+# `log_caught_exception` records each silent catch so the next
+# regression of this class is debuggable without having to enable
+# `CCM_DEBUG_TRACE` in advance. The log is size-capped so a runaway
+# loop cannot exhaust disk.
+
+CCM_ERRORS_LOG = os.path.join(CCM_TMP_DIR, "errors.log")
+ERRORS_LOG_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
+
+
+def log_caught_exception(scope: str) -> None:
+    """Append one JSON line describing a silently-caught exception.
+
+    Must be called from inside an `except` block — reads
+    `sys.exc_info()`. `scope` identifies the call site so the log
+    distinguishes "every project breaks" from "one project breaks"
+    (e.g. `"inject_status"`, `"build_project_list[my-project]"`).
+
+    Best-effort: a failure to write the log is itself swallowed,
+    because turning a survivable detection error into a fatal one
+    would defeat the purpose of the silent-catch barriers.
+    """
+    try:
+        exc_type, exc, tb = sys.exc_info()
+        if exc_type is None:
+            return
+        os.makedirs(os.path.dirname(CCM_ERRORS_LOG), exist_ok=True)
+        try:
+            size = os.path.getsize(CCM_ERRORS_LOG)
+        except OSError:
+            size = 0
+        if size >= ERRORS_LOG_MAX_BYTES:
+            return  # Cap reached; further writes silently dropped.
+        record = {
+            "ts": int(time.time()),
+            "scope": scope,
+            "type": exc_type.__name__,
+            "msg": str(exc),
+            "traceback": "".join(traceback.format_tb(tb)),
+        }
+        with open(CCM_ERRORS_LOG, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
 
 
 # ─── Session detection ───
@@ -1435,15 +1487,24 @@ def build_project_list(fast=False):
             except ValueError:
                 pass
 
-        if fast:
-            # Unified with slow path via DETECTION_RULES. Read-only.
-            state = evaluate_fast(prev_state, proj_dir)
-        else:
-            state = detect_window_state(
-                win_target, proj_dir, prev_state,
-                panes_cache, ps_lines, own_pgid,
-                prev_bg_active=bool(bg_active_str),
-            )
+        # Per-project exception barrier. A bug in detection for one
+        # project must not freeze every other project's state. On
+        # failure, carry forward `@ccm_prev_state` (worst case: this
+        # project's state stays stale for a tick, instead of the
+        # whole loop dying and ALL projects freezing — the failure
+        # mode that motivated this barrier).
+        try:
+            if fast:
+                state = evaluate_fast(prev_state, proj_dir)
+            else:
+                state = detect_window_state(
+                    win_target, proj_dir, prev_state,
+                    panes_cache, ps_lines, own_pgid,
+                    prev_bg_active=bool(bg_active_str),
+                )
+        except Exception:
+            log_caught_exception(f"build_project_list[{project}]")
+            state = prev_state or "IDLE"
 
         sort_ts = max(completed_at, win_activity) if win_activity else completed_at
 
@@ -1670,13 +1731,17 @@ def clear_notifications():
     try:
         listing = subprocess.run(
             [tn_path, "-list", "ALL"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, timeout=5,
         )
     except (subprocess.TimeoutExpired, OSError):
         return -1
 
+    # Other apps' notification titles may contain bytes that are not
+    # valid UTF-8; decode permissively so a single bad title does not
+    # abort the entire scrub.
+    listing_text = (listing.stdout or b"").decode("utf-8", errors="replace")
     removed = 0
-    for line in (listing.stdout or "").splitlines()[1:]:  # skip header
+    for line in listing_text.splitlines()[1:]:  # skip header
         # `-list ALL` emits a TSV: GroupID<TAB>Title<TAB>...
         group_id = line.split("\t", 1)[0].strip()
         if not group_id.startswith("ccm-"):

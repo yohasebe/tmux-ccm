@@ -536,9 +536,14 @@ def cmd_attach(target):
         # Check if claude is running as child
         try:
             ps_out = subprocess.run(["ps", "-eo", "ppid,comm"],
-                                    capture_output=True, text=True, timeout=5)
+                                    capture_output=True, timeout=5)
+            # macOS truncates `comm` mid-codepoint for apps with
+            # multi-byte names — see ccm_core.ps_snapshot for the
+            # full rationale. Decode permissively so the truncated
+            # row does not abort the scan.
+            ps_text = ps_out.stdout.decode("utf-8", errors="replace")
             has_claude = False
-            for line in ps_out.stdout.strip().split("\n"):
+            for line in ps_text.strip().split("\n"):
                 fields = line.split()
                 if len(fields) >= 2 and fields[0] == pane_pid and fields[1] == "claude":
                     has_claude = True

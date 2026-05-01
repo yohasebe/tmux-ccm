@@ -29,6 +29,7 @@ from ccm_core import (
     save_tmux_conf_setting,
     cmd_add, cmd_remove, cmd_unregister, cmd_register,
     cmd_snapshot_save, cmd_snapshot_load,
+    log_caught_exception,
     CCMError, raise_on_die,
 )
 
@@ -1502,6 +1503,7 @@ class Dashboard:
                 self.initial_load = False
                 self.data_dirty = True
         except Exception:
+            log_caught_exception("dashboard._refresh_loop:initial")
             self.initial_load = False
 
         # Subsequent refreshes
@@ -1520,7 +1522,7 @@ class Dashboard:
                 if self.preview_enabled and self.mode == "dashboard":
                     self._last_preview_target = ""  # Force refresh
             except Exception:
-                pass
+                log_caught_exception("dashboard._refresh_loop")
 
     # ─── Tree mode ───
 
