@@ -156,6 +156,43 @@ class TestRenderSmoke:
         d.render(_make_mock_stdscr())
 
 
+# ─── _strip_osc8_hyperlinks ───
+
+class TestStripOsc8Hyperlinks:
+    """Curses cannot render OSC 8 hyperlinks; the wrapper bytes leak
+    into the preview as `^]8;id=...;URL` literal text. Stripping the
+    wrappers and keeping the visible label preserves the user's
+    intent without breaking the layout.
+    """
+
+    def test_strips_complete_sequence_keeps_label(self):
+        text = "\x1b]8;id=abc;https://example.com/x\x1b\\#42\x1b]8;;\x1b\\"
+        assert Dashboard._strip_osc8_hyperlinks(text) == "#42"
+
+    def test_strips_with_bel_terminator(self):
+        # Some terminals emit BEL (\x07) as the OSC 8 terminator.
+        text = "\x1b]8;;https://example.com\x07link text\x1b]8;;\x07"
+        assert Dashboard._strip_osc8_hyperlinks(text) == "link text"
+
+    def test_keeps_surrounding_text(self):
+        text = "PR \x1b]8;;https://x.com\x1b\\#11\x1b]8;;\x1b\\ done"
+        assert Dashboard._strip_osc8_hyperlinks(text) == "PR #11 done"
+
+    def test_drops_orphan_open_sequence(self):
+        # Capture cut off mid-sequence — must not leave dangling chars.
+        text = "leftover \x1b]8;id=foo;https://x.com\x1b\\rest"
+        result = Dashboard._strip_osc8_hyperlinks(text)
+        assert "\x1b]8" not in result
+
+    def test_preserves_non_osc8_escapes(self):
+        # SGR colour codes (\x1b[...m) must survive untouched.
+        text = "\x1b[31mred\x1b[0m"
+        assert Dashboard._strip_osc8_hyperlinks(text) == text
+
+    def test_empty_input(self):
+        assert Dashboard._strip_osc8_hyperlinks("") == ""
+
+
 # ─── _strip_last_grapheme ───
 
 class TestStripLastGrapheme:

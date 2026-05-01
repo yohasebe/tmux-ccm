@@ -4321,6 +4321,64 @@ class TestDeriveStateFromEvents:
             pid_present=True, claude_pid_age=4000,
         ) == "PERMIT"
 
+    def test_permit_with_running_tool_returns_busy_after_fallback_window(self):
+        """The user grants the permission and Claude starts a tool
+        (Bash, etc.). The assistant `tool_use` record in JSONL was
+        written BEFORE the permit event by milliseconds (the request
+        is what triggered the modal). When PreToolUse hooks fall
+        silent afterwards, the latest event stays at `notify_permit`.
+        Once the permit event is older than
+        PERMIT_TOOL_USE_FALLBACK_SEC, we classify as BUSY because the
+        dismiss-not-yet-corrected window has closed.
+        """
+        now = int(time.time())
+        # Permit event landed 90 s ago (> PERMIT_TOOL_USE_FALLBACK_SEC).
+        # The `tool_use` JSONL record landed 91 s ago — older than the
+        # permit event. PreToolUse never fired.
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": now - 90, "type": "notify_permit"},),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=91,
+            pid_present=True,
+            claude_pid_age=400,
+            now=now,
+        ) == "BUSY"
+
+    def test_permit_within_fallback_window_keeps_permit(self):
+        """Within PERMIT_TOOL_USE_FALLBACK_SEC of the permit event
+        we cannot tell "tool running after grant" from "user dismissed
+        and idle_prompt is still on its way". Stay in PERMIT until
+        the window closes.
+        """
+        now = int(time.time())
+        # Permit event landed 5 s ago (< PERMIT_TOOL_USE_FALLBACK_SEC).
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": now - 5, "type": "permit_req"},),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=120,
+            pid_present=True,
+            claude_pid_age=300,
+            now=now,
+        ) == "PERMIT"
+
+    def test_permit_with_stale_tool_use_stays_permit(self):
+        """If JSONL has not been touched for longer than
+        BUSY_HOOK_JSONL_WINDOW (10 min), the `tool_use` signal is no
+        longer trustworthy as "tool currently running" — the tool
+        either finished without a JSONL record (unlikely) or the
+        session has been idle since. Stay in PERMIT (cosmetic stuck
+        state, surfaced via the (Nm) suffix).
+        """
+        now = int(time.time())
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": now - 1200, "type": "notify_permit"},),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=1200,                   # 20 min — beyond BUSY_HOOK_JSONL_WINDOW
+            pid_present=True,
+            claude_pid_age=2000,
+            now=now,
+        ) == "PERMIT"
+
     # ─── session_end with live pid → defer to legacy ───
 
     def test_session_end_with_live_pid_returns_none(self):

@@ -60,6 +60,16 @@ HOOK_FRESH_THRESHOLD = 2
 # short enough that a missed Stop does not strand the project in
 # BUSY indefinitely.
 BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
+# Permit-class fallback: when the latest event is permit-class but
+# the modal is gone (raw != PERMIT) and JSONL still shows a tool in
+# flight, it could be (a) user granted and PreToolUse fell silent
+# → BUSY, or (b) user dismissed and idle_prompt has not advanced
+# the log yet → PERMIT. We disambiguate by waiting this many seconds
+# from the permit event before promoting to BUSY: idle_prompt's
+# documented worst-case latency is ~60 s, so a permit event older
+# than that with JSONL still in tool_use is overwhelmingly the
+# hook-silence case.
+PERMIT_TOOL_USE_FALLBACK_SEC = int(os.environ.get("CCM_PERMIT_TOOL_USE_FALLBACK_SEC", "60"))
 # JSONL real-activity filter — whitelist. Only records whose
 # top-level `type` is in this set count as conversation activity
 # in `_parse_jsonl_tail`. Whitelist is preferable to a blacklist

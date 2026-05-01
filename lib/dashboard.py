@@ -263,11 +263,41 @@ class Dashboard:
         raw = tmux_cmd("capture-pane", "-e", "-t", p.win_target, "-p", "-S", "-50")
         if not raw or not raw.strip():
             raw = tmux_cmd("capture-pane", "-e", "-a", "-t", p.win_target, "-p", "-S", "-50")
+        if raw:
+            raw = self._strip_osc8_hyperlinks(raw)
         self.preview_cache = raw if raw else "(no content)"
         self._preview_lines = self.preview_cache.split("\n") if self.preview_cache else []
 
     # ANSI SGR to curses attribute mapping
     _ANSI_RE = re.compile(r'\x1b\[([0-9;]*)m')
+
+    # OSC 8 hyperlink: \e]8;PARAMS;URL\e\\TEXT\e]8;;\e\\
+    # (terminator can be ESC \ or BEL). Curses does not interpret OSC 8,
+    # so we replace each whole sequence with the visible TEXT — the
+    # link target is dropped, the user-visible label is kept.
+    _OSC8_RE = re.compile(
+        r'\x1b\]8;[^;]*;[^\x07\x1b]*(?:\x07|\x1b\\)'
+        r'(.*?)'
+        r'\x1b\]8;;(?:\x07|\x1b\\)',
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _strip_osc8_hyperlinks(cls, text: str) -> str:
+        """Replace OSC 8 hyperlink sequences with their visible label.
+
+        Claude Code emits OSC 8 hyperlinks (e.g. for branch / PR
+        references). `capture-pane -e` includes the raw escape codes,
+        but curses cannot render them, so they show up in the
+        dashboard preview as `^]8;id=...;URL ... ^]8;;`. Stripping
+        them here keeps the link's visible text and drops the wrapper.
+        """
+        # Replace complete sequences first.
+        text = cls._OSC8_RE.sub(r'\1', text)
+        # Defensive: drop any orphaned OSC 8 starts/terminators that
+        # remain (e.g. when the capture window cuts off mid-sequence).
+        text = re.sub(r'\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)?', '', text)
+        return text
 
     # Cache for dynamically allocated curses color pairs
     _color_pair_cache = {}
