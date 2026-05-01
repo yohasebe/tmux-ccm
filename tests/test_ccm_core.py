@@ -485,6 +485,40 @@ class TestJsonlTailStopReason:
         age, stop = ccm_core.read_jsonl_tail_info("/p/q")
         assert stop == "end_turn"
 
+    def test_promotes_to_user_pending_after_terminal_assistant(
+        self, tmp_path, monkeypatch
+    ):
+        """User submitted a fresh prompt after a terminal assistant
+        record. claude is now processing the new prompt (extended-
+        thinking phase, no new assistant record yet). The synthetic
+        `user_pending` stop_reason signals this so detection knows
+        to surface BUSY rather than treating the stale `end_turn`
+        as authoritative."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 60, stop_reason="end_turn"),
+            {"type": "user", "timestamp": _iso_ts(now - 30),
+             "message": {"content": "next question"}},
+        ])
+        age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        assert stop == ccm_core.JSONL_USER_PENDING
+
+    def test_does_not_promote_when_assistant_was_tool_use(
+        self, tmp_path, monkeypatch
+    ):
+        """User record after assistant `tool_use` is a tool_result,
+        not a fresh prompt. Stop_reason stays at `tool_use`."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 30, stop_reason="tool_use"),
+            {"type": "user", "timestamp": _iso_ts(now - 10),
+             "message": {"content": [{"type": "tool_result", "content": "x"}]}},
+        ])
+        age, stop = ccm_core.read_jsonl_tail_info("/p/q")
+        assert stop == "tool_use"
+
     def test_walks_past_tool_result_user_record_to_prior_assistant(
         self, tmp_path, monkeypatch
     ):
@@ -1425,6 +1459,7 @@ class TestRulePhaseAnnotations:
             "hook_fresh_busy": "midturn",
             "startup_transient_raw_busy": "startup",
             "raw_busy_passthrough": "midturn",
+            "jsonl_user_prompt_pending": "midturn",
             "raw_permit_passthrough": "permit",
             "default": None,
         }
@@ -1485,6 +1520,44 @@ class TestEvaluateRules:
     def test_raw_permit_passes_through(self):
         rule, state = ccm_core.evaluate_rules(make_ctx(raw="PERMIT"))
         assert (rule.name, state) == ("raw_permit_passthrough", "PERMIT")
+
+    # --- jsonl_user_prompt_pending ---
+
+    def test_jsonl_user_pending_promotes_idle_to_busy(self):
+        """User submitted a new prompt after a terminal assistant
+        record; claude is processing it (extended thinking, no
+        new assistant record yet). raw=IDLE because `❯` is visible
+        in accept-edits mode. ccm must surface BUSY."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE",
+                     jsonl_last_stop_reason="user_pending",
+                     jsonl_age=60)
+        )
+        assert (rule.name, state) == ("jsonl_user_prompt_pending", "BUSY")
+
+    def test_jsonl_user_pending_does_not_promote_when_raw_busy(self):
+        """If raw is already BUSY, the earlier `raw_busy_passthrough`
+        rule wins. The user_pending rule only matters for the
+        accept-edits raw=IDLE case."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="BUSY",
+                     jsonl_last_stop_reason="user_pending",
+                     jsonl_age=60)
+        )
+        assert rule.name == "raw_busy_passthrough"
+
+    def test_jsonl_user_pending_falls_through_when_stale(self):
+        """Past BUSY_HOOK_JSONL_WINDOW (10 min) without new activity,
+        the user_pending rule abstains and the session falls through
+        to the default rule. Showing BUSY indefinitely for a
+        genuinely stalled session would be misleading."""
+        rule, state = ccm_core.evaluate_rules(
+            make_ctx(raw="IDLE",
+                     jsonl_last_stop_reason="user_pending",
+                     jsonl_age=900)   # 15 min, past the 600s window
+        )
+        assert rule.name == "default"
+        assert state == "IDLE"
 
     # --- default ---
 

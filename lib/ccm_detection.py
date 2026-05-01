@@ -482,6 +482,27 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         phase="midturn",
     ),
     Rule(
+        # JSONL says the user just submitted a new prompt after a
+        # terminal assistant turn (`user_pending` synthesized
+        # stop_reason). Claude is processing it — typically in the
+        # extended-thinking phase before any new assistant record
+        # lands. Without this rule, accept-edits mode (where `❯` is
+        # visible at column 0 → raw=IDLE) would falsely classify the
+        # window as IDLE for the entire thinking phase. Hooks that
+        # would normally cover this (PreToolUse, etc.) may not have
+        # fired yet — claude is still thinking, not yet calling tools.
+        # Bounded by the long-tool window so a session that has
+        # genuinely stalled (no JSONL activity for 10+ minutes)
+        # falls through to the default rule rather than showing
+        # BUSY indefinitely.
+        name="jsonl_user_prompt_pending",
+        raw_in=("IDLE",),
+        jsonl_last_stop_reason_in=(ccm_core.JSONL_USER_PENDING,),
+        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
+        result="BUSY",
+        phase="midturn",
+    ),
+    Rule(
         # raw=PERMIT passthrough. capture-pane footer detected a
         # permission modal but no PermissionRequest hook fired (or
         # fired but was already cleared by the time we read).

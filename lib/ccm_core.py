@@ -725,15 +725,34 @@ JSONL_ACTIVITY_CACHE_MAX = 128
 _jsonl_activity_cache: "OrderedDict[str, Tuple[Tuple[int, int], Tuple[Optional[int], Optional[str]]]]" = OrderedDict()
 
 
+_TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
+
+# Synthesized stop_reason value: emitted when the latest real-activity
+# record is a `user` entry that landed AFTER a terminal assistant
+# record. This is the signature of "user submitted a new prompt;
+# claude is processing it (extended-thinking phase, no new assistant
+# record yet)". Distinct from any stop_reason Claude Code emits, so
+# detection can branch on it explicitly.
+JSONL_USER_PENDING = "user_pending"
+
+
 def _parse_jsonl_tail(
     path: str, mtime: int, size: int
 ) -> Tuple[Optional[int], Optional[str]]:
     """Tail-read a JSONL file and return:
       - unix timestamp of the most recent real-conversation-activity
         record, or None if no such record was found in the tail window
-      - `stop_reason` of the most recent `assistant` record in the tail
-        window, or None if no assistant record with a parseable
-        stop_reason was found
+      - active stop-state at the JSONL tail:
+          * `stop_reason` of the most recent assistant record (any of
+            `tool_use` / `end_turn` / `max_tokens` / `stop_sequence`,
+            etc.), OR
+          * the synthetic value `JSONL_USER_PENDING` when the latest
+            real-activity record is a `user` entry whose timestamp is
+            newer than the latest assistant record AND that assistant
+            had a terminal stop_reason. This indicates a fresh user
+            prompt is in flight (extended-thinking case where claude
+            has not written any new assistant record yet).
+        None when the tail contained neither.
 
     Only records whose `type` is in `JSONL_ACTIVITY_TYPES`
     (whitelist) are considered for both fields; everything else
@@ -744,12 +763,6 @@ def _parse_jsonl_tail(
     file. A new write changes the size (JSONL is append-only during
     a session), so cache invalidation is reliable even within the
     same wall-clock second.
-
-    On a "real activity record found but timestamp unparseable" edge
-    case (malformed Claude Code output, hypothetical schema drift),
-    falls back to the file mtime itself so the rule engine still has
-    a usable timestamp — better to err on the side of "fresh" than
-    lose detection entirely.
     """
     key = (mtime, size)
     cached = _jsonl_activity_cache.get(path)
@@ -758,6 +771,8 @@ def _parse_jsonl_tail(
         return cached[1]
 
     real_ts: Optional[int] = None
+    latest_user_ts: Optional[int] = None
+    latest_assistant_ts: Optional[int] = None
     last_stop_reason: Optional[str] = None
 
     try:
@@ -794,30 +809,40 @@ def _parse_jsonl_tail(
         rec_type = rec.get("type")
         if not rec_type or rec_type not in JSONL_ACTIVITY_TYPES:
             continue
-        # Real-activity records also REQUIRE a parseable
-        # timestamp — defence-in-depth in case Claude Code adds a
-        # whitelisted type that omits the field.
+        # Parse timestamp — defence-in-depth in case Claude Code adds
+        # a whitelisted type that omits the field.
+        rec_ts: Optional[int] = None
+        ts_str = rec.get("timestamp")
+        if ts_str and isinstance(ts_str, str):
+            try:
+                iso = ts_str.replace("Z", "+00:00")
+                rec_ts = int(datetime.fromisoformat(iso).timestamp())
+            except (ValueError, TypeError):
+                pass
+        if rec_ts is None:
+            continue
         if real_ts is None:
-            ts_str = rec.get("timestamp")
-            if ts_str and isinstance(ts_str, str):
-                try:
-                    iso = ts_str.replace("Z", "+00:00")
-                    dt = datetime.fromisoformat(iso)
-                    real_ts = int(dt.timestamp())
-                except (ValueError, TypeError):
-                    pass
-        # Capture the most recent assistant stop_reason. Walk past
-        # the first real-activity record (which may be a `user`
-        # tool_result newer than the assistant record it answers)
-        # to find the assistant stop_reason that describes the
-        # in-flight turn.
-        if last_stop_reason is None and rec_type == "assistant":
+            real_ts = rec_ts
+        if rec_type == "user" and latest_user_ts is None:
+            latest_user_ts = rec_ts
+        elif rec_type == "assistant" and latest_assistant_ts is None:
+            latest_assistant_ts = rec_ts
             msg = rec.get("message") or {}
             sr = msg.get("stop_reason") if isinstance(msg, dict) else None
             if isinstance(sr, str) and sr:
                 last_stop_reason = sr
-        if real_ts is not None and last_stop_reason is not None:
+        # Stop scanning once we have everything we need.
+        if (real_ts is not None and latest_user_ts is not None
+                and latest_assistant_ts is not None):
             break
+
+    # Promote to JSONL_USER_PENDING when a user record is newer than
+    # the latest terminal assistant — i.e. the user just submitted a
+    # new prompt and claude has not written any response yet.
+    if (latest_user_ts is not None and latest_assistant_ts is not None
+            and latest_user_ts > latest_assistant_ts
+            and last_stop_reason in _TERMINAL_STOP_REASONS):
+        last_stop_reason = JSONL_USER_PENDING
 
     result = (real_ts, last_stop_reason)
     _cache_jsonl_activity(path, key, result)
