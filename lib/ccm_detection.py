@@ -767,38 +767,36 @@ def derive_state_from_events(events, jsonl_stop_reason,
         if _jsonl_terminal_fresher_than_event(
                 latest, jsonl_stop_reason, jsonl_age, now):
             return "IDLE"
-        # raw is not PERMIT (modal gone). When JSONL still carries
-        # `tool_use` as the latest assistant stop_reason, the capture-
-        # pane classification (`raw`) discriminates the underlying
-        # state. raw is observed in the same scan as this evaluation,
-        # so it reflects the pane right now.
+        # raw is not PERMIT (modal gone). When JSONL carries
+        # `tool_use` as the latest assistant stop_reason and is still
+        # within the long-tool window, two BUSY paths are reachable
+        # without the JSONL-fresher-than-event guard rejecting them:
         #
         # raw=BUSY → tool output filling the pane (no `❯` at col 0
-        #   or `⏵⏵` accept-edits banner). Tool is running, regardless
-        #   of whether JSONL has been touched since the permit event.
-        #   This catches the post-grant case where PreToolUse hooks
-        #   silently failed (anthropics/claude-code#16047 class) and
-        #   the latest event is still permit-class.
+        #   or `⏵⏵` accept-edits banner), claude has children. Tool
+        #   is running. This catches the post-grant case where
+        #   PreToolUse hooks silently failed (anthropics/claude-code
+        #   #16047 class) and the latest event remains permit-class.
+        #   The `_jsonl_fresher_than_event` guard would have rejected
+        #   this case because the assistant's `tool_use` JSONL record
+        #   landed milliseconds BEFORE the permit event (the request
+        #   triggered the modal).
         #
-        # raw=IDLE → `❯` is visible at col 0. Two sub-cases:
-        #   - accept-edits mode where the tool is running but the
-        #     prompt remains visible: JSONL gets a fresh assistant
-        #     record AFTER the permit event when the tool produces
-        #     output. _jsonl_fresher_than_event True → BUSY.
-        #   - user dismissed (Esc) the modal and is back at the
-        #     prompt: JSONL still carries the prior `tool_use` record
-        #     (claude has not written anything new). _jsonl_fresher
-        #     _than_event False → IDLE. We commit IDLE immediately
-        #     rather than wait for idle_prompt to advance the log.
+        # raw=IDLE + JSONL fresher than the permit event → accept-edits
+        #   mode: the tool is running but `❯` remains visible. JSONL
+        #   has been touched after the permit event (Claude wrote
+        #   something post-grant). This is the existing
+        #   permit-tool-use BUSY override case.
+        #
+        # Other shapes (raw=IDLE with stale JSONL, raw=None) carry
+        # no positive evidence and fall through to PERMIT. The
+        # `(Nm)` stale-signal suffix surfaces the situation to the
+        # user, who can attach to disambiguate.
         if jsonl_stop_reason == "tool_use" and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW:
             if raw == "BUSY":
                 return "BUSY"
-            if raw == "IDLE":
-                if _jsonl_fresher_than_event(latest, jsonl_age, now):
-                    return "BUSY"
-                return "IDLE"
-            # raw is None (caller did not provide) or an unexpected
-            # value: keep PERMIT (no positive evidence either way).
+            if raw == "IDLE" and _jsonl_fresher_than_event(latest, jsonl_age, now):
+                return "BUSY"
     elif klass == EVENT_CLASS_START:
         # Phantom-subagent shortcut. Claude Code upstream
         # occasionally fires spurious `SubagentStart` /
