@@ -4,18 +4,18 @@
 # dependency checks, and output formatting.
 # All session management, snapshots, and state detection are in Python (lib/ccm_core.py).
 
-# Runtime data directory
-CCM_DATA_DIR="${HOME}/.local/share/ccm"
-CCM_SNAPSHOT_DIR="${CCM_DATA_DIR}/snapshots"
-CCM_STATE_DIR="${CCM_DATA_DIR}/state"
+# Runtime data directory (overridable for isolated test/demo environments)
+CCM_DATA_DIR="${CCM_DATA_DIR:-${HOME}/.local/share/ccm}"
+CCM_SNAPSHOT_DIR="${CCM_SNAPSHOT_DIR:-${CCM_DATA_DIR}/snapshots}"
+CCM_STATE_DIR="${CCM_STATE_DIR:-${CCM_DATA_DIR}/state}"
 
-# Temp directory (user-scoped to avoid multi-user collisions)
-CCM_TMP_DIR="${TMPDIR:-/tmp}/ccm-${UID}"
+# Temp directory (user-scoped; overridable for isolation)
+CCM_TMP_DIR="${CCM_TMP_DIR:-${TMPDIR:-/tmp}/ccm-${UID}}"
 
 # Hook signal directory
-CCM_HOOK_DIR="${CCM_TMP_DIR}/hooks"
+CCM_HOOK_DIR="${CCM_HOOK_DIR:-${CCM_TMP_DIR}/hooks}"
 # Timeout for hook commands in Claude Code settings (milliseconds)
-CCM_HOOK_CMD_TIMEOUT=5000
+CCM_HOOK_CMD_TIMEOUT="${CCM_HOOK_CMD_TIMEOUT:-5000}"
 
 # Commands to start Claude Code
 CCM_CLAUDE_CMD="claude --continue 2>/dev/null || claude"

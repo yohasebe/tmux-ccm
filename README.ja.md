@@ -106,14 +106,15 @@ ccm init
 
 他のプラグインとの競合を避けるため、ダッシュボードのみデフォルトで有効です。ツリービューとメニューはダッシュボード内で `t` または `m` を押してもアクセスできます。
 
-専用キーを追加で設定するには `~/.tmux.conf` に追加してください：
+ダッシュボードのキーを変更したり、任意キーを有効化するには `~/.tmux.conf` に追加してください：
 
 ```tmux
-set -g @ccm-key-menu "C"        # 任意: prefix + C でメニュー
-set -g @ccm-key-tree "T"        # 任意: prefix + T でツリービュー
-set -g @ccm-key-search "/"      # 任意: prefix + / でダッシュボードをライブフィルタ検索で開く
-                                 # (日本語対応、入力でリアルタイム絞り込み、
-                                 #  Enter でアタッチ、Esc でキャンセル)
+set -g @ccm-key-dashboard "Tab"  # デフォルト。リマップする場合に上書き（例: "F12"）
+set -g @ccm-key-menu "C"         # 任意: prefix + C でメニュー
+set -g @ccm-key-tree "T"         # 任意: prefix + T でツリービュー
+set -g @ccm-key-search "/"       # 任意: prefix + / でダッシュボードをライブフィルタ検索で開く
+                                  # (日本語対応、入力でリアルタイム絞り込み、
+                                  #  Enter でアタッチ、Esc でキャンセル)
 ```
 
 > [!TIP]

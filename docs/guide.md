@@ -496,6 +496,14 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_IDLE_EXIT_TIMEOUT` | `600` (seconds) | How long a Claude Code session can be IDLE before `x` (exit all) targets it, and how long before auto-exit triggers |
 | `CCM_STARTUP_GRACE_SEC` | `60` (seconds) | Window during which the legacy `startup_transient_raw_busy` rule demotes raw=BUSY to IDLE when no hook signal is present — covers Claude's MCP-loading phase after `claude --continue`, which typically completes in 10–30 s |
 | `CCM_SLIVER_HEIGHT_THRESHOLD` | `4` (rows) | Minimum tmux pane height for a pane to participate in window-state aggregation. Panes shorter than this cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a genuinely BUSY pane. Raise if you have legitimate small Agent Teams panes that should still count; lower (down to 1) to disable the filter entirely |
+| `CCM_HOOK_CMD_TIMEOUT` | `5000` (ms) | Timeout Claude Code applies to each ccm hook invocation. ccm's hooks each do one signal-file write — comfortably within any reasonable value. Lower if you are debugging a hook hang; the default is generous enough that you will only notice it during a Claude Code or filesystem stall |
+
+### Runtime directories
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CCM_TMP_DIR` | `${TMPDIR:-/tmp}/ccm-$UID` | Per-user runtime directory: hook signals, notification markers, port/git caches, popup-session marker. Override to isolate a demo / test session from your normal ccm runtime |
+| `CCM_DATA_DIR` | `~/.local/share/ccm` | Snapshot files and other persistent state. Override paired with `CCM_TMP_DIR` for fully isolated environments |
 
 ### Canary thresholds
 

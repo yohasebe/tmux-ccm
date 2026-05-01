@@ -32,12 +32,18 @@ sys.modules.setdefault("ccm_core", sys.modules[__name__])
 CCM_ROOT = os.environ.get(
     "CCM_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-CCM_TMP_DIR = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"ccm-{os.getuid()}")
-CCM_HOOK_DIR = os.path.join(CCM_TMP_DIR, "hooks")
-CCM_SNAPSHOT_DIR = os.path.join(
+CCM_TMP_DIR = os.environ.get(
+    "CCM_TMP_DIR",
+    os.path.join(os.environ.get("TMPDIR", "/tmp"), f"ccm-{os.getuid()}"),
+)
+CCM_HOOK_DIR = os.environ.get("CCM_HOOK_DIR", os.path.join(CCM_TMP_DIR, "hooks"))
+_default_data_dir = os.path.join(
     os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share")),
     "ccm",
-    "snapshots",
+)
+CCM_DATA_DIR = os.environ.get("CCM_DATA_DIR", _default_data_dir)
+CCM_SNAPSHOT_DIR = os.environ.get(
+    "CCM_SNAPSHOT_DIR", os.path.join(CCM_DATA_DIR, "snapshots")
 )
 CCM_GIT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "git-cache")
 CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")

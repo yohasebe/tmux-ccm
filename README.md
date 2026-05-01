@@ -106,14 +106,15 @@ This guides you through hooks installation, auto-restore, and status bar configu
 
 Only the dashboard keybinding is enabled by default to avoid conflicts with other plugins. Tree view and menu are also accessible from within the dashboard by pressing `t` or `m`.
 
-To additionally bind dedicated keys, add to `~/.tmux.conf`:
+To override the dashboard keybinding or enable the optional bindings, add to `~/.tmux.conf`:
 
 ```tmux
-set -g @ccm-key-menu "C"        # optional: enable prefix + C for menu
-set -g @ccm-key-tree "T"        # optional: enable prefix + T for tree view
-set -g @ccm-key-search "/"      # optional: enable prefix + / to open the dashboard
-                                 # directly in live-filter search (Unicode-safe,
-                                 # type to narrow, Enter to attach, Esc to cancel)
+set -g @ccm-key-dashboard "Tab"  # default; override to remap (e.g. "F12")
+set -g @ccm-key-menu "C"         # optional: enable prefix + C for menu
+set -g @ccm-key-tree "T"         # optional: enable prefix + T for tree view
+set -g @ccm-key-search "/"       # optional: enable prefix + / to open the dashboard
+                                  # directly in live-filter search (Unicode-safe,
+                                  # type to narrow, Enter to attach, Esc to cancel)
 ```
 
 > [!TIP]

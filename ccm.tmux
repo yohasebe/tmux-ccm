@@ -5,9 +5,6 @@
 CCM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CCM_BIN="${CCM_ROOT}/ccm"
 
-# Store plugin root for hook scripts to find ccm binary
-tmux set -g @ccm-plugin-root "$CCM_BIN" 2>/dev/null
-
 # User-configurable keybindings (with defaults)
 CCM_KEY_DASHBOARD=$(tmux show-option -gqv @ccm-key-dashboard 2>/dev/null)
 CCM_KEY_MENU=$(tmux show-option -gqv @ccm-key-menu 2>/dev/null)
