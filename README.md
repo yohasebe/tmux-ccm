@@ -304,6 +304,7 @@ ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
 ccm statusline                    Print one-line status (used by tmux status bar)
 ccm inject-status                 Update tmux status bar (called internally)
 ccm debug trace <name> [interval] Live state-detection trace (read-only; Ctrl-C to stop)
+ccm errors [--clear]              View / clear the silent-exception log
 ```
 
 > [!TIP]

@@ -442,6 +442,16 @@ ccm capture my-project    # 画面の内容を確認
 
 子プロセスが終了すれば、次の2秒リフレッシュで状態が修正されます。
 
+### 全プロジェクトが同じ状態で固まる
+
+**すべて**のプロジェクトが同じ状態（例: 全て BUSY）で固まり、リフレッシュしても更新されない場合、検出サイクル自体が silent な例外を踏んでいる可能性があります。ログを確認:
+
+```bash
+ccm errors
+```
+
+各行は捕捉された例外（タイムスタンプ、スコープ、トレースバック付き）です。空（`No silent-caught errors logged.`）であれば検出サイクルは正常です。エントリが蓄積している場合、最新のトレースバックが失敗箇所を示します。`ccm errors --clear` でアクティブログとローテートされた `errors.log.1` の両方を削除できます。
+
 ## Agent Teamsとの併用
 
 ccmはClaude Codeの[Agent Teams](https://code.claude.com/docs/en/agent-teams)と併用できます。両者は異なるレベルで動作し、補完関係にあります：
@@ -528,6 +538,13 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 |------|-----------|------|
 | `CCM_CACHE_TTL` | `30`（秒） | Git ブランチ / ポート検出キャッシュの寿命 |
 | `CCM_JSONL_CACHE_TTL` | `30`（秒） | JSONL パス解決キャッシュの寿命 |
+
+### 表示と可観測性
+
+| 変数 | デフォルト | 用途 |
+|------|-----------|------|
+| `CCM_AMBIGUOUS_WIDTH` | `1` | East Asian Ambiguous 文字（IDLE アイコン `●`、SHELL アイコン `■` など）のターミナル列幅。CJK locale ターミナルで Ambiguous 文字が 2 列幅でレンダリングされる場合は `2` に設定すると、ダッシュボード / `ccm status` のカラム整列が崩れない。モジュール読み込み時に評価されるため、変更後は inject-status / dashboard を再起動 |
+| `CCM_ERRORS_LOG_MAX_BYTES` | `1048576`（1 MB） | `$TMPDIR/ccm-$UID/errors.log`（silent-exception ログ）のサイズ上限。上限到達時はアクティブログを `errors.log.1` にローテーションし、新しいログを開始する（ディスク使用量は上限の約 2 倍）。`ccm errors` で表示、`ccm errors --clear` で削除 |
 
 ### チューニング例
 

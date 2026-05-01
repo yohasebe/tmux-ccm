@@ -306,6 +306,7 @@ ccm remove-claude-md              ~/.claude/CLAUDE.mdからccmセクションを
 ccm statusline                    1行ステータス出力（tmuxステータスバー用）
 ccm inject-status                 tmuxステータスバー更新（内部使用）
 ccm debug trace <name> [interval] 状態検出のライブトレース（読み取り専用、Ctrl-Cで終了）
+ccm errors [--clear]              silent-exception ログの表示／クリア
 ```
 
 > [!TIP]

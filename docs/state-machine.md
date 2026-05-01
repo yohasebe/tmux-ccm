@@ -77,7 +77,12 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
    - else if JSONL `stop_reason=tool_use` is fresher than the event AND within `BUSY_HOOK_JSONL_WINDOW` → `BUSY` (auto-approved permit, tool actively running)
    - else → `PERMIT`
 5. Latest event is start-class (`prompt` / `pretool` / `posttool` / `subagent` / `compact`):
-   - if `latest.type == "subagent"` AND the immediately-preceding non-subagent event is `notify_idle` AND `raw≠"PERMIT"` → `None` (phantom-subagent shortcut — Claude Code's upstream fires occasional spurious `subagent` events in idle periods; legitimate subagent invocations always come mid-conversation, never after the explicit idle marker. Walks back through stacked phantom subagent events to handle the chain case)
+   - **Phantom-subagent shortcut** (`latest.type == "subagent"` AND `raw≠"PERMIT"`): Claude Code's upstream fires occasional spurious `subagent` events in idle periods; legitimate subagent invocations always come mid-conversation. Walk back through stacked phantom subagents to find the underlying rest marker, then resolve as if the phantom did not exist:
+     - immediately-preceding non-subagent event is `notify_idle` → `IDLE` (Claude self-reported idle; the phantom does not invalidate that, even when raw briefly disagrees because `❯` is off-screen)
+     - immediately-preceding non-subagent event is `stop` with terminal `jsonl_stop_reason` → `IDLE` (turn ended; same logic as case 7 below)
+     - immediately-preceding non-subagent event is `stop` with mid-tool `jsonl_stop_reason` → `None` (tool may still be running; raw is authoritative — defer to legacy)
+     - immediately-preceding non-subagent event is `session_end` → `None` (claude restarted; brief transient where raw is authoritative)
+     - else → fall through to the next rules
    - else if JSONL terminal stop_reason is fresher than the event AND `raw≠"PERMIT"` → `IDLE` (Esc interrupt or hook silence within 60 s)
    - else if both event_age AND jsonl_age exceed `BUSY_HOOK_JSONL_WINDOW` (10 min) AND `raw≠"PERMIT"` → `None` (combined-stale fallback — defer to legacy, which resolves to IDLE via `default`. Catches other spurious upstream firings beyond the specific subagent shortcut above)
    - else → `BUSY`

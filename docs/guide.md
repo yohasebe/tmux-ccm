@@ -442,6 +442,16 @@ ccm capture my-project    # check what's on screen
 
 The state will correct itself on the next 2-second refresh cycle once the child processes exit.
 
+### Every project frozen at the same state
+
+If **all** projects are stuck at the same state (e.g. all BUSY, no longer updating after refresh), the detection cycle itself may have hit a silent exception. Check the log:
+
+```bash
+ccm errors
+```
+
+Each line is a previously-swallowed exception with timestamp, scope, and traceback. An empty log (`No silent-caught errors logged.`) means the cycle is healthy. If entries keep accumulating, the most recent traceback identifies the failing call site. `ccm errors --clear` removes both the active log and the rotated `errors.log.1`.
+
 ## Using with Agent Teams
 
 ccm works alongside Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams). The two operate at different levels and complement each other:
@@ -528,6 +538,13 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 |----------|---------|---------|
 | `CCM_CACHE_TTL` | `30` (seconds) | Git branch / port detection cache lifetime |
 | `CCM_JSONL_CACHE_TTL` | `30` (seconds) | JSONL path resolution cache lifetime |
+
+### Display and observability
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CCM_AMBIGUOUS_WIDTH` | `1` | Terminal column count for East Asian Ambiguous characters (e.g. the IDLE icon `●`, SHELL icon `■`). Set to `2` on CJK locale terminals where Ambiguous chars render as 2 columns, so dashboard / `ccm status` columns stay aligned. Read at module load — restart inject-status / dashboard to pick up a change |
+| `CCM_ERRORS_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap for `$TMPDIR/ccm-$UID/errors.log` (the silent-exception log). At the cap, the active log rotates to `errors.log.1` and a fresh log starts (total disk use ~2 × cap). View with `ccm errors`; clear with `ccm errors --clear` |
 
 ### Tuning examples
 
