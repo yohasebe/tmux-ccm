@@ -578,14 +578,20 @@ def _resolve_hook_key(project_dir: str) -> str:
     Tries `md5(@ccm_dir)` first (the common, no-drift case — answered
     by a single `os.path.exists` with no directory scan). If that
     signal file is missing, scan `*.cwd` sidecars in `CCM_HOOK_DIR`
-    for one whose content is a descendant of `project_dir` (or equal
-    to it), and return that file's KEY prefix. Falls back to the
-    original `md5(@ccm_dir)` when no descendant sidecar matches —
-    callers handle "no signal" downstream.
+    for any whose content equals or is a descendant of `project_dir`,
+    and return the KEY whose companion (signal file or events log)
+    has the freshest mtime. Picking the freshest companion — rather
+    than the first match `os.listdir` returns — is the deterministic
+    answer when multiple sidecars match, e.g. a session that has
+    `cd`'d through several subdirectories or stale sidecars from a
+    prior session in the same project tree. Falls back to the
+    original `md5(@ccm_dir)` when no descendant sidecar has a live
+    companion — callers handle "no signal" downstream.
 
-    The fast path is O(1); the fallback is O(active sessions) and
-    runs only when the primary signal is absent. Result is cached
-    per `project_dir` and invalidated on hooks-dir change.
+    The fast path is O(1); the fallback is O(active sessions in the
+    project tree) and runs only when the primary signal is absent.
+    Result is cached per `project_dir` and invalidated on hooks-dir
+    change.
     """
     expanded = _resolve_project_dir(project_dir)
     primary = md5_hash(expanded)
@@ -597,6 +603,7 @@ def _resolve_hook_key(project_dir: str) -> str:
     if cached is not None and cached[1] == sig:
         return cached[0]
     resolved = primary
+    best_mtime = -1.0
     try:
         prefix = expanded.rstrip("/") + "/"
         for fname in os.listdir(CCM_HOOK_DIR):
@@ -608,16 +615,27 @@ def _resolve_hook_key(project_dir: str) -> str:
                     cwd = f.read().strip()
             except OSError:
                 continue
-            if cwd == expanded or cwd.startswith(prefix):
-                # Only accept the sidecar if its companion signal /
-                # events file actually exists — a stale `.cwd` after
-                # cleanup must not be honoured.
-                key = fname[: -len(".cwd")]
-                if (os.path.exists(os.path.join(CCM_HOOK_DIR, key))
-                        or os.path.exists(os.path.join(
-                            CCM_HOOK_DIR, key + ".events.jsonl"))):
-                    resolved = key
-                    break
+            if cwd != expanded and not cwd.startswith(prefix):
+                continue
+            key = fname[: -len(".cwd")]
+            # Companion freshness: the most recently-touched signal
+            # / events file wins. A sidecar whose companions are all
+            # missing is a stale leftover (post-cleanup) and is
+            # ignored entirely.
+            companion_mtime = -1.0
+            for companion in (
+                os.path.join(CCM_HOOK_DIR, key),
+                os.path.join(CCM_HOOK_DIR, key + ".events.jsonl"),
+            ):
+                try:
+                    m = os.path.getmtime(companion)
+                except OSError:
+                    continue
+                if m > companion_mtime:
+                    companion_mtime = m
+            if companion_mtime > best_mtime:
+                best_mtime = companion_mtime
+                resolved = key
     except OSError:
         pass
     _HOOK_KEY_CACHE[expanded] = (resolved, sig)

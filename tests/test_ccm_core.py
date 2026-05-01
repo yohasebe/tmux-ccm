@@ -3439,6 +3439,34 @@ class TestResolveHookKey:
         (d / f"{primary}.cwd").write_text(project + "\n")
         assert ccm_core._resolve_hook_key(project) == primary
 
+    def test_multiple_matches_picks_freshest_companion(self, tmp_path, monkeypatch):
+        """Two sidecars match the project tree (e.g. session 1 cd'd
+        into sub1, exited; session 2 is now in sub2). Resolver must
+        pick the one whose companion is freshest, NOT whichever
+        os.listdir returns first — otherwise we'd read stale events
+        from the abandoned session."""
+        import time as _time
+        d = self._setup_hooks_dir(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        sub1 = "/x/proj-a/old-session"
+        sub2 = "/x/proj-a/active-session"
+        key_old = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub1))
+        key_new = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub2))
+
+        # Old session — events log frozen at t=1000
+        old_events = d / f"{key_old}.events.jsonl"
+        old_events.write_text('{"ts":100,"type":"stop"}\n')
+        os.utime(old_events, (1000.0, 1000.0))
+        (d / f"{key_old}.cwd").write_text(sub1 + "\n")
+
+        # New session — events log freshly touched at t=2000
+        new_events = d / f"{key_new}.events.jsonl"
+        new_events.write_text('{"ts":200,"type":"pretool"}\n')
+        os.utime(new_events, (2000.0, 2000.0))
+        (d / f"{key_new}.cwd").write_text(sub2 + "\n")
+
+        assert ccm_core._resolve_hook_key(project) == key_new
+
 
 # ─── raise_on_die / CCMError ───
 
