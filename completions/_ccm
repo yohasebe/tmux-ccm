@@ -27,6 +27,7 @@ _ccm() {
         'remove-hooks:Remove ccm hooks from Claude Code settings'
         'setup-claude-md:Add ccm section to ~/.claude/CLAUDE.md'
         'remove-claude-md:Remove ccm section from ~/.claude/CLAUDE.md'
+        'errors:View / clear the silent-exception log'
         'help:Show help'
     )
 

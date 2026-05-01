@@ -2370,19 +2370,103 @@ class TestLogCaughtException:
             ccm_core.log_caught_exception("never_called")
         assert not log_path.exists()
 
-    def test_size_cap_stops_appending(self, tmp_path):
+    def test_size_cap_rotates_to_dot_one(self, tmp_path):
         log_path = tmp_path / "errors.log"
+        prev_path = tmp_path / "errors.log.1"
         # Pre-fill the log past the cap to simulate a long-running
         # process that has already accumulated errors.
         log_path.write_text("x" * (ccm_core.ERRORS_LOG_MAX_BYTES + 1))
-        before = log_path.stat().st_size
-        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)):
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)), \
+                patch.object(ccm_core, "CCM_ERRORS_LOG_PREV", str(prev_path)):
             try:
-                raise RuntimeError("dropped")
+                raise RuntimeError("after-cap")
             except RuntimeError:
-                ccm_core.log_caught_exception("over_cap")
-        # Append silently dropped — file size unchanged.
-        assert log_path.stat().st_size == before
+                ccm_core.log_caught_exception("rotated")
+        # Old log moved aside, fresh log holds exactly the new record.
+        assert prev_path.exists()
+        new_text = log_path.read_text()
+        assert new_text.count("\n") == 1
+        record = json.loads(new_text)
+        assert record["scope"] == "rotated"
+
+    def test_subsequent_writes_after_rotation_go_to_active(self, tmp_path):
+        log_path = tmp_path / "errors.log"
+        prev_path = tmp_path / "errors.log.1"
+        log_path.write_text("x" * (ccm_core.ERRORS_LOG_MAX_BYTES + 1))
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)), \
+                patch.object(ccm_core, "CCM_ERRORS_LOG_PREV", str(prev_path)):
+            for i in range(3):
+                try:
+                    raise RuntimeError(f"e{i}")
+                except RuntimeError:
+                    ccm_core.log_caught_exception(f"call_{i}")
+        # Active log accumulates after the rotation; .1 still has the
+        # pre-rotation epoch (unchanged).
+        assert log_path.read_text().count("\n") == 3
+        assert prev_path.stat().st_size == ccm_core.ERRORS_LOG_MAX_BYTES + 1
+
+
+class TestCmdErrors:
+    """`ccm errors [--clear]` reads the silent-exception log."""
+
+    def test_no_log_prints_friendly_message(self, tmp_path, capsys):
+        log_path = tmp_path / "errors.log"
+        prev_path = tmp_path / "errors.log.1"
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)), \
+                patch.object(ccm_core, "CCM_ERRORS_LOG_PREV", str(prev_path)):
+            ccm_core.cmd_errors([])
+        out = capsys.readouterr().out
+        assert "No silent-caught errors logged." in out
+
+    def test_prints_records_in_chronological_order(self, tmp_path, capsys):
+        log_path = tmp_path / "errors.log"
+        prev_path = tmp_path / "errors.log.1"
+        prev_path.write_text(json.dumps({
+            "ts": 1000, "scope": "older_scope",
+            "type": "ValueError", "msg": "older",
+            "traceback": "  File 'x', line 1\n    foo\n",
+        }) + "\n")
+        log_path.write_text(json.dumps({
+            "ts": 2000, "scope": "newer_scope",
+            "type": "RuntimeError", "msg": "newer",
+            "traceback": "",
+        }) + "\n")
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)), \
+                patch.object(ccm_core, "CCM_ERRORS_LOG_PREV", str(prev_path)):
+            ccm_core.cmd_errors([])
+        out = capsys.readouterr().out
+        # Older first
+        assert out.find("older_scope") < out.find("newer_scope")
+        assert "ValueError: older" in out
+        assert "RuntimeError: newer" in out
+        # Indented traceback line
+        assert "    File 'x', line 1" in out
+
+    def test_clear_removes_both_files(self, tmp_path, capsys):
+        log_path = tmp_path / "errors.log"
+        prev_path = tmp_path / "errors.log.1"
+        log_path.write_text("garbage")
+        prev_path.write_text("garbage")
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)), \
+                patch.object(ccm_core, "CCM_ERRORS_LOG_PREV", str(prev_path)):
+            ccm_core.cmd_errors(["--clear"])
+        assert not log_path.exists()
+        assert not prev_path.exists()
+        assert "cleared" in capsys.readouterr().out.lower()
+
+    def test_malformed_lines_skipped(self, tmp_path, capsys):
+        log_path = tmp_path / "errors.log"
+        prev_path = tmp_path / "errors.log.1"
+        log_path.write_text(
+            "not-json\n"
+            + json.dumps({"ts": 1, "scope": "ok", "type": "X", "msg": "y"}) + "\n"
+        )
+        with patch.object(ccm_core, "CCM_ERRORS_LOG", str(log_path)), \
+                patch.object(ccm_core, "CCM_ERRORS_LOG_PREV", str(prev_path)):
+            ccm_core.cmd_errors([])
+        out = capsys.readouterr().out
+        assert "X: y" in out
+        # No traceback raised, no failure to print the well-formed record.
 
 
 class TestBuildProjectListIsolation:

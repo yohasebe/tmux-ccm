@@ -445,7 +445,10 @@ def md5_hash(s):
 # loop cannot exhaust disk.
 
 CCM_ERRORS_LOG = os.path.join(CCM_TMP_DIR, "errors.log")
-ERRORS_LOG_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
+CCM_ERRORS_LOG_PREV = CCM_ERRORS_LOG + ".1"
+ERRORS_LOG_MAX_BYTES = int(
+    os.environ.get("CCM_ERRORS_LOG_MAX_BYTES", str(1 * 1024 * 1024))
+)
 
 
 def log_caught_exception(scope: str) -> None:
@@ -455,6 +458,13 @@ def log_caught_exception(scope: str) -> None:
     `sys.exc_info()`. `scope` identifies the call site so the log
     distinguishes "every project breaks" from "one project breaks"
     (e.g. `"inject_status"`, `"build_project_list[my-project]"`).
+
+    Rotation: when the active log reaches `ERRORS_LOG_MAX_BYTES`
+    it is renamed to `<log>.1` and a fresh log starts. Total disk
+    use is bounded at 2 × cap (~2 MB by default). The previous
+    epoch is preserved so a regression that fills the log with
+    fast-firing repeats does not erase the original cause.
+    Tunable via `CCM_ERRORS_LOG_MAX_BYTES`.
 
     Best-effort: a failure to write the log is itself swallowed,
     because turning a survivable detection error into a fatal one
@@ -470,7 +480,10 @@ def log_caught_exception(scope: str) -> None:
         except OSError:
             size = 0
         if size >= ERRORS_LOG_MAX_BYTES:
-            return  # Cap reached; further writes silently dropped.
+            try:
+                os.replace(CCM_ERRORS_LOG, CCM_ERRORS_LOG_PREV)
+            except OSError:
+                pass
         record = {
             "ts": int(time.time()),
             "scope": scope,
@@ -2207,6 +2220,7 @@ from ccm_commands import (  # noqa: E402
     cmd_attach,
     cmd_capture,
     cmd_debug_trace,
+    cmd_errors,
     cmd_list,
     cmd_open,
     cmd_register,
@@ -2288,6 +2302,10 @@ if __name__ == "__main__":
         cmd_snapshot_delete(args[0] if args else "")
     elif cmd == "reset-window":
         cmd_reset_window()
+    elif cmd == "errors":
+        # `ccm errors [--clear]` — view the silent-exception log.
+        # See `log_caught_exception` for what this records.
+        cmd_errors(args)
     elif cmd == "clear-notifications":
         # `ccm clear-notifications` — remove only ccm-prefixed
         # notifications from macOS Notification Center. Other

@@ -29,6 +29,7 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 # `ccm_core` is imported for its (mockable) helpers AND for the runtime
 # constants the test suite mutates. See module docstring.
@@ -879,6 +880,69 @@ def cmd_reset_window():
     win_idx = ccm_core.tmux_cmd("display-message", "-p", "#{window_index}")
     if session_name and win_idx:
         ccm_core.reset_window_after_attach(f"{session_name}:{win_idx}")
+
+
+def cmd_errors(args):
+    """`ccm errors [--clear]` — show or clear the silent-exception log.
+
+    Reads `$TMPDIR/ccm-$UID/errors.log` (and `errors.log.1` if a
+    rotation occurred), prints one human-readable line per record
+    plus the traceback. With `--clear`, deletes both files.
+
+    The log itself is written by `ccm_core.log_caught_exception`
+    every time an inject_status / dashboard / build_project_list
+    silent-catch barrier fires. An empty log means detection has
+    been running cleanly.
+    """
+    if args and args[0] == "--clear":
+        cleared = 0
+        for path in (ccm_core.CCM_ERRORS_LOG, ccm_core.CCM_ERRORS_LOG_PREV):
+            try:
+                os.unlink(path)
+                cleared += 1
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                ccm_core.ccm_warn(f"Failed to remove {path}: {e}")
+        ccm_core.ccm_info(
+            f"Errors log cleared ({cleared} file(s) removed)"
+        )
+        return
+
+    # Read previous epoch first, then current — chronological order.
+    paths = [ccm_core.CCM_ERRORS_LOG_PREV, ccm_core.CCM_ERRORS_LOG]
+    found_any = False
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError as e:
+            ccm_core.ccm_warn(f"Failed to read {path}: {e}")
+            continue
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # malformed line; skip
+            found_any = True
+            ts = rec.get("ts", 0)
+            try:
+                when = (datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+                        if ts else "?")
+            except (ValueError, OSError):
+                when = "?"
+            print(f"{when}  [{rec.get('scope', '?')}]  "
+                  f"{rec.get('type', '')}: {rec.get('msg', '')}")
+            tb = rec.get("traceback", "")
+            for tb_line in tb.splitlines():
+                print(f"    {tb_line}")
+    if not found_any:
+        print("No silent-caught errors logged.")
 
 
 def cmd_debug_trace(project_match, interval=0.3):
