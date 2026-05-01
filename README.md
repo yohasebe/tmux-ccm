@@ -20,7 +20,7 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 - **Dashboard** — Interactive popup with real-time Claude Code status (BUSY / IDLE / PERMIT)
 - **Tree View** — Hierarchical session/window/pane display with navigation
 - **Git Integration** — Branch name and dirty status (`main*`) per project
-- **Port Detection** — Listening TCP ports per project (with caching)
+- **Port Detection** — Listening TCP ports per project
 - **Snapshots** — Save and restore project layouts as JSON
 - **Auto-start** — Claude Code auto-launches when switching to a SHELL-state window
 - **Status Line** — Inject active project status into tmux status bar
@@ -28,12 +28,12 @@ ccm is a tmux plugin that manages Claude Code sessions as tmux windows — with 
 
 ## Requirements
 
-- tmux 3.2+ (popup support required)
-- Python 3.9+ (standard on macOS and most Linux distributions)
-- [TPM](https://github.com/tmux-plugins/tpm) (for plugin installation; or use manual install)
+- tmux 3.2+
+- Python 3.9+
+- [TPM](https://github.com/tmux-plugins/tpm) (or manual install)
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 or later required**. ccm registers the `elicitation_dialog` Notification matcher for MCP elicitation prompts; older clients reject it. `ccm setup-hooks` checks `claude --version` and refuses to install on older versions
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107+**
 
 ## Installation
 
@@ -178,7 +178,7 @@ If you cannot install `terminal-notifier` and notice the accumulation problem, s
 
 #### Linux — `notify-send`
 
-ccm uses `notify-send` (libnotify) on Linux. Most distributions ship it; if your minimal install does not, your DE will pull it in along with a notification daemon. There is no per-project dedup equivalent of macOS's `-group`, so long-running multi-project sessions will accumulate notifications. The same `@ccm-notify "permit"` workaround applies — pin to PERMIT-only to keep volume low.
+ccm uses `notify-send` on Linux. There is no per-project dedup equivalent of macOS's `-group`, so set `@ccm-notify "permit"` to limit volume on long-running sessions.
 
 `ccm clear-notifications` is macOS-only; on Linux there is no command-line API to enumerate or remove existing notifications, so the command reports "terminal-notifier is not installed" and exits.
 
@@ -196,7 +196,7 @@ set -g @ccm-status-line 2     # default
 | `1` | Full | Replaces window list with ccm-style colored entries |
 | `2` | Dedicated line (default) | Adds dedicated status line(s) below the main bar with branch / port details for all projects |
 
-Mode 2 is the default because installing ccm signals "I want to track Claude Code state continuously"; a dedicated row makes that state visible at a glance without needing to open the dashboard. Mode 0 is the fallback for users who prefer the most conservative integration with their existing tmux theme.
+Mode 2 is the default. Mode 0 is the most conservative choice if you want to leave your existing tmux theme untouched.
 
 #### Mode 0 — Icon with indices
 
@@ -254,7 +254,7 @@ set -g @ccm-status-fg         "#9E9E9E"   # default foreground
 set -g @ccm-status-fg-dim     "#5a5a5a"   # separators / hints
 ```
 
-Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named colours (`red`, `blue`, `default`, …). Invalid values silently fall back to the default rather than producing a malformed status bar.
+Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named colours (`red`, `blue`, `default`, …). Invalid values fall back to the default.
 
 > [!NOTE]
 > Mode 2 uses additional `status-format` slots (one gutter row plus one row per layout line, up to slot 16). If other plugins also use those indices, conflicts may occur.
@@ -341,12 +341,12 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
-ccm has multiple hook-independent fallbacks so detection still works when Claude Code stops firing hooks mid-session ([anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047), [#25655](https://github.com/anthropics/claude-code/issues/25655)):
+ccm has hook-independent fallbacks so detection keeps working when Claude Code stops firing hooks mid-session:
 
-- **JSONL session log heartbeat**: ccm reads the timestamp of the most recent **user/assistant record** in the project's newest `~/.claude/projects/<slug>/<sessionId>.jsonl` file. Claude Code housekeeping records (`system/away_summary`, `system/turn_duration`, `attachment/task_reminder`, etc.) are filtered out, so recap generation and other internal events do not register as fresh activity. A real user/assistant record within the freshness window is positive evidence the session is alive.
-- **Process grandchild detection**: A grandchild process under `claude` (e.g. `claude → bash → xcodebuild`) is unambiguous evidence that a foreground tool is running, even if the input prompt is visible (the v2.1+ "ctrl+b ctrl+b to background" UI).
-- **Permission dialog footer match**: ccm recognizes the permission footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) directly from the visible pane.
-- **`~/.claude/hooks.log` size canary**: ccm warns in `ccm status` and the dashboard footer when this file exceeds 100 MB — the documented root cause of #16047 is silent hook failure due to log bloat. The fix is `: > ~/.claude/hooks.log`.
+- **JSONL session-log heartbeat**: a fresh user/assistant record in the project's `~/.claude/projects/.../jsonl` confirms the session is alive (housekeeping records are filtered out).
+- **Process grandchild detection**: a grandchild under `claude` (e.g. `claude → bash → xcodebuild`) means a tool is running.
+- **Permission dialog footer match**: the permission footer (`Esc to cancel · Tab to amend`) is detected directly from the visible pane.
+- **`~/.claude/hooks.log` size canary**: ccm warns when this file exceeds 100 MB — a known cause of silent hook failure. Clear it with `: > ~/.claude/hooks.log`.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
@@ -462,8 +462,6 @@ tmux switch-client -t oss      # Standard tmux session switching
 - Claude Code state is detected via hook signals + process tree inspection (with prompt pattern matching as supplement)
 - Completion marker (`* <elapsed>`) is shown for 30s after BUSY/PERMIT → IDLE transitions
 - Works with any tmux theme — ccm auto-detects theme changes to status-right
-- Git branch and port info are cached (30s) to minimize overhead
-- Popup session context is passed via temp file (`$TMPDIR/ccm-$UID/`)
 
 ## Uninstall
 

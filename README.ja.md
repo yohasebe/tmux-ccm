@@ -20,7 +20,7 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 - **ダッシュボード** — Claude Codeの状態（BUSY / IDLE / PERMIT）をリアルタイム表示するインタラクティブポップアップ
 - **ツリービュー** — セッション/ウィンドウ/ペインの階層表示とナビゲーション
 - **Git連携** — プロジェクトごとのブランチ名とdirty状態（`main*`）の表示
-- **ポート検出** — プロジェクトごとのリスニングTCPポートの自動検出（キャッシュ付き）
+- **ポート検出** — プロジェクトごとのリスニングTCPポートの自動検出
 - **スナップショット** — プロジェクトレイアウトのJSON保存・復元
 - **自動起動** — SHELL状態のウィンドウに切り替えるとClaude Codeを自動起動
 - **ステータスライン** — アクティブプロジェクトの状態をtmuxステータスバーに表示
@@ -28,12 +28,12 @@ ccmはClaude Codeセッションをtmuxウィンドウとして管理するtmux�
 
 ## 動作要件
 
-- tmux 3.2+（popup対応）
-- Python 3.9+（macOSおよび主要なLinuxディストリビューションに標準搭載）
-- [TPM](https://github.com/tmux-plugins/tpm)（プラグインインストール用。手動インストールも可）
+- tmux 3.2+
+- Python 3.9+
+- [TPM](https://github.com/tmux-plugins/tpm)（手動インストールも可）
 - jq
 - fzf
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — **v2.1.107 以上が必須**。ccm は MCP elicitation 用の `elicitation_dialog` Notification matcher を登録しますが、古いバージョンはこれを受け付けません。`ccm setup-hooks` は `claude --version` を確認し、古いバージョンでは installation を拒否します
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107 以上**
 
 ## インストール
 
@@ -178,7 +178,7 @@ ccm clear-notifications
 
 #### Linux — `notify-send`
 
-Linux では ccm は `notify-send`（libnotify）を使用します。多くのディストリビューションには標準で入っていますが、最小構成で含まれていない場合はデスクトップ環境が通知デーモンと一緒に取り込みます。macOS の `-group` のようなプロジェクト単位の重複防止機構は無いため、長時間のマルチプロジェクト運用では通知が蓄積します。`@ccm-notify "permit"` に設定して PERMIT 通知のみに絞るワークアラウンドが有効です。
+Linux では `notify-send` を使用します。macOS の `-group` のようなプロジェクト単位の重複防止機構は無いため、長時間運用時は `@ccm-notify "permit"` に設定して通知量を抑えてください。
 
 `ccm clear-notifications` は macOS 専用です。Linux には既存通知を一覧/削除するコマンドラインAPIがないため、コマンドは「terminal-notifier is not installed」と表示して終了します。
 
@@ -196,7 +196,7 @@ set -g @ccm-status-line 2     # デフォルト
 | `1` | 全表示 | ウィンドウリストを ccm 形式の色付きエントリに置換 |
 | `2` | 専用行（デフォルト） | メインバー下に専用行を追加し、全プロジェクトをブランチ・ポート情報付きで表示 |
 
-ccm をインストールするのは「Claude Code 状態を常時追跡したい」という宣言なので、ダッシュボードを開かずとも状態が一目で分かる **モード 2 をデフォルト** にしています。既存テーマと最も保守的に共存したい場合はモード 0 を選択してください。
+**モード 2 がデフォルト**。既存の tmux テーマをそのまま残したい場合はモード 0 が最も保守的な選択です。
 
 #### モード0 — アイコン＋ウィンドウ番号
 
@@ -254,7 +254,7 @@ set -g @ccm-status-fg         "#9E9E9E"   # デフォルト前景色
 set -g @ccm-status-fg-dim     "#5a5a5a"   # 区切り記号やヒント表示
 ```
 
-受理される値: 16 進カラー (`#RGB` / `#RRGGBB`)、`colour123` 形式のパレットインデックス、または名前付きカラー (`red` / `blue` / `default` 等)。無効な値はデフォルトに静かにフォールバックするので、誤入力でステータスバーが破綻することはありません。
+受理される値: 16 進カラー (`#RGB` / `#RRGGBB`)、`colour123` 形式のパレットインデックス、または名前付きカラー (`red` / `blue` / `default` 等)。無効な値はデフォルトにフォールバックします。
 
 > [!NOTE]
 > モード2は追加の `status-format` スロット（1行のガター + レイアウト1行ごとに1スロット、最大 16）を使用します。他のプラグインがこれらのインデックスを使用している場合、衝突が発生する可能性があります。
@@ -343,12 +343,12 @@ ccm setup-hooks
 - **SessionEnd** → セッション終了時にSHELL（/exit、Ctrl+D等）
 - **PermissionDenied** → autoモードで拒否時にPERMIT（`/permissions`で再試行）
 
-ccm は Claude Code がセッション途中でフック発火を停止する既知の不具合（[anthropics/claude-code#16047](https://github.com/anthropics/claude-code/issues/16047)、[#25655](https://github.com/anthropics/claude-code/issues/25655)）に備えて、複数のフック非依存フォールバックを実装しています:
+ccm はフック非依存のフォールバックを備えており、Claude Code がセッション途中でフック発火を停止しても検出が継続します:
 
-- **JSONL セッションログ心拍**: プロジェクトの最新 `~/.claude/projects/<slug>/<sessionId>.jsonl` ファイルから、最新の **user/assistant レコード** の timestamp を読み取る。Claude Code housekeeping レコード（`system/away_summary`、`system/turn_duration`、`attachment/task_reminder` 等）はフィルタされるため、recap 生成等の内部イベントが偽の活動として検出されない。実 user/assistant レコードが freshness window 以内ならセッションがアクティブな証拠
-- **プロセス孫検出**: `claude` の孫プロセス（例: `claude → bash → xcodebuild`）が存在すれば、入力プロンプトが見えていてもフォアグラウンドツール実行中とみなして BUSY 判定（v2.1+ の「ctrl+b ctrl+b で background」UI 対応）
-- **許可ダイアログのフッター検出**: 許可フッター（`Esc to cancel · Tab to amend · ctrl+e to explain`）をペインから直接検出
-- **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えるとフック書き込みが silent fail するため、`ccm status` とダッシュボードに警告表示。修復: `: > ~/.claude/hooks.log`
+- **JSONL セッションログ心拍**: プロジェクトの最新 `~/.claude/projects/.../jsonl` に user/assistant レコードがあればセッション稼働中の証拠（housekeeping レコードは除外）
+- **プロセス孫検出**: `claude` の孫プロセス（例: `claude → bash → xcodebuild`）の存在はツール実行中を示す
+- **許可ダイアログのフッター検出**: 許可フッター（`Esc to cancel · Tab to amend`）をペインから直接検出
+- **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えると silent fail の原因になるため警告表示。修復: `: > ~/.claude/hooks.log`
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
@@ -464,8 +464,6 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
 - Claude Codeの状態はフック信号＋プロセスツリー検査で検出（プロンプトパターンマッチも補助的に使用）
 - 完了マーカー（`* <elapsed>`）はBUSY/PERMIT → IDLE遷移後に30秒間表示
 - tmuxテーマとの併用に対応（status-rightの変更を自動検出）
-- gitブランチとポート情報は30秒キャッシュで負荷軽減
-- ポップアップ内のセッション検出は一時ファイル（`$TMPDIR/ccm-$UID/`）経由
 
 ## アンインストール
 
