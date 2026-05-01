@@ -2075,6 +2075,115 @@ class TestFormatDir:
     def test_returns_empty_when_too_narrow(self):
         assert ccm_core.format_dir("/some/path", 75, 80) == ""
 
+    def test_japanese_dir_uses_display_width(self):
+        # "日本" + "/" + "プロジェクト" = (4 + 1 + 12) = 17 cols.
+        # If `format_dir` mistakenly used `len()` (= 9 codepoints) it
+        # would think the path fit at avail=10 and render it
+        # mid-overflow. Display-width-based check rejects it.
+        d = "/日本/プロジェクト"  # 18 cols
+        # avail = cols(20) - prefix_len(0) - 4 = 16 cols
+        result = ccm_core.format_dir(d, 0, 20)
+        # Either a truncated form or empty; never the full string,
+        # which would not fit.
+        assert result != d
+        assert ccm_core.display_width(result) <= 16
+
+
+class TestDisplayWidth:
+    """`display_width` is the single source of truth for terminal
+    column counts of strings containing CJK / emoji / combining
+    marks. Used by every column-alignment site in dashboard, status
+    bar, and `format_dir`."""
+
+    def test_ascii(self):
+        assert ccm_core.display_width("hello") == 5
+
+    def test_empty(self):
+        assert ccm_core.display_width("") == 0
+
+    def test_cjk(self):
+        assert ccm_core.display_width("日本語") == 6  # 3 wide chars
+
+    def test_korean(self):
+        assert ccm_core.display_width("한글") == 4
+
+    def test_chinese(self):
+        assert ccm_core.display_width("中文") == 4
+
+    def test_emoji_wide(self):
+        assert ccm_core.display_width("🚀") == 2
+
+    def test_combining_mark_zero_width(self):
+        # "é" as a + COMBINING ACUTE: width 1, not 2
+        assert ccm_core.display_width("é") == 1
+
+    def test_zwj_zero_width(self):
+        # ZWJ between two ASCII chars adds nothing
+        assert ccm_core.display_width("a‍b") == 2
+
+    def test_mixed(self):
+        assert ccm_core.display_width("ab日c") == 5  # 1+1+2+1
+
+
+class TestTruncateToWidth:
+    def test_no_truncation_needed(self):
+        assert ccm_core.truncate_to_width("abc", 10) == "abc"
+
+    def test_ascii_truncation(self):
+        assert ccm_core.truncate_to_width("abcdef", 3) == "abc"
+
+    def test_zero_width_returns_empty(self):
+        assert ccm_core.truncate_to_width("anything", 0) == ""
+
+    def test_negative_width_returns_empty(self):
+        assert ccm_core.truncate_to_width("anything", -1) == ""
+
+    def test_cjk_boundary_keeps_whole_chars(self):
+        # "日本語" = 6 cols. With max=5, "日本" (4) fits, "語" (2)
+        # would push to 6, so we stop. Never returns half a glyph.
+        result = ccm_core.truncate_to_width("日本語", 5)
+        assert result == "日本"
+        assert ccm_core.display_width(result) <= 5
+
+    def test_cjk_exact(self):
+        assert ccm_core.truncate_to_width("日本語", 6) == "日本語"
+
+    def test_combining_mark_kept_with_base(self):
+        # Truncating "éf" to width 1 should keep "é"
+        # (the combining mark attaches to the preceding base char).
+        result = ccm_core.truncate_to_width("éf", 1)
+        assert result == "é"
+
+
+class TestPadToWidth:
+    """`pad_to_width` is the CJK-safe replacement for the f-string
+    `<N` spec. CLI tables (`ccm status`, `ccm list`, `ccm ports`,
+    `ccm snapshot list`) use it so column alignment survives
+    Japanese / emoji project names."""
+
+    def test_ascii_pads_to_width(self):
+        assert ccm_core.pad_to_width("abc", 5) == "abc  "
+
+    def test_already_at_width(self):
+        assert ccm_core.pad_to_width("hello", 5) == "hello"
+
+    def test_overlong_returned_unchanged(self):
+        # Same as f-string `<` spec: longer-than-target strings pass
+        # through unchanged. Callers that need truncation use
+        # `truncate_to_width` first.
+        assert ccm_core.pad_to_width("toolong", 3) == "toolong"
+
+    def test_cjk_pads_by_columns_not_codepoints(self):
+        # `len("日本") == 2` but visible width is 4 cols. f-string
+        # `<10` would pad with 8 spaces (total visible width 12);
+        # `pad_to_width` pads with 6 spaces (total visible width 10).
+        result = ccm_core.pad_to_width("日本", 10)
+        assert ccm_core.display_width(result) == 10
+
+    def test_emoji_pads_by_columns(self):
+        result = ccm_core.pad_to_width("🚀", 5)
+        assert ccm_core.display_width(result) == 5
+
 
 class TestPrintStatus:
     """Capture-stdout tests for the `ccm status` CLI rendering.

@@ -58,7 +58,7 @@ def acquire_lockfile():
     lockfile = os.path.join(CCM_TMP_DIR, "inject.lock")
     os.makedirs(CCM_TMP_DIR, exist_ok=True)
 
-    fd = open(lockfile, "w")
+    fd = open(lockfile, "w", encoding="utf-8")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (IOError, OSError):
@@ -253,7 +253,7 @@ def _inject_status_impl():
     dashboard_running = False
     if os.path.exists(dash_pidfile):
         try:
-            dash_pid = int(open(dash_pidfile).read().strip())
+            dash_pid = int(open(dash_pidfile, encoding="utf-8").read().strip())
             os.kill(dash_pid, 0)
             dashboard_running = True
         except (ProcessLookupError, ValueError, PermissionError, OSError):
@@ -288,7 +288,7 @@ def _inject_status_impl():
     prev_states = {}
     try:
         if os.path.exists(notify_cache):
-            with open(notify_cache) as f:
+            with open(notify_cache, encoding="utf-8") as f:
                 for line in f:
                     parts = line.strip().split("\t", 1)
                     if len(parts) == 2:
@@ -324,7 +324,7 @@ def _inject_status_impl():
     # a notification — we prefer silence to a late, misleading ping.
     try:
         tmp = notify_cache + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             for p in projects:
                 f.write(f"{p.win_target}\t{p.state}\n")
                 prev = prev_states.get(p.win_target, "")
@@ -363,7 +363,7 @@ def _inject_status_impl():
     prev_status = ""
     try:
         if os.path.exists(cache_file):
-            with open(cache_file) as f:
+            with open(cache_file, encoding="utf-8") as f:
                 prev_status = f.read()
     except OSError:
         pass
@@ -645,7 +645,7 @@ def _cleanup_mode02():
 def _touch_mode2_marker():
     marker = os.path.join(CCM_TMP_DIR, "mode2-active")
     try:
-        open(marker, "a").close()
+        open(marker, "a", encoding="utf-8").close()
     except OSError:
         pass
 
@@ -665,7 +665,7 @@ def _extend_status_right_length(original, factor=1, minimum=0, extra=0):
 def _write_cache(cache_file, content):
     try:
         tmp = cache_file + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(content)
         os.replace(tmp, cache_file)
     except OSError:

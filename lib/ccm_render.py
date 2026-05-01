@@ -12,8 +12,71 @@ from __future__ import annotations
 
 import os
 import time
+import unicodedata
 
 import ccm_core
+
+
+# ─── Display width (terminal column count) ───
+# `len(s)` returns codepoint count, which mismatches the actual
+# column width of a string in a monospace terminal:
+#   - CJK ideographs and most emoji ("W"/"F" East Asian Width) take 2.
+#   - Combining marks ("Mn"/"Me") and zero-width formatters ("Cf",
+#     e.g. ZWJ/ZWNJ) take 0.
+# Column alignment (dashboard list, status bar, directory truncation)
+# needs the terminal width. Edge cases like grapheme clusters and
+# regional-indicator flag sequences are not perfectly Unicode-spec
+# correct here, but match what every common monospace terminal
+# actually renders. The alternative — pulling in the `wcwidth`
+# package — adds a runtime dependency for a tmux plugin, which
+# we deliberately avoid.
+
+def display_width(s: str) -> int:
+    """Return the terminal column count of `s`."""
+    if not s:
+        return 0
+    width = 0
+    for c in s:
+        cat = unicodedata.category(c)
+        if cat in ("Mn", "Me", "Cf"):
+            continue
+        if unicodedata.east_asian_width(c) in ("W", "F"):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def truncate_to_width(s: str, max_width: int) -> str:
+    """Truncate `s` so its `display_width` does not exceed `max_width`.
+    Wide chars are kept whole — never sliced mid-character — so a
+    string starting with a CJK char being squeezed into 1 column
+    returns the empty string rather than half a glyph."""
+    if max_width <= 0:
+        return ""
+    width = 0
+    out = []
+    for c in s:
+        cat = unicodedata.category(c)
+        if cat in ("Mn", "Me", "Cf"):
+            out.append(c)
+            continue
+        cw = 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
+        if width + cw > max_width:
+            break
+        out.append(c)
+        width += cw
+    return "".join(out)
+
+
+def pad_to_width(s: str, width: int) -> str:
+    """Right-pad `s` with spaces so its `display_width` equals `width`.
+    Use this in CLI table formatters instead of the f-string `<N`
+    spec, which pads by codepoint count and silently misaligns
+    columns the moment a CJK or emoji character appears in the
+    field. Wider-than-`width` strings are returned unchanged."""
+    pad = width - display_width(s)
+    return s + " " * pad if pad > 0 else s
 from ccm_core import (
     JSONL_HOOK_GAP_TOLERANCE,
     STATE_ICONS,
@@ -104,14 +167,14 @@ def format_dir(directory, prefix_len, cols):
     avail = cols - prefix_len - 4
     if avail < 10:
         return ""
-    if len(d) <= avail:
+    if display_width(d) <= avail:
         return d
     base = os.path.basename(d)
     parent = os.path.basename(os.path.dirname(d))
     short = f"…/{parent}/{base}"
-    if len(short) <= avail:
+    if display_width(short) <= avail:
         return short
-    if len(base) <= avail:
+    if display_width(base) <= avail:
         return base
     return ""
 
@@ -171,12 +234,16 @@ def print_status():
         ports = p.ports or "-"
         d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
         # ANSI codes inflate len() past visible width; reserve the
-        # extra characters in the format spec so columns still
-        # line up.
+        # extra characters in the format spec so columns still line
+        # up. CJK / emoji project names need `pad_to_width` (terminal
+        # columns) instead of the f-string `<N` spec (codepoint
+        # count); otherwise a name like `日本語` would be padded by 17
+        # spaces under `<20` and overflow the column by 6 columns.
         status_w = 22 + len(suffix)
-        name_w = 20 + (len(pane_marker) - pane_marker_visible_w if pane_marker else 0)
-        name_field = f"{p.name}{pane_marker}"
-        print(f"{status:<{status_w}} {name_field:<{name_w}} {branch:<16} {ports:<12} {d}")
+        name_pad_w = max(0, 20 - pane_marker_visible_w - display_width(p.name))
+        name_field = f"{p.name}{pane_marker}{' ' * name_pad_w}"
+        print(f"{status:<{status_w}} {name_field} "
+              f"{pad_to_width(branch, 16)} {pad_to_width(ports, 12)} {d}")
 
 
 def print_ports():
@@ -192,7 +259,7 @@ def print_ports():
     for p in projects:
         ports = p.ports or "-"
         d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
-        print(f"{p.name:<20} {ports:<16} {d}")
+        print(f"{pad_to_width(p.name, 20)} {pad_to_width(ports, 16)} {d}")
 
 
 def print_tree():

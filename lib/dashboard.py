@@ -4,6 +4,7 @@
 import contextlib
 import curses
 import io
+import locale
 import os
 import platform
 import re
@@ -14,6 +15,17 @@ import threading
 import time
 import unicodedata
 
+# curses + wide characters require an initialized locale. Without
+# this call, ncurses falls back to single-byte mode and `addstr`
+# can raise OverflowError or render mojibake when the user has a
+# Japanese / emoji project name. Calling at import time is safe —
+# `setlocale("")` reads LC_ALL/LC_CTYPE/etc. from the environment
+# and is a no-op when already set.
+try:
+    locale.setlocale(locale.LC_ALL, "")
+except locale.Error:
+    pass
+
 # Add lib dir to path for ccm_core import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ccm_core import (
@@ -23,6 +35,7 @@ from ccm_core import (
     tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
     read_cache_file, build_project_list, format_elapsed, format_dir,
     signal_age_suffix,
+    display_width, truncate_to_width,
     hooks_configured, hooks_log_warning, disable_all_hooks_warning,
     managed_hooks_only_warning, shell_cluster_warnings,
     reset_window_after_attach,
@@ -398,7 +411,7 @@ class Dashboard:
                     pos = m.end()
                 else:
                     ch = line[pos]
-                    ch_w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+                    ch_w = display_width(ch)
                     if display_used + ch_w > max_w:
                         break
                     try:
@@ -441,7 +454,7 @@ class Dashboard:
                     pos = m.end()
                 else:
                     ch = line[pos]
-                    ch_w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+                    ch_w = display_width(ch)
                     if display_used + ch_w > max_w:
                         break
                     try:
@@ -600,17 +613,22 @@ class Dashboard:
                             elapsed_str = format_elapsed(proj.completed_at) or ""
                     suffix_str = signal_age_suffix(proj.dir, proj.state).strip()
                     pane_marker = f"[{proj.pane_count}]" if proj.pane_count > 1 else ""
+                    # All width calculations go through `display_width`
+                    # (terminal columns), not `len` (codepoints). Names
+                    # and branches can contain CJK / emoji; mixing the
+                    # two would silently misalign as soon as a wide
+                    # character appears.
                     if pane_marker:
-                        pieces.append(len(pane_marker))
+                        pieces.append(display_width(pane_marker))
                     if elapsed_str:
                         # "* " (2) + elapsed
-                        pieces.append(2 + len(elapsed_str))
+                        pieces.append(2 + display_width(elapsed_str))
                     if suffix_str:
-                        pieces.append(len(suffix_str))
+                        pieces.append(display_width(suffix_str))
                     elif proj.bg_active:
-                        pieces.append(len("(bg)"))
+                        pieces.append(display_width("(bg)"))
                     if proj.branch:
-                        pieces.append(len(proj.branch) + 2)
+                        pieces.append(display_width(proj.branch) + 2)
                     cluster_w = (
                         1 + sum(pieces) + (len(pieces) - 1)
                         if pieces else 0
@@ -628,7 +646,7 @@ class Dashboard:
                 # before the path column; rows with the worst-case
                 # cluster get exactly one space before the path.
                 COL_DIR = COL_NAME + max(
-                    (len(p.name) + a["cluster_w"]
+                    (display_width(p.name) + a["cluster_w"]
                      for p, a in zip(projects, annotations)),
                     default=0,
                 ) + 1
@@ -666,7 +684,7 @@ class Dashboard:
                     # markers ([N] for panes, * for completion)
                     # avoid font/terminal width ambiguity that
                     # would offset later columns.
-                    col = COL_NAME + len(p.name) + 1
+                    col = COL_NAME + display_width(p.name) + 1
 
                     # Pane-count marker [N]: brackets dim, number
                     # cyan to draw the eye to the count.
@@ -674,8 +692,8 @@ class Dashboard:
                         n = str(p.pane_count)
                         self._addstr(stdscr, y, col, "[", curses.color_pair(C_DIM))
                         self._addstr(stdscr, y, col + 1, n, curses.color_pair(C_CYAN))
-                        self._addstr(stdscr, y, col + 1 + len(n), "]", curses.color_pair(C_DIM))
-                        col += len(ann["pane_marker"]) + 1
+                        self._addstr(stdscr, y, col + 1 + display_width(n), "]", curses.color_pair(C_DIM))
+                        col += display_width(ann["pane_marker"]) + 1
 
                     # Completion marker "* elapsed": asterisk
                     # green to flag a freshly-finished response,
@@ -685,7 +703,7 @@ class Dashboard:
                                      curses.color_pair(C_COMPLETED))
                         self._addstr(stdscr, y, col + 1, " " + ann["elapsed"],
                                      curses.color_pair(C_DIM))
-                        col += 2 + len(ann["elapsed"]) + 1
+                        col += 2 + display_width(ann["elapsed"]) + 1
 
                     # Stale-signal age (BUSY/PERMIT) or
                     # background-activity (IDLE) — disjoint, shared
@@ -693,7 +711,7 @@ class Dashboard:
                     if ann["suffix"]:
                         self._addstr(stdscr, y, col, ann["suffix"],
                                      curses.color_pair(C_DIM))
-                        col += len(ann["suffix"]) + 1
+                        col += display_width(ann["suffix"]) + 1
                     elif p.bg_active:
                         self._addstr(stdscr, y, col, "(bg)",
                                      curses.color_pair(C_DIM))
@@ -705,9 +723,9 @@ class Dashboard:
                                      curses.color_pair(C_DIM))
                         self._addstr(stdscr, y, col + 1, p.branch,
                                      curses.color_pair(C_CYAN))
-                        self._addstr(stdscr, y, col + 1 + len(p.branch), ")",
+                        self._addstr(stdscr, y, col + 1 + display_width(p.branch), ")",
                                      curses.color_pair(C_DIM))
-                        col += len(p.branch) + 3
+                        col += display_width(p.branch) + 3
 
                     # Directory at fixed COL_DIR so the path
                     # column is vertically aligned across rows
@@ -793,14 +811,6 @@ class Dashboard:
             pass
 
     @staticmethod
-    def _display_width(text):
-        """Calculate display width accounting for wide (CJK) characters."""
-        w = 0
-        for c in text:
-            w += 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
-        return w
-
-    @staticmethod
     def _strip_last_grapheme(text):
         """Remove the last user-perceived character (grapheme cluster).
 
@@ -823,17 +833,6 @@ class Dashboard:
                 continue
             break
         return text[:i]
-
-    @staticmethod
-    def _truncate_to_width(text, max_width):
-        """Truncate text to fit within max_width display columns."""
-        w = 0
-        for i, c in enumerate(text):
-            cw = 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
-            if w + cw > max_width:
-                return text[:i]
-            w += cw
-        return text
 
     def _render_help_line(self, stdscr, y, x, text):
         """Render help text with [key] portions highlighted."""
@@ -870,7 +869,7 @@ class Dashboard:
             avail = effective_max - x - 1
             if avail <= 0:
                 return
-            clipped = self._truncate_to_width(text, avail)
+            clipped = truncate_to_width(text, avail)
             stdscr.addstr(y, x, clipped, attr)
         except curses.error:
             pass
@@ -959,7 +958,7 @@ class Dashboard:
             cmd_snapshot_save(name, quiet=True)
             try:
                 import json
-                with open(os.path.join(CCM_SNAPSHOT_DIR, f"{name}.json")) as f:
+                with open(os.path.join(CCM_SNAPSHOT_DIR, f"{name}.json"), encoding="utf-8") as f:
                     count = len(json.load(f).get("projects", []))
                 msg = f"Saved: {name} ({count} projects)"
             except Exception:
@@ -1288,7 +1287,7 @@ class Dashboard:
             # Match count on the right side (e.g., "3/16")
             count_str = f"{len(filtered)}/{total}"
             count_col = width - len(count_str) - 2
-            buf_end_col = prompt_col + self._display_width(buf)
+            buf_end_col = prompt_col + display_width(buf)
             if count_col > buf_end_col + 2:
                 self._addstr(stdscr, prompt_row, count_col, count_str,
                              curses.color_pair(C_DIM))
@@ -1322,7 +1321,7 @@ class Dashboard:
         curses.curs_set(1)
         height, width = stdscr.getmaxyx()
         row = height - 1
-        prompt_col = 2 + self._display_width(prompt_text)
+        prompt_col = 2 + display_width(prompt_text)
         stdscr.timeout(-1)  # Block for input
 
         buf = ""
@@ -1332,7 +1331,7 @@ class Dashboard:
             stdscr.clrtoeol()
             self._addstr(stdscr, row, 0, f"  {prompt_text}", curses.color_pair(C_DIM))
             self._addstr(stdscr, row, prompt_col, buf, 0)
-            cursor_col = prompt_col + self._display_width(buf)
+            cursor_col = prompt_col + display_width(buf)
             try:
                 stdscr.move(row, cursor_col)
             except curses.error:
@@ -1953,7 +1952,7 @@ def acquire_pidfile():
     # Kill existing
     if os.path.exists(pidfile):
         try:
-            old_pid = int(open(pidfile).read().strip())
+            old_pid = int(open(pidfile, encoding="utf-8").read().strip())
             if old_pid != os.getpid():
                 os.kill(old_pid, signal.SIGTERM)
                 time.sleep(0.2)
@@ -1963,7 +1962,7 @@ def acquire_pidfile():
                     pass
         except (ProcessLookupError, ValueError, PermissionError, OSError):
             pass
-    with open(pidfile, "w") as f:
+    with open(pidfile, "w", encoding="utf-8") as f:
         f.write(str(os.getpid()))
     return pidfile
 
@@ -1988,7 +1987,7 @@ def main():
         # Log errors for debugging
         import traceback
         err_file = os.path.join(CCM_TMP_DIR, "dashboard-error.log")
-        with open(err_file, "w") as f:
+        with open(err_file, "w", encoding="utf-8") as f:
             traceback.print_exc(file=f)
         raise
     finally:

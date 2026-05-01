@@ -478,7 +478,7 @@ def log_caught_exception(scope: str) -> None:
             "msg": str(exc),
             "traceback": "".join(traceback.format_tb(tb)),
         }
-        with open(CCM_ERRORS_LOG, "a") as f:
+        with open(CCM_ERRORS_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except Exception:
         pass
@@ -492,7 +492,7 @@ def get_session():
         if os.path.exists(popup_file):
             age = time.time() - os.path.getmtime(popup_file)
             if age < 60:
-                with open(popup_file) as f:
+                with open(popup_file, encoding="utf-8") as f:
                     return f.read().strip()
     except OSError:
         pass
@@ -564,7 +564,7 @@ def read_project_notify_marker(project_dir):
     expanded = _resolve_project_dir(project_dir)
     marker_path = os.path.join(CCM_NOTIFY_MARKER_DIR, md5_hash(expanded))
     try:
-        with open(marker_path) as f:
+        with open(marker_path, encoding="utf-8") as f:
             content = f.read().strip()
     except OSError:
         return None
@@ -621,7 +621,7 @@ def read_hook_signal(project_dir):
     """
     hook_file = _hook_signal_path(project_dir)
     try:
-        with open(hook_file) as f:
+        with open(hook_file, encoding="utf-8") as f:
             content = f.read().strip()
         parts = content.split(None, 2)  # split into at most 3 parts
         if len(parts) >= 2 and parts[1] in VALID_HOOK_STATES:
@@ -678,7 +678,7 @@ def read_session_info(claude_pid):
         return None
     path = os.path.join(CLAUDE_SESSIONS_DIR, f"{claude_pid}.json")
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return None
@@ -1142,7 +1142,7 @@ CLAUDE_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")
 
 def _read_claude_settings():
     try:
-        with open(CLAUDE_SETTINGS_FILE) as f:
+        with open(CLAUDE_SETTINGS_FILE, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return None
@@ -1406,7 +1406,7 @@ def read_cache_file(cache_dir, directory):
         if os.path.exists(path):
             age = time.time() - os.path.getmtime(path)
             if age < CACHE_TTL:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     return f.read().strip()
     except OSError:
         pass
@@ -1533,7 +1533,7 @@ def build_project_list(fast=False):
 def hooks_configured():
     settings_file = os.path.expanduser("~/.claude/settings.json")
     try:
-        with open(settings_file) as f:
+        with open(settings_file, encoding="utf-8") as f:
             content = f.read()
         return all(script in content for script in HOOK_SCRIPTS)
     except OSError:
@@ -1553,7 +1553,7 @@ def save_tmux_conf_setting(setting):
     try:
         lines = []
         if os.path.exists(conf):
-            with open(conf) as f:
+            with open(conf, encoding="utf-8") as f:
                 lines = f.readlines()
 
         # Remove existing lines with this key
@@ -1569,7 +1569,7 @@ def save_tmux_conf_setting(setting):
 
         lines.insert(insert_at, setting + "\n")
 
-        with open(conf, "w") as f:
+        with open(conf, "w", encoding="utf-8") as f:
             f.writelines(lines)
     except OSError:
         pass
@@ -1877,7 +1877,7 @@ def periodic_autosave():
     last_save = 0
     try:
         if os.path.exists(marker):
-            with open(marker) as f:
+            with open(marker, encoding="utf-8") as f:
                 last_save = int(f.read().strip())
     except (OSError, ValueError):
         pass
@@ -1893,7 +1893,7 @@ def periodic_autosave():
 
     try:
         cmd_snapshot_save("_autosave", quiet=True)
-        with open(marker, "w") as f:
+        with open(marker, "w", encoding="utf-8") as f:
             f.write(str(now))
     except Exception:
         pass
@@ -2229,13 +2229,16 @@ from ccm_commands import (  # noqa: E402
 # `ccm_core.print_status` / `ccm_core.signal_age_suffix` etc.
 from ccm_render import (  # noqa: E402
     SIGNAL_STALE_DISPLAY_THRESHOLD,
+    display_width,
     format_dir,
     format_elapsed,
+    pad_to_width,
     print_ports,
     print_status,
     print_statusline,
     print_tree,
     signal_age_suffix,
+    truncate_to_width,
 )
 
 

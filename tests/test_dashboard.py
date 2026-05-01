@@ -226,40 +226,6 @@ class TestStripLastGrapheme:
         assert Dashboard._strip_last_grapheme("x\U0001f468\u200d\U0001f4bb") == "x"
 
 
-# ─── _display_width ───
-
-class TestDisplayWidth:
-    """Display width must account for wide (CJK) characters."""
-
-    def test_ascii(self):
-        assert Dashboard._display_width("hello") == 5
-
-    def test_cjk(self):
-        # Each CJK character is 2 columns
-        assert Dashboard._display_width("日本語") == 6
-
-    def test_mixed(self):
-        assert Dashboard._display_width("ab日c") == 5  # 1+1+2+1
-
-    def test_empty(self):
-        assert Dashboard._display_width("") == 0
-
-
-# ─── _truncate_to_width ───
-
-class TestTruncateToWidth:
-    def test_no_truncation_needed(self):
-        assert Dashboard._truncate_to_width("abc", 10) == "abc"
-
-    def test_truncate_ascii(self):
-        assert Dashboard._truncate_to_width("abcdef", 3) == "abc"
-
-    def test_truncate_cjk_boundary(self):
-        # "日本語" = 6 cols; truncating to 5 should keep "日本" (4 cols)
-        # because "日本語" needs 6 and "日本" + partial 語 won't fit
-        result = Dashboard._truncate_to_width("日本語", 5)
-        assert result == "日本"
-        assert Dashboard._display_width(result) <= 5
-
-    def test_truncate_cjk_exact(self):
-        assert Dashboard._truncate_to_width("日本語", 6) == "日本語"
+# Width helpers moved to ccm_render and re-exported via ccm_core.
+# Dashboard's previous static methods are gone — its imports the
+# canonical helpers, and the tests live in test_ccm_core.py.

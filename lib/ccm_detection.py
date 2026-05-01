@@ -1201,7 +1201,7 @@ def _trace_scan(win_target, ctx, rule, state, event_log_state=None):
             # once per process.
             if size < TRACE_MAX_BYTES + 200:
                 try:
-                    with open(path, "a") as f:
+                    with open(path, "a", encoding="utf-8") as f:
                         f.write(json.dumps({
                             "t": ctx.now,
                             "event": "trace_cap_reached",
@@ -1230,7 +1230,7 @@ def _trace_scan(win_target, ctx, rule, state, event_log_state=None):
             record["event_log_state"] = event_log_state
             if event_log_state != state:
                 record["diff"] = True
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
         pass

@@ -61,6 +61,10 @@ Initial public release. ccm is a tmux plugin that manages Claude Code sessions a
 - `ps_snapshot` and `tmux_cmd` decode subprocess output with `errors="replace"`. macOS truncates the `ps comm` column at a fixed byte width, slicing multi-byte characters mid-codepoint (e.g. an app named `⌘英かな` produces orphan UTF-8 bytes); a decode error there would silently kill the entire detection cycle and freeze every project's `@ccm_prev_state`. `clear_notifications` and the `cmd_attach` claude-child probe got the same treatment.
 - Per-project exception barrier in `build_project_list`. A bug in detection for one project no longer freezes every other project's state — the failing project carries forward its previous `@ccm_prev_state` while the rest of the loop continues.
 - Silent-catch sites (`inject_status` top level, `dashboard._refresh_loop`) now record exceptions to `$TMPDIR/ccm-$UID/errors.log` (1 MB cap). Crashing the status refresh is still avoided, but the next detection-cycle regression is debuggable without having to enable `CCM_DEBUG_TRACE` in advance.
+- Multi-byte text (Japanese / Chinese / Korean / emoji) handling hardened end-to-end:
+  - `display_width()`, `truncate_to_width()`, `pad_to_width()` (in `ccm_render`) replace every `len()` / f-string `<N` spec used for terminal-column calculations. Project names like `日本語プロジェクト` no longer misalign columns in the dashboard, `ccm status`, `ccm ports`, `ccm list`, or `ccm snapshot list`.
+  - All text-mode `open()` calls now pass `encoding="utf-8"` explicitly. Snapshot files (which can store CJK project names) and `~/.tmux.conf` / `~/.claude/settings.json` are no longer subject to the locale-default encoding (would fall back to ASCII under `LANG=C`).
+  - `dashboard.py` initializes `locale.setlocale(LC_ALL, "")` at import. Without this, ncurses falls back to single-byte mode and `addstr` can raise `OverflowError` when a wide character reaches the curses layer.
 
 ### Setup / integration
 - `ccm init` interactive setup wizard.

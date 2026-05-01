@@ -105,7 +105,7 @@ def cmd_snapshot_save(name="", quiet=False):
 
     file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
     tmp_path = file_path + ".tmp"
-    with open(tmp_path, "w") as f:
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(snapshot, f, indent=2, ensure_ascii=False)
     os.replace(tmp_path, file_path)
 
@@ -130,7 +130,7 @@ def cmd_snapshot_load(name=""):
     if not os.path.exists(file_path):
         ccm_core.ccm_die(f"Snapshot not found: {name}")
 
-    with open(file_path) as f:
+    with open(file_path, encoding="utf-8") as f:
         data = json.load(f)
 
     snap_projects = data.get("projects", [])
@@ -185,12 +185,12 @@ def cmd_snapshot_list():
 
     for fp in files:
         try:
-            with open(fp) as f:
+            with open(fp, encoding="utf-8") as f:
                 data = json.load(f)
             name = data.get("name", os.path.splitext(os.path.basename(fp))[0])
             created = data.get("created", "-")
             count = len(data.get("projects", []))
-            print(f"{name:<20} {created:<24} {count}")
+            print(f"{ccm_core.pad_to_width(name, 20)} {ccm_core.pad_to_width(created, 24)} {count}")
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -484,7 +484,7 @@ def cmd_list():
     print(f"{'-------':<20} {'---------'}")
 
     for _idx, _wn, project, proj_dir in windows:
-        print(f"{project:<20} {proj_dir}")
+        print(f"{ccm_core.pad_to_width(project, 20)} {proj_dir}")
 
 
 def cmd_attach(target):
@@ -734,7 +734,7 @@ def cmd_send(args):
 
     if message_file:
         try:
-            with open(message_file) as f:
+            with open(message_file, encoding="utf-8") as f:
                 message = f.read()
         except OSError as e:
             ccm_core.ccm_die(f"Failed to read message file: {e}")
