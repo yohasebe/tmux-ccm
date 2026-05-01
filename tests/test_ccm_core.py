@@ -4876,25 +4876,29 @@ class TestDeriveStateFromEvents:
             now=now,
         ) == "BUSY"
 
-    def test_permit_with_dismissed_modal_and_stale_jsonl_keeps_permit(self):
-        """The user dismissed the permit modal (Esc). The pane is back
-        at the input prompt (raw=IDLE) and JSONL is older than the
-        permit event — no positive evidence a tool is running. We
-        keep PERMIT and let `notify_idle` advance the event log when
-        Claude Code's idle_prompt fires; the `(Nm)` stale-signal
-        suffix tells the user the state is past its auto-release
-        window.
+    def test_permit_with_idle_pane_and_recent_tool_use_promotes_to_busy(self):
+        """The modal has been dismissed (raw=IDLE = `❯` visible,
+        accept-edits mode), JSONL last assistant record is `tool_use`
+        within the long-tool window. The vast majority of the time
+        this is the post-accept state: tool resumed, Claude is in
+        extended-thinking → next tool_use cycle. JSONL doesn't get
+        rewritten during thinking so the JSONL ts stays slightly
+        OLDER than the permit event, but the user has clearly moved
+        past the modal and the dashboard should reflect that.
+        Promoting to BUSY here is the right answer; the only loss
+        is a 1-cycle false BUSY in the rare Esc-cancel case where
+        JSONL terminal hasn't landed yet.
         """
         now = int(time.time())
         assert ccm_core.derive_state_from_events(
             events=({"ts": now - 30, "type": "permit_req"},),
-            jsonl_stop_reason="tool_use",     # stale tool_use record
+            jsonl_stop_reason="tool_use",
             jsonl_age=35,                      # older than event_age=30
             pid_present=True,
             claude_pid_age=400,
             raw="IDLE",
             now=now,
-        ) == "PERMIT"
+        ) == "BUSY"
 
     def test_permit_with_running_tool_and_no_raw_keeps_permit(self):
         """When the caller does not provide a `raw` value (None) we
@@ -5458,15 +5462,21 @@ class TestDeriveStateFromEvents:
             raw="IDLE",
         ) == "BUSY"
 
-    def test_permit_event_with_dismiss_case_keeps_permit(self):
-        """Real dismiss case: PermissionRequest fired AFTER the prior
-        assistant tool_use record (JSONL is older than the permit
-        event), the user dismissed (Esc), and the pane is back at the
-        input prompt (raw=IDLE). We do NOT promote to BUSY — neither
-        `_jsonl_fresher_than_event` nor any other positive signal
-        confirms a tool is running. State stays PERMIT until
-        `notify_idle` advances the event log; the `(Nm)` stale-signal
-        suffix surfaces the stuck nature to the user in the meantime.
+    def test_permit_event_post_dismiss_with_recent_tool_use_promotes_to_busy(self):
+        """Post-dismiss state with raw=IDLE (modal physically gone,
+        `❯` visible in accept-edits mode) and JSONL `tool_use`
+        within the long-tool window. The JSONL ts being slightly
+        older than the permit event is the NORMAL accept-then-
+        thinking shape — Claude doesn't write to JSONL while
+        thinking, so the only assistant record we see is the one
+        that triggered the modal in the first place. We promote
+        to BUSY rather than holding PERMIT (the previous behavior
+        kept the user-blocking badge for as long as the thinking
+        phase took, sometimes 10s+). The narrow Esc-cancel
+        regression is bounded to one poll cycle: a real cancel
+        produces a terminal `stop_reason` within ~1 s and the
+        `_jsonl_terminal_fresher_than_event` branch above releases
+        to IDLE.
         """
         assert ccm_core.derive_state_from_events(
             events=({"ts": 200, "type": "permit_req"},),
@@ -5474,7 +5484,25 @@ class TestDeriveStateFromEvents:
             pid_present=True, claude_pid_age=300,
             jsonl_age=120, now=205,           # JSONL older than event
             raw="IDLE",
-        ) == "PERMIT"
+        ) == "BUSY"
+
+    def test_permit_event_post_dismiss_with_terminal_jsonl_returns_idle(self):
+        """Esc-cancel resolved: the user dismissed the modal AND
+        Claude has already written a terminal `stop_reason` (e.g.
+        `end_turn`) into JSONL. The terminal-fresher-than-event
+        branch above returns IDLE before the tool_use promotion
+        runs, so a clean cancel never gets the brief false BUSY
+        that the post-dismiss-with-stale-JSONL path can briefly
+        show."""
+        # latest event ts=200, JSONL at ts ≈ now (jsonl_age=2) —
+        # fresher than the event AND a terminal stop reason.
+        assert ccm_core.derive_state_from_events(
+            events=({"ts": 200, "type": "permit_req"},),
+            jsonl_stop_reason="end_turn",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=2, now=210,
+            raw="IDLE",
+        ) == "IDLE"
 
     def test_phantom_subagent_after_notify_idle_returns_idle(self):
         """Concrete scenario:
