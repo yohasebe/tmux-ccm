@@ -346,7 +346,6 @@ ccm setup-hooks
 ccm はフック非依存のフォールバックを備えており、Claude Code がセッション途中でフック発火を停止しても検出が継続します:
 
 - **JSONL セッションログ心拍**: プロジェクトの最新 `~/.claude/projects/.../jsonl` に user/assistant レコードがあればセッション稼働中の証拠（housekeeping レコードは除外）
-- **プロセス孫検出**: `claude` の孫プロセス（例: `claude → bash → xcodebuild`）の存在はツール実行中を示す
 - **許可ダイアログのフッター検出**: 許可フッター（`Esc to cancel · Tab to amend`）をペインから直接検出
 - **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えると silent fail の原因になるため警告表示。修復: `: > ~/.claude/hooks.log`
 

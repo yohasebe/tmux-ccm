@@ -46,7 +46,7 @@ This rule satisfies two competing requirements simultaneously:
 
 Scope is intentionally narrow: PERMIT only. BUSY panes are interesting to monitor but do not require user input, and stealing focus to one would surprise users who deliberately positioned themselves elsewhere. Manual `prefix + N` window-switch is not hooked — the auto-focus only fires through ccm-mediated attaches.
 
-Inactive panes also drive the `(bg)` UI affordance (state=IDLE with raw=BUSY from grandchild processes) when applicable.
+Inactive panes also drive the `(bg)` UI affordance (state=IDLE with raw=BUSY: the conversation has returned to the user but the pane still shows tool output / has live tool subprocesses) when applicable.
 
 ## Detection backbones
 
@@ -133,7 +133,7 @@ This is the principled response to the limitation — when ccm cannot prove the 
 
 ### `(bg)` — background activity in user's turn
 
-When the committed state is `IDLE` (the conversation turn has returned to the user) but `raw=BUSY` (the process tree still shows tool / dev-server grandchildren), the renderers append `(bg)` to indicate "Claude is at rest, but something it spawned is still running":
+When the committed state is `IDLE` (the conversation turn has returned to the user) but `raw=BUSY` (claude has live child processes and the input prompt is not visible — e.g. tool output still on screen, leftover dev server still running), the renderers append `(bg)` to indicate "Claude is at rest, but something it spawned is still running":
 
 ```
 ● IDLE (bg)  myproject

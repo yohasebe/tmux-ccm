@@ -344,7 +344,6 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 ccm has hook-independent fallbacks so detection keeps working when Claude Code stops firing hooks mid-session:
 
 - **JSONL session-log heartbeat**: a fresh user/assistant record in the project's `~/.claude/projects/.../jsonl` confirms the session is alive (housekeeping records are filtered out).
-- **Process grandchild detection**: a grandchild under `claude` (e.g. `claude → bash → xcodebuild`) means a tool is running.
 - **Permission dialog footer match**: the permission footer (`Esc to cancel · Tab to amend`) is detected directly from the visible pane.
 - **`~/.claude/hooks.log` size canary**: ccm warns when this file exceeds 100 MB — a known cause of silent hook failure. Clear it with `: > ~/.claude/hooks.log`.
 
