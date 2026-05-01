@@ -317,12 +317,23 @@ def classify_permit_modal(pane_text: str):
 # ─── Subprocess helpers ───
 
 def tmux_cmd(*args, timeout=5):
-    """Run tmux command, return stdout."""
+    """Run tmux command, return stdout.
+
+    Decodes output with `errors="replace"` because `capture-pane`
+    can emit byte sequences that are not valid UTF-8 — terminal
+    escape codes, half-rendered multi-byte chars, or random binary
+    that another program wrote to the pane. A decode error here
+    would propagate up and silently kill the entire detection
+    cycle (inject_status / dashboard refresh), leaving every
+    project's `@ccm_prev_state` frozen.
+    """
     try:
         r = subprocess.run(
-            ["tmux"] + list(args), capture_output=True, text=True, timeout=timeout
+            ["tmux"] + list(args), capture_output=True, timeout=timeout
         )
-        return r.stdout.strip() if r.returncode == 0 else ""
+        if r.returncode != 0:
+            return ""
+        return r.stdout.decode("utf-8", errors="replace").strip()
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
 
@@ -354,13 +365,22 @@ def ps_snapshot():
     modification. `etime` is consumed only by `find_process_age`
     below, which distinguishes Claude's startup window from
     steady-state operation.
+
+    macOS `ps` truncates the `comm` column at a fixed byte width,
+    which can slice a multi-byte UTF-8 character in half (e.g. an
+    app named `⌘英かな`). Decoding the raw bytes with
+    `errors="replace"` keeps the line intact (truncated names are
+    only used for prefix matching, not displayed) instead of
+    raising and crashing the entire detection cycle.
     """
     try:
         r = subprocess.run(
             ["ps", "-eo", "pid,ppid,pgid,comm,etime"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, timeout=5,
         )
-        return r.stdout if r.returncode == 0 else ""
+        if r.returncode != 0:
+            return ""
+        return r.stdout.decode("utf-8", errors="replace")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
 

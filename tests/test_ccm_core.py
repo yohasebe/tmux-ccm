@@ -2206,6 +2206,35 @@ class TestTmuxBatch:
         mock_run.assert_not_called()
 
 
+class TestNonUtf8Output:
+    """`ps` and `capture-pane` can emit byte sequences that are not
+    valid UTF-8: macOS truncates the `comm` column at a fixed byte
+    width, slicing multi-byte characters mid-codepoint, and
+    capture-pane returns whatever bytes the pane currently shows.
+    Both `ps_snapshot` and `tmux_cmd` must survive — a UnicodeDecodeError
+    here would propagate up and silently kill the entire detection
+    cycle, leaving every project's `@ccm_prev_state` frozen."""
+
+    @patch("subprocess.run")
+    def test_ps_snapshot_survives_truncated_multibyte(self, mock_run):
+        # `⌘` is U+2318 → bytes \xe2\x8c\x98. macOS ps truncated the
+        # comm column mid-codepoint, leaving an orphan \xe2\x8c.
+        bad_bytes = b"100 1 100 /Applications/\xe2\x8c    01:17:15\n"
+        mock_run.return_value = MagicMock(returncode=0, stdout=bad_bytes)
+        out = ccm_core.ps_snapshot()
+        # Should not raise; replacement chars are fine because comm
+        # column is only used for prefix matching, not display.
+        assert "100 1 100" in out
+
+    @patch("subprocess.run")
+    def test_tmux_cmd_survives_invalid_utf8(self, mock_run):
+        bad_bytes = b"line1\n\xe2\x8c truncated\nline3"
+        mock_run.return_value = MagicMock(returncode=0, stdout=bad_bytes)
+        out = ccm_core.tmux_cmd("capture-pane", "-p")
+        assert "line1" in out
+        assert "line3" in out
+
+
 # ─── validate_name ───
 
 class TestValidateName:
