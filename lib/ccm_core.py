@@ -546,10 +546,87 @@ def _resolve_project_dir(project_dir):
     return expanded
 
 
+# ─── cwd-drift resolution ───
+# Each Claude Code hook keys its signal / events file on the
+# session's *current* cwd, not the @ccm_dir of the tmux window the
+# session lives in. If the user `cd`s into a subdirectory mid-
+# conversation (common Claude Code workflow: `cd docker/services/ruby`
+# then proceed) the hook's md5 diverges from md5(@ccm_dir). The hook
+# writes a `<KEY>.cwd` sidecar containing the literal cwd; this index
+# lets ccm match a drifted hook KEY back to the parent @ccm_dir.
+#
+# Cache: per process, a {project_dir: (resolved_key, scan_signature)}
+# map. The scan signature is a cheap (mtime, size) summary of the
+# hooks dir so a fresh sidecar invalidates the cache without per-call
+# directory scans.
+_HOOK_KEY_CACHE: "dict[str, Tuple[str, Tuple[int, int]]]" = {}
+
+
+def _hooks_dir_signature() -> Tuple[int, int]:
+    """Cheap fingerprint of the hooks dir for cache invalidation."""
+    try:
+        st = os.stat(CCM_HOOK_DIR)
+        return (int(st.st_mtime), st.st_size)
+    except OSError:
+        return (0, 0)
+
+
+def _resolve_hook_key(project_dir: str) -> str:
+    """Return the md5 key the hooks are actively writing for this
+    project, accounting for cwd drift.
+
+    Tries `md5(@ccm_dir)` first (the common, no-drift case — answered
+    by a single `os.path.exists` with no directory scan). If that
+    signal file is missing, scan `*.cwd` sidecars in `CCM_HOOK_DIR`
+    for one whose content is a descendant of `project_dir` (or equal
+    to it), and return that file's KEY prefix. Falls back to the
+    original `md5(@ccm_dir)` when no descendant sidecar matches —
+    callers handle "no signal" downstream.
+
+    The fast path is O(1); the fallback is O(active sessions) and
+    runs only when the primary signal is absent. Result is cached
+    per `project_dir` and invalidated on hooks-dir change.
+    """
+    expanded = _resolve_project_dir(project_dir)
+    primary = md5_hash(expanded)
+    primary_path = os.path.join(CCM_HOOK_DIR, primary)
+    if os.path.exists(primary_path):
+        return primary
+    sig = _hooks_dir_signature()
+    cached = _HOOK_KEY_CACHE.get(expanded)
+    if cached is not None and cached[1] == sig:
+        return cached[0]
+    resolved = primary
+    try:
+        prefix = expanded.rstrip("/") + "/"
+        for fname in os.listdir(CCM_HOOK_DIR):
+            if not fname.endswith(".cwd"):
+                continue
+            full = os.path.join(CCM_HOOK_DIR, fname)
+            try:
+                with open(full, encoding="utf-8") as f:
+                    cwd = f.read().strip()
+            except OSError:
+                continue
+            if cwd == expanded or cwd.startswith(prefix):
+                # Only accept the sidecar if its companion signal /
+                # events file actually exists — a stale `.cwd` after
+                # cleanup must not be honoured.
+                key = fname[: -len(".cwd")]
+                if (os.path.exists(os.path.join(CCM_HOOK_DIR, key))
+                        or os.path.exists(os.path.join(
+                            CCM_HOOK_DIR, key + ".events.jsonl"))):
+                    resolved = key
+                    break
+    except OSError:
+        pass
+    _HOOK_KEY_CACHE[expanded] = (resolved, sig)
+    return resolved
+
+
 def _hook_signal_path(project_dir):
     """Get the hook signal file path for a project directory."""
-    expanded = _resolve_project_dir(project_dir)
-    return os.path.join(CCM_HOOK_DIR, md5_hash(expanded))
+    return os.path.join(CCM_HOOK_DIR, _resolve_hook_key(project_dir))
 
 
 # Directory used for per-project "instant notification already
@@ -602,9 +679,15 @@ def cleanup_project_runtime_files(project_dir):
       - hook signal file (`$HOOK_DIR/<key>`) and its companions
         (`.busy` from the pre-4-state era, `.pending` from the
         multi-turn Stop delayed-notify mechanism, `.events.jsonl`
-        from the event-log redesign)
+        from the event-log redesign, `.cwd` sidecar from the
+        cwd-drift index)
       - notification dedup marker (`$NOTIFY_MARKER_DIR/<key>`)
       - git branch cache and listening-port cache
+      - any drifted hook files keyed by a subdirectory cwd —
+        discovered by scanning `<key>.cwd` sidecars whose content
+        is a descendant of `project_dir`. Without this sweep, a
+        session that had `cd`'d into `project_dir/foo` would leave
+        orphan signal/events files behind.
 
     Each removal is independent and guarded against OSError so a
     missing file (normal case for inactive projects) is a silent
@@ -613,19 +696,41 @@ def cleanup_project_runtime_files(project_dir):
     if not project_dir:
         return
     expanded = _resolve_project_dir(project_dir)
-    key = md5_hash(expanded)
-    for directory, suffixes in (
-        (CCM_HOOK_DIR, ("", ".busy", ".pending", ".events.jsonl")),
-        (CCM_NOTIFY_MARKER_DIR, ("",)),
-        (CCM_GIT_CACHE_DIR, ("",)),
-        (CCM_PORT_CACHE_DIR, ("",)),
-    ):
-        for suffix in suffixes:
-            path = os.path.join(directory, key + suffix)
+    primary_key = md5_hash(expanded)
+    keys_to_clean = {primary_key}
+    # Sweep any drifted keys that have cwd-sidecars pointing into
+    # this project's tree.
+    try:
+        prefix = expanded.rstrip("/") + "/"
+        for fname in os.listdir(CCM_HOOK_DIR):
+            if not fname.endswith(".cwd"):
+                continue
+            full = os.path.join(CCM_HOOK_DIR, fname)
             try:
-                os.unlink(path)
+                with open(full, encoding="utf-8") as f:
+                    cwd = f.read().strip()
             except OSError:
-                pass
+                continue
+            if cwd == expanded or cwd.startswith(prefix):
+                keys_to_clean.add(fname[: -len(".cwd")])
+    except OSError:
+        pass
+    # Drop any cached resolution for this project so the next
+    # detection cycle re-resolves from scratch.
+    _HOOK_KEY_CACHE.pop(expanded, None)
+    for key in keys_to_clean:
+        for directory, suffixes in (
+            (CCM_HOOK_DIR, ("", ".busy", ".pending", ".events.jsonl", ".cwd")),
+            (CCM_NOTIFY_MARKER_DIR, ("",)),
+            (CCM_GIT_CACHE_DIR, ("",)),
+            (CCM_PORT_CACHE_DIR, ("",)),
+        ):
+            for suffix in suffixes:
+                path = os.path.join(directory, key + suffix)
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
 
 def read_hook_signal(project_dir):
@@ -1017,9 +1122,14 @@ _events_cache: "OrderedDict[str, Tuple[Tuple[int, int], Tuple[dict, ...]]]" = Or
 
 
 def _events_log_path(project_dir: str) -> str:
-    """Return the absolute path of a project's event log file."""
-    expanded = _resolve_project_dir(project_dir)
-    return os.path.join(CCM_HOOK_DIR, md5_hash(expanded) + ".events.jsonl")
+    """Return the absolute path of a project's event log file.
+
+    Uses `_resolve_hook_key` so a session that has cd'd into a
+    subdirectory still resolves to its actual hook-key (which is
+    keyed on the current cwd, not the @ccm_dir root)."""
+    return os.path.join(
+        CCM_HOOK_DIR, _resolve_hook_key(project_dir) + ".events.jsonl"
+    )
 
 
 def _cache_events(path: str, key: Tuple[int, int],

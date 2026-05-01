@@ -41,6 +41,12 @@ ccm_hook_init() {
     else
         return 1
     fi
+    # Sidecar: literal cwd indexed by KEY. ccm reads this when its
+    # @ccm_dir's md5 has no signal, so a session that has cd'd into
+    # a subdirectory mid-conversation can still be matched to its
+    # parent ccm window. Best-effort: a write failure must not block
+    # the hook itself.
+    printf '%s\n' "$CWD" > "${HOOK_DIR}/${KEY}.cwd" 2>/dev/null || true
     return 0
 }
 

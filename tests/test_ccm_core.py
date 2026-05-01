@@ -3325,6 +3325,120 @@ class TestCleanupProjectRuntimeFiles:
         ccm_core.cleanup_project_runtime_files("")
         ccm_core.cleanup_project_runtime_files(None)
 
+    def test_drifted_subdirectory_keys_also_removed(self, tmp_path, monkeypatch):
+        """If the user `cd`'d into a subdirectory mid-session, hooks
+        write keyed on the deeper cwd. Cleanup must sweep those too
+        via the `.cwd` sidecar — otherwise unregistering a project
+        leaves orphan signal/events files behind."""
+        self._setup_tmp(tmp_path, monkeypatch)
+        ccm_core._HOOK_KEY_CACHE.clear()
+        project = "/x/proj-a"
+        sub = "/x/proj-a/docker/services/ruby"
+
+        primary_key = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        drifted_key = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub))
+
+        # Primary signal at @ccm_dir's key + drifted hook files at the
+        # subdirectory key (where Claude is actually running).
+        (tmp_path / "hooks" / primary_key).write_text("0 BUSY")
+        (tmp_path / "hooks" / f"{primary_key}.cwd").write_text(project + "\n")
+        (tmp_path / "hooks" / drifted_key).write_text("100 BUSY")
+        (tmp_path / "hooks" / f"{drifted_key}.events.jsonl").write_text(
+            '{"ts":100,"type":"pretool"}\n')
+        (tmp_path / "hooks" / f"{drifted_key}.cwd").write_text(sub + "\n")
+
+        ccm_core.cleanup_project_runtime_files(project)
+
+        # Both keys' hook artefacts gone
+        assert not (tmp_path / "hooks" / primary_key).exists()
+        assert not (tmp_path / "hooks" / f"{primary_key}.cwd").exists()
+        assert not (tmp_path / "hooks" / drifted_key).exists()
+        assert not (tmp_path / "hooks" / f"{drifted_key}.events.jsonl").exists()
+        assert not (tmp_path / "hooks" / f"{drifted_key}.cwd").exists()
+
+
+class TestResolveHookKey:
+    """The `.cwd` sidecar index lets ccm find the active hook key when
+    the user has `cd`'d into a subdirectory mid-conversation, so the
+    detection cycle keeps working across the cwd drift that happens in
+    typical Claude Code workflows."""
+
+    def _setup_hooks_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "hooks"
+        d.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(d))
+        ccm_core._HOOK_KEY_CACHE.clear()
+        return d
+
+    def test_no_drift_returns_primary_key(self, tmp_path, monkeypatch):
+        d = self._setup_hooks_dir(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        # Primary signal exists — fast path returns immediately, no scan.
+        (d / primary).write_text("0 BUSY")
+        assert ccm_core._resolve_hook_key(project) == primary
+
+    def test_drift_finds_subdirectory_key(self, tmp_path, monkeypatch):
+        d = self._setup_hooks_dir(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        sub = "/x/proj-a/docker/services/ruby"
+        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        drifted = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub))
+        # No primary signal; only the drifted key has a sidecar +
+        # an actual signal file.
+        (d / drifted).write_text("100 BUSY")
+        (d / f"{drifted}.cwd").write_text(sub + "\n")
+        assert ccm_core._resolve_hook_key(project) == drifted
+        assert primary != drifted
+
+    def test_drift_finds_subdirectory_via_events_only(self, tmp_path, monkeypatch):
+        """Sidecar accepted when an `.events.jsonl` companion exists,
+        even if no separate signal file is present (Stop hook deletes
+        the signal but events log persists)."""
+        d = self._setup_hooks_dir(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        sub = "/x/proj-a/sub"
+        drifted = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub))
+        (d / f"{drifted}.events.jsonl").write_text(
+            '{"ts":100,"type":"stop"}\n')
+        (d / f"{drifted}.cwd").write_text(sub + "\n")
+        assert ccm_core._resolve_hook_key(project) == drifted
+
+    def test_stale_sidecar_without_companion_ignored(self, tmp_path, monkeypatch):
+        """A leftover `.cwd` after cleanup (no signal, no events) must
+        not be honoured — falling back to the primary key is safer
+        than pointing at a key with no live data."""
+        d = self._setup_hooks_dir(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        sub = "/x/proj-a/sub"
+        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        drifted = ccm_core.md5_hash(ccm_core._resolve_project_dir(sub))
+        # Sidecar present but neither signal nor events exists.
+        (d / f"{drifted}.cwd").write_text(sub + "\n")
+        assert ccm_core._resolve_hook_key(project) == primary
+
+    def test_unrelated_subdirectory_not_matched(self, tmp_path, monkeypatch):
+        """A `.cwd` for a sibling project must not satisfy our
+        descendant check (no false matches across project boundaries)."""
+        d = self._setup_hooks_dir(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        other = "/x/proj-a-clone"  # name prefix overlap, NOT a child
+        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        other_key = ccm_core.md5_hash(ccm_core._resolve_project_dir(other))
+        (d / other_key).write_text("100 BUSY")
+        (d / f"{other_key}.cwd").write_text(other + "\n")
+        assert ccm_core._resolve_hook_key(project) == primary
+
+    def test_exact_match_sidecar(self, tmp_path, monkeypatch):
+        """When `.cwd` contains exactly the project_dir (no
+        subdirectory), the sidecar still resolves cleanly."""
+        d = self._setup_hooks_dir(tmp_path, monkeypatch)
+        project = "/x/proj-a"
+        primary = ccm_core.md5_hash(ccm_core._resolve_project_dir(project))
+        (d / primary).write_text("100 BUSY")
+        (d / f"{primary}.cwd").write_text(project + "\n")
+        assert ccm_core._resolve_hook_key(project) == primary
+
 
 # ─── raise_on_die / CCMError ───
 
