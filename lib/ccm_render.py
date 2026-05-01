@@ -23,6 +23,9 @@ import ccm_core
 #   - CJK ideographs and most emoji ("W"/"F" East Asian Width) take 2.
 #   - Combining marks ("Mn"/"Me") and zero-width formatters ("Cf",
 #     e.g. ZWJ/ZWNJ) take 0.
+#   - Ambiguous ("A") characters render as 1 in non-CJK terminals and
+#     as 2 in CJK terminals; the historical Unicode TR11 ambiguity
+#     means we cannot pick a default that is correct for everyone.
 # Column alignment (dashboard list, status bar, directory truncation)
 # needs the terminal width. Edge cases like grapheme clusters and
 # regional-indicator flag sequences are not perfectly Unicode-spec
@@ -31,20 +34,44 @@ import ccm_core
 # package — adds a runtime dependency for a tmux plugin, which
 # we deliberately avoid.
 
+# `CCM_AMBIGUOUS_WIDTH` lets users on CJK locale terminals (where
+# Ambiguous chars render as 2 columns) opt into the wider
+# treatment. Default 1 matches non-CJK terminals (the majority).
+# Scope note: this only affects EAW='A' chars. Some symbols that
+# also widen on CJK terminals (e.g. ⚠/◉ which are EAW='N') are
+# outside this knob — closing that gap would require the external
+# `wcwidth` package, which the plugin deliberately avoids. Read at
+# module load; restart inject-status / dashboard to pick up a
+# changed value.
+def _resolve_ambiguous_width() -> int:
+    raw = os.environ.get("CCM_AMBIGUOUS_WIDTH", "1")
+    try:
+        v = int(raw)
+    except ValueError:
+        return 1
+    return 2 if v == 2 else 1
+
+
+_AMBIGUOUS_WIDTH = _resolve_ambiguous_width()
+
+
+def _char_width(c: str) -> int:
+    cat = unicodedata.category(c)
+    if cat in ("Mn", "Me", "Cf"):
+        return 0
+    eaw = unicodedata.east_asian_width(c)
+    if eaw in ("W", "F"):
+        return 2
+    if eaw == "A":
+        return _AMBIGUOUS_WIDTH
+    return 1
+
+
 def display_width(s: str) -> int:
     """Return the terminal column count of `s`."""
     if not s:
         return 0
-    width = 0
-    for c in s:
-        cat = unicodedata.category(c)
-        if cat in ("Mn", "Me", "Cf"):
-            continue
-        if unicodedata.east_asian_width(c) in ("W", "F"):
-            width += 2
-        else:
-            width += 1
-    return width
+    return sum(_char_width(c) for c in s)
 
 
 def truncate_to_width(s: str, max_width: int) -> str:
@@ -57,11 +84,10 @@ def truncate_to_width(s: str, max_width: int) -> str:
     width = 0
     out = []
     for c in s:
-        cat = unicodedata.category(c)
-        if cat in ("Mn", "Me", "Cf"):
+        cw = _char_width(c)
+        if cw == 0:
             out.append(c)
             continue
-        cw = 2 if unicodedata.east_asian_width(c) in ("W", "F") else 1
         if width + cw > max_width:
             break
         out.append(c)
