@@ -2554,6 +2554,141 @@ class TestCmdErrors:
         # No traceback raised, no failure to print the well-formed record.
 
 
+class TestCmdDoctor:
+    """`ccm doctor` aggregates dependency / setup / canary / project
+    diagnostics into a single output. Each section is independent;
+    these tests verify the output structure and that each canary
+    branch (warn vs ok) renders correctly. The full-system
+    integration is exercised by manual runs — these tests focus on
+    not crashing and on rendering each section's text."""
+
+    def _stub_world(self, monkeypatch, tmp_path,
+                    hooks=True, hooks_log_warning="",
+                    disable_warning="", managed_warning="",
+                    cluster_warnings=(), projects=(),
+                    errors_log_lines=0):
+        """Stub every external dependency cmd_doctor reads, returning
+        controlled values so each test exercises a specific branch
+        without standing up real tmux / claude state."""
+        monkeypatch.setattr(ccm_core, "hooks_configured",
+                            lambda: hooks)
+        monkeypatch.setattr(ccm_core, "hooks_log_warning",
+                            lambda: hooks_log_warning)
+        monkeypatch.setattr(ccm_core, "hooks_log_size",
+                            lambda: 1024 * 1024 if not hooks_log_warning else -1)
+        monkeypatch.setattr(ccm_core, "disable_all_hooks_warning",
+                            lambda: disable_warning)
+        monkeypatch.setattr(ccm_core, "managed_hooks_only_warning",
+                            lambda: managed_warning)
+        monkeypatch.setattr(ccm_core, "shell_cluster_warnings",
+                            lambda p: list(cluster_warnings))
+        monkeypatch.setattr(ccm_core, "build_project_list",
+                            lambda fast=False: list(projects))
+        # tmux_cmd is called for show-option @ccm_session_id per
+        # project; return empty for all of them.
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **kw: "")
+        # Errors log
+        log_path = tmp_path / "errors.log"
+        if errors_log_lines:
+            log_path.write_text("\n".join(
+                json.dumps({"ts": i, "scope": "x", "type": "E", "msg": "e"})
+                for i in range(errors_log_lines)
+            ) + "\n")
+        monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG", str(log_path))
+        # subprocess.run for `which`/`--version` calls — return
+        # something plausible for each.
+        def fake_run(args, **kw):
+            cmd = args[0] if args else ""
+            if cmd == "which":
+                tool = args[1]
+                stdout = f"/usr/bin/{tool}" if tool != "missing" else ""
+                return MagicMock(returncode=0 if stdout else 1, stdout=stdout)
+            if cmd.endswith("claude"):
+                return MagicMock(returncode=0, stdout="2.1.126 (Claude Code)\n")
+            if cmd == "tmux":
+                return MagicMock(returncode=0, stdout="tmux 3.5\n")
+            return MagicMock(returncode=0, stdout="")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+    def test_clean_environment_renders_all_sections(self, tmp_path,
+                                                    monkeypatch, capsys):
+        self._stub_world(monkeypatch, tmp_path)
+        ccm_core.cmd_doctor()
+        out = capsys.readouterr().out
+        for section in ("Environment", "Setup", "Runtime canaries",
+                        "Active projects", "Silent-exception log",
+                        "Configuration"):
+            assert section in out, f"missing section: {section}"
+
+    def test_warns_when_hooks_not_installed(self, tmp_path,
+                                            monkeypatch, capsys):
+        self._stub_world(monkeypatch, tmp_path, hooks=False)
+        ccm_core.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Hooks not installed" in out
+        assert "ccm setup-hooks" in out  # actionable guidance
+
+    def test_warns_on_hooks_log_bloat(self, tmp_path, monkeypatch, capsys):
+        self._stub_world(
+            monkeypatch, tmp_path,
+            hooks_log_warning="hooks.log is 250 MB — see anthropics/...",
+        )
+        ccm_core.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "250 MB" in out
+
+    def test_warns_on_disable_all_hooks(self, tmp_path, monkeypatch, capsys):
+        self._stub_world(
+            monkeypatch, tmp_path,
+            disable_warning="disableAllHooks=true; ccm hooks won't fire",
+        )
+        ccm_core.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "disableAllHooks=true" in out
+
+    def test_lists_projects_with_states(self, tmp_path, monkeypatch, capsys):
+        proj_a = ccm_core.Project(
+            win_target="0:1", win_idx="1", name="alpha",
+            directory="/p/a", state="BUSY",
+        )
+        proj_b = ccm_core.Project(
+            win_target="0:2", win_idx="2", name="beta",
+            directory="/p/b", state="IDLE",
+        )
+        self._stub_world(monkeypatch, tmp_path,
+                         projects=(proj_a, proj_b))
+        ccm_core.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "alpha" in out and "BUSY" in out
+        assert "beta" in out and "IDLE" in out
+        assert "(2)" in out  # active projects (2)
+
+    def test_reports_empty_errors_log(self, tmp_path, monkeypatch, capsys):
+        self._stub_world(monkeypatch, tmp_path)
+        ccm_core.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "errors.log" in out
+        assert "empty" in out
+
+    def test_reports_errors_log_record_count(self, tmp_path,
+                                             monkeypatch, capsys):
+        self._stub_world(monkeypatch, tmp_path, errors_log_lines=7)
+        ccm_core.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "7 record(s)" in out
+        assert "ccm errors" in out  # actionable guidance
+
+    def test_lists_cluster_shell_warnings_when_present(
+            self, tmp_path, monkeypatch, capsys):
+        self._stub_world(
+            monkeypatch, tmp_path,
+            cluster_warnings=("alpha cluster: 4 SHELL transitions in 8 min",),
+        )
+        ccm_core.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "4 SHELL transitions" in out
+
+
 class TestBuildProjectListIsolation:
     """A bug in detection for one project must not freeze every
     other project's state. The per-project barrier carries forward
@@ -2592,6 +2727,92 @@ class TestBuildProjectListIsolation:
         scopes = [c.args[0] for c in mock_log.call_args_list]
         assert any("proj-a" in s for s in scopes)
         assert not any("proj-b" in s for s in scopes)
+
+
+class TestBuildProjectListSubprocessCount:
+    """Regression guard against the N+1 tmux subprocess class of
+    perf bug. `build_project_list` should issue a bounded number of
+    tmux subprocess calls regardless of how many projects exist —
+    the per-project session_id resolution must come from the bulk
+    `list-windows` query, not a per-project lookup."""
+
+    def _windows_raw(self, n):
+        """Build a `list-windows` output for `n` projects, each with
+        an `@ccm_session_id` field populated. The 8-column format
+        matches the production query."""
+        rows = []
+        for i in range(n):
+            rows.append(
+                f"0:{i+1}\tproj-{i}\t/p/{i}\tIDLE\t0\t1234567890\t\t"
+                f"sid-{i}-uuid-uuid-uuid-uuid-uuid"
+            )
+        return "\n".join(rows)
+
+    def test_fast_path_subprocess_count_bounded(self, monkeypatch):
+        """Fast path: list-windows for project metadata only. No
+        per-project tmux lookup once cached_session_id is threaded
+        through. Allowed: bounded constants for environment / mock
+        checks and the one bulk list-windows."""
+        n_projects = 10
+        windows_out = self._windows_raw(n_projects)
+        calls = []
+        def fake_tmux(*args, **kwargs):
+            calls.append(args[0] if args else "")
+            if args and args[0] == "list-windows":
+                return windows_out
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        # evaluate_fast doesn't need to touch the real path; stub.
+        monkeypatch.setattr(ccm_core, "evaluate_fast",
+                            lambda *a, **k: "IDLE")
+
+        ccm_core.build_project_list(fast=True)
+
+        # The N+1 bug would have produced 10 list-windows calls
+        # (one per project via _session_id_from_tmux). The fix
+        # makes it exactly 1.
+        list_windows_calls = [c for c in calls if c == "list-windows"]
+        assert len(list_windows_calls) == 1, (
+            f"fast path issued {len(list_windows_calls)} list-windows "
+            f"calls for {n_projects} projects — N+1 regression"
+        )
+
+    def test_slow_path_show_option_count_bounded(self, monkeypatch):
+        """Slow path: should NOT call show-option @ccm_session_id
+        per project. The cached value from the bulk list-windows is
+        passed through `cached_session_id`, so the per-project
+        show-option in `build_detection_context` is bypassed."""
+        n_projects = 10
+        windows_out = self._windows_raw(n_projects)
+        calls = []
+        def fake_tmux(*args, **kwargs):
+            calls.append(args[:3] if len(args) >= 3 else args)
+            if args and args[0] == "list-windows":
+                return windows_out
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        # Stub the heavy detection so we only exercise the dispatch
+        # plumbing (we're measuring tmux calls, not detection logic).
+        monkeypatch.setattr(ccm_core, "detect_window_state",
+                            lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+
+        ccm_core.build_project_list(fast=False)
+
+        # show-option @ccm_session_id should be called 0 times
+        # (cached_session_id from list-windows is passed through).
+        # Other show-options (e.g. CCM_MOCK_STATE) are allowed but
+        # bounded; we count only @ccm_session_id specifically.
+        sid_show_options = [
+            c for c in calls
+            if len(c) >= 3 and c[0] == "show-option"
+            and "@ccm_session_id" in str(c)
+        ]
+        assert len(sid_show_options) == 0, (
+            f"slow path issued {len(sid_show_options)} show-option "
+            f"@ccm_session_id calls for {n_projects} projects — "
+            "cached_session_id wasn't threaded through"
+        )
 
 
 # ─── validate_name ───
