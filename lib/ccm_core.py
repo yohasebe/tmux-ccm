@@ -597,15 +597,20 @@ def _session_id_from_tmux(project_dir: str) -> Optional[str]:
 def _hook_signal_path(project_dir, session_id: Optional[str] = None):
     """Get the hook signal file path for a project window.
 
-    Caller may pass `session_id` directly (slow path, after computing
-    via the pid chain). Otherwise resolved from the `@ccm_session_id`
-    tmux option populated by the most recent slow path. Returns None
-    when no session_id is known — callers must treat that as "no
-    signal available" rather than reading a default path."""
-    sid = session_id or _session_id_from_tmux(project_dir)
-    if not sid:
+    `session_id` semantics:
+      - non-empty string → use directly (caller resolved it).
+      - ``""``           → caller authoritatively reports "no session";
+                            return None without any tmux lookup.
+      - ``None``         → caller did not resolve; fall back to the
+                            cached `@ccm_session_id` tmux option.
+    Returns None whenever no session_id is known — callers must treat
+    that as "no signal available" rather than reading a default path.
+    """
+    if session_id is None:
+        session_id = _session_id_from_tmux(project_dir)
+    if not session_id:
         return None
-    return os.path.join(CCM_HOOK_DIR, sid)
+    return os.path.join(CCM_HOOK_DIR, session_id)
 
 
 # Directory used for per-project "instant notification already
@@ -1109,13 +1114,16 @@ def _events_log_path(project_dir: str,
     """Return the absolute path of a project's event log file.
 
     Keyed on Claude Code's session_id (UUID per session, stable for
-    the session's lifetime). Returns None when no session_id is yet
-    known — pre-first-hook windows fall back to legacy detection.
+    the session's lifetime). `session_id` semantics match
+    `_hook_signal_path`: non-empty → use, ``""`` → "no session"
+    (skip tmux lookup), ``None`` → fall back to cached tmux option.
+    Returns None whenever no session_id is known.
     """
-    sid = session_id or _session_id_from_tmux(project_dir)
-    if not sid:
+    if session_id is None:
+        session_id = _session_id_from_tmux(project_dir)
+    if not session_id:
         return None
-    return os.path.join(CCM_HOOK_DIR, sid + ".events.jsonl")
+    return os.path.join(CCM_HOOK_DIR, session_id + ".events.jsonl")
 
 
 def _cache_events(path: str, key: Tuple[int, int],
@@ -1541,7 +1549,7 @@ def build_project_list(fast=False):
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
         "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
-        "#{@ccm_bg_active}"
+        "#{@ccm_bg_active}\t#{@ccm_session_id}"
     )
     if not raw:
         return []
@@ -1571,10 +1579,19 @@ def build_project_list(fast=False):
         prev_state, completed_at_str, win_activity_str = (
             parts[3], parts[4], parts[5]
         )
-        # @ccm_bg_active is the most recent addition; older tmux
-        # sessions / windows may not have it yet — treat absent as
-        # "no background activity".
+        # @ccm_bg_active and @ccm_session_id are recent additions;
+        # older tmux windows may not have them — treat absent as
+        # "no background activity" / "no session known".
         bg_active_str = parts[6] if len(parts) >= 7 else ""
+        # cached_session_id semantics:
+        #   - empty string ""  → fetched, but no session_id cached
+        #     (slow path will resolve via pid chain; build_detection_context
+        #     skips its own show-option since the bulk value is authoritative)
+        #   - None             → format string was missing the field
+        #     (legacy tmux window, fallback to per-call show-option)
+        # Both forms are distinct so build_detection_context can trust
+        # an empty cached value as the authoritative answer.
+        cached_session_id = parts[7] if len(parts) >= 8 else None
 
         if not project:
             continue
@@ -1611,12 +1628,16 @@ def build_project_list(fast=False):
         # mode that motivated this barrier).
         try:
             if fast:
-                state = evaluate_fast(prev_state, proj_dir)
+                state = evaluate_fast(
+                    prev_state, proj_dir,
+                    session_id=cached_session_id,
+                )
             else:
                 state = detect_window_state(
                     win_target, proj_dir, prev_state,
                     panes_cache, ps_lines, own_pgid,
                     prev_bg_active=bool(bg_active_str),
+                    cached_session_id=cached_session_id,
                 )
         except Exception:
             log_caught_exception(f"build_project_list[{project}]")

@@ -559,11 +559,16 @@ _FAST_PREV_TO_RAW = {
 
 
 def build_fast_context(prev_state, project_dir,
-                       now=None) -> DetectionContext:
+                       now=None,
+                       session_id: Optional[str] = None) -> DetectionContext:
     """Build a DetectionContext for the read-only statusline path.
 
     Does not call ps/capture-pane/tmux queries for process tree info.
     Derives `raw` from prev_state, reads hook signal only.
+
+    Caller may pass `session_id` directly (cached value from the
+    same tmux query that built the project list) to avoid an
+    O(N) tmux subprocess per fast-path refresh.
     """
     if now is None:
         now = int(time.time())
@@ -574,7 +579,7 @@ def build_fast_context(prev_state, project_dir,
     hook_ts = 0
     hook_age = -1
     if project_dir:
-        sig = ccm_core.read_hook_signal(project_dir)
+        sig = ccm_core.read_hook_signal(project_dir, session_id=session_id)
         if sig is not None:
             hook_ts, hook_state, _detail = sig
             if hook_state == "SHELL":
@@ -600,14 +605,21 @@ def build_fast_context(prev_state, project_dir,
     )
 
 
-def evaluate_fast(prev_state, project_dir, now=None) -> str:
+def evaluate_fast(prev_state, project_dir, now=None,
+                  session_id: Optional[str] = None) -> str:
     """Read-only state evaluation for statusline-speed contexts.
 
     Runs the same DETECTION_RULES table as the slow path, so there is
     one source of truth for state transitions. Does not write to tmux
     — the slow-path run next cycle is authoritative for persisting state.
+
+    `session_id` may be passed in by the caller (typically from a
+    bulk `tmux list-windows` query that already gathered the
+    `@ccm_session_id` option) to skip the per-call tmux lookup
+    inside `read_hook_signal`.
     """
-    ctx = build_fast_context(prev_state, project_dir, now)
+    ctx = build_fast_context(prev_state, project_dir, now,
+                             session_id=session_id)
     _rule, state = evaluate_rules(ctx)
     return state
 
@@ -939,6 +951,7 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
 def build_detection_context(win_target, project_dir, prev_state,
                             panes_cache, ps_lines, own_pgid,
                             prev_bg_active: bool = False,
+                            cached_session_id: Optional[str] = None,
                             ) -> DetectionContext:
     """Gather all inputs needed for rule evaluation.
 
@@ -977,8 +990,16 @@ def build_detection_context(win_target, project_dir, prev_state,
         if info:
             session_id = info.get("sessionId") or info.get("session_id")
     if win_target:
-        prev_sid = ccm_core.tmux_cmd(
-            "show-option", "-w", "-t", win_target, "-qv", "@ccm_session_id"
+        # `cached_session_id` is the value already read from the
+        # bulk `list-windows` query in `build_project_list`, so we
+        # avoid an extra `show-option` subprocess per project per
+        # cycle. When it's None (e.g. a direct caller without the
+        # cached value, like a one-off `cmd_debug_trace` invocation)
+        # we still pay one show-option as a defensive fallback.
+        prev_sid = cached_session_id if cached_session_id is not None else (
+            ccm_core.tmux_cmd(
+                "show-option", "-w", "-t", win_target, "-qv", "@ccm_session_id"
+            )
         )
         if session_id and session_id != prev_sid:
             ccm_core.tmux_cmd(
@@ -1135,7 +1156,8 @@ def _event_log_enabled():
 
 def detect_window_state(win_target, project_dir, prev_state,
                         panes_cache, ps_lines, own_pgid,
-                        prev_bg_active: bool = False):
+                        prev_bg_active: bool = False,
+                        cached_session_id: Optional[str] = None):
     """Full detection pipeline. Returns the resolved state string.
 
     Thin orchestration layer:
@@ -1157,6 +1179,7 @@ def detect_window_state(win_target, project_dir, prev_state,
         win_target, project_dir, prev_state,
         panes_cache, ps_lines, own_pgid,
         prev_bg_active=prev_bg_active,
+        cached_session_id=cached_session_id,
     )
     rule, legacy_state = evaluate_rules(ctx)
 

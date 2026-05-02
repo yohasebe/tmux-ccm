@@ -2512,7 +2512,7 @@ class TestBuildProjectListIsolation:
             "0:2\tproj-b\t/p/b\tIDLE\t0\t1234567890\t"
         )
 
-        def evaluate_side_effect(prev_state, proj_dir, now=None):
+        def evaluate_side_effect(prev_state, proj_dir, now=None, **kwargs):
             if proj_dir == "/p/a":
                 raise RuntimeError("synthetic detection failure")
             return "IDLE"
