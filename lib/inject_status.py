@@ -297,12 +297,10 @@ def _inject_status_impl():
         pass
 
     # Per-project instant-notify marker is read inside the loop below
-    # via `read_project_notify_marker`. This replaces the previous
-    # global `${TMPDIR}/ccm-$UID/hook-notified` path, which suppressed
-    # one project's PERMIT / COMPLETED notification whenever a
-    # different project had fired within the last 30 seconds — a
-    # severe cross-project collision when running ccm with several
-    # concurrent Claude sessions.
+    # via `read_project_notify_marker`. The marker is per-project so
+    # one project's recent notification cannot suppress another's,
+    # which matters when several concurrent Claude sessions are
+    # running.
     now = int(time.time())
 
     # Write current states and check for transitions.

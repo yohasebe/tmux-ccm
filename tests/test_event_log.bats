@@ -1,10 +1,8 @@
 #!/usr/bin/env bats
-# Tests for the event log writer added in the detection-redesign P1
-# and migrated to session_id keying in v0.3.0. Each hook script
-# appends one JSONL record to $HOOK_DIR/<session_id>.events.jsonl
-# in addition to writing the legacy signal file. The existing
-# signal-file behavior is unchanged; this test suite verifies the
-# event-log append path specifically.
+# Tests for the event log writer. Each hook script appends one JSONL
+# record to $HOOK_DIR/<session_id>.events.jsonl in addition to
+# writing the signal file. This suite verifies both the event-log
+# append path and the signal-file write.
 
 CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 

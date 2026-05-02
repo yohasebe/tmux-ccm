@@ -80,10 +80,8 @@ JSONL_ACTIVITY_TYPES = frozenset({"user", "assistant"})
 # recent real activity record. Needs to accommodate a single large
 # tool_result record (Read of 2000 lines, long shell output, ...)
 # plus several trailing system records — any tool-result record alone
-# can easily exceed 8 KB, which at the previous cap could leave the
-# tail without a decodable real-activity line and force the mtime
-# fallback. 32 KB covers that comfortably while remaining trivially
-# cheap per detection cycle.
+# can easily exceed 8 KB. 32 KB covers that comfortably while
+# remaining trivially cheap per detection cycle.
 JSONL_TAIL_BYTES = 32768
 # Safety cap on how many lines from the tail we will JSON-parse.
 JSONL_TAIL_MAX_LINES = 200
@@ -548,15 +546,11 @@ def _resolve_project_dir(project_dir):
 
 # ─── session_id resolution ───
 # Hook signal / events files are keyed on the Claude Code session_id
-# (UUID per session, present in every hook payload). This is the
-# natural primary key:
+# (UUID per session, present in every hook payload):
 #   - stable for the lifetime of one Claude session
 #   - distinct across sessions, so a fresh `claude --continue` cannot
 #     read state left by a prior session in the same cwd
 #   - unaffected by `cd` mid-session
-# Earlier `md5(cwd)` keying needed sidecar files and a pid-age filter
-# to patch around cwd drift and cross-session contamination; both
-# vanish under session_id keying.
 #
 # ccm resolves session_id for a tmux project window via the chain:
 #   @ccm_dir → tmux pane → claude pid → ~/.claude/sessions/<pid>.json

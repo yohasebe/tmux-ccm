@@ -1,7 +1,5 @@
 """Subcommand handlers for the ccm CLI.
 
-Extracted from `ccm_core` in R2 Stage B so the core module can stay
-focused on constants, data model, tmux helpers, and state detection.
 Every public `cmd_*` function here corresponds to a `ccm <subcommand>`
 invocation routed through the CLI dispatch in `ccm_core.__main__`.
 
@@ -13,13 +11,13 @@ Cross-module discipline (mirrors `ccm_detection.py`):
     `_autosave_trigger`, ...) and constants that tests mutate
     (`CCM_SNAPSHOT_DIR`) — is accessed via `ccm_core.foo()` so that
     `unittest.mock.patch("ccm_core.foo")` and
-    `monkeypatch.setattr(ccm_core, "foo", ...)` keep reaching the
-    callsites inside this module. A direct from-import would freeze
-    the binding at import time and bypass the mock.
+    `monkeypatch.setattr(ccm_core, "foo", ...)` reach the callsites
+    inside this module. A direct from-import would freeze the binding
+    at import time and bypass the mock.
 
 `ccm_core` re-exports every public symbol from this file at the bottom
-of its module, so existing `from ccm_core import cmd_add` callers
-(dashboard, tests, CLI dispatch) do not change.
+of its module so callers (dashboard, tests, CLI dispatch) can
+`from ccm_core import cmd_add` etc.
 """
 
 import glob
@@ -627,9 +625,9 @@ def cmd_stop(target):
             return
 
         # Auto-save before stopping. Best-effort: if it fails, warn
-        # the user but proceed with the stop — the previous behaviour
-        # of silently swallowing the error left users believing a
-        # snapshot existed when it did not.
+        # the user but proceed with the stop. Silent failure is
+        # explicitly avoided here so users do not believe a snapshot
+        # exists when it does not.
         ccm_core.init_dirs()
         try:
             cmd_snapshot_save("_autosave", quiet=True)

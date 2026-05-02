@@ -5404,12 +5404,6 @@ class TestDeriveStateFromEvents:
             pid_present=False, claude_pid_age=-1,
         ) == "SHELL"
 
-    # The previous `cross-session events filter` (claude_pid_age <
-    # latest_ts) was made obsolete by the session_id keying refactor:
-    # each session's events live in their own file keyed on the UUID,
-    # so an old session's records cannot leak into a new session's
-    # detection. The filter, its rule, and its tests were removed
-    # together — see `project_session_id_refactor.md` memory.
 
     # ─── notify_idle → IDLE ───
 
@@ -5516,7 +5510,7 @@ class TestDeriveStateFromEvents:
             pid_present=True, claude_pid_age=100,
         ) is None
 
-    # ─── Lifecycle scenarios (the original failing cases) ───
+    # ─── Lifecycle scenarios ───
 
     def test_long_running_tool_stays_busy(self):
         """Regression from project_false_idle_long_tool: hook went
@@ -5924,12 +5918,11 @@ class TestDeriveStateFromEvents:
         older than the permit event is the NORMAL accept-then-
         thinking shape — Claude doesn't write to JSONL while
         thinking, so the only assistant record we see is the one
-        that triggered the modal in the first place. We promote
-        to BUSY rather than holding PERMIT (the previous behavior
-        kept the user-blocking badge for as long as the thinking
-        phase took, sometimes 10s+). The narrow Esc-cancel
-        regression is bounded to one poll cycle: a real cancel
-        produces a terminal `stop_reason` within ~1 s and the
+        that triggered the modal in the first place. Promoting to
+        BUSY here keeps the dashboard responsive during long
+        thinking phases (10s+ in practice). The narrow Esc-cancel
+        edge is bounded to one poll cycle: a real cancel produces
+        a terminal `stop_reason` within ~1 s and the
         `_jsonl_terminal_fresher_than_event` branch above releases
         to IDLE.
         """

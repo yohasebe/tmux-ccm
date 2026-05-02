@@ -18,14 +18,12 @@ source "${_CCM_HOOK_LIB_DIR}/../lib/state_meta.sh"
 # payload lacks a session id — hook scripts should
 # `ccm_hook_init || exit 0` to short-circuit.
 #
-# session_id is the natural primary key for hook artefacts:
+# session_id is the primary key for hook artefacts:
 #   - stable for the lifetime of a Claude Code session (UUID per
 #     session, written by the runtime)
 #   - distinct across sessions, so a fresh `claude --continue` cannot
 #     read state left by a prior session in the same cwd
-#   - unaffected by cwd drift (`cd` mid-session does not move it)
-# This eliminates the cwd-drift sidecar and cross-session pid-age
-# filter that earlier `md5(cwd)` keying needed as patches.
+#   - unaffected by `cd` mid-session
 #
 # Reads stdin exactly once. If a script needs additional fields from
 # the payload, parse them from "$INPUT" after calling ccm_hook_init.
@@ -35,16 +33,16 @@ ccm_hook_init() {
 
     INPUT=$(cat)
 
-    # session_id: the new primary KEY. Try snake_case then camelCase
-    # — upstream payload schema has used both at different points.
+    # session_id: the primary KEY. Try snake_case then camelCase —
+    # upstream payload schema uses both depending on the field.
     SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || \
         SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"sessionI?d?_?i?d?" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
     [[ -z "$SESSION_ID" ]] && return 1
     KEY="$SESSION_ID"
 
-    # cwd is still used by `_ccm_instant_notify` to find the matching
-    # tmux window for project-name lookup, and by the project-name
-    # cache file. Best-effort extraction; a missing cwd is tolerable
+    # cwd is used by `_ccm_instant_notify` to find the matching tmux
+    # window for project-name lookup, and by the project-name cache
+    # file. Best-effort extraction; a missing cwd is tolerable
     # (instant notification falls back to "ccm" as group name).
     CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || \
         CWD=$(printf '%s' "$INPUT" | grep -o '"cwd" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
