@@ -51,7 +51,7 @@ def _sanitize_snapshot_name(name):
     # Remove any remaining dots that could cause issues (e.g., ".." left over)
     name = name.strip(".")
     if not name:
-        ccm_core.ccm_die("Invalid snapshot name")
+        ccm_core.ccm_die("Invalid snapshot name (alphanumerics / hyphens / underscores only; no path components)")
     return name
 
 
@@ -139,7 +139,7 @@ def cmd_snapshot_load(name=""):
 
     session = ccm_core.get_session()
     if not session:
-        ccm_core.ccm_die("Not inside a tmux session")
+        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
 
     for proj in snap_projects:
         proj_name = proj.get("name", "")
@@ -251,11 +251,16 @@ def cmd_add(directory, name="", start_claude=True, _loading=False):
         name = os.path.basename(directory)
     name = ccm_core.validate_name(name)
     if not name:
-        ccm_core.ccm_die("Invalid project name")
+        ccm_core.ccm_die(
+            "Invalid project name (alphanumerics / hyphens / underscores only; "
+            "shell metachars and whitespace are stripped)"
+        )
 
     session = ccm_core.get_session()
     if not session:
-        ccm_core.ccm_die("Not inside a tmux session")
+        ccm_core.ccm_die(
+            "Not inside a tmux session — start one with `tmux new-session` first"
+        )
 
     if ccm_core.project_exists(session, name):
         ccm_core.ccm_die(f"Project window already exists: {name}")
@@ -273,7 +278,7 @@ def cmd_add(directory, name="", start_claude=True, _loading=False):
     win_idx = ccm_core.tmux_cmd("new-window", "-P", "-F", "#{window_index}",
                                 "-t", f"{session}:", "-n", name, "-c", directory)
     if not win_idx:
-        ccm_core.ccm_die("Failed to create window")
+        ccm_core.ccm_die("Failed to create tmux window — check `tmux info` for server status")
 
     win_target = f"{session}:{win_idx}"
 
@@ -330,7 +335,7 @@ def cmd_register(source_target, new_name=""):
 
     session = ccm_core.get_session()
     if not session:
-        ccm_core.ccm_die("Not inside a tmux session")
+        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
 
     # Find window by index or name
     if source_target.isdigit():
@@ -363,7 +368,7 @@ def cmd_register(source_target, new_name=""):
     name = new_name or win_name
     name = ccm_core.validate_name(name)
     if not name:
-        ccm_core.ccm_die("Invalid project name")
+        ccm_core.ccm_die("Invalid project name (alphanumerics / hyphens / underscores only)")
 
     if ccm_core.project_exists(session, name):
         ccm_core.ccm_die(f"Project name already in use: {name}")
@@ -427,7 +432,7 @@ def cmd_rename(old_name, new_name):
 
     new_name = ccm_core.validate_name(new_name)
     if not new_name:
-        ccm_core.ccm_die("Invalid project name")
+        ccm_core.ccm_die("Invalid project name (alphanumerics / hyphens / underscores only)")
 
     session = ccm_core.get_session()
     idx = ccm_core.find_window(session, old_name)
@@ -495,7 +500,7 @@ def cmd_attach(target):
 
     session = ccm_core.get_session()
     if not session:
-        ccm_core.ccm_die("Not inside a tmux session")
+        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
 
     idx = None
     if target.isdigit():
@@ -756,7 +761,7 @@ def cmd_send(args):
     # Resolve target window
     session = ccm_core.get_session()
     if not session:
-        ccm_core.ccm_die("Not inside a tmux session")
+        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
 
     if target.startswith("#"):
         idx = target[1:]
@@ -880,6 +885,133 @@ def cmd_reset_window():
     win_idx = ccm_core.tmux_cmd("display-message", "-p", "#{window_index}")
     if session_name and win_idx:
         ccm_core.reset_window_after_attach(f"{session_name}:{win_idx}")
+
+
+def cmd_doctor():
+    """`ccm doctor` — single self-check command. Aggregates dependency
+    versions, hook installation state, runtime canaries, project
+    inventory, and a tail of the silent-exception log. Designed as
+    "first thing to run when something feels wrong" and as a
+    drop-in artefact for bug reports."""
+    OK = f"{ccm_core._C_GREEN}✓{ccm_core._C_RESET}"
+    WARN = f"{ccm_core._C_YELLOW}⚠{ccm_core._C_RESET}"
+    FAIL = f"{ccm_core._C_RED}✗{ccm_core._C_RESET}"
+
+    def section(title):
+        print(f"\n{ccm_core._C_BOLD}{title}{ccm_core._C_RESET}")
+
+    def row(mark, label, detail=""):
+        print(f"  {mark} {label}{('  ' + detail) if detail else ''}")
+
+    section("Environment")
+    # claude binary
+    claude_path = subprocess.run(
+        ["which", "claude"], capture_output=True, text=True,
+    ).stdout.strip()
+    if not claude_path:
+        row(FAIL, "claude",
+            "binary not found — install from https://docs.anthropic.com/en/docs/claude-code")
+    else:
+        version_out = subprocess.run(
+            [claude_path, "--version"], capture_output=True, text=True,
+            timeout=5,
+        ).stdout.strip()
+        row(OK, "claude", version_out or claude_path)
+    # tmux
+    tmux_ver = subprocess.run(
+        ["tmux", "-V"], capture_output=True, text=True,
+    ).stdout.strip()
+    row(OK if tmux_ver else FAIL, "tmux", tmux_ver or "not found")
+    # jq, fzf
+    for tool in ("jq", "fzf"):
+        path = subprocess.run(
+            ["which", tool], capture_output=True, text=True,
+        ).stdout.strip()
+        row(OK if path else WARN, tool, path or "not found (recommended)")
+
+    section("Setup")
+    if ccm_core.hooks_configured():
+        row(OK, "Hooks installed")
+    else:
+        row(WARN, "Hooks not installed",
+            "run `ccm setup-hooks` for full state detection")
+    claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
+    if os.path.exists(claude_md):
+        with open(claude_md, encoding="utf-8") as f:
+            has_ccm = "ccm" in f.read().lower()
+        if has_ccm:
+            row(OK, "~/.claude/CLAUDE.md", "ccm section present")
+        else:
+            row(WARN, "~/.claude/CLAUDE.md",
+                "ccm section absent — run `ccm setup-claude-md`")
+    else:
+        row(WARN, "~/.claude/CLAUDE.md", "missing")
+
+    section("Runtime canaries")
+    hooks_warn = ccm_core.hooks_log_warning()
+    log_size = ccm_core.hooks_log_size()
+    if hooks_warn:
+        row(WARN, "hooks.log size", hooks_warn)
+    elif log_size < 0:
+        row(OK, "hooks.log size", "(absent)")
+    else:
+        row(OK, "hooks.log size", f"{log_size / (1024*1024):.1f} MB")
+    dah = ccm_core.disable_all_hooks_warning()
+    row(WARN if dah else OK,
+        "disableAllHooks",
+        dah or "not set")
+    mho = ccm_core.managed_hooks_only_warning()
+    row(WARN if mho else OK,
+        "allowManagedHooksOnly",
+        mho or "not set")
+
+    projects = ccm_core.build_project_list(fast=False)
+    cluster_msgs = ccm_core.shell_cluster_warnings(projects)
+    if cluster_msgs:
+        for msg in cluster_msgs:
+            row(WARN, "cluster-SHELL transitions", msg)
+    else:
+        row(OK, "cluster-SHELL transitions",
+            f"none in last {ccm_core.SHELL_CLUSTER_WINDOW // 60} min")
+
+    section(f"Active projects ({len(projects)})")
+    if not projects:
+        row(WARN, "(none registered)", "run `ccm add <dir>` to start")
+    for p in projects:
+        state_color = {
+            "PERMIT": ccm_core._C_YELLOW,
+            "BUSY": ccm_core._C_GREEN,
+            "IDLE": ccm_core._C_DIM,
+            "SHELL": ccm_core._C_DIM,
+            "DOWN": ccm_core._C_RED,
+        }.get(p.state, "")
+        state_label = f"{state_color}{p.state:<6}{ccm_core._C_RESET}"
+        sid = ccm_core.tmux_cmd(
+            "show-option", "-w", "-t", p.win_target,
+            "-qv", "@ccm_session_id",
+        ) or "(no session)"
+        row(OK, f"{p.name:<20}", f"{state_label}  {sid}")
+
+    section("Silent-exception log")
+    log_count = 0
+    try:
+        if os.path.exists(ccm_core.CCM_ERRORS_LOG):
+            with open(ccm_core.CCM_ERRORS_LOG, encoding="utf-8") as f:
+                log_count = sum(1 for _ in f)
+    except OSError:
+        pass
+    if log_count == 0:
+        row(OK, "errors.log", "empty")
+    else:
+        row(WARN, "errors.log",
+            f"{log_count} record(s) — view with `ccm errors`")
+
+    section("Configuration")
+    for key in ("CCM_ROOT", "CCM_TMP_DIR", "CCM_DATA_DIR", "CCM_HOOK_DIR"):
+        val = getattr(ccm_core, key, None)
+        if val:
+            print(f"  {key:<20} {val}")
+    print()
 
 
 def cmd_errors(args):

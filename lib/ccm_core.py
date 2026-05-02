@@ -2323,6 +2323,7 @@ from ccm_commands import (  # noqa: E402
     cmd_attach,
     cmd_capture,
     cmd_debug_trace,
+    cmd_doctor,
     cmd_errors,
     cmd_list,
     cmd_open,
@@ -2409,6 +2410,11 @@ if __name__ == "__main__":
         # `ccm errors [--clear]` — view the silent-exception log.
         # See `log_caught_exception` for what this records.
         cmd_errors(args)
+    elif cmd == "doctor":
+        # `ccm doctor` — single self-check command. Aggregates
+        # canaries, hook state, project inventory, and recent
+        # errors into one diagnostic snapshot.
+        cmd_doctor()
     elif cmd == "clear-notifications":
         # `ccm clear-notifications` — remove only ccm-prefixed
         # notifications from macOS Notification Center. Other

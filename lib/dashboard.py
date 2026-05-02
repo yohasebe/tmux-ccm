@@ -743,8 +743,10 @@ class Dashboard:
             # Help line — keys highlighted, wraps to 2 lines if needed
             avail_w = (list_width if preview_width > 0 else width) - 4  # padding
             help_items = [
-                "[↑↓/jk] select", "[Enter] attach", "[p]review", "[a]dd",
-                "[n]ame", "[r]emove", "e[x]it all", "[s]ave", "[t]ree", "[m]enu", "[q] quit",
+                "[↑↓/jk] select", "[Enter] attach", "[/] search",
+                "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
+                "[r]emove", "e[x]it all", "[s]ave", "[t]ree",
+                "[m/?] menu", "[q] quit",
             ]
             # Split into lines that fit within avail_w
             help_lines = []
@@ -916,7 +918,10 @@ class Dashboard:
         elif key in (ord("t"), ord("T")):
             self.mode = "tree"
             self._build_tree()
-        elif key in (ord("m"), ord("M")):
+        elif key in (ord("m"), ord("M"), ord("?")):
+            # `?` is the universal "show me all the commands" key
+            # (vim, fzf, etc.) — alias to menu mode which already
+            # lists every action this dashboard exposes.
             self.mode = "menu"
             self._build_menu()
             self.menu_selected = 0

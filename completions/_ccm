@@ -28,6 +28,7 @@ _ccm() {
         'setup-claude-md:Add ccm section to ~/.claude/CLAUDE.md'
         'remove-claude-md:Remove ccm section from ~/.claude/CLAUDE.md'
         'errors:View / clear the silent-exception log'
+        'doctor:Self-check: dependencies, hooks, canaries, projects'
         'help:Show help'
     )
 
