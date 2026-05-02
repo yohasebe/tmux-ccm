@@ -13,6 +13,9 @@ import pytest
 # Add lib to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import ccm_core
+import ccm_canaries
+import ccm_jsonl
+import ccm_notify
 
 
 # ─── Fixtures ───
@@ -122,18 +125,18 @@ class TestJsonlFreshness:
         assert slug == (home + "/code/foo").replace("/", "-")
 
     def test_age_minus_one_when_no_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         assert ccm_core.read_jsonl_age("/nonexistent/path/foo") == -1
 
     def test_age_minus_one_when_no_jsonl(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         slug = ccm_core._project_slug("/x/y")
         (tmp_path / slug).mkdir()
         # empty dir
         assert ccm_core.read_jsonl_age("/x/y") == -1
 
     def test_age_reads_newest(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         slug = ccm_core._project_slug("/x/y")
         d = tmp_path / slug
         d.mkdir()
@@ -148,7 +151,7 @@ class TestJsonlFreshness:
         assert 2 <= age <= 5  # newest record is ~3s old
 
     def test_ignores_non_jsonl(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         slug = ccm_core._project_slug("/x/y")
         d = tmp_path / slug
         d.mkdir()
@@ -160,7 +163,7 @@ class TestJsonlFreshness:
         """Calling twice should not re-listdir if cache is hot.
         We assert by deleting the dir between calls — second call
         still returns the cached path's age (until path vanishes)."""
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         slug = ccm_core._project_slug("/x/y")
         d = tmp_path / slug
         d.mkdir()
@@ -175,7 +178,7 @@ class TestJsonlFreshness:
     def test_cache_recovers_when_file_disappears(self, tmp_path, monkeypatch):
         """If the cached file is deleted, the next call must re-glob
         and either find a replacement or return -1."""
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         slug = ccm_core._project_slug("/x/y")
         d = tmp_path / slug
         d.mkdir()
@@ -203,7 +206,7 @@ class TestJsonlRealActivityFilter:
         ccm_core._jsonl_activity_cache.clear()
 
     def _setup_project(self, tmp_path, monkeypatch, project_dir="/p/q"):
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         slug = ccm_core._project_slug(project_dir)
         d = tmp_path / slug
         d.mkdir()
@@ -455,7 +458,7 @@ class TestJsonlTailStopReason:
         ccm_core._jsonl_activity_cache.clear()
 
     def _setup_project(self, tmp_path, monkeypatch, project_dir="/p/q"):
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         slug = ccm_core._project_slug(project_dir)
         d = tmp_path / slug
         d.mkdir()
@@ -583,7 +586,7 @@ class TestJsonlTailStopReason:
 
     def test_returns_none_when_jsonl_missing(self, tmp_path, monkeypatch):
         """No JSONL file at all: (-1, None)."""
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         age, stop = ccm_core.read_jsonl_tail_info("/nonexistent")
         assert age == -1
         assert stop is None
@@ -624,22 +627,22 @@ class TestJsonlTailStopReason:
 
 class TestHooksLogWarning:
     def test_no_file_returns_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_HOOKS_LOG", str(tmp_path / "missing.log"))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_HOOKS_LOG", str(tmp_path / "missing.log"))
         assert ccm_core.hooks_log_size() == -1
         assert ccm_core.hooks_log_warning() == ""
 
     def test_small_file_returns_empty(self, tmp_path, monkeypatch):
         log = tmp_path / "hooks.log"
         log.write_text("a" * 1024)  # 1 KB
-        monkeypatch.setattr(ccm_core, "CLAUDE_HOOKS_LOG", str(log))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_HOOKS_LOG", str(log))
         assert ccm_core.hooks_log_warning() == ""
 
     def test_bloated_file_returns_warning(self, tmp_path, monkeypatch):
         log = tmp_path / "hooks.log"
         log.write_text("x")  # tiny file
-        monkeypatch.setattr(ccm_core, "CLAUDE_HOOKS_LOG", str(log))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_HOOKS_LOG", str(log))
         # Lower threshold so the tiny file qualifies
-        monkeypatch.setattr(ccm_core, "HOOKS_LOG_WARN_BYTES", 0)
+        monkeypatch.setattr(ccm_canaries, "HOOKS_LOG_WARN_BYTES", 0)
         msg = ccm_core.hooks_log_warning()
         assert "hooks.log" in msg
         assert "#16047" in msg
@@ -650,25 +653,25 @@ class TestHooksLogWarning:
 
 class TestDisableAllHooksWarning:
     def test_no_settings_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(tmp_path / "missing.json"))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(tmp_path / "missing.json"))
         assert ccm_core.disable_all_hooks_warning() == ""
 
     def test_setting_absent(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.json"
         f.write_text('{"other": "value"}')
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_core.disable_all_hooks_warning() == ""
 
     def test_setting_false(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.json"
         f.write_text('{"disableAllHooks": false}')
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_core.disable_all_hooks_warning() == ""
 
     def test_setting_true_returns_warning(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.json"
         f.write_text('{"disableAllHooks": true}')
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         msg = ccm_core.disable_all_hooks_warning()
         assert "disableAllHooks" in msg
         assert "settings.json" in msg
@@ -680,7 +683,7 @@ class TestDisableAllHooksWarning:
     def test_malformed_json(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.json"
         f.write_text("not json")
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_core.disable_all_hooks_warning() == ""
 
 
@@ -688,25 +691,25 @@ class TestDisableAllHooksWarning:
 
 class TestManagedHooksOnlyWarning:
     def test_no_settings_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(tmp_path / "missing.json"))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(tmp_path / "missing.json"))
         assert ccm_core.managed_hooks_only_warning() == ""
 
     def test_setting_absent(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.json"
         f.write_text('{"other": "value"}')
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_core.managed_hooks_only_warning() == ""
 
     def test_setting_false(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.json"
         f.write_text('{"allowManagedHooksOnly": false}')
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_core.managed_hooks_only_warning() == ""
 
     def test_setting_true_returns_warning(self, tmp_path, monkeypatch):
         f = tmp_path / "settings.json"
         f.write_text('{"allowManagedHooksOnly": true}')
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         msg = ccm_core.managed_hooks_only_warning()
         assert "allowManagedHooksOnly" in msg
         assert "user-scope hooks" in msg
@@ -715,7 +718,7 @@ class TestManagedHooksOnlyWarning:
         """Both canaries can fire independently or together."""
         f = tmp_path / "settings.json"
         f.write_text('{"allowManagedHooksOnly": true, "disableAllHooks": true}')
-        monkeypatch.setattr(ccm_core, "CLAUDE_SETTINGS_FILE", str(f))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_core.managed_hooks_only_warning() != ""
         assert ccm_core.disable_all_hooks_warning() != ""
 
@@ -728,7 +731,7 @@ class TestReadSessionInfo:
         assert ccm_core.read_session_info(None) is None
 
     def test_reads_session_json(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
         (tmp_path / "12345.json").write_text(
             '{"pid":12345,"sessionId":"abc-def","cwd":"/tmp/proj",'
             '"startedAt":1776048000000,"kind":"interactive","entrypoint":"cli"}'
@@ -739,11 +742,11 @@ class TestReadSessionInfo:
         assert info["kind"] == "interactive"
 
     def test_none_when_file_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
         assert ccm_core.read_session_info("99999") is None
 
     def test_none_on_malformed_json(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
         (tmp_path / "1.json").write_text("not json")
         assert ccm_core.read_session_info("1") is None
 
@@ -755,7 +758,7 @@ class TestReadSessionInfo:
         recycled. read_session_info must return None so the caller
         falls through to legacy detection rather than reading
         the wrong session's events."""
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
         # Live process: etime=10s → started 10s ago
         # File: startedAt = 1 hour ago (very different)
         now = int(time.time())
@@ -775,7 +778,7 @@ class TestReadSessionInfo:
         """startedAt within the drift tolerance of the live process's
         start time → accept. Normal case for an actively-running
         Claude session."""
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
         now = int(time.time())
         # Live process: etime=10s, started 10s ago (live_started ≈ now-10)
         # File: startedAt = now - 12s (2s drift, within 10s tolerance)
@@ -795,7 +798,7 @@ class TestReadSessionInfo:
         cross-check is silently skipped — we accept the file.
         Otherwise a malformed ps row would erase a perfectly good
         session_info read."""
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
         now = int(time.time())
         old_started_ms = (now - 3600) * 1000  # would be rejected with valid etime
         (tmp_path / "777.json").write_text(
@@ -810,8 +813,8 @@ class TestReadSessionInfo:
 
 class TestJsonlFromSessionInfo:
     def test_resolves_exact_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
         (tmp_path / "sessions").mkdir()
         (tmp_path / "sessions" / "500.json").write_text(
             '{"pid":500,"sessionId":"s-1","cwd":"/x/y","kind":"interactive"}'
@@ -827,15 +830,15 @@ class TestJsonlFromSessionInfo:
     def test_returns_none_for_headless_session(self, tmp_path, monkeypatch):
         """kind='cli' (headless -p mode) should be skipped — ccm tracks
         only interactive sessions."""
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
         (tmp_path / "600.json").write_text(
             '{"pid":600,"sessionId":"s-2","cwd":"/a/b","kind":"cli"}'
         )
         assert ccm_core._jsonl_from_session_info("600") is None
 
     def test_returns_none_when_jsonl_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
         (tmp_path / "sessions").mkdir()
         (tmp_path / "sessions" / "700.json").write_text(
             '{"pid":700,"sessionId":"s-3","cwd":"/p/q","kind":"interactive"}'
@@ -847,8 +850,8 @@ class TestJsonlFromSessionInfo:
         """read_jsonl_age prefers the session-info resolution when
         claude_pid is provided, even if the slug-based lookup would
         find a different newest file."""
-        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
-        monkeypatch.setattr(ccm_core, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
         ccm_core._jsonl_path_cache.clear()
         (tmp_path / "sessions").mkdir()
         (tmp_path / "sessions" / "800.json").write_text(
@@ -3421,7 +3424,7 @@ class TestCmdRename:
 
 class TestClearNotificationsScope:
     def test_returns_minus_one_when_terminal_notifier_missing(self, monkeypatch):
-        monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: None)
+        monkeypatch.setattr(ccm_notify, "_terminal_notifier_path", lambda: None)
         assert ccm_core.clear_notifications() == -1
 
     def test_removes_only_ccm_prefixed_groups(self, monkeypatch):
@@ -3432,7 +3435,7 @@ class TestClearNotificationsScope:
             "deploy-alert\tDeploy succeeded\t\tprod\t2024-01-01 10:02:00 +0000\n"
             "monitoring-cpu\tHigh CPU\t\t\t2024-01-01 10:03:00 +0000\n"
         ).encode("utf-8")
-        monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
+        monkeypatch.setattr(ccm_notify, "_terminal_notifier_path", lambda: "/fake/tn")
 
         calls = []
 
@@ -3463,7 +3466,7 @@ class TestClearNotificationsScope:
             "GroupID\tTitle\tSubtitle\tMessage\tDelivered At\n"
             "deploy-alert\tDeploy succeeded\t\tprod\t2024-01-01 10:00:00 +0000\n"
         ).encode("utf-8")
-        monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
+        monkeypatch.setattr(ccm_notify, "_terminal_notifier_path", lambda: "/fake/tn")
 
         class _Result:
             def __init__(self, stdout=b""):
@@ -3478,7 +3481,7 @@ class TestClearNotificationsScope:
         assert ccm_core.clear_notifications() == 0
 
     def test_returns_minus_one_when_listing_fails(self, monkeypatch):
-        monkeypatch.setattr(ccm_core, "_terminal_notifier_path", lambda: "/fake/tn")
+        monkeypatch.setattr(ccm_notify, "_terminal_notifier_path", lambda: "/fake/tn")
 
         def fake_run(args, **kwargs):
             raise OSError("simulated")

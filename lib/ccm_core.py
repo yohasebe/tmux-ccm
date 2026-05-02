@@ -75,39 +75,17 @@ BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600")
 # `last-prompt`, …): a blacklist needs a code change for each new
 # type, while the whitelist absorbs them automatically. New
 # activity types are the only case that needs explicit addition.
-JSONL_ACTIVITY_TYPES = frozenset({"user", "assistant"})
-# Tail size (bytes) read from each JSONL when looking for the most
-# recent real activity record. Needs to accommodate a single large
-# tool_result record (Read of 2000 lines, long shell output, ...)
-# plus several trailing system records — any tool-result record alone
-# can easily exceed 8 KB. 32 KB covers that comfortably while
-# remaining trivially cheap per detection cycle.
-JSONL_TAIL_BYTES = 32768
-# Safety cap on how many lines from the tail we will JSON-parse.
-JSONL_TAIL_MAX_LINES = 200
-# Hook-vs-real-activity gap discriminator. A BUSY hook fired more
-# than this many seconds AFTER the last real conversation activity
-# is treated as a phantom hook (no surrounding real work) — the
-# upstream `away_summary` recap fires a BUSY-class hook with no
-# corresponding Stop, and this guard rejects it. In real long-
-# thinking, hook_age and real_activity_age grow together (gap ~0);
-# in recap, the hook is brand new while real_activity is minutes
-# old (gap >> threshold).
-JSONL_HOOK_GAP_TOLERANCE = int(os.environ.get("CCM_JSONL_HOOK_GAP_TOLERANCE", "60"))
+# JSONL_* constants moved to lib/ccm_jsonl.py and re-exported below.
 # Cluster-SHELL-transition detection: surface a warning when a project
 # drops back to SHELL too many times in a short window. The canonical
 # trigger is anthropics/claude-code#48069 (macOS silent-exit), where
 # Claude Code dies every 1-5 minutes and ccm observes SHELL → (user
 # re-attaches) → BUSY → IDLE → SHELL loops. Defaults: 3 transitions
 # in 10 minutes.
-SHELL_CLUSTER_WINDOW = int(os.environ.get("CCM_SHELL_CLUSTER_WINDOW", "600"))
-SHELL_CLUSTER_COUNT = int(os.environ.get("CCM_SHELL_CLUSTER_COUNT", "3"))
-# Upstream issue tag surfaced in the cluster-SHELL warning. Centralised
-# so future re-classification (different issue, root-cause PR, etc.)
-# only needs one edit. Update both halves when the upstream story
-# changes.
-SHELL_CLUSTER_ISSUE = "anthropics/claude-code#48069"
-SHELL_CLUSTER_ISSUE_NOTE = "macOS silent-exit"
+# SHELL_CLUSTER_* and the related canary functions live in
+# `ccm_canaries`. They are re-exported at the bottom of this file
+# so existing `from ccm_core import SHELL_CLUSTER_WINDOW` callers
+# (cmd_doctor, ccm_render, dashboard) work unchanged.
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))  # 10 min safety net
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
@@ -733,387 +711,7 @@ def read_hook_signal(project_dir, session_id: Optional[str] = None):
 
 
 # ─── Claude Code session log (JSONL) ───
-# Independent activity heartbeat that survives hook outages.
-# Claude Code writes one JSONL file per session under
-# `~/.claude/projects/<slug>/<sessionId>.jsonl`. Records are appended
-# at conversation turn boundaries (user prompt, assistant message,
-# tool_use, tool_result). The file mtime is therefore a reliable
-# "session activity" signal — when fresh, Claude is alive and
-# exchanging records, regardless of whether hooks are firing.
-#
-# Limitation: pure thinking / token streaming phases do NOT update
-# the file (records are written at message completion, not during
-# generation). So a stale mtime does not imply IDLE — only fresh
-# mtime is actionable. We use this as a positive BUSY signal only.
-#
-# Slug rule (verified empirically against ~/.claude/projects/):
-#   `/Users/alice/code/myproject` → `-Users-alice-code-myproject`
-# Claude Code uses the *literal* cwd at session start (no realpath
-# resolution), so we must NOT resolve symlinks here.
-
-CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
-CLAUDE_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
-JSONL_CACHE_TTL = int(os.environ.get("CCM_JSONL_CACHE_TTL", "60"))
-# Drift tolerance (seconds) for the session_info staleness check.
-# Compares Claude Code's recorded startedAt against the live
-# process's etime-derived start time. Anything beyond this means
-# the .json file is from a recycled pid's prior session.
-# 10 s comfortably covers normal clock drift, NTP corrections, and
-# the few-second gap between fork and Claude writing session_info.
-_SESSION_INFO_AGE_DRIFT_SEC = int(
-    os.environ.get("CCM_SESSION_INFO_AGE_DRIFT_SEC", "10")
-)
-
-# In-process cache: project_dir → (newest_jsonl_path, expiry_unixtime).
-# Path is re-discovered on cache expiry or when the cached file is gone.
-_jsonl_path_cache: dict = {}
-
-
-def read_session_info(claude_pid, ps_lines=None):
-    """Read the Claude Code runtime session file for a pid.
-
-    Claude Code writes `~/.claude/sessions/{pid}.json` at session start
-    with fields: pid, sessionId, cwd, startedAt, kind, entrypoint.
-    This is the authoritative source for mapping a running Claude
-    process to its session id and recorded cwd — no slug guessing,
-    no symlink / worktree edge cases.
-
-    PID-reuse defence: when `ps_lines` is provided, the file's
-    `startedAt` (unix ms when Claude Code recorded its own start) is
-    cross-checked against the live process's etime-derived start.
-    If they disagree by more than `_SESSION_INFO_AGE_DRIFT_SEC`
-    seconds the file is considered stale (a previous Claude session
-    whose pid was recycled to a new claude process before the file
-    was overwritten) and we return None — readers fall through to
-    legacy detection rather than reading the wrong session's events.
-    Without `ps_lines` the cross-check is skipped (caller had no
-    `ps` snapshot to verify against, so we accept the file as-is).
-
-    Returns a dict on success, or None if the file is missing,
-    malformed, or fails the staleness check. Callers gracefully
-    fall back to slug-based discovery when this returns None
-    (older Claude Code versions, sandboxed execution, etc.).
-    """
-    if not claude_pid:
-        return None
-    path = os.path.join(CLAUDE_SESSIONS_DIR, f"{claude_pid}.json")
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-
-    if ps_lines is not None:
-        # Cross-check `startedAt` (unix ms Claude recorded at session
-        # start) against the live process's etime-derived start time.
-        # Disagreement past the drift tolerance means the json file
-        # is from a previous session whose pid got recycled.
-        started_at_ms = data.get("startedAt")
-        if isinstance(started_at_ms, (int, float)):
-            etime_seconds = find_process_age(claude_pid, ps_lines)
-            if etime_seconds >= 0:
-                live_started_unix = int(time.time()) - etime_seconds
-                file_started_unix = int(started_at_ms) // 1000
-                if abs(live_started_unix - file_started_unix) > _SESSION_INFO_AGE_DRIFT_SEC:
-                    return None
-    return data
-
-
-def _project_slug(project_dir: str) -> str:
-    """Convert a project directory to its Claude Code JSONL slug.
-
-    Uses the literal path with `/` → `-`. Tilde is expanded but
-    symlinks are NOT resolved (Claude Code records the cwd as-given).
-    """
-    expanded = os.path.expanduser(project_dir)
-    return expanded.replace("/", "-")
-
-
-def _jsonl_from_session_info(claude_pid):
-    """Resolve the exact JSONL path via ~/.claude/sessions/{pid}.json.
-
-    Returns the path to the session's JSONL file, or None if the
-    runtime session file is missing or does not point at an existing
-    JSONL. Skips non-interactive sessions (e.g. `claude -p` headless
-    runs) — they are not user-facing and ccm should ignore them.
-    """
-    info = read_session_info(claude_pid)
-    if not info:
-        return None
-    if info.get("kind") != "interactive":
-        return None
-    session_id = info.get("sessionId")
-    cwd = info.get("cwd")
-    if not session_id or not cwd:
-        return None
-    slug = cwd.replace("/", "-")
-    path = os.path.join(CLAUDE_PROJECTS_DIR, slug, f"{session_id}.jsonl")
-    return path if os.path.exists(path) else None
-
-
-def _find_newest_jsonl(project_dir: str, claude_pid=None):
-    """Return the path to the newest *.jsonl file for this project,
-    or None if there is none.
-
-    Prefers the authoritative mapping via `~/.claude/sessions/{pid}.json`
-    when claude_pid is provided and the runtime session file exists.
-    Falls back to slug-based directory scanning for older Claude Code
-    versions or when the pid mapping cannot be resolved.
-
-    Result is cached for JSONL_CACHE_TTL seconds; the file's mtime is
-    read live each call.
-    """
-    now = time.time()
-
-    # Fast path: runtime session file gives us the exact JSONL.
-    if claude_pid:
-        exact = _jsonl_from_session_info(claude_pid)
-        if exact:
-            _jsonl_path_cache[project_dir] = (exact, now + JSONL_CACHE_TTL)
-            return exact
-
-    cached = _jsonl_path_cache.get(project_dir)
-    if cached and now < cached[1]:
-        path = cached[0]
-        if path is None:
-            return None
-        if os.path.exists(path):
-            return path
-        # cached path vanished — fall through to re-scan
-
-    slug = _project_slug(project_dir)
-    session_dir = os.path.join(CLAUDE_PROJECTS_DIR, slug)
-    try:
-        entries = os.listdir(session_dir)
-    except OSError:
-        _jsonl_path_cache[project_dir] = (None, now + JSONL_CACHE_TTL)
-        return None
-
-    newest = None
-    newest_mtime = -1.0
-    for entry in entries:
-        if not entry.endswith(".jsonl"):
-            continue
-        full = os.path.join(session_dir, entry)
-        try:
-            mt = os.path.getmtime(full)
-        except OSError:
-            continue
-        if mt > newest_mtime:
-            newest_mtime = mt
-            newest = full
-
-    _jsonl_path_cache[project_dir] = (newest, now + JSONL_CACHE_TTL)
-    return newest
-
-
-# Cache for _parse_jsonl_tail. Key: jsonl path. Value:
-# ((mtime_int, size_int), (real_activity_ts_or_None, last_stop_reason_or_None)).
-# The cache hits on every detection cycle as long as the JSONL file hasn't
-# been written, so the cost of tail-reading + JSON parsing is paid only
-# when the file actually changes.
-#
-# Why (mtime, size) and not just mtime: int(mtime) has 1-second
-# precision, so two writes within the same wall-clock second would
-# share the same int(mtime) and collide. JSONL files are append-only
-# during a session, so the size is monotonic and any new write
-# changes it — adding size to the key catches sub-second writes that
-# bare mtime would miss.
-#
-# OrderedDict + bounded eviction: a new JSONL file is created on every
-# `claude --continue` or `/compact`, so the cache would otherwise grow
-# without bound in long-running tmux sessions. On each lookup we move
-# the entry to the end (MRU); on insertion, we pop the oldest entry
-# if the cache exceeds JSONL_ACTIVITY_CACHE_MAX.
-JSONL_ACTIVITY_CACHE_MAX = 128
-_jsonl_activity_cache: "OrderedDict[str, Tuple[Tuple[int, int], Tuple[Optional[int], Optional[str]]]]" = OrderedDict()
-
-
-_TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
-
-# Synthesized stop_reason value: emitted when the latest real-activity
-# record is a `user` entry that landed AFTER a terminal assistant
-# record. This is the signature of "user submitted a new prompt;
-# claude is processing it (extended-thinking phase, no new assistant
-# record yet)". Distinct from any stop_reason Claude Code emits, so
-# detection can branch on it explicitly.
-JSONL_USER_PENDING = "user_pending"
-
-
-def _parse_jsonl_tail(
-    path: str, mtime: int, size: int
-) -> Tuple[Optional[int], Optional[str]]:
-    """Tail-read a JSONL file and return:
-      - unix timestamp of the most recent real-conversation-activity
-        record, or None if no such record was found in the tail window
-      - active stop-state at the JSONL tail:
-          * `stop_reason` of the most recent assistant record (any of
-            `tool_use` / `end_turn` / `max_tokens` / `stop_sequence`,
-            etc.), OR
-          * the synthetic value `JSONL_USER_PENDING` when the latest
-            real-activity record is a `user` entry whose timestamp is
-            newer than the latest assistant record AND that assistant
-            had a terminal stop_reason. This indicates a fresh user
-            prompt is in flight (extended-thinking case where claude
-            has not written any new assistant record yet).
-        None when the tail contained neither.
-
-    Only records whose `type` is in `JSONL_ACTIVITY_TYPES`
-    (whitelist) are considered for both fields; everything else
-    is skipped as system / housekeeping metadata.
-
-    Cached by (path, mtime, size): the second call with an unchanged
-    mtime AND size returns the cached tuple without re-reading the
-    file. A new write changes the size (JSONL is append-only during
-    a session), so cache invalidation is reliable even within the
-    same wall-clock second.
-    """
-    key = (mtime, size)
-    cached = _jsonl_activity_cache.get(path)
-    if cached is not None and cached[0] == key:
-        _jsonl_activity_cache.move_to_end(path)
-        return cached[1]
-
-    real_ts: Optional[int] = None
-    latest_user_ts: Optional[int] = None
-    latest_assistant_ts: Optional[int] = None
-    last_stop_reason: Optional[str] = None
-
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            actual_size = f.tell()
-            f.seek(max(0, actual_size - JSONL_TAIL_BYTES))
-            tail_bytes = f.read()
-    except OSError:
-        _cache_jsonl_activity(path, key, (None, None))
-        return (None, None)
-
-    tail = tail_bytes.decode("utf-8", errors="ignore")
-    lines = tail.split("\n")
-    # When we read mid-file, the first chunk line is potentially partial.
-    # Drop it unless we read the entire file in one shot.
-    if size > JSONL_TAIL_BYTES and len(lines) > 1:
-        lines = lines[1:]
-
-    parsed = 0
-    for line in reversed(lines):
-        if parsed >= JSONL_TAIL_MAX_LINES:
-            break
-        line = line.strip()
-        if not line:
-            continue
-        parsed += 1
-        try:
-            rec = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(rec, dict):
-            continue
-        rec_type = rec.get("type")
-        if not rec_type or rec_type not in JSONL_ACTIVITY_TYPES:
-            continue
-        # Parse timestamp — defence-in-depth in case Claude Code adds
-        # a whitelisted type that omits the field.
-        rec_ts: Optional[int] = None
-        ts_str = rec.get("timestamp")
-        if ts_str and isinstance(ts_str, str):
-            try:
-                iso = ts_str.replace("Z", "+00:00")
-                rec_ts = int(datetime.fromisoformat(iso).timestamp())
-            except (ValueError, TypeError):
-                pass
-        if rec_ts is None:
-            continue
-        if real_ts is None:
-            real_ts = rec_ts
-        if rec_type == "user" and latest_user_ts is None:
-            latest_user_ts = rec_ts
-        elif rec_type == "assistant" and latest_assistant_ts is None:
-            latest_assistant_ts = rec_ts
-            msg = rec.get("message") or {}
-            sr = msg.get("stop_reason") if isinstance(msg, dict) else None
-            if isinstance(sr, str) and sr:
-                last_stop_reason = sr
-        # Stop scanning once we have everything we need.
-        if (real_ts is not None and latest_user_ts is not None
-                and latest_assistant_ts is not None):
-            break
-
-    # Promote to JSONL_USER_PENDING when a user record is newer than
-    # the latest terminal assistant — i.e. the user just submitted a
-    # new prompt and claude has not written any response yet.
-    if (latest_user_ts is not None and latest_assistant_ts is not None
-            and latest_user_ts > latest_assistant_ts
-            and last_stop_reason in _TERMINAL_STOP_REASONS):
-        last_stop_reason = JSONL_USER_PENDING
-
-    result = (real_ts, last_stop_reason)
-    _cache_jsonl_activity(path, key, result)
-    return result
-
-
-def _cache_jsonl_activity(path: str, key: Tuple[int, int],
-                          value: Tuple[Optional[int], Optional[str]]) -> None:
-    """Insert into _jsonl_activity_cache with LRU eviction."""
-    _jsonl_activity_cache[path] = (key, value)
-    _jsonl_activity_cache.move_to_end(path)
-    while len(_jsonl_activity_cache) > JSONL_ACTIVITY_CACHE_MAX:
-        _jsonl_activity_cache.popitem(last=False)
-
-
-def read_jsonl_tail_info(project_dir: str, claude_pid=None) -> Tuple[int, Optional[str]]:
-    """Return `(age_seconds, last_assistant_stop_reason)` for the project's
-    newest JSONL file.
-
-      - age_seconds: seconds since the most recent real-activity record,
-        or -1 if no JSONL exists or no real activity is present in the
-        tail.
-      - last_assistant_stop_reason: `stop_reason` string from the most
-        recent `assistant` record in the tail (e.g. `"tool_use"`,
-        `"end_turn"`, `"max_tokens"`), or None if none was found.
-
-    System / housekeeping records (anything outside the
-    `JSONL_ACTIVITY_TYPES` whitelist) are filtered out of both
-    fields so they do NOT register as fresh activity and do NOT
-    clobber the last-assistant stop_reason signal.
-
-    `stop_reason` is the upstream signal that distinguishes "tool
-    pending mid-turn" (`tool_use`) from "response complete"
-    (`end_turn` / `max_tokens` / `stop_sequence`). The event-log
-    detection path uses it to hold BUSY across tool-turn
-    boundaries.
-
-    When claude_pid is provided, the exact session file is resolved
-    via `~/.claude/sessions/{pid}.json` (authoritative, no slug guess).
-    """
-    if not project_dir:
-        return -1, None
-    newest = _find_newest_jsonl(project_dir, claude_pid=claude_pid)
-    if newest is None:
-        return -1, None
-    try:
-        st = os.stat(newest)
-    except OSError:
-        return -1, None
-    real_ts, stop_reason = _parse_jsonl_tail(newest, int(st.st_mtime), st.st_size)
-    if real_ts is None:
-        return -1, stop_reason
-    return int(time.time() - real_ts), stop_reason
-
-
-def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
-    """Thin wrapper around `read_jsonl_tail_info` that returns only the age.
-
-    Kept for callers that do not need the stop_reason and for backward
-    compatibility with the pytest suite that mocks this function
-    directly. The combined accessor is preferred in new detection code
-    because it shares the underlying tail-parse cache entry.
-    """
-    age, _ = read_jsonl_tail_info(project_dir, claude_pid=claude_pid)
-    return age
+# Moved to lib/ccm_jsonl.py. Re-exported at the bottom.
 
 
 # ─── Event log reader ───
@@ -1246,268 +844,9 @@ def read_events_tail(project_dir: str, limit: int = 20,
     return result[-limit:] if limit and len(result) > limit else result
 
 
-# ─── Claude Code hooks.log canary ───
-# Per anthropics/claude-code#16047, an unrotated `~/.claude/hooks.log`
-# can grow to many GB and silently disable all hook firing (every
-# hook write fails). Claude Code does not rotate or cap this file.
-# We surface a warning in `ccm status` and the dashboard footer when
-# the size crosses a threshold so the user can `: > ~/.claude/hooks.log`
-# and recover hook delivery.
-
-CLAUDE_HOOKS_LOG = os.path.expanduser("~/.claude/hooks.log")
-HOOKS_LOG_WARN_BYTES = int(
-    os.environ.get("CCM_HOOKS_LOG_WARN_BYTES", str(100 * 1024 * 1024))  # 100 MB
-)
-
-
-def hooks_log_size() -> int:
-    """Return the byte size of `~/.claude/hooks.log`, or -1 if absent."""
-    try:
-        return os.path.getsize(CLAUDE_HOOKS_LOG)
-    except OSError:
-        return -1
-
-
-def hooks_log_warning() -> str:
-    """Return a one-line warning string when hooks.log is bloated past
-    the threshold, or "" if everything is fine. The message tells the
-    user the exact remediation command — this is a self-service fix.
-    """
-    size = hooks_log_size()
-    if size < HOOKS_LOG_WARN_BYTES:
-        return ""
-    mb = size / (1024 * 1024)
-    return (
-        f"Claude hooks.log is {mb:.0f} MB — hooks may be silently failing. "
-        f"Run `: > ~/.claude/hooks.log` to restore hook delivery (#16047)."
-    )
-
-
-# ─── Claude Code global settings canary ───
-# Detect configuration flags in ~/.claude/settings.json that silently
-# disable ccm's fast-path signals. If the user sets these, state
-# detection degrades without any obvious error — we surface a warning
-# so the cause is discoverable.
-
-CLAUDE_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")
-
-
-def _read_claude_settings():
-    try:
-        with open(CLAUDE_SETTINGS_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def disable_all_hooks_warning() -> str:
-    """Return a warning string if `disableAllHooks: true` is set in
-    ~/.claude/settings.json, otherwise "".
-
-    Per Claude Code's docs, this setting disables ALL hooks AND any
-    custom statusLine — ccm's entire fast-path signal goes dark with
-    no error. Same class of silent failure as the hooks.log bloat
-    canary.
-
-    Scope: only the user-level file `~/.claude/settings.json` is
-    checked. Project-scope settings (`<project>/.claude/settings.json`)
-    and enterprise managed settings (e.g.
-    `/Library/Application Support/ClaudeCode/managed-settings.json`
-    on macOS) are NOT inspected. The setting is also valid in those
-    locations, so a managed-policy or per-project disable will not
-    surface a warning here. Adding cross-scope checks would require
-    walking Claude Code's full settings precedence chain, which is
-    out of scope for this canary.
-    """
-    data = _read_claude_settings()
-    if not data:
-        return ""
-    if data.get("disableAllHooks") is True:
-        return (
-            "Claude Code `disableAllHooks: true` is set in "
-            "~/.claude/settings.json — this disables ALL hooks AND any "
-            "custom `statusLine` command. ccm state detection falls "
-            "back to JSONL polling and process tree only, and any "
-            "embedded statusLine you configured will stop rendering. "
-            "Remove the setting to restore real-time hook signals."
-        )
-    return ""
-
-
-def managed_hooks_only_warning() -> str:
-    """Return a warning string if `allowManagedHooksOnly: true` is set
-    in ~/.claude/settings.json, otherwise "".
-
-    Per Claude Code's docs, when this is set in *managed* settings,
-    every user-scope hook (which is exactly where ccm installs all
-    14 of its hooks) is silently blocked with no error.
-    The result looks identical to a broken Claude Code install from
-    ccm's perspective: no hooks fire, ever.
-
-    Scope (important caveat): only the user-level file
-    `~/.claude/settings.json` is checked. The setting is most
-    commonly placed in an enterprise-managed settings file (e.g.
-    `/Library/Application Support/ClaudeCode/managed-settings.json`
-    on macOS), which is the actual deployment scenario this flag
-    targets. ccm does NOT walk Claude Code's settings precedence
-    chain — that path varies by OS and is not stably documented.
-
-    This canary therefore catches:
-      - a user who set the flag in their own file by mistake or test
-      - a managed file symlinked to the user-scope path
-    But it does NOT catch the typical enterprise deployment where
-    the flag lives in a separate managed file. Users in managed
-    enterprise environments should not expect a warning here even
-    when ccm hooks are silently disabled.
-    """
-    data = _read_claude_settings()
-    if not data:
-        return ""
-    if data.get("allowManagedHooksOnly") is True:
-        return (
-            "Claude Code `allowManagedHooksOnly: true` is set — all "
-            "user-scope hooks (including every ccm hook) are blocked. "
-            "Remove the setting or move ccm hooks to managed scope to "
-            "restore real-time signals."
-        )
-    return ""
-
-
-# ─── Cluster-SHELL-transition detection ───
-# When Claude Code dies repeatedly (most commonly the macOS silent-
-# exit regression, anthropics/claude-code#48069), ccm observes a
-# rapid SHELL → (user or ccm re-attach) → BUSY → IDLE → SHELL loop.
-# We record each SHELL transition timestamp in a per-window tmux
-# option `@ccm_shell_history` and surface a warning if the count in
-# the last SHELL_CLUSTER_WINDOW exceeds SHELL_CLUSTER_COUNT.
-
-_SHELL_HISTORY_OPT = "@ccm_shell_history"
-
-
-def _parse_shell_history_raw(raw: str) -> list:
-    """Parse a raw `@ccm_shell_history` value (comma-separated unix
-    timestamps) into a list of ints, newest first, with entries
-    older than SHELL_CLUSTER_WINDOW filtered out. Shared by the
-    per-window read and the batch read.
-    """
-    if not raw:
-        return []
-    horizon = int(time.time()) - SHELL_CLUSTER_WINDOW
-    out = []
-    for item in raw.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        try:
-            ts = int(item)
-        except ValueError:
-            continue
-        if ts >= horizon:
-            out.append(ts)
-    return out
-
-
-def _read_shell_history(win_target: str) -> list:
-    """Read the SHELL transition timestamp history for a single window.
-
-    Used by the rare write path (`_push_shell_transition`). The hot
-    read path (`shell_cluster_warnings`) goes through
-    `_read_all_shell_histories` to amortise the subprocess cost
-    across windows.
-    """
-    raw = tmux_cmd("show-option", "-wqv", "-t", win_target, _SHELL_HISTORY_OPT)
-    return _parse_shell_history_raw(raw)
-
-
-def _read_all_shell_histories() -> dict:
-    """Return `{win_target: history_list}` for every window in one
-    `tmux list-windows -a` subprocess instead of one show-option
-    per window. Keeps `shell_cluster_warnings` O(1) subprocess
-    regardless of project count.
-    """
-    raw = tmux_cmd(
-        "list-windows", "-a",
-        "-F", "#{session_name}:#{window_index}\t#{" + _SHELL_HISTORY_OPT + "}",
-    )
-    histories = {}
-    if not raw:
-        return histories
-    for line in raw.splitlines():
-        if "\t" not in line:
-            continue
-        win_target, _, history_raw = line.partition("\t")
-        histories[win_target] = _parse_shell_history_raw(history_raw)
-    return histories
-
-
-def _push_shell_transition(win_target: str) -> None:
-    """Record a new SHELL transition for a window.
-
-    Prepends the current timestamp to `@ccm_shell_history`, trims
-    entries older than SHELL_CLUSTER_WINDOW via `_read_shell_history`,
-    and caps the stored size at 2 × SHELL_CLUSTER_COUNT entries (or
-    a floor of 6) to prevent unbounded growth of the tmux option.
-    Every push writes back a capped, trimmed history so that even
-    pre-existing oversized values converge on the cap.
-    """
-    existing = _read_shell_history(win_target)
-    now = int(time.time())
-    max_entries = max(SHELL_CLUSTER_COUNT * 2, 6)
-
-    # Deduplicate same-second pushes so two code paths hitting
-    # apply_actions for the same scan cycle don't double-count one
-    # transition. We still write back the capped history though,
-    # so pre-existing oversized values are normalised.
-    if existing and existing[0] == now:
-        updated = existing
-    else:
-        updated = [now] + existing
-
-    updated = updated[:max_entries]
-    tmux_cmd(
-        "set-option", "-wt", win_target, _SHELL_HISTORY_OPT,
-        ",".join(str(t) for t in updated),
-    )
-
-
-def _format_cluster_warning(history_len: int, project_name: str) -> str:
-    label = f"{project_name}: " if project_name else ""
-    return (
-        f"{label}Claude Code exited {history_len}+ times in "
-        f"{SHELL_CLUSTER_WINDOW // 60} min — likely "
-        f"{SHELL_CLUSTER_ISSUE} ({SHELL_CLUSTER_ISSUE_NOTE}). "
-        f"The conversation auto-restores via `claude --continue`."
-    )
-
-
-def shell_cluster_warning(win_target: str, project_name: str = "") -> str:
-    """Return a one-line warning if this window has hit the SHELL
-    cluster threshold, otherwise "". Per-window read; for bulk
-    use prefer `shell_cluster_warnings` which batches.
-    """
-    history = _read_shell_history(win_target)
-    if len(history) < SHELL_CLUSTER_COUNT:
-        return ""
-    return _format_cluster_warning(len(history), project_name)
-
-
-def shell_cluster_warnings(projects) -> list:
-    """Return a list of warning strings, one per project that has
-    crossed the SHELL cluster threshold. Empty list if all quiet.
-
-    Reads every window's `@ccm_shell_history` in a single
-    `tmux list-windows` subprocess instead of one per project, so
-    the cost is O(1) subprocess regardless of project count.
-    """
-    histories = _read_all_shell_histories()
-    out = []
-    for p in projects:
-        history = histories.get(p.win_target, [])
-        if len(history) < SHELL_CLUSTER_COUNT:
-            continue
-        out.append(_format_cluster_warning(len(history), p.name))
-    return out
+# ─── Runtime canaries ───
+# Moved to lib/ccm_canaries.py. Re-exported at the bottom of this
+# file so `from ccm_core import hooks_log_warning` etc. keep working.
 
 
 # ─── State detection ───
@@ -1741,186 +1080,7 @@ def save_tmux_conf_setting(setting):
 
 
 # ─── Desktop notifications ───
-
-_TERMINAL_NOTIFIER_PATH = None
-_TERMINAL_NOTIFIER_CHECKED = False
-
-
-def _terminal_notifier_path():
-    """Return the path to `terminal-notifier` if installed, else None.
-
-    Result is cached for the process lifetime — `which` is fast but
-    we hit this on every notification.
-    """
-    global _TERMINAL_NOTIFIER_PATH, _TERMINAL_NOTIFIER_CHECKED
-    if _TERMINAL_NOTIFIER_CHECKED:
-        return _TERMINAL_NOTIFIER_PATH
-    _TERMINAL_NOTIFIER_CHECKED = True
-    try:
-        r = subprocess.run(["which", "terminal-notifier"],
-                           capture_output=True, text=True, timeout=2)
-        if r.returncode == 0:
-            _TERMINAL_NOTIFIER_PATH = r.stdout.strip() or None
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return _TERMINAL_NOTIFIER_PATH
-
-
-def notify(state, project, detail=""):
-    """Send desktop notification for state changes.
-
-    Controlled by @ccm-notify tmux option: off, permit, completed,
-    permit,completed, all. `detail` is optional context (e.g.
-    "Bash: rm -rf ..." for PERMIT).
-
-    macOS notifications accumulate in Notification Center — a
-    user who runs ccm continuously across many projects can build
-    up hundreds of stale entries that drive WindowServer /
-    NotificationCenter to high CPU. Two mitigations:
-
-      1. If `terminal-notifier` is installed, use it with
-         `-group ccm-<project>` so each project shows at most
-         one notification (new replaces old). Recommended.
-      2. Otherwise fall back to `osascript display notification`,
-         which has no group / replace primitive — users who hit
-         the NC-accumulation problem should either install
-         terminal-notifier (`brew install terminal-notifier`),
-         set `@ccm-notify permit` to drop the more-frequent
-         COMPLETED notifications, or run `ccm clear-notifications`
-         periodically.
-    """
-    setting = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,completed"
-    if setting == "off":
-        return
-
-    state_lower = state.lower()
-    if setting != "all" and state_lower not in setting:
-        return
-
-    sound_setting = tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
-    sound_name = (tmux_cmd("show-option", "-gqv", "@ccm-notify-sound-name") or "Glass") if sound_setting == "on" else ""
-
-    permit_body = f"Permission required: {detail}" if detail else \
-                  "Action required — respond to the permission prompt"
-    messages = {
-        "PERMIT": (f"ccm ⚠ {project}",
-                   permit_body,
-                   sound_name),
-        "COMPLETED": (f"ccm ✔ {project}",
-                      "Claude has finished responding — review the output when ready",
-                      sound_name),
-        "BUSY":   (f"ccm ◉ {project}",
-                   "Claude is now processing your request",
-                   ""),
-        "IDLE":   (f"ccm {project}",
-                   "Waiting for your input",
-                   ""),
-    }
-
-    if state not in messages:
-        return
-
-    title, body, sound = messages[state]
-    # Group ID per-project so a fresh notification for the same
-    # project replaces (rather than accumulates with) the previous
-    # one. terminal-notifier respects -group; osascript does not.
-    group_id = f"ccm-{project}"
-
-    tn_path = _terminal_notifier_path()
-    if tn_path:
-        # Intentionally NO `-sender com.apple.Terminal`. Specifying
-        # a sender bundle id makes macOS deliver the notification
-        # under that app's identity, which silently drops it for
-        # every user not actually running Terminal.app (iTerm2,
-        # WezTerm, kitty, ghostty, …). Letting terminal-notifier
-        # use its own bundle id means the user grants notification
-        # permission once and it works regardless of terminal.
-        cmd_args = [tn_path,
-                    "-message", body,
-                    "-title", title,
-                    "-group", group_id]
-        if sound:
-            cmd_args.extend(["-sound", sound])
-        try:
-            subprocess.Popen(cmd_args,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-            return
-        except OSError:
-            pass  # fall through to osascript
-
-    try:
-        # Escape double quotes and backslashes for AppleScript string literals
-        esc_title = title.replace("\\", "\\\\").replace('"', '\\"')
-        esc_body = body.replace("\\", "\\\\").replace('"', '\\"')
-        sound_opt = ""
-        if sound:
-            esc_sound = sound.replace("\\", "\\\\").replace('"', '\\"')
-            sound_opt = f' sound name "{esc_sound}"'
-        cmd = f'display notification "{esc_body}" with title "{esc_title}"{sound_opt}'
-        subprocess.Popen(["osascript", "-e", cmd],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except FileNotFoundError:
-        try:
-            subprocess.Popen(["notify-send", title, body],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except FileNotFoundError:
-            pass
-
-
-def clear_notifications():
-    """Remove ccm-sent notifications from the macOS Notification
-    Center. Requires `terminal-notifier` (the only command-line
-    way to enumerate / remove macOS notifications).
-
-    Scopes the removal to ccm by enumerating `-list ALL` and
-    deleting only group ids prefixed with `ccm-` (the convention
-    `notify()` uses). `-remove ALL` was tempting but would also
-    delete notifications a user has sent via terminal-notifier
-    from unrelated scripts (deploy alerts, monitoring, …). The
-    enumerate-then-filter approach pays one extra subprocess but
-    keeps the user's other notifications intact.
-
-    Notifications that pre-date the terminal-notifier integration
-    (delivered via `osascript`) have no programmatic remove path
-    and remain in Notification Center until the user dismisses
-    them manually — `osascript display notification` does not
-    expose an identifier the system will accept for later removal.
-
-    Returns the count of removed notifications on success, -1 if
-    terminal-notifier is not installed or the enumeration failed.
-    """
-    tn_path = _terminal_notifier_path()
-    if not tn_path:
-        return -1
-    try:
-        listing = subprocess.run(
-            [tn_path, "-list", "ALL"],
-            capture_output=True, timeout=5,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return -1
-
-    # Other apps' notification titles may contain bytes that are not
-    # valid UTF-8; decode permissively so a single bad title does not
-    # abort the entire scrub.
-    listing_text = (listing.stdout or b"").decode("utf-8", errors="replace")
-    removed = 0
-    for line in listing_text.splitlines()[1:]:  # skip header
-        # `-list ALL` emits a TSV: GroupID<TAB>Title<TAB>...
-        group_id = line.split("\t", 1)[0].strip()
-        if not group_id.startswith("ccm-"):
-            continue
-        try:
-            subprocess.run(
-                [tn_path, "-remove", group_id],
-                capture_output=True, text=True, timeout=5,
-            )
-            removed += 1
-        except (subprocess.TimeoutExpired, OSError):
-            # Best-effort: log nothing, continue with remaining ids
-            continue
-    return removed
+# Moved to lib/ccm_notify.py. Re-exported at the bottom.
 
 
 # ─── Window name update ───
@@ -2335,6 +1495,72 @@ def fzf_select(items, prompt="Select: "):
         ccm_die("fzf not found (install with: brew install fzf)")
 
 
+
+
+# ─── Re-exported canary API ───
+# `ccm_canaries` imports `ccm_core` for late-bound `tmux_cmd` access,
+# so the canaries re-export must happen AFTER `tmux_cmd` is defined
+# above. Existing callers continue to use `ccm_core.hooks_log_warning`
+# etc. unchanged.
+from ccm_canaries import (  # noqa: E402
+    SHELL_CLUSTER_WINDOW,
+    SHELL_CLUSTER_COUNT,
+    SHELL_CLUSTER_ISSUE,
+    SHELL_CLUSTER_ISSUE_NOTE,
+    CLAUDE_HOOKS_LOG,
+    CLAUDE_SETTINGS_FILE,
+    HOOKS_LOG_WARN_BYTES,
+    _read_claude_settings,
+    _read_shell_history,
+    _read_all_shell_histories,
+    _push_shell_transition,
+    _format_cluster_warning,
+    _parse_shell_history_raw,
+    disable_all_hooks_warning,
+    hooks_log_size,
+    hooks_log_warning,
+    managed_hooks_only_warning,
+    shell_cluster_warning,
+    shell_cluster_warnings,
+)
+
+
+# ─── Re-exported notification API ───
+from ccm_notify import (  # noqa: E402
+    _terminal_notifier_path,
+    clear_notifications,
+    notify,
+)
+
+
+# ─── Re-exported JSONL API ───
+# `ccm_jsonl` imports `ccm_core` for late-bound `find_process_age`
+# access in its pid-reuse staleness check. The re-export pattern
+# (constants + functions visible via `ccm_core.X`) keeps existing
+# `from ccm_core import JSONL_HOOK_GAP_TOLERANCE / read_session_info`
+# callers (ccm_detection, ccm_render, dashboard, tests) unchanged.
+from ccm_jsonl import (  # noqa: E402
+    CLAUDE_PROJECTS_DIR,
+    CLAUDE_SESSIONS_DIR,
+    JSONL_ACTIVITY_CACHE_MAX,
+    JSONL_ACTIVITY_TYPES,
+    JSONL_CACHE_TTL,
+    JSONL_HOOK_GAP_TOLERANCE,
+    JSONL_TAIL_BYTES,
+    JSONL_TAIL_MAX_LINES,
+    JSONL_USER_PENDING,
+    _SESSION_INFO_AGE_DRIFT_SEC,
+    _cache_jsonl_activity,
+    _find_newest_jsonl,
+    _jsonl_activity_cache,
+    _jsonl_from_session_info,
+    _jsonl_path_cache,
+    _parse_jsonl_tail,
+    _project_slug,
+    read_jsonl_age,
+    read_jsonl_tail_info,
+    read_session_info,
+)
 
 
 # ─── Re-exported detection API ───
