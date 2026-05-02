@@ -6,7 +6,11 @@
 <br clear="left">
 <br>
 
-ccm is a tmux plugin that runs multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions as tmux windows. A live dashboard shows each project's state, snapshots restore your layout across tmux restarts, and desktop notifications surface the projects that need attention.
+ccm is a tmux plugin for developers who run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) across several projects at once. Each Claude session becomes a tagged tmux window with live state detection — so you stop tabbing through windows trying to remember which is mid-response, which is waiting for your approval, and which is idle.
+
+A popup dashboard shows every project's state (busy / idle / waiting for permission), git branch, and listening ports at a glance. Snapshots restore your full layout after a tmux restart. Desktop notifications surface only the projects that need attention.
+
+ccm's value scales with parallelism: useful with 2–3 projects, daily infrastructure with 4+. Best fit for Max-tier users running agents across multiple projects in parallel.
 
 **Dashboard** (`prefix + Tab`) with the mode-2 status bar visible at the bottom:
 

@@ -16,36 +16,46 @@ CCM_KEY_DASHBOARD="${CCM_KEY_DASHBOARD:-Tab}"
 # Temp dir setup command (used in run-shell for session detection)
 _session_cmd='mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"'
 
+# Coloured "ccm" badge for popup titles. Three pill cells in a
+# muted traffic-light palette (rose / amber / sage) so each
+# letter reads as a distinct mark while staying gentle on the
+# eye. Each cell is 3 columns wide (" c " / " c " / " m ") with
+# a black bold glyph centred on a coloured background.
+# `#[default]` resets to the popup's normal title style for the
+# suffix word. Truecolor terminals render exact hex; on 256-
+# colour terminals tmux falls back to the nearest palette entry.
+_logo='#[bg=#E89B9B,fg=#000000,bold] c #[bg=#E8C76A,fg=#000000,bold] c #[bg=#86C99B,fg=#000000,bold] m #[default]'
+
 # Keybindings — only dashboard is bound by default (Tab rarely conflicts)
 # Menu and tree are opt-in via @ccm-key-menu / @ccm-key-tree to avoid
 # conflicts with other plugins (e.g., tmux-sessionist binds C).
 tmux bind-key "$CCM_KEY_DASHBOARD" \
     run-shell "$_session_cmd" \\\; \
-    display-popup -E -w 80% -h 60% -T " ccm Dashboard " "$CCM_BIN dashboard"
+    display-popup -E -w 80% -h 60% -T " ${_logo} Dashboard " "$CCM_BIN dashboard"
 
 if [[ -n "$CCM_KEY_MENU" ]]; then
     tmux bind-key "$CCM_KEY_MENU" \
         run-shell "$_session_cmd" \\\; \
-        display-popup -E -w 80% -h 60% -T " ccm Menu " "$CCM_BIN menu"
+        display-popup -E -w 80% -h 60% -T " ${_logo} Menu " "$CCM_BIN menu"
 fi
 
 if [[ -n "$CCM_KEY_TREE" ]]; then
     tmux bind-key "$CCM_KEY_TREE" \
         run-shell "$_session_cmd" \\\; \
-        display-popup -E -w 80% -h 60% -T " ccm Tree " "$CCM_BIN tree-interactive"
+        display-popup -E -w 80% -h 60% -T " ${_logo} Tree " "$CCM_BIN tree-interactive"
 fi
 
 if [[ -n "$CCM_KEY_SEARCH" ]]; then
     tmux bind-key "$CCM_KEY_SEARCH" \
         run-shell "$_session_cmd" \\\; \
-        display-popup -E -w 80% -h 60% -T " ccm Filter " "$CCM_BIN search"
+        display-popup -E -w 80% -h 60% -T " ${_logo} Filter " "$CCM_BIN search"
 fi
 
 # Mouse click on ccm status icon → open dashboard
 # Falls back to default behavior (select-window) for non-ccm clicks
 tmux bind-key -n MouseDown1Status \
     if-shell -F '#{==:#{mouse_status_range},ccm}' \
-    "run-shell '$_session_cmd' ; display-popup -E -w 80% -h 60% -T ' ccm Dashboard ' '$CCM_BIN dashboard'" \
+    "run-shell '$_session_cmd' ; display-popup -E -w 80% -h 60% -T ' ${_logo} Dashboard ' '$CCM_BIN dashboard'" \
     "switch-client -t ="
 
 # Reduce Claude Code UI flicker in tmux (alt-screen rendering)
