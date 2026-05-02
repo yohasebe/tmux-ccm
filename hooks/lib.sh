@@ -187,6 +187,15 @@ ccm_write_signal() {
         if [[ "$state" == "PERMIT" && -n "$project" ]]; then
             _ccm_instant_permit_icon "$win_target" "$project" &
             _ccm_instant_notify "PERMIT" "$project" "$detail" "$key" &
+        else
+            # Non-PERMIT transitions also benefit from forcing an
+            # immediate status redraw so BUSY ↔ IDLE flips appear in
+            # ~100 ms instead of waiting up to status-interval (1 s).
+            # The PERMIT branch above already calls refresh-client via
+            # `_ccm_instant_permit_icon`, so this `else` covers BUSY
+            # signal writes (PreToolUse / PostToolUse / etc.) without
+            # double-refreshing.
+            tmux refresh-client -S 2>/dev/null
         fi
     fi
 }
