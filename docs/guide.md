@@ -545,6 +545,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 |----------|---------|---------|
 | `CCM_AMBIGUOUS_WIDTH` | `1` | Terminal column count for East Asian Ambiguous characters (e.g. the IDLE icon `●`, SHELL icon `■`). Set to `2` on CJK locale terminals where Ambiguous chars render as 2 columns, so dashboard / `ccm status` columns stay aligned. Read at module load — restart inject-status / dashboard to pick up a change |
 | `CCM_ERRORS_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap for `$TMPDIR/ccm-$UID/errors.log` (the silent-exception log). At the cap, the active log rotates to `errors.log.1` and a fresh log starts (total disk use ~2 × cap). View with `ccm errors`; clear with `ccm errors --clear` |
+| `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10` (seconds) | Drift tolerance for the session_info pid-reuse check. When `read_session_info` is given a `ps` snapshot, it cross-checks Claude Code's recorded `startedAt` against the live process's etime-derived start time; a discrepancy beyond this tolerance means the json file is from a recycled pid's prior session and is rejected (caller falls through to legacy detection). 10 s comfortably covers normal clock drift / NTP corrections / the few-second gap between fork and Claude writing session_info |
 
 ### Tuning examples
 

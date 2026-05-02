@@ -760,13 +760,22 @@ def read_hook_signal(project_dir, session_id: Optional[str] = None):
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 CLAUDE_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 JSONL_CACHE_TTL = int(os.environ.get("CCM_JSONL_CACHE_TTL", "60"))
+# Drift tolerance (seconds) for the session_info staleness check.
+# Compares Claude Code's recorded startedAt against the live
+# process's etime-derived start time. Anything beyond this means
+# the .json file is from a recycled pid's prior session.
+# 10 s comfortably covers normal clock drift, NTP corrections, and
+# the few-second gap between fork and Claude writing session_info.
+_SESSION_INFO_AGE_DRIFT_SEC = int(
+    os.environ.get("CCM_SESSION_INFO_AGE_DRIFT_SEC", "10")
+)
 
 # In-process cache: project_dir → (newest_jsonl_path, expiry_unixtime).
 # Path is re-discovered on cache expiry or when the cached file is gone.
 _jsonl_path_cache: dict = {}
 
 
-def read_session_info(claude_pid):
+def read_session_info(claude_pid, ps_lines=None):
     """Read the Claude Code runtime session file for a pid.
 
     Claude Code writes `~/.claude/sessions/{pid}.json` at session start
@@ -775,10 +784,21 @@ def read_session_info(claude_pid):
     process to its session id and recorded cwd — no slug guessing,
     no symlink / worktree edge cases.
 
-    Returns a dict on success, or None if the file is missing or
-    malformed. Callers should gracefully fall back to slug-based
-    discovery when this returns None (older Claude Code versions,
-    sandboxed execution, etc.).
+    PID-reuse defence: when `ps_lines` is provided, the file's
+    `startedAt` (unix ms when Claude Code recorded its own start) is
+    cross-checked against the live process's etime-derived start.
+    If they disagree by more than `_SESSION_INFO_AGE_DRIFT_SEC`
+    seconds the file is considered stale (a previous Claude session
+    whose pid was recycled to a new claude process before the file
+    was overwritten) and we return None — readers fall through to
+    legacy detection rather than reading the wrong session's events.
+    Without `ps_lines` the cross-check is skipped (caller had no
+    `ps` snapshot to verify against, so we accept the file as-is).
+
+    Returns a dict on success, or None if the file is missing,
+    malformed, or fails the staleness check. Callers gracefully
+    fall back to slug-based discovery when this returns None
+    (older Claude Code versions, sandboxed execution, etc.).
     """
     if not claude_pid:
         return None
@@ -790,6 +810,20 @@ def read_session_info(claude_pid):
         return None
     if not isinstance(data, dict):
         return None
+
+    if ps_lines is not None:
+        # Cross-check `startedAt` (unix ms Claude recorded at session
+        # start) against the live process's etime-derived start time.
+        # Disagreement past the drift tolerance means the json file
+        # is from a previous session whose pid got recycled.
+        started_at_ms = data.get("startedAt")
+        if isinstance(started_at_ms, (int, float)):
+            etime_seconds = find_process_age(claude_pid, ps_lines)
+            if etime_seconds >= 0:
+                live_started_unix = int(time.time()) - etime_seconds
+                file_started_unix = int(started_at_ms) // 1000
+                if abs(live_started_unix - file_started_unix) > _SESSION_INFO_AGE_DRIFT_SEC:
+                    return None
     return data
 
 
@@ -2000,11 +2034,14 @@ def auto_exit_idle(projects):
 # ─── Autosave ───
 
 def _force_autosave():
-    """Force an immediate autosave."""
+    """Force an immediate autosave. Silent on failure to keep the
+    auto-exit cleanup path non-blocking, but logged so a recurrent
+    autosave outage (e.g. disk full, snapshot dir permission lost)
+    is visible via `ccm errors` rather than a black hole."""
     try:
         cmd_snapshot_save("_autosave", quiet=True)
     except Exception:
-        pass
+        log_caught_exception("_force_autosave")
 
 
 def periodic_autosave():
@@ -2033,7 +2070,10 @@ def periodic_autosave():
         with open(marker, "w", encoding="utf-8") as f:
             f.write(str(now))
     except Exception:
-        pass
+        # Periodic autosave is best-effort but a recurring failure
+        # (e.g. disk full) is exactly the kind of silent issue
+        # `ccm errors` was designed to surface.
+        log_caught_exception("periodic_autosave")
 
 
 # ─── CLI helpers ───

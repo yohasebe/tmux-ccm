@@ -986,7 +986,11 @@ def build_detection_context(win_target, project_dir, prev_state,
     # to avoid pointless tmux churn on every scan.
     session_id = None
     if claude_pid is not None:
-        info = ccm_core.read_session_info(claude_pid)
+        # Pass `ps_lines` so `read_session_info` can verify the
+        # session_info file's `startedAt` against the live process's
+        # etime — defends against pid recycling where a prior
+        # claude session's json file lingers under the same pid.
+        info = ccm_core.read_session_info(claude_pid, ps_lines=ps_lines)
         if info:
             session_id = info.get("sessionId") or info.get("session_id")
     if win_target:

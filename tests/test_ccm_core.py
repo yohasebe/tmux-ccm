@@ -747,6 +747,66 @@ class TestReadSessionInfo:
         (tmp_path / "1.json").write_text("not json")
         assert ccm_core.read_session_info("1") is None
 
+    def test_pid_reuse_staleness_check_rejects_old_session(
+            self, tmp_path, monkeypatch):
+        """If `startedAt` in the json predates the live process's
+        etime-derived start time by more than the drift tolerance,
+        the file belongs to a previous session whose pid was
+        recycled. read_session_info must return None so the caller
+        falls through to legacy detection rather than reading
+        the wrong session's events."""
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        # Live process: etime=10s → started 10s ago
+        # File: startedAt = 1 hour ago (very different)
+        now = int(time.time())
+        old_started_ms = (now - 3600) * 1000
+        (tmp_path / "12345.json").write_text(
+            f'{{"pid":12345,"sessionId":"stale-uuid",'
+            f'"cwd":"/tmp/p","startedAt":{old_started_ms}}}'
+        )
+        ps_lines = [f"12345 99 12345 claude 00:10"]  # etime=10s
+        # Without ps_lines: file is accepted (no cross-check)
+        assert ccm_core.read_session_info("12345")["sessionId"] == "stale-uuid"
+        # With ps_lines: rejected as stale
+        assert ccm_core.read_session_info("12345", ps_lines=ps_lines) is None
+
+    def test_pid_staleness_check_accepts_current_session(
+            self, tmp_path, monkeypatch):
+        """startedAt within the drift tolerance of the live process's
+        start time → accept. Normal case for an actively-running
+        Claude session."""
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        now = int(time.time())
+        # Live process: etime=10s, started 10s ago (live_started ≈ now-10)
+        # File: startedAt = now - 12s (2s drift, within 10s tolerance)
+        recent_started_ms = (now - 12) * 1000
+        (tmp_path / "555.json").write_text(
+            f'{{"pid":555,"sessionId":"current-uuid",'
+            f'"cwd":"/tmp/p","startedAt":{recent_started_ms}}}'
+        )
+        ps_lines = ["555 99 555 claude 00:10"]
+        info = ccm_core.read_session_info("555", ps_lines=ps_lines)
+        assert info is not None
+        assert info["sessionId"] == "current-uuid"
+
+    def test_pid_staleness_check_skipped_when_etime_unknown(
+            self, tmp_path, monkeypatch):
+        """If find_process_age can't parse etime (-1), the
+        cross-check is silently skipped — we accept the file.
+        Otherwise a malformed ps row would erase a perfectly good
+        session_info read."""
+        monkeypatch.setattr(ccm_core, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        now = int(time.time())
+        old_started_ms = (now - 3600) * 1000  # would be rejected with valid etime
+        (tmp_path / "777.json").write_text(
+            f'{{"pid":777,"sessionId":"u",'
+            f'"cwd":"/tmp/p","startedAt":{old_started_ms}}}'
+        )
+        # ps line missing the etime column (find_process_age returns -1)
+        ps_lines = ["777 99 777 claude"]
+        info = ccm_core.read_session_info("777", ps_lines=ps_lines)
+        assert info is not None  # accepted because etime unknown
+
 
 class TestJsonlFromSessionInfo:
     def test_resolves_exact_path(self, tmp_path, monkeypatch):
