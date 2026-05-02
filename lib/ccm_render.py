@@ -15,6 +15,8 @@ import time
 import unicodedata
 
 import ccm_core
+import ccm_canaries
+import ccm_signals
 
 
 # ─── Display width (terminal column count) ───
@@ -103,15 +105,12 @@ def pad_to_width(s: str, width: int) -> str:
     field. Wider-than-`width` strings are returned unchanged."""
     pad = width - display_width(s)
     return s + " " * pad if pad > 0 else s
-from ccm_core import (
-    JSONL_HOOK_GAP_TOLERANCE,
-    STATE_ICONS,
-)
+from ccm_constants import STATE_ICONS
+from ccm_jsonl import JSONL_HOOK_GAP_TOLERANCE
 
 
 # ─── ANSI colour codes ───
-# Used by the print_* helpers below and re-exported by ccm_core
-# for any caller that needs to stay terminal-output-aware.
+# Used by the print_* helpers below.
 C_RESET = "\033[0m"
 C_BOLD = "\033[1m"
 C_DIM = "\033[2m"
@@ -155,7 +154,7 @@ def signal_age_suffix(project_dir, state):
     if not project_dir:
         return ""
     try:
-        sig = ccm_core.read_hook_signal(project_dir)
+        sig = ccm_signals.read_hook_signal(project_dir)
     except Exception:
         return ""
     if sig is None:
@@ -220,13 +219,13 @@ def print_status():
     else:
         print(f"{C_DIM}Hooks: OFF (run 'ccm setup-hooks' for improved detection){C_RESET}")
     for warning in (
-        ccm_core.hooks_log_warning(),
-        ccm_core.disable_all_hooks_warning(),
-        ccm_core.managed_hooks_only_warning(),
+        ccm_canaries.hooks_log_warning(),
+        ccm_canaries.disable_all_hooks_warning(),
+        ccm_canaries.managed_hooks_only_warning(),
     ):
         if warning:
             print(f"\033[33m⚠ {warning}\033[0m")
-    for cluster_msg in ccm_core.shell_cluster_warnings(projects):
+    for cluster_msg in ccm_canaries.shell_cluster_warnings(projects):
         print(f"\033[33m⚠ {cluster_msg}\033[0m")
     print()
 

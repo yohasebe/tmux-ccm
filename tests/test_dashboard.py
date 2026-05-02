@@ -226,6 +226,3 @@ class TestStripLastGrapheme:
         assert Dashboard._strip_last_grapheme("x\U0001f468\u200d\U0001f4bb") == "x"
 
 
-# Width helpers moved to ccm_render and re-exported via ccm_core.
-# Dashboard's previous static methods are gone — its imports the
-# canonical helpers, and the tests live in test_ccm_core.py.

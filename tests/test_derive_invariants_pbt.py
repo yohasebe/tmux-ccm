@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import ccm_core
-from ccm_detection import derive_state_from_events, EVENT_CLASSES
+from ccm_activity import derive_state_from_events, EVENT_CLASSES
 
 
 hypothesis = pytest.importorskip("hypothesis")

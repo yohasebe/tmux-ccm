@@ -309,6 +309,7 @@ ccm inject-status                 tmuxステータスバー更新（内部使用
 ccm debug trace <name> [interval] 状態検出のライブトレース（読み取り専用、Ctrl-Cで終了）
 ccm errors [--clear]              silent-exception ログの表示／クリア
 ccm doctor                        セルフチェック (依存・フック・カナリア・プロジェクト・エラー)
+ccm clear-notifications           macOS 通知センターから ccm 通知を削除
 ```
 
 > [!TIP]

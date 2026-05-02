@@ -28,23 +28,53 @@ except locale.Error:
 
 # Add lib dir to path for ccm_core import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ccm_core import (
-    CCM_ROOT, CCM_TMP_DIR, CCM_SNAPSHOT_DIR, CCM_GIT_CACHE_DIR, CCM_PORT_CACHE_DIR,
-    COMPLETED_AT_TIMEOUT, IDLE_EXIT_TIMEOUT,
-    STATE_PRIORITY, STATE_ICONS, CLAUDE_CMD,
-    tmux_cmd, md5_hash, get_session, touch_popup_session, read_hook_signal,
-    read_cache_file, build_project_list, format_elapsed, format_dir,
-    signal_age_suffix,
-    display_width, truncate_to_width,
-    hooks_configured, hooks_log_warning, disable_all_hooks_warning,
-    managed_hooks_only_warning, shell_cluster_warnings,
-    reset_window_after_attach,
-    save_tmux_conf_setting,
-    cmd_add, cmd_remove, cmd_unregister, cmd_register,
-    cmd_snapshot_save, cmd_snapshot_load,
-    log_caught_exception,
-    CCMError, raise_on_die,
+from ccm_constants import (
+    CCM_GIT_CACHE_DIR,
+    CCM_PORT_CACHE_DIR,
+    CCM_ROOT,
+    CCM_SNAPSHOT_DIR,
+    CCM_TMP_DIR,
+    CLAUDE_CMD,
+    COMPLETED_AT_TIMEOUT,
+    IDLE_EXIT_TIMEOUT,
+    STATE_ICONS,
+    STATE_PRIORITY,
 )
+from ccm_core import (
+    CCMError,
+    build_project_list,
+    get_session,
+    hooks_configured,
+    log_caught_exception,
+    md5_hash,
+    raise_on_die,
+    read_cache_file,
+    save_tmux_conf_setting,
+    tmux_cmd,
+    touch_popup_session,
+)
+from ccm_window import reset_window_after_attach
+from ccm_canaries import (
+    disable_all_hooks_warning,
+    hooks_log_warning,
+    managed_hooks_only_warning,
+    shell_cluster_warnings,
+)
+from ccm_commands import (
+    cmd_add,
+    cmd_register,
+    cmd_remove,
+    cmd_unregister,
+)
+from ccm_snapshot import cmd_snapshot_load, cmd_snapshot_save
+from ccm_render import (
+    display_width,
+    format_dir,
+    format_elapsed,
+    signal_age_suffix,
+    truncate_to_width,
+)
+from ccm_signals import read_hook_signal
 
 # Max characters shown in the single-line message area
 MSG_MAX_LEN = 200

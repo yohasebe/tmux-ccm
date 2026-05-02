@@ -1,23 +1,25 @@
 """Subcommand handlers for the ccm CLI.
 
 Every public `cmd_*` function here corresponds to a `ccm <subcommand>`
-invocation routed through the CLI dispatch in `ccm_core.__main__`.
+invocation routed through the argparse dispatch in
+`ccm_core.__main__`. Snapshot and `ccm send` handlers live in
+`ccm_snapshot` / `ccm_send` because their bodies are large enough
+to deserve their own modules; this file owns the lifecycle
+commands (`add` / `open` / `register` / `unregister` / `rename` /
+`remove` / `attach` / `list` / `capture` / `stop` / `reset_window`)
+plus the diagnostic commands (`doctor` / `errors` / `debug trace`).
 
-Cross-module discipline (mirrors `ccm_detection.py`):
-  - Truly immutable constants (`CLAUDE_CMD`, ANSI color strings) are
-    pulled in with `from ccm_core import ...` for readability.
-  - Everything else — helpers that tests mock (`tmux_cmd`, `get_session`,
-    `find_window`, `build_project_list`, `hooks_configured`,
-    `_autosave_trigger`, ...) and constants that tests mutate
-    (`CCM_SNAPSHOT_DIR`) — is accessed via `ccm_core.foo()` so that
-    `unittest.mock.patch("ccm_core.foo")` and
-    `monkeypatch.setattr(ccm_core, "foo", ...)` reach the callsites
-    inside this module. A direct from-import would freeze the binding
+Cross-module discipline:
+  - Immutable constants (`CLAUDE_CMD`, ANSI color strings) are
+    pulled in via direct `from ccm_constants import …` /
+    `from ccm_core import …`.
+  - Mockable helpers (`tmux_cmd`, `get_session`, `find_window`,
+    `build_project_list`, `hooks_configured`, …) and constants
+    that tests mutate (`CCM_SNAPSHOT_DIR`) are accessed via
+    `ccm_core.foo()` so that `unittest.mock.patch("ccm_core.foo")`
+    and `monkeypatch.setattr(ccm_core, "foo", ...)` reach the
+    callsites here. A direct from-import would freeze the binding
     at import time and bypass the mock.
-
-`ccm_core` re-exports every public symbol from this file at the bottom
-of its module so callers (dashboard, tests, CLI dispatch) can
-`from ccm_core import cmd_add` etc.
 """
 
 import glob
@@ -31,188 +33,18 @@ from datetime import datetime
 
 # `ccm_core` is imported for its (mockable) helpers AND for the runtime
 # constants the test suite mutates. See module docstring.
-import ccm_core  # noqa: F401 (used for late-bound attribute access)
-from ccm_core import (
-    CLAUDE_CMD,
-    _C_BOLD,
-    _C_RESET,
-)
-
-
-# ─── Snapshot commands ───
-
-
-def _sanitize_snapshot_name(name):
-    """Sanitize snapshot name to prevent path traversal."""
-    # Strip path components — only keep the basename
-    name = os.path.basename(name)
-    # Remove any remaining dots that could cause issues (e.g., ".." left over)
-    name = name.strip(".")
-    if not name:
-        ccm_core.ccm_die("Invalid snapshot name (alphanumerics / hyphens / underscores only; no path components)")
-    return name
-
-
-def cmd_snapshot_save(name="", quiet=False):
-    """Save current projects as a snapshot."""
-    if not name:
-        try:
-            name = input("Snapshot name: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return
-    if not name:
-        ccm_core.ccm_die("Snapshot name is required")
-    name = _sanitize_snapshot_name(name)
-
-    ccm_core.init_dirs()
-
-    # Scan ALL sessions for ccm-tagged windows
-    raw = ccm_core.tmux_cmd("list-windows", "-a", "-F",
-                            "#{window_index}\t#{window_name}\t#{@ccm_project}\t#{@ccm_dir}")
-    if not raw:
-        if not quiet:
-            ccm_core.ccm_die("No active projects to save")
-        return
-
-    projects_list = []
-    for line in raw.split("\n"):
-        parts = line.split("\t")
-        while len(parts) < 4:
-            parts.append("")
-        project, proj_dir = parts[2], parts[3]
-        if not project or not proj_dir:
-            continue
-        # Replace $HOME with ~ for portability
-        proj_dir = proj_dir.replace(os.path.expanduser("~"), "~")
-        projects_list.append({
-            "name": project,
-            "dir": proj_dir,
-            "auto_start_claude": True,
-        })
-
-    if not projects_list:
-        if not quiet:
-            ccm_core.ccm_die("No active projects to save")
-        return
-
-    snapshot = {
-        "version": 1,
-        "name": name,
-        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "projects": projects_list,
-    }
-
-    file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
-    tmp_path = file_path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(snapshot, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, file_path)
-
-    if not quiet:
-        ccm_core.ccm_info(f"Snapshot saved: {name} ({file_path})")
-
-
-def cmd_snapshot_load(name=""):
-    """Load and restore a snapshot."""
-    ccm_core.init_dirs()
-    if not name:
-        files = sorted(glob.glob(os.path.join(ccm_core.CCM_SNAPSHOT_DIR, "*.json")))
-        if not files:
-            ccm_core.ccm_die("No snapshots found")
-        items = [os.path.splitext(os.path.basename(f))[0] for f in files]
-        name = ccm_core.fzf_select(items, "Select snapshot: ")
-        if not name:
-            return
-
-    name = _sanitize_snapshot_name(name)
-    file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
-    if not os.path.exists(file_path):
-        ccm_core.ccm_die(f"Snapshot not found: {name}")
-
-    with open(file_path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    snap_projects = data.get("projects", [])
-    print(f"Loading snapshot: {name} ({len(snap_projects)} projects)")
-
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
-
-    for proj in snap_projects:
-        proj_name = proj.get("name", "")
-        proj_dir = proj.get("dir", "")
-        if not proj_name or proj_name == "null":
-            continue
-        if not proj_dir or proj_dir == "null":
-            continue
-        proj_dir = os.path.expanduser(proj_dir)
-        try:
-            proj_dir = os.path.realpath(proj_dir)
-        except OSError:
-            pass
-
-        if ccm_core.project_exists(session, proj_name):
-            ccm_core.ccm_warn(f"Project window already exists, skipping: {proj_name}")
-            continue
-        if not os.path.isdir(proj_dir):
-            ccm_core.ccm_warn(f"Directory not found, skipping: {proj_name} ({proj_dir})")
-            continue
-
-        # Don't auto-start Claude on restore — saves resources
-        cmd_add(proj_dir, proj_name, start_claude=False, _loading=True)
-
-    # Save autosave after all projects loaded
-    try:
-        cmd_snapshot_save("_autosave", quiet=True)
-    except Exception:
-        ccm_core.ccm_warn("Failed to save autosave snapshot after load")
-
-    ccm_core.ccm_info(f"Snapshot loaded: {name}")
-
-
-def cmd_snapshot_list():
-    """List available snapshots."""
-    ccm_core.init_dirs()
-    files = sorted(glob.glob(os.path.join(ccm_core.CCM_SNAPSHOT_DIR, "*.json")))
-    if not files:
-        print("No snapshots.")
-        return
-
-    print(f"{_C_BOLD}{'NAME':<20} {'CREATED':<24} {'PROJECTS'}{_C_RESET}")
-    print(f"{'----':<20} {'-------':<24} {'--------'}")
-
-    for fp in files:
-        try:
-            with open(fp, encoding="utf-8") as f:
-                data = json.load(f)
-            name = data.get("name", os.path.splitext(os.path.basename(fp))[0])
-            created = data.get("created", "-")
-            count = len(data.get("projects", []))
-            print(f"{ccm_core.pad_to_width(name, 20)} {ccm_core.pad_to_width(created, 24)} {count}")
-        except (json.JSONDecodeError, OSError):
-            pass
-
-
-def cmd_snapshot_delete(name=""):
-    """Delete a snapshot."""
-    ccm_core.init_dirs()
-    if not name:
-        files = sorted(glob.glob(os.path.join(ccm_core.CCM_SNAPSHOT_DIR, "*.json")))
-        if not files:
-            ccm_core.ccm_die("No snapshots found")
-        items = [os.path.splitext(os.path.basename(f))[0] for f in files]
-        name = ccm_core.fzf_select(items, "Delete snapshot: ")
-        if not name:
-            return
-
-    name = _sanitize_snapshot_name(name)
-    file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
-    if not os.path.exists(file_path):
-        ccm_core.ccm_die(f"Snapshot not found: {name}")
-
-    os.unlink(file_path)
-    ccm_core.ccm_info(f"Snapshot deleted: {name}")
+import ccm_core  # late-bound for tmux_cmd / ccm_die / build_project_list / etc.
+import ccm_window
+import ccm_canaries
+import ccm_commands
+import ccm_detection
+import ccm_jsonl
+import ccm_render
+import ccm_rules
+import ccm_signals
+import ccm_snapshot
+from ccm_constants import CLAUDE_CMD
+from ccm_core import _C_BOLD, _C_RESET
 
 
 # ─── Session commands ───
@@ -226,7 +58,7 @@ def _autosave_trigger():
     the user is not left silently believing a snapshot exists.
     """
     try:
-        cmd_snapshot_save("_autosave", quiet=True)
+        ccm_snapshot.cmd_snapshot_save("_autosave", quiet=True)
     except Exception as exc:
         ccm_core.ccm_warn(f"Autosave failed: {exc}")
 
@@ -298,9 +130,9 @@ def cmd_add(directory, name="", start_claude=True, _loading=False):
         ccm_core.ccm_warn("Hooks not installed. Run 'ccm setup-hooks' for accurate state detection.")
 
     if not _loading:
-        # Tests patch `ccm_core._autosave_trigger` — go through the
+        # Tests patch `ccm_commands._autosave_trigger` — go through the
         # module attribute so the mock is observed.
-        ccm_core._autosave_trigger()
+        ccm_commands._autosave_trigger()
 
 
 def cmd_open(directory, name=""):
@@ -383,7 +215,7 @@ def cmd_register(source_target, new_name=""):
     )
 
     ccm_core.ccm_info(f"Registered: {win_name} → {name}")
-    ccm_core._autosave_trigger()
+    ccm_commands._autosave_trigger()
 
 
 def cmd_unregister(name):
@@ -415,10 +247,10 @@ def cmd_unregister(name):
     cmds = [("set-option", "-wt", win_target, "-u", tag) for tag in tags]
     ccm_core.tmux_batch(*cmds)
 
-    ccm_core.cleanup_project_runtime_files(proj_dir)
+    ccm_signals.cleanup_project_runtime_files(proj_dir)
 
     ccm_core.ccm_info(f"Unregistered: {name} (window kept)")
-    ccm_core._autosave_trigger()
+    ccm_commands._autosave_trigger()
 
 
 def cmd_rename(old_name, new_name):
@@ -447,7 +279,7 @@ def cmd_rename(old_name, new_name):
     )
 
     ccm_core.ccm_info(f"Renamed: {old_name} → {new_name}")
-    ccm_core._autosave_trigger()
+    ccm_commands._autosave_trigger()
 
 
 def cmd_remove(name):
@@ -466,10 +298,10 @@ def cmd_remove(name):
     proj_dir = ccm_core.tmux_cmd("show-option", "-wt", win_target, "-qv", "@ccm_dir")
 
     ccm_core.tmux_cmd("kill-window", "-t", win_target)
-    ccm_core.cleanup_project_runtime_files(proj_dir)
+    ccm_signals.cleanup_project_runtime_files(proj_dir)
 
     ccm_core.ccm_info(f"Removed project: {name}")
-    ccm_core._autosave_trigger()
+    ccm_commands._autosave_trigger()
 
 
 def cmd_list():
@@ -488,7 +320,7 @@ def cmd_list():
     print(f"{'-------':<20} {'---------'}")
 
     for _idx, _wn, project, proj_dir in windows:
-        print(f"{ccm_core.pad_to_width(project, 20)} {proj_dir}")
+        print(f"{ccm_render.pad_to_width(project, 20)} {proj_dir}")
 
 
 def cmd_attach(target):
@@ -556,9 +388,9 @@ def cmd_attach(target):
             has_claude = True  # Assume running on error
 
         if not has_claude:
-            ccm_core.auto_start_claude(win_target)
+            ccm_window.auto_start_claude(win_target)
 
-    ccm_core.reset_window_after_attach(win_target)
+    ccm_window.reset_window_after_attach(win_target)
     ccm_core.tmux_cmd("select-window", "-t", f"{session}:{idx}")
 
 
@@ -644,236 +476,6 @@ def cmd_stop(target):
         ccm_core.ccm_die("Usage: ccm stop [--all|<name>]")
 
 
-def cmd_send(args):
-    """Send a prompt to a project's Claude Code session.
-
-    Usage:
-      ccm send <name|#idx> <message>       Send literal message + Enter
-      ccm send <name> --file <path>        Read message from file
-      ccm send <name> --stdin              Read message from stdin
-      ccm send <name> --no-enter <msg>     Send without submitting
-      ccm send <name> --force <msg>        Send to a BUSY project (queued)
-      ccm send <name> --start <msg>        Auto-launch Claude if SHELL
-      ccm send -y <name> <msg>             Skip confirmation prompt
-      ccm send <name> -- "--literal"       `--` ends flag parsing
-
-    State policy:
-      IDLE         → send immediately
-      BUSY         → refuse without --force; queue into buffer with --force
-                     (covers both active streaming and tool_use mid-turn
-                     pauses — both classify as BUSY because the ball is on
-                     Claude's side either way)
-      PERMIT       → ALWAYS refuse (hard guard — typing into a permission
-                     dialog could accidentally approve or deny a tool call)
-      SHELL        → refuse without --start; launch Claude + 2s wait with --start
-
-    Multi-line messages (`\\n` in content) are converted to M-Enter between
-    lines + a final Enter, matching Claude Code's "newline without submit"
-    convention.
-    """
-    target = None
-    positional_parts = []
-    message_file = None
-    use_stdin = False
-    no_enter = False
-    force = False
-    auto_start = False
-    skip_confirm = False
-
-    stop_flags = False
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if not stop_flags and arg == "--":
-            stop_flags = True
-            i += 1
-            continue
-        if not stop_flags and arg.startswith("-") and arg != "-":
-            if arg == "--file":
-                i += 1
-                if i >= len(args):
-                    ccm_core.ccm_die("--file requires a path argument")
-                message_file = args[i]
-            elif arg == "--stdin":
-                use_stdin = True
-            elif arg == "--no-enter":
-                no_enter = True
-            elif arg == "--force":
-                force = True
-            elif arg == "--start":
-                auto_start = True
-            elif arg in ("-y", "--yes"):
-                skip_confirm = True
-            else:
-                ccm_core.ccm_die(
-                    f"Unknown flag: {arg}\n"
-                    "Usage: ccm send <name> <message> "
-                    "[--file path] [--stdin] [--force] [--start] "
-                    "[--no-enter] [-y]"
-                )
-        else:
-            if arg == "-":  # conventional stdin alias
-                use_stdin = True
-            elif target is None:
-                target = arg
-            else:
-                positional_parts.append(arg)
-        i += 1
-
-    if not target:
-        ccm_core.ccm_die(
-            "Usage: ccm send <name> <message> "
-            "[--file path] [--stdin] [--force] [--start] "
-            "[--no-enter] [-y]"
-        )
-
-    # Resolve message source (exactly one of the three)
-    positional_message = " ".join(positional_parts) if positional_parts else None
-    source_count = sum(x is not None and x is not False for x in
-                       (positional_message, message_file, use_stdin or None))
-    if source_count == 0:
-        ccm_core.ccm_die("No message provided (positional, --file, or --stdin)")
-    if source_count > 1:
-        ccm_core.ccm_die("Provide exactly one of: positional message, --file, or --stdin")
-
-    if message_file:
-        try:
-            with open(message_file, encoding="utf-8") as f:
-                message = f.read()
-        except OSError as e:
-            ccm_core.ccm_die(f"Failed to read message file: {e}")
-    elif use_stdin:
-        message = sys.stdin.read()
-        # Once we have consumed stdin, the interactive confirmation
-        # prompt can no longer read from it (EOFError). Force-skip
-        # confirmation so a TTY user running `ccm send blog --stdin`
-        # and typing a body terminated by Ctrl-D is not silently
-        # cancelled.
-        skip_confirm = True
-    else:
-        message = positional_message
-
-    if not message.strip() and not no_enter:
-        ccm_core.ccm_die("Empty message (use --no-enter to send only Enter suppression)")
-
-    # Resolve target window
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
-
-    if target.startswith("#"):
-        idx = target[1:]
-    elif target.isdigit():
-        idx = target
-    else:
-        idx = ccm_core.find_window(session, target)
-        if idx is None:
-            ccm_core.ccm_die(f"Project not found: {target}")
-
-    win_target = f"{session}:{idx}"
-
-    # Look up project state from the current ccm scan
-    projects = ccm_core.build_project_list(fast=False)
-    matched = next((p for p in projects if p.win_target == win_target), None)
-    if matched is None:
-        ccm_core.ccm_die(f"Window is not a registered ccm project: {win_target}")
-
-    project_name = matched.name
-    state = matched.state
-
-    # State-based gating
-    if state == "PERMIT":
-        # Give the caller (human or another Claude) enough information
-        # to understand what the target pane is blocked on. The
-        # refusal itself is unconditional — PERMIT is never auto-
-        # dismissed from another pane even when the modal is safe,
-        # because misclassification of a real permission dialog could
-        # accidentally approve a tool call.
-        raw_tail = ccm_core.tmux_cmd(
-            "capture-pane", "-t", win_target, "-p", "-S", "-10"
-        ) or ""
-        if not raw_tail.strip():
-            raw_tail = ccm_core.tmux_cmd(
-                "capture-pane", "-a", "-t", win_target, "-p", "-S", "-10"
-            ) or ""
-        tail_lines = [l for l in raw_tail.split("\n") if l.strip()][-8:]
-        category, guidance = ccm_core.classify_permit_modal(raw_tail)
-        lines = [
-            f"{project_name} is in PERMIT state — send refused.",
-            f"  Classification: {category}",
-            "  Guidance:",
-        ]
-        lines.extend(f"    {g}" for g in guidance.split("\n"))
-        if tail_lines:
-            lines.append("  Pane tail:")
-            lines.extend(f"    {l}" for l in tail_lines)
-        ccm_core.ccm_die("\n".join(lines))
-
-    if state == "SHELL":
-        if not auto_start:
-            ccm_core.ccm_die(
-                f"{project_name} is in SHELL state (Claude not running). "
-                "Use --start to auto-launch Claude before sending."
-            )
-        ccm_core.ccm_info(f"Starting Claude in {project_name}...")
-        ccm_core.tmux_cmd("send-keys", "-t", win_target, "-X", "cancel")
-        ccm_core.tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
-        # Crude wait for Claude to initialize. Longer would block ccm
-        # pipelines; shorter risks sending before the input prompt is
-        # ready. 2 seconds is a reasonable compromise on modern hardware.
-        time.sleep(2)
-
-    if state == "BUSY" and not force:
-        ccm_core.ccm_die(
-            f"{project_name} is BUSY. The message would queue in the "
-            "input buffer and mix with Claude's current turn. Use --force "
-            "if that is what you want."
-        )
-
-    # Confirmation prompt (skip when piping or --yes)
-    interactive = (
-        not skip_confirm
-        and sys.stdin.isatty()
-        and sys.stdout.isatty()
-    )
-    if interactive:
-        preview = message.strip().replace("\n", " ")[:80]
-        if len(message.strip()) > 80:
-            preview += "..."
-        tag = " (force)" if state == "BUSY" else ""
-        print(f"Send to {project_name} ({state}{tag}): {preview}")
-        try:
-            ans = input("Proceed? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            ccm_core.ccm_info("Cancelled")
-            return
-        if ans not in ("y", "yes"):
-            ccm_core.ccm_info("Cancelled")
-            return
-
-    # Defensively exit any tmux mode on the target pane. Without this,
-    # a pane stuck in copy-mode would interpret the message characters
-    # as copy-mode bindings (same class of bug as the dashboard attach
-    # fix in d1ca09b).
-    ccm_core.tmux_cmd("send-keys", "-t", win_target, "-X", "cancel")
-
-    # Literal send, converting `\n` into M-Enter (Claude Code's
-    # "newline without submit" key) so the body is delivered as a
-    # single multi-line prompt rather than multiple submitted turns.
-    lines = message.split("\n")
-    for line_i, line in enumerate(lines):
-        if line:
-            ccm_core.tmux_cmd("send-keys", "-t", win_target, "-l", line)
-        if line_i < len(lines) - 1:
-            ccm_core.tmux_cmd("send-keys", "-t", win_target, "M-Enter")
-
-    # Final submit (unless --no-enter)
-    if not no_enter:
-        ccm_core.tmux_cmd("send-keys", "-t", win_target, "Enter")
-
-    ccm_core.ccm_info(f"Sent to {project_name}")
-
-
 def cmd_reset_window():
     """CLI handler for `ccm reset-window` — runs the post-attach reset
     on the current window. Internal plumbing used by the bash wrapper
@@ -882,7 +484,7 @@ def cmd_reset_window():
     session_name = ccm_core.tmux_cmd("display-message", "-p", "#{session_name}")
     win_idx = ccm_core.tmux_cmd("display-message", "-p", "#{window_index}")
     if session_name and win_idx:
-        ccm_core.reset_window_after_attach(f"{session_name}:{win_idx}")
+        ccm_window.reset_window_after_attach(f"{session_name}:{win_idx}")
 
 
 def cmd_doctor():
@@ -946,31 +548,31 @@ def cmd_doctor():
         row(WARN, "~/.claude/CLAUDE.md", "missing")
 
     section("Runtime canaries")
-    hooks_warn = ccm_core.hooks_log_warning()
-    log_size = ccm_core.hooks_log_size()
+    hooks_warn = ccm_canaries.hooks_log_warning()
+    log_size = ccm_canaries.hooks_log_size()
     if hooks_warn:
         row(WARN, "hooks.log size", hooks_warn)
     elif log_size < 0:
         row(OK, "hooks.log size", "(absent)")
     else:
         row(OK, "hooks.log size", f"{log_size / (1024*1024):.1f} MB")
-    dah = ccm_core.disable_all_hooks_warning()
+    dah = ccm_canaries.disable_all_hooks_warning()
     row(WARN if dah else OK,
         "disableAllHooks",
         dah or "not set")
-    mho = ccm_core.managed_hooks_only_warning()
+    mho = ccm_canaries.managed_hooks_only_warning()
     row(WARN if mho else OK,
         "allowManagedHooksOnly",
         mho or "not set")
 
     projects = ccm_core.build_project_list(fast=False)
-    cluster_msgs = ccm_core.shell_cluster_warnings(projects)
+    cluster_msgs = ccm_canaries.shell_cluster_warnings(projects)
     if cluster_msgs:
         for msg in cluster_msgs:
             row(WARN, "cluster-SHELL transitions", msg)
     else:
         row(OK, "cluster-SHELL transitions",
-            f"none in last {ccm_core.SHELL_CLUSTER_WINDOW // 60} min")
+            f"none in last {ccm_canaries.SHELL_CLUSTER_WINDOW // 60} min")
 
     section(f"Active projects ({len(projects)})")
     if not projects:
@@ -1173,18 +775,18 @@ def cmd_debug_trace(project_match, interval=0.3):
         # Invalidate the JSONL activity cache so each tick is a fresh
         # read — without this, trace would show stale ages across
         # successive ticks while the JSONL file actually changes.
-        ccm_core._jsonl_activity_cache.clear()
+        ccm_jsonl._jsonl_activity_cache.clear()
 
-        ctx = ccm_core.build_detection_context(
+        ctx = ccm_detection.build_detection_context(
             win_target, proj_dir, prev_state,
             panes_cache, ps_lines, own_pgid,
         )
-        rule, state = ccm_core.evaluate_rules(ctx)
+        rule, state = ccm_rules.evaluate_rules(ctx)
 
         hook_str = f"{ctx.hook_state or '-'},{ctx.hook_age if ctx.hook_age >= 0 else '-'}"
         pid_age = ctx.claude_pid_age if ctx.claude_pid_age >= 0 else "-"
         jsonl_str = f"{ctx.jsonl_age if ctx.jsonl_age >= 0 else '-'},{ctx.jsonl_last_stop_reason or '-'}"
-        action_short = "WRITE" if rule.action == ccm_core.Action.DEFAULT else "HOLD"
+        action_short = "WRITE" if rule.action == ccm_rules.Action.DEFAULT else "HOLD"
         # Phase annotation is metadata only (Step 1 of phase-machine
         # roadmap) — show it next to the rule name so "why fired?"
         # investigations include the intended session-lifecycle scope.

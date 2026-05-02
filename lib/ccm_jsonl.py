@@ -34,7 +34,7 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import Optional, Tuple
 
-import ccm_core  # noqa: F401 (used for late-bound attribute access)
+import ccm_core  # late-bound for find_process_age (pid-reuse staleness check)
 
 
 # ─── Constants ───

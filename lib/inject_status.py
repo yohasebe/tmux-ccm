@@ -10,12 +10,29 @@ import time
 
 # Add lib dir to path for ccm_core import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ccm_constants import (
+    CCM_ROOT,
+    CCM_SNAPSHOT_DIR,
+    CCM_TMP_DIR,
+    COMPLETED_AT_TIMEOUT,
+    STATE_ICONS,
+    STATE_PRIORITY,
+)
 from ccm_core import (
-    CCM_ROOT, CCM_TMP_DIR, CCM_SNAPSHOT_DIR,
-    COMPLETED_AT_TIMEOUT, STATE_ICONS, STATE_PRIORITY,
-    tmux_cmd, tmux_batch, build_project_list, update_window_names,
-    auto_exit_idle, periodic_autosave, notify, read_hook_signal,
-    read_project_notify_marker, signal_age_suffix,
+    build_project_list,
+    tmux_batch,
+    tmux_cmd,
+)
+from ccm_notify import notify
+from ccm_render import signal_age_suffix
+from ccm_runtime import (
+    auto_exit_idle,
+    periodic_autosave,
+    update_window_names,
+)
+from ccm_signals import (
+    read_hook_signal,
+    read_project_notify_marker,
 )
 
 # tmux status bar color map

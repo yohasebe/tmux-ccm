@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import inject_status
 import ccm_core
+import ccm_signals
 
 
 def make_project(win_target, win_idx, name, state):
@@ -80,7 +81,7 @@ class TestStaleSignalSuffixInStatusBar:
         # Hook signal 8 minutes old → "(8m)" suffix.
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
-        monkeypatch.setattr(ccm_core, "read_hook_signal",
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d: (ts - 480, "BUSY", ""))
         entries = inject_status.build_detail_entries(
             [make_project("0:2", "2", "ccm-dev", "BUSY")],
@@ -91,7 +92,7 @@ class TestStaleSignalSuffixInStatusBar:
     def test_mode2_stale_permit_appends_suffix(self, monkeypatch):
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
-        monkeypatch.setattr(ccm_core, "read_hook_signal",
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d: (ts - 120, "PERMIT", ""))
         entries = inject_status.build_detail_entries(
             [make_project("0:2", "2", "ccm-dev", "PERMIT")],
@@ -104,7 +105,7 @@ class TestStaleSignalSuffixInStatusBar:
         otherwise every active turn would clutter the status bar."""
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
-        monkeypatch.setattr(ccm_core, "read_hook_signal",
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d: (ts - 5, "BUSY", ""))
         entries = inject_status.build_detail_entries(
             [make_project("0:2", "2", "ccm-dev", "BUSY")],
@@ -119,7 +120,7 @@ class TestStaleSignalSuffixInStatusBar:
         a stale signal happens to be lying around."""
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
-        monkeypatch.setattr(ccm_core, "read_hook_signal",
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d: (ts - 600, "BUSY", ""))
         for state in ("IDLE", "SHELL", "DOWN"):
             entries = inject_status.build_detail_entries(
@@ -222,7 +223,7 @@ class TestPaneCountSuffixInStatusBar:
         import time
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
-        monkeypatch.setattr(ccm_core, "read_hook_signal",
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d: (ts - 600, "PERMIT", ""))
         p = self._make(2, state="PERMIT")
         entries = inject_status.build_detail_entries(

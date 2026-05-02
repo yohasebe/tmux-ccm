@@ -530,7 +530,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_DEBUG_TRACE` | (unset) | Path to a JSONL trace file. When set, every slow-path detection scan (`inject-status`, dashboard, `ccm status`) appends a record with the full `DetectionContext`, matched rule, and resolved state. See [Detection-behaviour debugging](#detection-behaviour-debugging). Remember to set it via `tmux set-environment -g`, not shell `export`, so the tmux-spawned subprocesses see it |
 | `CCM_TRACE_MAX_BYTES` | `104857600` (100 MB) | Size cap for the `CCM_DEBUG_TRACE` log. Once exceeded, a single `{"event":"trace_cap_reached", ...}` sentinel is written and subsequent appends are skipped, so a forgotten trace cannot fill the disk |
 | `CCM_TRACE_ONLY_DIFF` | (unset) | When set to a truthy value, restricts `CCM_DEBUG_TRACE` writes to rows where the legacy and event-log derivations disagree. Lets long-running traces stay small. No effect when `CCM_USE_EVENT_LOG=off` (no event-log state to diff against) |
-| `CCM_USE_EVENT_LOG` | `auto` | `auto` (default) commits the event-log state when [`derive_state_from_events`](../lib/ccm_detection.py) returns a non-`None` answer; otherwise legacy `DETECTION_RULES` takes over. `off` (or `0` / `no` / `false`) is the diagnostic kill-switch — legacy-only, no event-log read. Anything else resolves to `auto` |
+| `CCM_USE_EVENT_LOG` | `auto` | `auto` (default) commits the event-log state when [`derive_state_from_events`](../lib/ccm_activity.py) returns a non-`None` answer; otherwise legacy `DETECTION_RULES` (in [`lib/ccm_rules.py`](../lib/ccm_rules.py)) takes over. `off` (or `0` / `no` / `false`) is the diagnostic kill-switch — legacy-only, no event-log read. Anything else resolves to `auto` |
 
 ### Cache TTLs
 

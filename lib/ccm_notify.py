@@ -22,7 +22,7 @@ test-mock visibility.
 
 import subprocess
 
-import ccm_core  # noqa: F401 (used for late-bound attribute access)
+import ccm_core  # late-bound for tmux_cmd
 
 
 _TERMINAL_NOTIFIER_PATH = None

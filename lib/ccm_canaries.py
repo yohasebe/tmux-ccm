@@ -20,16 +20,15 @@ Three independent canary classes:
 Cross-module discipline: this module imports `ccm_core` for
 late-bound access to `tmux_cmd` (so test mocks via
 `monkeypatch.setattr(ccm_core, "tmux_cmd", ...)` reach the
-callsites here). `ccm_core` re-exports every public symbol from
-this file, so existing `from ccm_core import shell_cluster_warnings`
-callers do not change.
+callsites here). Public callers import directly from
+`ccm_canaries` — `ccm_core` is purely the helper provider.
 """
 
 import json
 import os
 import time
 
-import ccm_core  # noqa: F401 (used for late-bound attribute access)
+import ccm_core  # late-bound for tmux_cmd
 
 
 # ─── Cluster-SHELL configuration ───

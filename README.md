@@ -300,6 +300,8 @@ ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
                                   flags: --file --stdin --no-enter --force --start -y --
 ccm init                          Interactive setup wizard (hooks, restore, status bar)
+ccm setup-hooks                   Install Claude Code hooks (improved state detection)
+ccm remove-hooks                  Uninstall ccm hooks from Claude Code settings
 ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
 ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
 ccm statusline                    Print one-line status (used by tmux status bar)
@@ -307,6 +309,7 @@ ccm inject-status                 Update tmux status bar (called internally)
 ccm debug trace <name> [interval] Live state-detection trace (read-only; Ctrl-C to stop)
 ccm errors [--clear]              View / clear the silent-exception log
 ccm doctor                        Self-check (deps, hooks, canaries, projects, errors)
+ccm clear-notifications           Remove ccm notifications from macOS Notification Center
 ```
 
 > [!TIP]

@@ -1,6 +1,6 @@
 # State machine
 
-Formal reference for the ccm detection pipeline. The implementation lives in [`lib/ccm_detection.py`](../lib/ccm_detection.py); this document describes the design contract that the two detection backbones (legacy `DETECTION_RULES` table and `derive_state_from_events`) must respect.
+Formal reference for the ccm detection pipeline. The implementation is split across [`lib/ccm_detection.py`](../lib/ccm_detection.py) (orchestrator: `build_detection_context`, `resolve_state_from_context`, `apply_actions`), [`lib/ccm_activity.py`](../lib/ccm_activity.py) (primary path: `derive_state_from_events`, `classify_activity`, `map_activity_to_state`), and [`lib/ccm_rules.py`](../lib/ccm_rules.py) (legacy `DETECTION_RULES` fallback table). This document describes the design contract those modules must respect.
 
 ## Design principle
 
@@ -134,7 +134,7 @@ When a `BUSY` or `PERMIT` state survives past `JSONL_HOOK_GAP_TOLERANCE` (60 s) 
 ◉ BUSY  (2m)  another-project
 ```
 
-This is the principled response to the limitation — when ccm cannot prove the signal is stuck, it surfaces the age so the user can judge. Implementation: [`ccm_core.signal_age_suffix(project_dir, state)`](../lib/ccm_core.py) is the single source of truth, used by all three renderers. Threshold is bound directly to `JSONL_HOOK_GAP_TOLERANCE` so the affordance appears exactly when the auto-release window has lapsed. Other states (`IDLE` / `SHELL` / `DOWN`) suppress the suffix — their hook signals are either absent or freshness-irrelevant.
+This is the principled response to the limitation — when ccm cannot prove the signal is stuck, it surfaces the age so the user can judge. Implementation: [`ccm_render.signal_age_suffix(project_dir, state)`](../lib/ccm_render.py) is the single source of truth, used by all three renderers. Threshold is bound directly to `JSONL_HOOK_GAP_TOLERANCE` so the affordance appears exactly when the auto-release window has lapsed. Other states (`IDLE` / `SHELL` / `DOWN`) suppress the suffix — their hook signals are either absent or freshness-irrelevant.
 
 ### `(bg)` — background activity in user's turn
 
@@ -211,10 +211,10 @@ These walk the event-log path. The event sequence is the per-session tail of `$H
 
 ## When editing the state machine
 
-1. Edit the relevant branch of `derive_state_from_events` (primary path) or `DETECTION_RULES` (legacy fallback).
-2. Set the `phase` field on any new legacy rule (`shell` / `startup` / `midturn` / `between_tools` / `idle` / `permit`, or `None` for genuine catch-alls). Update `TestRulePhaseAnnotations.test_specific_rule_phase_classifications` to register it.
+1. Edit the relevant branch of `derive_state_from_events` in [`lib/ccm_activity.py`](../lib/ccm_activity.py) (primary path) or `DETECTION_RULES` in [`lib/ccm_rules.py`](../lib/ccm_rules.py) (legacy fallback).
+2. Set the `phase` field on any new legacy rule (`shell` / `startup` / `midturn` / `between_tools` / `idle` / `permit`, or `None` for genuine catch-alls). Update `TestRulePhaseAnnotations.test_specific_rule_phase_classifications` in `tests/test_rules.py` to register it.
 3. Add tests:
-   - `TestDeriveStateFromEvents` for event-log changes (Context built directly, no mocks).
-   - `TestEvaluateRules` for legacy-rule changes.
-   - `TestLifecycleSequences` for end-to-end scenarios.
-4. Run `python3 -m pytest tests/test_ccm_core.py -v` and verify property invariants in `TestPipelineInvariants` / `TestDeriveInvariants` still pass.
+   - `TestDeriveStateFromEvents` (`tests/test_activity.py`) for event-log changes (Context built directly, no mocks).
+   - `TestEvaluateRules` (`tests/test_rules.py`) for legacy-rule changes.
+   - `TestLifecycleSequences` (`tests/test_detection.py`) for end-to-end scenarios.
+4. Run `python3 -m pytest tests/ -v` and verify property invariants in `TestPipelineInvariants` (`tests/test_detection.py`) / `TestDeriveInvariants` (`tests/test_activity.py`) still pass.
