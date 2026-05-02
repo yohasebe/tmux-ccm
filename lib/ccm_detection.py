@@ -736,201 +736,203 @@ def derive_state_from_events(events, jsonl_stop_reason,
     if not pid_present:
         return "SHELL"
 
-    # Tuple/list/iterator — defensive normalization. derive must not
-    # depend on random-access indexing so any iterable works.
+    # Tuple/list/iterator — defensive normalization.
     events_seq = tuple(events) if not isinstance(events, tuple) else events
 
+    activity, evidence = classify_activity(
+        events_seq, jsonl_stop_reason, jsonl_age, raw, now,
+    )
+    return map_activity_to_state(
+        activity, raw, jsonl_stop_reason, jsonl_age,
+    )
+
+
+# ─── User-centric activity classification ───
+# State detection is structured as: (1) classify what Claude is
+# *doing* (the activity), (2) map that activity + the on-screen
+# observation (raw) to the user-facing state. The bridge is the
+# Activity enum, which answers the only question the user really
+# cares about: "do I need to do something right now?"
+#
+#   AT_REST          — Claude self-reported idle, or a turn ended
+#                       with a terminal stop_reason. Nothing for the
+#                       user to act on.
+#   AWAITING_PERMIT  — Permission modal raised and not yet resolved
+#                       by an event-log signal. The user might need
+#                       to respond.
+#   IN_PROGRESS      — Tool, thinking, or mid-turn pause. The user
+#                       waits.
+#   UNKNOWN          — No positive signal in the event log; defer
+#                       to legacy detection (which leans on raw +
+#                       JSONL heartbeat).
+#
+# Edge cases that historically lived as inline if-else in derive
+# (phantom subagent, Esc release, combined-stale) move into either
+# `_strip_phantom_subagents` or `classify_activity` as named
+# normalisations. The decision tree in `map_activity_to_state` then
+# stays small and exhaustive.
+
+ACTIVITY_AT_REST = "at_rest"
+ACTIVITY_AWAITING_PERMIT = "awaiting_permit"
+ACTIVITY_IN_PROGRESS = "in_progress"
+ACTIVITY_UNKNOWN = "unknown"
+
+_REST_MARKERS = ("notify_idle", "stop", "session_end")
+
+
+def _strip_phantom_subagents(events_seq):
+    """Return events_seq with trailing phantom subagent records
+    removed. Subagents at the end of the log are phantom iff the
+    immediately-preceding non-subagent event is a rest marker
+    (notify_idle / stop / session_end). Mid-conversation subagents
+    (preceded by prompt / pretool / posttool / etc.) are
+    legitimate Task-tool invocations and stay untouched.
+
+    Pure function; takes and returns a tuple."""
     if not events_seq:
-        # No hook activity recorded yet. Could be (a) fresh Claude
-        # session before first UserPromptSubmit, (b) hooks never
-        # installed on this project, (c) event log file was cleaned
-        # up out from under us. Returning None forces caller
-        # fallback to legacy detection (capture-pane footer +
-        # JSONL heartbeat) so a PERMIT modal on screen stays
-        # visible to the dashboard even when the event log is
-        # silent.
-        return None
+        return events_seq
+    i = len(events_seq) - 1
+    while i >= 0:
+        e = events_seq[i]
+        if isinstance(e, dict) and e.get("type") == "subagent":
+            i -= 1
+            continue
+        break
+    if i < 0:
+        # All-subagent log — no rest marker to test against. Keep
+        # as-is; the classifier will fall through to UNKNOWN.
+        return events_seq
+    if i == len(events_seq) - 1:
+        return events_seq  # no trailing subagents
+    pred = events_seq[i]
+    pred_t = pred.get("type") if isinstance(pred, dict) else None
+    if pred_t in _REST_MARKERS:
+        return events_seq[: i + 1]
+    return events_seq
+
+
+def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
+    """Inspect the event log tail (after phantom-subagent stripping)
+    and JSONL signals to decide what Claude is doing right now.
+    Returns (activity, evidence_event) where activity is one of the
+    ACTIVITY_* constants and evidence_event is the event the
+    decision was based on (or None for UNKNOWN cases without a
+    contributing event)."""
+    events_seq = tuple(events) if not isinstance(events, tuple) else events
+    events_seq = _strip_phantom_subagents(events_seq)
+    if not events_seq:
+        return ACTIVITY_UNKNOWN, None
 
     latest = events_seq[-1]
     t = latest.get("type") if isinstance(latest, dict) else None
     if not t:
-        # Malformed latest record — let legacy decide rather than
-        # silently committing IDLE.
-        return None
-
+        return ACTIVITY_UNKNOWN, None
     klass = EVENT_CLASSES.get(t)
     if klass is None:
-        # Unknown event type (upstream schema drift) — defer to legacy.
-        return None
+        # Unknown upstream event type — let legacy decide.
+        return ACTIVITY_UNKNOWN, latest
+
     if klass == EVENT_CLASS_END:
-        # session_end with pid present: claude has restarted but the
-        # new session has not yet emitted any event. Returning SHELL
-        # would falsely show "claude not running" on the dashboard for
-        # the brief window between SessionEnd and the next prompt.
-        # Defer to legacy (which sees the live pid via raw).
-        return None
+        # session_end with live pid: brief transient between
+        # SessionEnd hook and the new session's first event. The
+        # process tree (raw) is authoritative; defer.
+        return ACTIVITY_UNKNOWN, latest
+
+    if klass == EVENT_CLASS_IDLE:
+        return ACTIVITY_AT_REST, latest
+
+    if klass == EVENT_CLASS_PAUSE:
+        # `stop` event. Terminal stop_reason → turn truly ended,
+        # at rest. tool_use OR missing stop_reason → claude paused
+        # awaiting a tool result, in progress (conservative for
+        # missing data: long-running tools without clear evidence
+        # must not flip to false IDLE).
+        if jsonl_stop_reason in TERMINAL_STOP_REASONS:
+            return ACTIVITY_AT_REST, latest
+        return ACTIVITY_IN_PROGRESS, latest
 
     if klass == EVENT_CLASS_PERMIT:
-        candidate = "PERMIT"
-        # raw=="PERMIT" precedence: if a modal is physically on
-        # screen (capture-pane footer match) we trust it over any
-        # JSONL state — that is the user-blocking case PERMIT was
-        # designed to flag.
-        if raw == "PERMIT":
-            return "PERMIT"
-        # No modal on screen. The latest permit event was either
-        # silently resolved (Claude Code does not fire a permission-
-        # resolved hook) or dismissed by the user. Look at JSONL to
-        # disambiguate the underlying activity:
-        #
-        #   1. Terminal stop_reason fresher than the permit event →
-        #      response truly ended → IDLE (Esc-dismiss / silent-
-        #      resolve mirror of the start-class fallback below).
-        #   2. JSONL shows a tool is in flight (`tool_use` within
-        #      the long-tool window) → claude is actively running
-        #      tools (auto-approved permit). The user is being
-        #      attended to, not waiting — show BUSY, not PERMIT.
-        #   3. Otherwise → PERMIT remains (cosmetic stuck state,
-        #      visible via the (Nm) suffix).
+        # Permit event raised. If JSONL shows the response actually
+        # ended with a terminal stop_reason fresher than the permit
+        # event, the modal was Esc-dismissed cleanly and Claude
+        # wrote a final assistant record — at rest.
         if _jsonl_terminal_fresher_than_event(
                 latest, jsonl_stop_reason, jsonl_age, now):
-            return "IDLE"
-        # raw is not PERMIT (modal physically gone from the pane).
-        # The user has dismissed the modal — either by accepting
-        # (tool resumed) or by ESC (tool aborted). The two paths
-        # below cover both screen layouts the post-dismiss state
-        # can take:
-        #
-        # raw=BUSY → tool output is filling the pane (no `❯` visible).
-        #   Tool is running. Trivially BUSY.
-        #
-        # raw=IDLE + JSONL says tool_use within the long-tool window
-        #   → accept-edits mode: tool is running but `❯` (and the
-        #   `⏵⏵ accept edits on` banner) remains visible at the
-        #   bottom. The JSONL `tool_use` record landed milliseconds
-        #   BEFORE the permit event (it's what triggered the modal),
-        #   so a "JSONL fresher than the event" guard would reject
-        #   the case incorrectly — Claude's extended-thinking phase
-        #   after acceptance writes nothing to JSONL until it emits
-        #   the next tool_use, leaving us stuck on PERMIT for many
-        #   seconds. The Esc-cancel case is covered by the
-        #   `_jsonl_terminal_fresher_than_event` branch above (a
-        #   real cancellation produces a terminal stop_reason within
-        #   ~1 s); a brief overlap where the cancellation hasn't
-        #   yet hit JSONL would show BUSY for one poll cycle, which
-        #   is preferable to staying on PERMIT for the much more
-        #   common accept case.
-        #
-        # raw=IDLE + JSONL stale (older than the long-tool window)
-        #   → ambiguous; fall through to PERMIT (cosmetic stuck
-        #   state, visible via the `(Nm)` stale-signal suffix).
-        if jsonl_stop_reason == "tool_use" and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW:
-            if raw in ("BUSY", "IDLE"):
-                return "BUSY"
-    elif klass == EVENT_CLASS_START:
-        # Phantom-subagent shortcut. Claude Code upstream
-        # occasionally fires spurious `SubagentStart` /
-        # `SubagentStop` hooks during otherwise-idle periods
-        # (cause unconfirmed; possibly status-line refresh or
-        # auto-memory). Legitimate subagent events always come
-        # mid-conversation (between `prompt` and `stop`, alongside
-        # tool events); a subagent that lands AFTER the
-        # conversation has reached a rest state is necessarily
-        # phantom. Walk back through stacked subagent events to
-        # find the underlying rest marker, then resolve as if the
-        # phantom did not exist:
-        #   - notify_idle: Claude self-reported idle. Phantom does
-        #     not invalidate that. Return IDLE.
-        #   - stop: turn ended. Resolve identically to a direct
-        #     `stop` latest event (terminal stop_reason → IDLE,
-        #     mid-tool → defer so legacy can use raw).
-        #   - session_end: claude restarted (pid_present is True).
-        #     Brief transient — defer to legacy (raw is
-        #     authoritative for the new session).
-        # Returning a definite IDLE for the strongest-evidence
-        # cases (notify_idle and terminal stop) prevents legacy's
-        # `raw_busy_passthrough` from wrongly latching BUSY when
-        # `❯` is briefly off-screen (pane scrolled / typing in
-        # progress / etc.).
-        if t == "subagent" and raw != "PERMIT":
-            for i in range(len(events_seq) - 2, -1, -1):
-                prev_event = events_seq[i]
-                prev_t = (prev_event.get("type")
-                          if isinstance(prev_event, dict) else None)
-                if prev_t == "subagent":
-                    continue  # walk past stacked phantoms
-                if prev_t == "notify_idle":
-                    return "IDLE"
-                if prev_t == "stop":
-                    if jsonl_stop_reason in TERMINAL_STOP_REASONS:
-                        return "IDLE"
-                    return None  # mid-tool: legacy uses raw
-                if prev_t == "session_end":
-                    return None  # restart transient: legacy uses raw
-                break  # crossed a real activity event; legitimate context
-        # Esc-interrupt / hook-silence fallback. Latest event is
-        # start-class (prompt / pretool / posttool / subagent /
-        # compact) but JSONL shows the assistant just completed
-        # with a terminal stop_reason. The response really ended,
-        # but the Stop hook failed to fire — either the user
-        # pressed Esc to interrupt mid-stream (Esc bypasses Stop
-        # in current Claude Code), or the hook pipeline went
-        # silent (anthropics/claude-code#16047 class). Commit IDLE
-        # directly — JSONL is the authoritative completion signal.
-        # raw=="PERMIT" is the one exception — A' (capture-pane
-        # footer match) wins because a modal literally on screen is
-        # more authoritative than a pre-modal JSONL completion.
-        # The fresher-than-event check is the regression guard
-        # against "fresh prompt right after a previous turn ended"
-        # false-positives; centralised in
-        # `_jsonl_terminal_fresher_than_event`.
+            return ACTIVITY_AT_REST, latest
+        return ACTIVITY_AWAITING_PERMIT, latest
+
+    if klass == EVENT_CLASS_START:
+        # prompt / pretool / posttool / compact / non-phantom
+        # subagent. Esc-interrupt path: a terminal JSONL stop_reason
+        # newer than the start event proves the response ended even
+        # though no Stop hook fired (Esc bypasses Stop, or hooks
+        # went silent under #16047-class regressions).
         if (raw != "PERMIT" and _jsonl_terminal_fresher_than_event(
                 latest, jsonl_stop_reason, jsonl_age, now)):
-            return "IDLE"
-        # Combined-stale fallback: a start-class event with no
-        # follow-up for >BUSY_HOOK_JSONL_WINDOW (10 min) AND a
-        # similarly stale JSONL is the long-tail signature of any
-        # other spurious upstream firing (not just subagent).
-        # Defer to legacy.
+            return ACTIVITY_AT_REST, latest
+        # Combined-stale: latest start event AND JSONL both stale
+        # past the long-tool window — the session has effectively
+        # abandoned the in-progress claim. Let legacy decide.
         if raw != "PERMIT":
             event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
-            if now > 0 and event_ts > 0:
-                event_age = now - event_ts
-                if (event_age > BUSY_HOOK_JSONL_WINDOW
-                        and 0 <= jsonl_age
-                        and jsonl_age > BUSY_HOOK_JSONL_WINDOW):
-                    return None
-        candidate = "BUSY"
-    elif klass == EVENT_CLASS_IDLE:
+            if (now > 0 and event_ts > 0
+                    and now - event_ts > BUSY_HOOK_JSONL_WINDOW
+                    and 0 <= jsonl_age
+                    and jsonl_age > BUSY_HOOK_JSONL_WINDOW):
+                return ACTIVITY_UNKNOWN, latest
+        return ACTIVITY_IN_PROGRESS, latest
+
+    # Defensive: a new EVENT_CLASS_* added to the vocabulary but
+    # not handled here surfaces as legacy fallback rather than a
+    # hard error.
+    return ACTIVITY_UNKNOWN, latest
+
+
+def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
+    """Map (activity, raw observation, JSONL signals) to a definite
+    state, or None to defer to legacy detection.
+
+    Ordering invariant: activity decides whether derive commits at
+    all, then raw=PERMIT (capture-pane authority for "modal on
+    screen") promotes a committed non-PERMIT candidate to PERMIT.
+    UNKNOWN activity returns None even when raw=PERMIT — the rule
+    "no event-log signal → legacy fallback" is preserved end-to-end
+    so any future legacy-only logic (e.g. raw_permit_passthrough)
+    keeps working consistently."""
+    candidate = None
+
+    if activity == ACTIVITY_AT_REST:
         candidate = "IDLE"
-    elif klass == EVENT_CLASS_PAUSE:
-        # stop event: BUSY if still in tool_use mid-turn (claude
-        # paused waiting on a tool result), IDLE if the response
-        # completed with a terminal stop_reason. Missing stop_reason
-        # (older schema or no assistant record in tail) is
-        # conservative → BUSY so that long-running tools without
-        # clear evidence do not flip to false IDLE.
-        if jsonl_stop_reason in TERMINAL_STOP_REASONS:
-            candidate = "IDLE"
-        else:
+    elif activity == ACTIVITY_IN_PROGRESS:
+        candidate = "BUSY"
+    elif activity == ACTIVITY_AWAITING_PERMIT:
+        # Modal raised by the event log. raw=PERMIT (modal still on
+        # screen) is handled by the override below. Otherwise the
+        # modal was dismissed — accept (tool resumed) or Esc (tool
+        # aborted). JSONL `tool_use` within the long-tool window
+        # plus raw in {BUSY, IDLE} means a tool is actively running
+        # post-dismiss; promote to BUSY rather than holding cosmetic
+        # PERMIT for the tool's whole duration. Any other shape
+        # stays PERMIT (the `(Nm)` stale-signal suffix surfaces the
+        # stuck nature to the user).
+        if (jsonl_stop_reason == "tool_use"
+                and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW
+                and raw in ("BUSY", "IDLE")):
             candidate = "BUSY"
-    else:
-        # Defensive — every defined class above is handled, but a new
-        # EVENT_CLASS_* added without updating this branch should
-        # surface as a legacy fallback rather than a hard error.
+        else:
+            candidate = "PERMIT"
+    # ACTIVITY_UNKNOWN: candidate stays None.
+
+    if candidate is None:
         return None
 
-    # Capture-pane PERMIT footer overrides any non-PERMIT derivation.
-    # The PermissionRequest hook can fire after the modal is already
-    # rendered, or fail to fire at all under #16047-class regressions,
-    # leaving the latest event still a start-class hook (pretool /
-    # posttool / prompt) when a permission dialog is actually waiting
-    # on user input. The capture-pane footer match (PATTERN_PERMIT_FOOTER)
-    # is reliable in those cases — a modal cannot render its footer
-    # without actually being on screen.
+    # Capture-pane authority. raw=PERMIT (modal physically rendered)
+    # promotes a non-PERMIT candidate to PERMIT — the modal could
+    # have appeared after the latest event landed, or the
+    # PermissionRequest hook could have failed silently
+    # (anthropics/claude-code#16047 class).
     if raw == "PERMIT" and candidate != "PERMIT":
         return "PERMIT"
-
     return candidate
 
 

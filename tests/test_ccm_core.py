@@ -4688,6 +4688,256 @@ class TestReadEventsTail:
 
 # ─── derive_state_from_events (detection redesign phase 2+) ───
 
+class TestStripPhantomSubagents:
+    """`_strip_phantom_subagents` is the input normaliser run by
+    `classify_activity` before the decision tree. Trailing subagent
+    events that follow a rest marker (notify_idle / stop /
+    session_end) are spurious upstream firings and get trimmed;
+    mid-conversation subagents (after a real activity event) are
+    legitimate Task-tool invocations and must stay."""
+
+    def _strip(self, events):
+        from ccm_detection import _strip_phantom_subagents
+        return _strip_phantom_subagents(tuple(events))
+
+    def test_empty_returns_empty(self):
+        assert self._strip(()) == ()
+
+    def test_no_trailing_subagent_unchanged(self):
+        events = ({"ts": 1, "type": "prompt"},
+                  {"ts": 2, "type": "pretool"})
+        assert self._strip(events) == events
+
+    def test_trailing_subagent_after_notify_idle_trimmed(self):
+        events = ({"ts": 1, "type": "stop"},
+                  {"ts": 2, "type": "notify_idle"},
+                  {"ts": 3, "type": "subagent"})
+        assert self._strip(events) == events[:2]
+
+    def test_trailing_subagent_after_stop_trimmed(self):
+        events = ({"ts": 1, "type": "stop"},
+                  {"ts": 2, "type": "subagent"})
+        assert self._strip(events) == (events[0],)
+
+    def test_trailing_subagent_after_session_end_trimmed(self):
+        events = ({"ts": 1, "type": "session_end"},
+                  {"ts": 2, "type": "subagent"})
+        assert self._strip(events) == (events[0],)
+
+    def test_stacked_phantom_subagents_all_trimmed(self):
+        events = ({"ts": 1, "type": "notify_idle"},
+                  {"ts": 2, "type": "subagent"},
+                  {"ts": 3, "type": "subagent"},
+                  {"ts": 4, "type": "subagent"})
+        assert self._strip(events) == (events[0],)
+
+    def test_legitimate_subagent_after_pretool_kept(self):
+        # Task tool spawning a subagent mid-conversation. The
+        # immediately preceding non-subagent event is `pretool`, not
+        # a rest marker, so the trailing subagent is legitimate.
+        events = ({"ts": 1, "type": "prompt"},
+                  {"ts": 2, "type": "pretool"},
+                  {"ts": 3, "type": "subagent"})
+        assert self._strip(events) == events
+
+    def test_all_subagent_events_kept_unchanged(self):
+        # No rest marker to anchor against; classifier handles this
+        # via UNKNOWN further along.
+        events = ({"ts": 1, "type": "subagent"},
+                  {"ts": 2, "type": "subagent"})
+        assert self._strip(events) == events
+
+    def test_malformed_event_in_tail_treated_as_non_subagent(self):
+        events = ({"ts": 1, "type": "stop"},
+                  "not-a-dict",
+                  {"ts": 3, "type": "subagent"})
+        # Subagent is trailing; non-subagent walking stops at the
+        # malformed entry, which is not in _REST_MARKERS, so the
+        # filter declines to trim. Keeps everything as-is.
+        assert self._strip(events) == events
+
+
+class TestClassifyActivity:
+    """`classify_activity` produces the (Activity, evidence_event)
+    pair that drives the decision tree. Each branch corresponds to
+    a "what is Claude doing right now?" answer."""
+
+    def _classify(self, **kwargs):
+        from ccm_detection import classify_activity
+        return classify_activity(**kwargs)
+
+    def test_empty_events_unknown(self):
+        from ccm_detection import ACTIVITY_UNKNOWN
+        a, e = self._classify(
+            events=(), jsonl_stop_reason=None,
+            jsonl_age=-1, raw="IDLE", now=100,
+        )
+        assert a == ACTIVITY_UNKNOWN and e is None
+
+    def test_notify_idle_at_rest(self):
+        from ccm_detection import ACTIVITY_AT_REST
+        a, e = self._classify(
+            events=({"ts": 100, "type": "notify_idle"},),
+            jsonl_stop_reason=None,
+            jsonl_age=-1, raw="IDLE", now=200,
+        )
+        assert a == ACTIVITY_AT_REST
+        assert e["type"] == "notify_idle"
+
+    def test_stop_with_terminal_stop_reason_at_rest(self):
+        from ccm_detection import ACTIVITY_AT_REST
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "stop"},),
+            jsonl_stop_reason="end_turn",
+            jsonl_age=5, raw="IDLE", now=200,
+        )
+        assert a == ACTIVITY_AT_REST
+
+    def test_stop_with_tool_use_in_progress(self):
+        from ccm_detection import ACTIVITY_IN_PROGRESS
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "stop"},),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=5, raw="BUSY", now=200,
+        )
+        assert a == ACTIVITY_IN_PROGRESS
+
+    def test_permit_event_awaiting_permit(self):
+        from ccm_detection import ACTIVITY_AWAITING_PERMIT
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "permit_req"},),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=50, raw="PERMIT", now=200,
+        )
+        assert a == ACTIVITY_AWAITING_PERMIT
+
+    def test_permit_event_with_terminal_jsonl_at_rest(self):
+        # Esc-dismiss + Claude wrote a terminal stop_reason.
+        from ccm_detection import ACTIVITY_AT_REST
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "permit_req"},),
+            jsonl_stop_reason="end_turn",
+            jsonl_age=2, raw="IDLE", now=110,
+        )
+        assert a == ACTIVITY_AT_REST
+
+    def test_pretool_event_in_progress(self):
+        from ccm_detection import ACTIVITY_IN_PROGRESS
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "pretool"},),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=5, raw="BUSY", now=110,
+        )
+        assert a == ACTIVITY_IN_PROGRESS
+
+    def test_session_end_unknown(self):
+        from ccm_detection import ACTIVITY_UNKNOWN
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "session_end"},),
+            jsonl_stop_reason=None,
+            jsonl_age=-1, raw="IDLE", now=110,
+        )
+        assert a == ACTIVITY_UNKNOWN
+
+    def test_unknown_event_type_unknown(self):
+        from ccm_detection import ACTIVITY_UNKNOWN
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "newfangled_upstream_event"},),
+            jsonl_stop_reason=None,
+            jsonl_age=-1, raw="IDLE", now=110,
+        )
+        assert a == ACTIVITY_UNKNOWN
+
+    def test_combined_stale_start_event_unknown(self):
+        # event ts=0 (very old), jsonl_age past long-tool window,
+        # raw != PERMIT → defer to legacy via UNKNOWN.
+        from ccm_detection import ACTIVITY_UNKNOWN
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "pretool"},),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=99999, raw="IDLE",
+            now=99999,  # event 99899s old, jsonl 99999s
+        )
+        assert a == ACTIVITY_UNKNOWN
+
+    def test_phantom_subagent_normalised_before_classify(self):
+        # Trailing subagent after notify_idle is stripped; classifier
+        # then sees notify_idle as latest → AT_REST.
+        from ccm_detection import ACTIVITY_AT_REST
+        a, e = self._classify(
+            events=(
+                {"ts": 100, "type": "stop"},
+                {"ts": 110, "type": "notify_idle"},
+                {"ts": 200, "type": "subagent"},
+            ),
+            jsonl_stop_reason="end_turn",
+            jsonl_age=400, raw="IDLE", now=500,
+        )
+        assert a == ACTIVITY_AT_REST
+        assert e["type"] == "notify_idle"
+
+
+class TestMapActivityToState:
+    """`map_activity_to_state` is the small decision tree that maps
+    an activity classification to a definite state, or None to defer
+    to legacy. raw=PERMIT can promote a committed candidate to
+    PERMIT, but UNKNOWN activity remains None even with raw=PERMIT
+    (preserving the "no event signal → legacy decides" invariant)."""
+
+    def _map(self, activity, raw="IDLE",
+             jsonl_stop_reason=None, jsonl_age=-1):
+        from ccm_detection import map_activity_to_state
+        return map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age)
+
+    def test_at_rest_returns_idle(self):
+        from ccm_detection import ACTIVITY_AT_REST
+        assert self._map(ACTIVITY_AT_REST, raw="IDLE") == "IDLE"
+
+    def test_in_progress_returns_busy(self):
+        from ccm_detection import ACTIVITY_IN_PROGRESS
+        assert self._map(ACTIVITY_IN_PROGRESS, raw="BUSY") == "BUSY"
+
+    def test_awaiting_permit_with_modal_on_screen_returns_permit(self):
+        from ccm_detection import ACTIVITY_AWAITING_PERMIT
+        assert self._map(ACTIVITY_AWAITING_PERMIT, raw="PERMIT") == "PERMIT"
+
+    def test_awaiting_permit_with_recent_tool_use_promotes_to_busy(self):
+        # Modal dismissed (raw != PERMIT) but tool actively running.
+        from ccm_detection import ACTIVITY_AWAITING_PERMIT
+        assert self._map(
+            ACTIVITY_AWAITING_PERMIT, raw="BUSY",
+            jsonl_stop_reason="tool_use", jsonl_age=5,
+        ) == "BUSY"
+
+    def test_awaiting_permit_with_stale_jsonl_stays_permit(self):
+        # No positive signal of active work → cosmetic stuck PERMIT.
+        from ccm_detection import ACTIVITY_AWAITING_PERMIT
+        assert self._map(
+            ACTIVITY_AWAITING_PERMIT, raw="IDLE",
+            jsonl_stop_reason="tool_use", jsonl_age=99999,
+        ) == "PERMIT"
+
+    def test_unknown_returns_none(self):
+        from ccm_detection import ACTIVITY_UNKNOWN
+        assert self._map(ACTIVITY_UNKNOWN, raw="IDLE") is None
+
+    def test_unknown_with_raw_permit_still_returns_none(self):
+        # Capture-pane authority does not override the
+        # "UNKNOWN → legacy" invariant; raw=PERMIT will be picked up
+        # by legacy's `raw_permit_passthrough` rule consistently.
+        from ccm_detection import ACTIVITY_UNKNOWN
+        assert self._map(ACTIVITY_UNKNOWN, raw="PERMIT") is None
+
+    def test_at_rest_promoted_to_permit_when_raw_permit(self):
+        # AT_REST committed candidate → IDLE; raw=PERMIT promotes.
+        from ccm_detection import ACTIVITY_AT_REST
+        assert self._map(ACTIVITY_AT_REST, raw="PERMIT") == "PERMIT"
+
+    def test_in_progress_promoted_to_permit_when_raw_permit(self):
+        from ccm_detection import ACTIVITY_IN_PROGRESS
+        assert self._map(ACTIVITY_IN_PROGRESS, raw="PERMIT") == "PERMIT"
+
+
 class TestDeriveStateFromEvents:
     """Parametrized coverage of the pure state-derivation function.
 
@@ -5493,12 +5743,16 @@ class TestDeriveStateFromEvents:
         )
         assert result == "IDLE"
 
-    def test_phantom_subagent_after_mid_tool_stop_defers(self):
+    def test_phantom_subagent_after_mid_tool_stop_returns_busy(self):
         """`stop` with mid-tool stop_reason (`tool_use`) means a tool
-        is still running — Claude is genuinely BUSY. The phantom
-        subagent still doesn't change that, but we defer to legacy
-        rather than committing BUSY ourselves so that raw (which
-        sees the live process tree) gets the authoritative call."""
+        is still running — Claude is genuinely BUSY. Stripping the
+        trailing phantom subagent leaves the `stop` as the latest
+        real event, which the activity classifier maps to
+        IN_PROGRESS → BUSY. This is symmetric with how a bare
+        `[stop]` events list is handled; the phantom guard normalises
+        the input so the same answer falls out, rather than
+        introducing a special "defer to legacy" case for the
+        post-phantom shape."""
         events = (
             {"ts": 100, "type": "stop"},
             {"ts": 200, "type": "subagent"},
@@ -5510,7 +5764,7 @@ class TestDeriveStateFromEvents:
             jsonl_age=10, now=210,
             raw="BUSY",
         )
-        assert result is None  # defer to legacy
+        assert result == "BUSY"
 
     def test_phantom_subagent_after_session_end_defers(self):
         """`session_end` is a rest-state marker indicating claude has
