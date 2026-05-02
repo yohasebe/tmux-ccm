@@ -55,7 +55,6 @@ COMPLETED_AT_TIMEOUT = int(os.environ.get("CCM_COMPLETED_AT_TIMEOUT", "30"))
 # and trusted unconditionally — bypasses the slower pipeline when multiple
 # projects contend for evaluation time.
 HOOK_FRESH_THRESHOLD = 2
-# JSONL session-log freshness threshold. If the project's newest .jsonl
 # Window for trusting a BUSY hook signal without JSONL corroboration.
 # A BUSY hook older than this AND a JSONL that has been silent for
 # the same duration is almost certainly left over from a turn that
@@ -67,25 +66,6 @@ HOOK_FRESH_THRESHOLD = 2
 # short enough that a missed Stop does not strand the project in
 # BUSY indefinitely.
 BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
-# JSONL real-activity filter — whitelist. Only records whose
-# top-level `type` is in this set count as conversation activity
-# in `_parse_jsonl_tail`. Whitelist is preferable to a blacklist
-# because Claude Code adds housekeeping record types over time
-# (recap / `away_summary`, `permission-mode`, `file-history-snapshot`,
-# `last-prompt`, …): a blacklist needs a code change for each new
-# type, while the whitelist absorbs them automatically. New
-# activity types are the only case that needs explicit addition.
-# JSONL_* constants moved to lib/ccm_jsonl.py and re-exported below.
-# Cluster-SHELL-transition detection: surface a warning when a project
-# drops back to SHELL too many times in a short window. The canonical
-# trigger is anthropics/claude-code#48069 (macOS silent-exit), where
-# Claude Code dies every 1-5 minutes and ccm observes SHELL → (user
-# re-attaches) → BUSY → IDLE → SHELL loops. Defaults: 3 transitions
-# in 10 minutes.
-# SHELL_CLUSTER_* and the related canary functions live in
-# `ccm_canaries`. They are re-exported at the bottom of this file
-# so existing `from ccm_core import SHELL_CLUSTER_WINDOW` callers
-# (cmd_doctor, ccm_render, dashboard) work unchanged.
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))  # 10 min safety net
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))  # 10 minutes default
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
@@ -710,14 +690,10 @@ def read_hook_signal(project_dir, session_id: Optional[str] = None):
     return None
 
 
-# ─── Claude Code session log (JSONL) ───
-# Moved to lib/ccm_jsonl.py. Re-exported at the bottom.
-
-
 # ─── Event log reader ───
-# The per-project event log is written by
+# The per-session event log is written by
 # `hooks/lib.sh::ccm_append_event` as append-only JSONL at
-# `$HOOK_DIR/<md5>.events.jsonl`. Each record is
+# `$HOOK_DIR/<sessionId>.events.jsonl`. Each record is
 # `{"ts": unix_seconds, "type": <normalized_type>}`, one per hook
 # invocation. State is derived as a pure function of the event
 # tail by `derive_state_from_events`; this reader is the input
@@ -842,17 +818,6 @@ def read_events_tail(project_dir: str, limit: int = 20,
     result = tuple(events_newest_first)
     _cache_events(path, key, result)
     return result[-limit:] if limit and len(result) > limit else result
-
-
-# ─── Runtime canaries ───
-# Moved to lib/ccm_canaries.py. Re-exported at the bottom of this
-# file so `from ccm_core import hooks_log_warning` etc. keep working.
-
-
-# ─── State detection ───
-# Moved to lib/ccm_detection.py. Re-exported at the bottom of this
-# file so `from ccm_core import DETECTION_RULES / detect_window_state / …`
-# continues to work for dashboard, inject_status, and pytest.
 
 
 # ─── Project data ───
@@ -1077,10 +1042,6 @@ def save_tmux_conf_setting(setting):
             f.writelines(lines)
     except OSError:
         pass
-
-
-# ─── Desktop notifications ───
-# Moved to lib/ccm_notify.py. Re-exported at the bottom.
 
 
 # ─── Window name update ───

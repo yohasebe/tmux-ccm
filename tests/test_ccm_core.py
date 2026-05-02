@@ -614,15 +614,6 @@ class TestJsonlTailStopReason:
         )
 
 
-# ─── recap-phantom gap discriminator ───
-#
-# These tests exercise the `hook_after_real_activity_lt` field on
-# the legacy `hook_fresh_busy` rule. Trust BUSY hook only when it
-# fired within JSONL_HOOK_GAP_TOLERANCE seconds of (or after) the
-# last real conversation activity. Rejects phantom BUSY hooks fired
-# by Claude Code's recap (`away_summary`) which writes to JSONL and
-# fires a BUSY hook with no surrounding real activity.
-
 # ─── hooks.log canary ───
 
 class TestHooksLogWarning:
