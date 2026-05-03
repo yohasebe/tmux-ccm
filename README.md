@@ -24,9 +24,10 @@ ccm's value scales with parallelism: useful with 2–3 projects, daily infrastru
 - **Git Integration** — Branch name and dirty status (`main*`) per project
 - **Port Detection** — Listening TCP ports per project
 - **Snapshots** — Save and restore project layouts as JSON
+- **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe, BUSY-queueable)
 - **Auto-start** — Claude Code auto-launches when switching to a SHELL-state window
 - **Status Line** — Inject active project status into tmux status bar
-- **Multi-byte text** — Project names containing Japanese, Chinese, or Korean characters, or emoji align correctly in the dashboard, status bar, and CLI tables. Snapshots and config files use explicit UTF-8; subprocess output is decoded permissively so a single malformed byte cannot freeze the detection cycle. CJK-locale terminals can opt into 2-column rendering for East Asian Ambiguous characters via `CCM_AMBIGUOUS_WIDTH=2`
+- **Multi-byte text** — CJK characters and emoji in project names align correctly across dashboard, status bar, and CLI tables
 - **Agent Teams Compatible** — Works alongside Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams): manage projects with ccm while running parallel agents within each project
 
 ## Requirements

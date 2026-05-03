@@ -131,6 +131,16 @@ set -g @ccm-key-search "/"   # prefix + / → dashboard opens in filter mode
 
 You can also run `ccm search` (or `ccm dashboard --search`) from a shell or another tmux binding for the same effect. This is handy when you have many projects — type a few characters to jump straight to the one you want, instead of hunting through the full list.
 
+### Prefix-less dashboard hotkey
+
+If you prefer a top-row function key over `prefix + Tab`, bind one with `@ccm-key-dashboard-noprefix`:
+
+```tmux
+set -g @ccm-key-dashboard-noprefix "F1"   # F1 alone (no prefix) → dashboard
+```
+
+Goes through the same `display-popup` invocation as the prefix binding, so the coloured ccm logo on the popup title is preserved. Writing your own `bind-key -n F1 display-popup …` instead works mechanically but won't carry the logo unless you replicate the full `-T` format string.
+
 ## The Tree View
 
 Open with `prefix + T`. Shows the full tmux hierarchy:

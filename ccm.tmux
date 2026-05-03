@@ -51,6 +51,19 @@ if [[ -n "$CCM_KEY_SEARCH" ]]; then
         display-popup -E -w 80% -h 60% -T " ${_logo} Filter " "$CCM_BIN search"
 fi
 
+# Optional prefix-less dashboard hotkey. Set
+# `@ccm-key-dashboard-noprefix "F1"` (or any tmux key) in
+# ~/.tmux.conf to bind the dashboard popup directly, without the
+# tmux prefix. Useful for users who want a top-row function key
+# to toggle ccm. Goes through the same display-popup invocation
+# as the prefix binding so the coloured logo title is preserved.
+CCM_KEY_DASHBOARD_NOPREFIX=$(tmux show-option -gqv @ccm-key-dashboard-noprefix 2>/dev/null)
+if [[ -n "$CCM_KEY_DASHBOARD_NOPREFIX" ]]; then
+    tmux bind-key -n "$CCM_KEY_DASHBOARD_NOPREFIX" \
+        run-shell "$_session_cmd" \\\; \
+        display-popup -E -w 80% -h 60% -T " ${_logo} Dashboard " "$CCM_BIN dashboard"
+fi
+
 # Mouse click on ccm status icon → open dashboard
 # Falls back to default behavior (select-window) for non-ccm clicks
 tmux bind-key -n MouseDown1Status \

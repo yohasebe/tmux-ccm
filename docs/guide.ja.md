@@ -131,6 +131,16 @@ set -g @ccm-key-search "/"   # prefix + / でダッシュボードをフィル�
 
 シェルや別の tmux バインディングから `ccm search`（または `ccm dashboard --search`）を呼んでも同じです。プロジェクト数が多いときに、リストをスクロールせず数文字で目的のプロジェクトに直行できます。
 
+### プレフィックスなしのダッシュボードホットキー
+
+`prefix + Tab` よりファンクションキー一発で開きたい場合、`@ccm-key-dashboard-noprefix` で直接バインドできます:
+
+```tmux
+set -g @ccm-key-dashboard-noprefix "F1"   # F1 単独 (prefix 不要) → ダッシュボード
+```
+
+prefix 経由の binding と同じ `display-popup` 呼び出しを通るので、popup タイトルの色付き ccm ロゴはそのまま表示されます。自前で `bind-key -n F1 display-popup …` を書くこともできますが、`-T` の format 文字列を完全にコピーしないとロゴは出ません。
+
 ## ツリービュー
 
 `prefix + T` で開きます。tmuxの全体構造を階層表示します：
