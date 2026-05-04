@@ -73,7 +73,7 @@ ccm_hook_event_name() {
 # mechanism; detection logic is unchanged until Phase 2 opts in.
 #
 # Format: JSONL, append-only. One hook invocation = one line.
-# Path: $HOOK_DIR/<md5-of-cwd>.events.jsonl
+# Path: $HOOK_DIR/<session_id>.events.jsonl
 # Schema: {"ts": <unix_seconds>, "type": "<normalized>"}
 #
 # `type` is restricted to the 9-type normalized vocabulary:
@@ -85,7 +85,7 @@ ccm_hook_event_name() {
 # without flock. Errors are suppressed: a write failure must not
 # prevent the legacy signal-file path from running.
 #
-# Args: $1=HOOK_DIR, $2=KEY (md5 of cwd), $3=TYPE (normalized event type)
+# Args: $1=HOOK_DIR, $2=KEY (Claude Code session_id), $3=TYPE (normalized event type)
 ccm_append_event() {
     local hook_dir="$1" key="$2" type="$3"
     local ts events_file
@@ -150,7 +150,7 @@ ccm_hook_resolve_project() {
 
 # Write signal to hook file AND directly update tmux window option
 # for instant status bar reflection (no polling delay).
-# Args: $1=HOOK_DIR, $2=KEY (md5), $3=STATE (BUSY/PERMIT/SHELL), $4=CWD, $5=DETAIL (optional)
+# Args: $1=HOOK_DIR, $2=KEY (session_id), $3=STATE (BUSY/PERMIT/SHELL), $4=CWD, $5=DETAIL (optional)
 ccm_write_signal() {
     local hook_dir="$1" key="$2" state="$3" cwd="$4" detail="${5:-}"
 
@@ -184,7 +184,7 @@ ccm_write_signal() {
         # (eliminates up to 3s polling delay for critical states)
         if [[ "$state" == "PERMIT" && -n "$project" ]]; then
             _ccm_instant_permit_icon "$win_target" "$project" &
-            _ccm_instant_notify "PERMIT" "$project" "$detail" "$key" &
+            _ccm_instant_notify "PERMIT" "$project" "$detail" "$cwd" &
         else
             # Non-PERMIT transitions also benefit from forcing an
             # immediate status redraw so BUSY ↔ IDLE flips appear in
@@ -233,11 +233,12 @@ _ccm_instant_permit_icon() {
 # notification arrives before this delayed check, and per-project
 # dedup suppresses the follow-up.
 #
-# Args: $1=HOOK_DIR, $2=KEY, $3=PROJECT_NAME, $4=GRACE_SEC
-#       (default: CCM_COMPLETION_GRACE_SEC env, or 3)
+# Args: $1=HOOK_DIR, $2=KEY (session_id, for the .pending sentinel),
+#       $3=CWD (for notification dedup keying), $4=PROJECT_NAME,
+#       $5=GRACE_SEC (default: CCM_COMPLETION_GRACE_SEC env, or 3)
 _ccm_schedule_completed_notify() {
-    local hook_dir="$1" key="$2" project="$3"
-    local grace="${4:-${CCM_COMPLETION_GRACE_SEC:-3}}"
+    local hook_dir="$1" key="$2" cwd="$3" project="$4"
+    local grace="${5:-${CCM_COMPLETION_GRACE_SEC:-3}}"
     local pending="${hook_dir}/${key}.pending"
 
     printf '%s' "$(date +%s)" > "$pending" 2>/dev/null
@@ -249,7 +250,7 @@ _ccm_schedule_completed_notify() {
         sleep "$grace"
         if [[ -f "$pending" ]]; then
             rm -f "$pending" 2>/dev/null
-            _ccm_instant_notify "COMPLETED" "$project" "" "$key"
+            _ccm_instant_notify "COMPLETED" "$project" "" "$cwd"
         fi
     ) </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null || true
@@ -267,25 +268,28 @@ _ccm_cancel_pending_completion() {
 
 # Send desktop notification immediately for PERMIT or COMPLETED state.
 # Writes a per-project marker so inject-status can skip the duplicate
-# notification for the same project. The marker is keyed off the
-# project's hook-signal `key` (md5 of cwd) so concurrent ccm projects
-# do not dedup each other — a global marker would cause project B's
-# COMPLETED to be silently dropped whenever project A completed within
-# 10 seconds, which is the common case when running several projects
-# in parallel.
-# Args: $1=STATE (PERMIT/COMPLETED), $2=PROJECT_NAME, $3=DETAIL, $4=KEY
+# notification for the same project. The marker is keyed on md5(cwd)
+# so a Claude restart in the same directory still hits the dedup
+# window (session_id keying would treat the restarted session as
+# brand new and miss legitimate duplicates). Per-project scoping
+# prevents project A's notification from suppressing project B's.
+# Must stay in sync with `read_project_notify_marker` in ccm_signals.py.
+# Args: $1=STATE (PERMIT/COMPLETED), $2=PROJECT_NAME, $3=DETAIL, $4=CWD
 _ccm_instant_notify() {
-    local state="$1" project="$2" detail="${3:-}" key="${4:-}"
+    local state="$1" project="$2" detail="${3:-}" cwd="${4:-}"
 
     local tmp_dir="${TMPDIR:-/tmp}/ccm-${UID}"
     local marker_dir="${tmp_dir}/notified"
     mkdir -p "$marker_dir" 2>/dev/null || true
-    # Per-project marker (keyed on md5-of-cwd). Fall back to the legacy
-    # global path if no key was supplied so older hook scripts continue
+    # Per-project marker keyed on md5(cwd). Fall back to the legacy
+    # global path if no cwd was supplied so older hook scripts continue
     # to function during an in-place upgrade.
     local marker
-    if [[ -n "$key" ]]; then
-        marker="${marker_dir}/${key}"
+    if [[ -n "$cwd" ]]; then
+        local cwd_hash
+        cwd_hash=$(printf '%s' "$cwd" | md5 -q 2>/dev/null) || \
+            cwd_hash=$(printf '%s' "$cwd" | md5sum 2>/dev/null | cut -d' ' -f1)
+        marker="${marker_dir}/${cwd_hash}"
     else
         marker="${tmp_dir}/hook-notified"
     fi

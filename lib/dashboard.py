@@ -74,7 +74,6 @@ from ccm_render import (
     signal_age_suffix,
     truncate_to_width,
 )
-from ccm_signals import read_hook_signal
 
 # Max characters shown in the single-line message area
 MSG_MAX_LEN = 200

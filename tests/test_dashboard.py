@@ -51,7 +51,6 @@ def _stub_dashboard_environment(monkeypatch):
     monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
     monkeypatch.setattr("dashboard.get_session", lambda: "0")
     monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-    monkeypatch.setattr("dashboard.read_hook_signal", lambda d: None)
     monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
     monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
     monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)

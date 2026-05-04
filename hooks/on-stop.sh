@@ -22,5 +22,5 @@ rm -f "$HOOK_DIR/$KEY" "$HOOK_DIR/$KEY.busy"
 # `_ccm_schedule_completed_notify` in lib.sh for the rationale.
 project=$(ccm_hook_resolve_project "$CWD")
 if [[ -n "$project" ]]; then
-    _ccm_schedule_completed_notify "$HOOK_DIR" "$KEY" "$project"
+    _ccm_schedule_completed_notify "$HOOK_DIR" "$KEY" "$CWD" "$project"
 fi

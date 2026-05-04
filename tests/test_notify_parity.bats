@@ -89,14 +89,14 @@ _invoke_both() {
     # Both implementations must return 0 on either fire-or-skip; a
     # non-zero here means they leaked an error exit code and the test
     # should fail loudly rather than mask it with `|| true`.
-    local bash_key="bash-${state}-$$-${RANDOM}"
-    _ccm_instant_notify "$state" "$project" "$detail" "$bash_key"
+    local bash_cwd="/tmp/parity-${state}-$$-${RANDOM}"
+    _ccm_instant_notify "$state" "$project" "$detail" "$bash_cwd"
 
     PYTHONDONTWRITEBYTECODE=1 python3 -c "
 import sys
 sys.path.insert(0, '${CCM_ROOT}/lib')
-import ccm_core
-ccm_core.notify('${state}', '${project}', '${detail}')
+import ccm_notify
+ccm_notify.notify('${state}', '${project}', '${detail}')
 "
 
     # Poll the log briefly; stubs are fast but Popen/& are async.
@@ -219,8 +219,8 @@ assert_neither_fired() {
     PYTHONDONTWRITEBYTECODE=1 python3 -c "
 import sys
 sys.path.insert(0, '${CCM_ROOT}/lib')
-import ccm_core
-ccm_core.notify('BUSY', 'proj', '')
+import ccm_notify
+ccm_notify.notify('BUSY', 'proj', '')
 "
     # Wait for Popen to complete.
     local i

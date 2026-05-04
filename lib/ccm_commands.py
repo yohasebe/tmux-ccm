@@ -22,13 +22,11 @@ Cross-module discipline:
     at import time and bypass the mock.
 """
 
-import glob
 import json
 import os
 import shlex
 import subprocess
 import sys
-import time
 from datetime import datetime
 
 # `ccm_core` is imported for its (mockable) helpers AND for the runtime
@@ -462,7 +460,7 @@ def cmd_stop(target):
         # exists when it does not.
         ccm_core.init_dirs()
         try:
-            cmd_snapshot_save("_autosave", quiet=True)
+            ccm_snapshot.cmd_snapshot_save("_autosave", quiet=True)
             ccm_core.ccm_info("Auto-saved snapshot: _autosave")
         except Exception as exc:
             ccm_core.ccm_warn(f"Autosave failed: {exc} — proceeding with stop")

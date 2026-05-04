@@ -233,8 +233,7 @@ def cmd_send(args):
 
     # Defensively exit any tmux mode on the target pane. Without this,
     # a pane stuck in copy-mode would interpret the message characters
-    # as copy-mode bindings (same class of bug as the dashboard attach
-    # fix in d1ca09b).
+    # as copy-mode bindings rather than typed input.
     ccm_core.tmux_cmd("send-keys", "-t", win_target, "-X", "cancel")
 
     # Literal send, converting `\n` into M-Enter (Claude Code's

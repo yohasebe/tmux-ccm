@@ -491,6 +491,37 @@ class TestCmdRename:
         mock_auto.assert_called_once()
 
 
+class TestCmdStopAll:
+    """`ccm stop --all` must persist `_autosave` before killing
+    windows. The snapshot save is the only on-shutdown guarantee
+    that a `ccm start _autosave` later restores the workspace."""
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_snapshot.cmd_snapshot_save")
+    @patch("ccm_core.list_windows_raw", return_value=[])
+    @patch("ccm_core.get_session", return_value="main")
+    def test_no_windows_skips_save(self, mock_sess, mock_list, mock_save, mock_tmux):
+        ccm_commands.cmd_stop("--all")
+        mock_save.assert_not_called()
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.init_dirs")
+    @patch("ccm_snapshot.cmd_snapshot_save")
+    @patch(
+        "ccm_core.list_windows_raw",
+        return_value=[("1", "session-id", "proj1", "/dir1")],
+    )
+    @patch("ccm_core.get_session", return_value="main")
+    def test_with_windows_saves_then_kills(
+        self, mock_sess, mock_list, mock_save, mock_init, mock_tmux
+    ):
+        ccm_commands.cmd_stop("--all")
+        mock_save.assert_called_once_with("_autosave", quiet=True)
+        # Kill-window invoked for the project window.
+        kill_calls = [c for c in mock_tmux.call_args_list if c.args[:1] == ("kill-window",)]
+        assert len(kill_calls) == 1
+
+
 class TestDispatcherPassthrough:
     """`send` / `capture` / `errors` accept flags intermixed with
     positionals. The dispatcher must pass raw argv through to the

@@ -17,19 +17,20 @@ finished:
     second runs every cycle but rate-limits itself to one save per
     2 minutes via the `autosave-time` marker.
 
-All helpers late-bind to `ccm_core` for the symbols they call
-(`tmux_cmd`, `_set_win_state`, `cmd_snapshot_save`,
+Helpers late-bind to `ccm_core` for shared utilities (`tmux_cmd`,
 `log_caught_exception`, `STATE_ICONS`, `IDLE_EXIT_TIMEOUT`,
-`CCM_TMP_DIR`). Test mocks routed via `ccm_core.X` therefore reach
-this module unchanged.
+`CCM_TMP_DIR`) so test mocks routed via `ccm_core.X` reach this
+module unchanged. `ccm_detection._set_win_state` and
+`ccm_snapshot.cmd_snapshot_save` are imported from their owning
+modules directly.
 """
 
 import os
 import time
 
-import ccm_core  # late-bound for tmux_cmd / cmd_snapshot_save / log_caught_exception
-import ccm_commands
+import ccm_core
 import ccm_detection
+import ccm_snapshot
 
 
 # ─── Window name update ───
