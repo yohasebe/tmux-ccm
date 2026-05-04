@@ -10,6 +10,8 @@ exchanging records, regardless of whether hooks are firing.
 This module provides:
   - `read_session_info(pid)` — read `~/.claude/sessions/<pid>.json`
     runtime mapping, with a pid-reuse staleness check.
+  - `read_session_versions()` — scan all `~/.claude/sessions/*.json`
+    and return `{sessionId: version}` for use by `ccm doctor`.
   - `read_jsonl_tail_info(project_dir, pid)` — return
     `(real_activity_age, last_assistant_stop_reason)` from the
     project's newest JSONL.
