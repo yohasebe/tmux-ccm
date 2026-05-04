@@ -18,14 +18,14 @@ ccm's value scales with parallelism: useful with 2–3 projects, daily infrastru
 
 ## Features
 
-- **Resource Management** — Idle Claude Code sessions auto-exit after 10 minutes to free memory and CPU; auto-restart with `--continue` when you switch back
+- **Resource Management** — Idle Claude Code sessions auto-exit after 10 minutes to free memory and CPU; auto-restart and resume when you switch back
 - **Dashboard** — Interactive popup with real-time Claude Code status (BUSY / IDLE / PERMIT)
 - **Tree View** — Hierarchical session/window/pane display with navigation
-- **Git Integration** — Branch name and dirty status (`main*`) per project
-- **Port Detection** — Listening TCP ports per project
-- **Snapshots** — Save and restore project layouts as JSON
+- **Git Integration** — Per-project git branch with dirty-state indicator
+- **Port Detection** — Listening ports per project
+- **Snapshots** — Save and restore your project layout
 - **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe, BUSY-queueable)
-- **Auto-start** — Claude Code auto-launches when switching to a SHELL-state window
+- **Auto-start** — Claude Code auto-launches when you attach to a project where it's not yet running
 - **Status Line** — Inject active project status into tmux status bar
 - **Multi-byte text** — CJK characters and emoji in project names align correctly across dashboard, status bar, and CLI tables
 - **Agent Teams Compatible** — Works alongside Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams): manage projects with ccm while running parallel agents within each project
@@ -122,13 +122,13 @@ set -g @ccm-key-search "/"       # optional: enable prefix + / to open the dashb
 ```
 
 > [!TIP]
-> For even quicker access, you can bind a single key (no prefix) to toggle the dashboard. For example, to use `F1`:
+> For even quicker access, bind a single key (no prefix) to toggle the dashboard via `@ccm-key-dashboard-noprefix`. For example, to use `F1`:
 >
 > ```tmux
-> bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-ccm/ccm dashboard"
+> set -g @ccm-key-dashboard-noprefix "F1"
 > ```
 >
-> Place this **after** the ccm plugin loads. Press `F1` to open, `F1` again to close. Adjust the path if you installed ccm manually (e.g. `~/path/to/ccm/ccm dashboard`).
+> Press `F1` to open, `F1` again to close. The coloured ccm logo on the popup title is preserved (writing your own `bind-key -n F1 display-popup …` works mechanically but loses the logo unless you replicate the full `-T` format string).
 
 > [!IMPORTANT]
 > All `set -g @ccm-*` options must be placed **before** the ccm plugin loads in `~/.tmux.conf` — that means before both the `source-file` line (manual install) and the TPM `run` line (TPM install). The plugin reads these options at load time, so settings placed after will not take effect.

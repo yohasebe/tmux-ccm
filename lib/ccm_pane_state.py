@@ -73,6 +73,9 @@ def has_children(pid, ps_lines, own_pgid):
 def capture_pane_bottom(pane_target, lines=8):
     """Capture the bottom `lines` non-empty lines of a pane.
 
+    Used for footer matching (PERMIT modal detection) where the
+    relevant content is always the last ~3 rows.
+
     Handles alternate-screen mode (`CLAUDE_CODE_NO_FLICKER=1`) by
     trying the normal screen first and falling back to alternate
     capture if the normal read is empty. Returns a list (possibly
@@ -84,6 +87,25 @@ def capture_pane_bottom(pane_target, lines=8):
         return []
     non_empty = [l for l in raw.split("\n") if l.strip()]
     return non_empty[-lines:]
+
+
+def capture_pane_visible(pane_target):
+    """Capture the entire visible area of a pane (no scrollback).
+
+    Used for input-prompt (`❯`) detection where the prompt may sit
+    well above the bottom rows when the user is composing a long
+    multi-line message — the input area grows upward as text wraps,
+    so a narrow tail-only capture loses the `❯` line. The visible
+    area is bounded by the pane's current height, so this remains a
+    fixed-cost capture regardless of scrollback length.
+
+    Returns a list of stripped non-empty lines, oldest first."""
+    raw = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p")
+    if not raw or not raw.strip():
+        raw = ccm_core.tmux_cmd("capture-pane", "-a", "-t", pane_target, "-p")
+    if not raw:
+        return []
+    return [l for l in raw.split("\n") if l.strip()]
 
 
 def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
@@ -99,10 +121,13 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
       3. Permit-footer matched at the bottom → PERMIT (matched even
          when claude has no children — permission dialogs appear
          before the tool subprocess spawns).
-      4. Has live children + no input prompt → BUSY.
-      5. Has live children + input prompt visible → IDLE
-         (background workers like MCP / dev servers don't change
-         that the user is at the prompt).
+      4. Has live children + no input prompt anywhere visible →
+         BUSY.
+      5. Has live children + input prompt visible somewhere in the
+         visible pane → IDLE. The prompt is searched across the
+         whole visible area (not just the bottom) because a long
+         multi-line user input pushes the `❯` row well above the
+         bottom 8 lines while the user is still composing.
       6. No children → IDLE.
     """
     claude_pid = find_claude_pid(pane_pid, ps_lines)
@@ -114,16 +139,21 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
 
     has_child = has_children(claude_pid, ps_lines, own_pgid)
 
-    # Single capture-pane read shared between the permit-footer
-    # check and the input-prompt check below; permit takes priority
-    # (a dialog can be shown while children are zero).
+    # PERMIT footer is always rendered at the very bottom of the
+    # pane — a tail-only capture is sufficient and avoids
+    # false-positives from "permit footer"-shaped strings appearing
+    # in conversation content above.
     bottom = capture_pane_bottom(pane_target)
     for line in bottom:
         if PATTERN_PERMIT_FOOTER.match(line):
             return "PERMIT"
 
     if has_child:
-        for line in bottom:
+        # Scan the whole visible pane for the input prompt. The `❯`
+        # row marks the top of the input area — when the user is
+        # composing a multi-line message, the `❯` may be many rows
+        # above the pane bottom while the user keeps typing.
+        for line in capture_pane_visible(pane_target):
             if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
                 return "IDLE"
         return "BUSY"

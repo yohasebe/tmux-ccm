@@ -89,12 +89,12 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 > ── ccm Dashboard ──────────────
 >   6 project(s)
 >
-> ▶ #5  ⚠PERMIT  ml-pipeline    ✔20s ~/code/ml-pipeline
->   #4  ✔IDLE    auth-service   ✔2s  ~/code/auth-service
->   #2  ◉BUSY    api-gateway    ✔6s  ~/code/api-gateway
->   #3  ●IDLE    web-dashboard  ✔1m  ~/code/web-dashboard
->   #6  ●IDLE    mobile-app     ✔5m  ~/code/mobile-app
->   #7  ■SHELL   docs-site      ✔1d  ~/code/docs-site
+> ▶ #5  ⚠ PERMIT  ml-pipeline                ~/code/ml-pipeline
+>   #4  ● IDLE    auth-service     * 2s      ~/code/auth-service
+>   #2  ◉ BUSY    api-gateway                ~/code/api-gateway
+>   #3  ● IDLE    web-dashboard              ~/code/web-dashboard
+>   #6  ● IDLE    mobile-app                 ~/code/mobile-app
+>   #7  ■ SHELL   docs-site                  ~/code/docs-site
 >
 > [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
 > e[x]it all [s]ave [t]ree [m]enu [q] quit
@@ -262,15 +262,15 @@ ccm setup-hooks
 
 ### 完了追跡
 
-Claude Codeが処理を完了すると、ccmは：
-1. 完了タイムスタンプを記録（プロジェクトはIDLEに遷移）
-2. ウィンドウ名とステータスバーに「最近完了」マーカーとして `✔` を表示
-3. デスクトップ通知を送信（設定時）
+Claude Code が処理を完了すると、ccm は:
+1. 完了タイムスタンプを記録 (プロジェクトは IDLE に遷移)
+2. ダッシュボード / ステータスバー / `ccm status` のプロジェクト名の右に `* <elapsed>` を「最近完了」マーカーとして表示 (アスタリスクは緑、時間は dim)
+3. デスクトップ通知を送信 (設定時)
 
-`✔` マーカーは以下の場合にクリアされます：
-- 30秒経過（自動クリア）
-- そのウィンドウに切り替えた時（ダッシュボード、ツリー、`ccm attach` 経由）
-- 新しいプロンプトを送信した時（ClaudeがBUSYになりマーカーがクリア）
+`* <elapsed>` マーカーは以下の場合にクリアされます:
+- 30 秒経過 (自動クリア)
+- そのウィンドウに切り替えた時 (ダッシュボード、ツリー、`ccm attach` 経由)
+- 新しいプロンプトを送信した時 (Claude が BUSY になりマーカーがクリア)
 
 ## ステータスバーモード
 
@@ -314,10 +314,10 @@ tmux標準のウィンドウリストをccm形式の色付きエントリに置�
 | `⚠` | PERMIT | 黄 |
 | `◉` | BUSY | オレンジ |
 | `●` | IDLE | ブルー |
-| `✔` | IDLE（最近完了） | 緑 |
+| `* <elapsed>`（プロジェクト名の後ろ） | IDLE（最近完了） | アスタリスク緑、時間 dim |
 | `■` | SHELL | 暗グレー |
 
-- `✔` マーカーは完了後30秒間表示され、その後 `●` IDLEに戻る
+- `* <elapsed>` マーカーは完了後30秒間表示され、その後消えます（プロジェクトは `●` IDLE のまま）
 - 向いている人: status-rightを維持しつつ全プロジェクトを常時確認したい人
 - 注意: 画面が1行狭くなる（プロジェクト数に応じて自動拡張）
 
@@ -339,7 +339,7 @@ ccm start my-workspace
 
 ### 自動保存
 
-`ccm stop --all` 実行時に、現在のレイアウトが `_autosave` として自動保存されます：
+`_autosave` スナップショットは、ccm プロジェクトが存在する間 **2 分ごとに自動更新** されます。加えて `ccm stop --all` 実行時にも書き込まれます:
 
 ```bash
 # 全プロジェクト停止（自動保存される）

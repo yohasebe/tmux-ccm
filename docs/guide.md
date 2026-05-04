@@ -89,12 +89,12 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 > ── ccm Dashboard ──────────────
 >   6 project(s)
 >
-> ▶ #5  ⚠PERMIT  ml-pipeline    ✔20s ~/code/ml-pipeline
->   #4  ✔IDLE    auth-service   ✔2s  ~/code/auth-service
->   #2  ◉BUSY    api-gateway    ✔6s  ~/code/api-gateway
->   #3  ●IDLE    web-dashboard  ✔1m  ~/code/web-dashboard
->   #6  ●IDLE    mobile-app     ✔5m  ~/code/mobile-app
->   #7  ■SHELL   docs-site      ✔1d  ~/code/docs-site
+> ▶ #5  ⚠ PERMIT  ml-pipeline                ~/code/ml-pipeline
+>   #4  ● IDLE    auth-service     * 2s      ~/code/auth-service
+>   #2  ◉ BUSY    api-gateway                ~/code/api-gateway
+>   #3  ● IDLE    web-dashboard              ~/code/web-dashboard
+>   #6  ● IDLE    mobile-app                 ~/code/mobile-app
+>   #7  ■ SHELL   docs-site                  ~/code/docs-site
 >
 > [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
 > e[x]it all [s]ave [t]ree [m]enu [q] quit
@@ -264,10 +264,10 @@ Without hooks, ccm falls back to process tree inspection with prompt pattern mat
 
 When Claude Code finishes processing, ccm:
 1. Records a completion timestamp (the project transitions to IDLE)
-2. Shows `✔` in the window name and status bar as a "recently completed" marker
+2. Shows `* <elapsed>` after the project name in the dashboard, status bar, and `ccm status` as a "recently completed" marker (asterisk green, time dim)
 3. Sends a desktop notification (if configured)
 
-The `✔` marker clears when:
+The `* <elapsed>` marker clears when:
 - 30 seconds elapse (auto-clear)
 - You switch to the window (via dashboard, tree, or `ccm attach`)
 - You send a new prompt (Claude goes BUSY, clearing the marker)
@@ -314,10 +314,10 @@ Adds a second status bar line below the main bar, showing all projects including
 | `⚠` | PERMIT | Yellow |
 | `◉` | BUSY | Orange |
 | `●` | IDLE | Blue |
-| `✔` | IDLE (recently completed) | Green |
+| `* <elapsed>` (after project name) | IDLE (recently completed) | Asterisk green, time dim |
 | `■` | SHELL | Dark gray |
 
-- The `✔` marker appears for 30 seconds after completion, then reverts to `●` IDLE
+- The `* <elapsed>` marker appears for 30 seconds after completion, then clears (project remains `●` IDLE)
 - Best for: users who want full visibility without losing their status-right
 - Trade-off: uses one extra screen line (auto-expands to more if needed)
 
@@ -339,7 +339,7 @@ ccm start my-workspace
 
 ### Auto-save
 
-When you run `ccm stop --all`, the current layout is automatically saved as `_autosave`:
+The `_autosave` snapshot is updated automatically every 2 minutes while ccm projects exist, and is also written when you run `ccm stop --all`:
 
 ```bash
 # Stop all projects (auto-saves)

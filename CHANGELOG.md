@@ -12,7 +12,7 @@ Initial public release. ccm is a tmux plugin that manages Claude Code sessions a
 ### Project management
 - Window-based project model: `ccm add` / `open` / `register` / `unregister` / `remove` / `attach` / `list` / `rename`. Each project is a tagged tmux window; the window options `@ccm_project` and `@ccm_dir` are the source of truth.
 - `ccm send <project> <message>` for cross-project prompt injection, with state-gated safety (PERMIT modals are unconditionally non-bypassable, including `--force`). Refusals classify the modal (session-resume, permission-request, confirmation-modal, unknown-permit) and quote the captured pane tail so the calling agent can explain the situation.
-- Snapshot save / load / list / delete; `_autosave` snapshot is taken automatically on `ccm stop --all`. Optional `@ccm-auto-restore on` reloads the autosave on tmux start.
+- Snapshot save / load / list / delete; `_autosave` snapshot is updated automatically every 2 minutes while projects exist, and also written on `ccm stop --all`. Optional `@ccm-auto-restore on` reloads the autosave on tmux start.
 - Auto-start Claude Code on attach to a SHELL window via `claude --continue`. Idle sessions auto-exit after 10 minutes (`CCM_IDLE_EXIT_TIMEOUT`) to free resources; the next attach restarts and resumes the conversation.
 
 ### State detection

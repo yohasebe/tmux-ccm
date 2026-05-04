@@ -18,17 +18,17 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 
 ## 機能
 
-- **リソース管理** — アイドル状態のClaude Codeセッションを10分後に自動終了し、メモリとCPUを解放。ウィンドウに戻ると `--continue` で自動再起動
-- **ダッシュボード** — Claude Codeの状態（BUSY / IDLE / PERMIT）をリアルタイム表示するインタラクティブポップアップ
-- **ツリービュー** — セッション/ウィンドウ/ペインの階層表示とナビゲーション
-- **Git連携** — プロジェクトごとのブランチ名とdirty状態（`main*`）の表示
-- **ポート検出** — プロジェクトごとのリスニングTCPポートの自動検出
-- **スナップショット** — プロジェクトレイアウトのJSON保存・復元
+- **リソース管理** — アイドル状態の Claude Code セッションを 10 分後に自動終了してメモリと CPU を解放。ウィンドウに戻ると会話を引き継いで自動再起動
+- **ダッシュボード** — Claude Code の状態 (BUSY / IDLE / PERMIT) をリアルタイム表示するインタラクティブポップアップ
+- **ツリービュー** — セッション / ウィンドウ / ペインの階層表示とナビゲーション
+- **Git 連携** — プロジェクトごとに git ブランチと dirty 状態を表示
+- **ポート検出** — プロジェクトごとのリスニングポートを表示
+- **スナップショット** — プロジェクトレイアウトの保存と復元
 - **プロジェクト間メッセージング** — `ccm send <project> <message>` で他プロジェクトの Claude にプロンプト送信、状態に応じた安全な制御 (PERMIT は拒否、BUSY は `--force` でキュー投入)
-- **自動起動** — SHELL状態のウィンドウに切り替えるとClaude Codeを自動起動
-- **ステータスライン** — アクティブプロジェクトの状態をtmuxステータスバーに表示
+- **自動起動** — Claude Code が起動していないプロジェクトに attach すると自動起動
+- **ステータスライン** — アクティブプロジェクトの状態を tmux ステータスバーに表示
 - **多バイト文字対応** — CJK 文字や絵文字を含むプロジェクト名がダッシュボード・ステータスバー・CLI テーブルで正しく整列
-- **Agent Teams対応** — Claude Codeの[Agent Teams](https://code.claude.com/docs/en/agent-teams)と併用可能：ccmでプロジェクトを管理しつつ、各プロジェクト内で並行エージェントを実行
+- **Agent Teams 対応** — Claude Code の [Agent Teams](https://code.claude.com/docs/en/agent-teams) と併用可能: ccm でプロジェクトを管理しつつ、各プロジェクト内で並行エージェントを実行
 
 ## 動作要件
 
@@ -122,13 +122,13 @@ set -g @ccm-key-search "/"       # 任意: prefix + / でダッシュボード�
 ```
 
 > [!TIP]
-> prefixなしの単一キーでダッシュボードをトグルすることもできます。例えば `F1` に割り当てる場合：
+> prefix なしの単一キーでダッシュボードをトグルする場合は `@ccm-key-dashboard-noprefix` を使います。例えば `F1` に割り当てる場合:
 >
 > ```tmux
-> bind-key -T root F1 run-shell 'mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"' \; display-popup -E -w 80% -h 60% -T " ccm Dashboard " "~/.tmux/plugins/tmux-ccm/ccm dashboard"
+> set -g @ccm-key-dashboard-noprefix "F1"
 > ```
 >
-> この行はccmプラグインの読み込みよりも**後に**配置してください。`F1` で開き、もう一度 `F1` で閉じます。手動インストールの場合はパスを調整してください（例: `~/path/to/ccm/ccm dashboard`）。
+> `F1` で開き、もう一度 `F1` で閉じます。popup タイトルの色付き ccm ロゴもそのまま表示されます (自前で `bind-key -n F1 display-popup …` を書くこともできますが、`-T` の format 文字列を完全にコピーしないとロゴは出ません)。
 
 > [!IMPORTANT]
 > すべての `set -g @ccm-*` オプションは、ccmプラグインが読み込まれるよりも**前に** `~/.tmux.conf` で設定する必要があります。`source-file` 行（手動インストール）およびTPMの `run` 行（TPMインストール）よりも前に配置してください。プラグインは読み込み時にこれらのオプションを参照するため、後に配置された設定は反映されません。

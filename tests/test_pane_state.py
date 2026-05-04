@@ -124,6 +124,34 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
+    def test_idle_with_children_and_multiline_input(self, mock_tmux):
+        """Long multi-line user input pushes the `❯` row well above
+        the bottom of the pane while the user keeps composing. The
+        prompt scan must look at the whole visible pane, not just
+        the last few rows, so the `❯` is still found even when many
+        wrapped text rows sit between it and the footer."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
+        )
+        # Layout: previous response above, then `❯ <multi-line text>`,
+        # then the footer at the bottom. The `❯` is many rows above
+        # the bottom because the user's typed text wraps.
+        mock_tmux.return_value = (
+            "Cooked for 28s\n"
+            "──────────────────────────\n"
+            "❯ first line of long input\n"
+            "  second wrapped row\n"
+            "  third wrapped row\n"
+            "  fourth wrapped row\n"
+            "  fifth wrapped row\n"
+            "  sixth wrapped row\n"
+            "  seventh wrapped row\n"
+            "──────────────────────────\n"
+            "  ~/path  branch  Model  ████ 50%\n"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
     def test_busy_with_children_and_accept_edits_prompt(self, mock_tmux):
         """Accept-edits prompt (❯❯) should NOT be treated as idle."""
         ps = make_ps_lines(
