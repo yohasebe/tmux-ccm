@@ -105,8 +105,7 @@ def pad_to_width(s: str, width: int) -> str:
     field. Wider-than-`width` strings are returned unchanged."""
     pad = width - display_width(s)
     return s + " " * pad if pad > 0 else s
-from ccm_constants import STATE_ICONS
-from ccm_jsonl import JSONL_HOOK_GAP_TOLERANCE
+from ccm_constants import JSONL_HOOK_GAP_TOLERANCE, STATE_ICONS
 
 
 # ─── ANSI colour codes ───

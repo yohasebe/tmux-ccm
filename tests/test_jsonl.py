@@ -644,3 +644,64 @@ class TestJsonlFromSessionInfo:
         age2 = ccm_jsonl.read_jsonl_age("/w/x")
         assert age2 <= 2
 
+
+class TestReadSessionVersions:
+    """`read_session_versions` builds a sessionId→version map from
+    every `~/.claude/sessions/*.json` file. Used by `ccm doctor`
+    to surface the per-session Claude Code version (catches the
+    "auto-update mid-day" case where windows end up on different
+    versions)."""
+
+    def test_empty_dir_returns_empty_map(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        assert ccm_jsonl.read_session_versions() == {}
+
+    def test_collects_session_id_to_version(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        (tmp_path / "100.json").write_text(
+            '{"pid":100,"sessionId":"sid-a","version":"2.1.126"}'
+        )
+        (tmp_path / "200.json").write_text(
+            '{"pid":200,"sessionId":"sid-b","version":"2.1.127"}'
+        )
+        m = ccm_jsonl.read_session_versions()
+        assert m == {"sid-a": "2.1.126", "sid-b": "2.1.127"}
+
+    def test_skips_malformed_files(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        (tmp_path / "100.json").write_text("not json")
+        (tmp_path / "200.json").write_text(
+            '{"sessionId":"sid-ok","version":"2.1.126"}'
+        )
+        m = ccm_jsonl.read_session_versions()
+        assert m == {"sid-ok": "2.1.126"}
+
+    def test_skips_files_without_sessionid_or_version(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        (tmp_path / "no-sid.json").write_text('{"version":"2.1.126"}')
+        (tmp_path / "no-ver.json").write_text('{"sessionId":"sid-x"}')
+        (tmp_path / "ok.json").write_text(
+            '{"sessionId":"sid-y","version":"2.1.126"}'
+        )
+        m = ccm_jsonl.read_session_versions()
+        assert m == {"sid-y": "2.1.126"}
+
+    def test_non_string_values_ignored(self, tmp_path, monkeypatch):
+        # Defensive: future Claude Code versions might emit different
+        # types — we should only accept str→str entries, never crash.
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        (tmp_path / "100.json").write_text(
+            '{"sessionId":123,"version":"2.1.126"}'
+        )
+        assert ccm_jsonl.read_session_versions() == {}
+
+    def test_ansi_escapes_stripped(self, tmp_path, monkeypatch):
+        # Defense-in-depth: a malformed/tampered session JSON must
+        # not inject ANSI colour codes into the doctor output.
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path))
+        (tmp_path / "100.json").write_text(
+            '{"sessionId":"sid-\\u001b[31mevil","version":"2\\u001b[0m.1.126"}'
+        )
+        m = ccm_jsonl.read_session_versions()
+        assert m == {"sid-evil": "2.1.126"}
+

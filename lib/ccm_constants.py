@@ -78,6 +78,27 @@ BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600")
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
+# Hook-vs-real-activity gap discriminator. A BUSY hook fired more
+# than this many seconds AFTER the last real conversation activity
+# is treated as a phantom hook (no surrounding real work) — the
+# upstream `away_summary` recap fires a BUSY-class hook with no
+# corresponding Stop, and this guard rejects it. In real long-
+# thinking, hook_age and real_activity_age grow together (gap ~0);
+# in recap, the hook is brand new while real_activity is minutes
+# old (gap >> threshold). Lives here (not in `ccm_jsonl`) so
+# `ccm_activity` and `ccm_render` can read it without forming an
+# import cycle through the `ccm_jsonl → ccm_core → ccm_commands →
+# ccm_detection → ccm_activity` chain.
+JSONL_HOOK_GAP_TOLERANCE = int(
+    os.environ.get("CCM_JSONL_HOOK_GAP_TOLERANCE", "60")
+)
+# Synthetic `stop_reason` value emitted by `ccm_jsonl.read_jsonl_tail_info`
+# when the latest JSONL record is a user prompt newer than the previous
+# assistant's terminal stop_reason — i.e. "user submitted, claude has
+# not yet started writing assistant tokens". Lives here (not in
+# `ccm_jsonl`) so `ccm_rules` can reference it at module-load time
+# without forming an import cycle.
+JSONL_USER_PENDING = "user_pending"
 # How long after the `claude` process starts a `raw=BUSY` reading
 # is treated as MCP-loading startup rather than real work, when no
 # hook signal has been written yet. MCP server initialization

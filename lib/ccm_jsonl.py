@@ -29,12 +29,14 @@ resolution), so we must NOT resolve symlinks here.
 
 import json
 import os
+import re
 import time
 from collections import OrderedDict
 from datetime import datetime
 from typing import Optional, Tuple
 
 import ccm_core  # late-bound for find_process_age (pid-reuse staleness check)
+from ccm_constants import JSONL_USER_PENDING, TERMINAL_STOP_REASONS
 
 
 # ─── Constants ───
@@ -65,18 +67,6 @@ JSONL_TAIL_BYTES = 32768
 # Safety cap on how many lines from the tail we will JSON-parse.
 JSONL_TAIL_MAX_LINES = 200
 
-# Hook-vs-real-activity gap discriminator. A BUSY hook fired more
-# than this many seconds AFTER the last real conversation activity
-# is treated as a phantom hook (no surrounding real work) — the
-# upstream `away_summary` recap fires a BUSY-class hook with no
-# corresponding Stop, and this guard rejects it. In real long-
-# thinking, hook_age and real_activity_age grow together (gap ~0);
-# in recap, the hook is brand new while real_activity is minutes
-# old (gap >> threshold).
-JSONL_HOOK_GAP_TOLERANCE = int(
-    os.environ.get("CCM_JSONL_HOOK_GAP_TOLERANCE", "60")
-)
-
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 CLAUDE_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 JSONL_CACHE_TTL = int(os.environ.get("CCM_JSONL_CACHE_TTL", "60"))
@@ -94,12 +84,11 @@ _SESSION_INFO_AGE_DRIFT_SEC = int(
 # Synthesized stop_reason value: emitted when the latest real-activity
 # record is a `user` entry that landed AFTER a terminal assistant
 # record. This is the signature of "user submitted a new prompt;
-# claude is processing it (extended-thinking phase, no new assistant
-# record yet)". Distinct from any stop_reason Claude Code emits, so
-# detection can branch on it explicitly.
-JSONL_USER_PENDING = "user_pending"
-
-_TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
+# `JSONL_USER_PENDING` and `TERMINAL_STOP_REASONS` live in
+# `ccm_constants` — referenced from `ccm_rules` at module-load
+# time and importing them from here would close a `ccm_rules →
+# ccm_jsonl → ccm_core → ccm_commands → ccm_detection → ccm_rules`
+# cycle.
 
 # In-process cache: project_dir → (newest_jsonl_path, expiry_unixtime).
 # Path is re-discovered on cache expiry or when the cached file is gone.
@@ -179,6 +168,43 @@ def read_session_info(claude_pid, ps_lines=None):
                 if abs(live_started_unix - file_started_unix) > _SESSION_INFO_AGE_DRIFT_SEC:
                     return None
     return data
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def read_session_versions():
+    """Build a {sessionId: version} map by scanning all
+    `~/.claude/sessions/*.json` files. Used by `ccm doctor` to show
+    the Claude Code version each running session is on (catches the
+    "ran `claude update` mid-session" case where one window is on
+    a newer version than another). Bounded by the number of running
+    Claude sessions (typically <10), so cost is negligible.
+
+    ANSI escape sequences are stripped from `version` and `sessionId`
+    before storing. The values come from JSON written under the user's
+    home dir (same trust boundary as Claude Code itself), but a
+    malformed / tampered file should not be able to inject colour
+    codes or cursor moves into the doctor output.
+
+    Skips malformed / unreadable files silently — the doctor row
+    just shows no version next to that session, which the operator
+    can treat as a separate signal."""
+    import glob
+    out: dict = {}
+    for path in glob.glob(os.path.join(CLAUDE_SESSIONS_DIR, "*.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        sid = data.get("sessionId")
+        ver = data.get("version")
+        if isinstance(sid, str) and isinstance(ver, str):
+            out[_ANSI_ESCAPE_RE.sub("", sid)] = _ANSI_ESCAPE_RE.sub("", ver)
+    return out
 
 
 # ─── JSONL path resolution ───
@@ -378,7 +404,7 @@ def _parse_jsonl_tail(
     # new prompt and claude has not written any response yet.
     if (latest_user_ts is not None and latest_assistant_ts is not None
             and latest_user_ts > latest_assistant_ts
-            and last_stop_reason in _TERMINAL_STOP_REASONS):
+            and last_stop_reason in TERMINAL_STOP_REASONS):
         last_stop_reason = JSONL_USER_PENDING
 
     result = (real_ts, last_stop_reason)

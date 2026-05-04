@@ -32,6 +32,12 @@ import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 from ccm_constants import CLAUDE_CMD
 
 
+_SEND_USAGE = (
+    "Usage: ccm send <name|#idx> <message> "
+    "[--file path] [--stdin] [--force] [--start] [--no-enter] [-y]"
+)
+
+
 def cmd_send(args):
     """Send a prompt to a project's Claude Code session.
 
@@ -45,6 +51,9 @@ def cmd_send(args):
       ccm send -y <name> <msg>             Skip confirmation prompt
       ccm send <name> -- "--literal"       `--` ends flag parsing
     """
+    if any(a in ("-h", "--help") for a in args):
+        print(_SEND_USAGE)
+        return
     target = None
     positional_parts = []
     message_file = None
@@ -79,12 +88,7 @@ def cmd_send(args):
             elif arg in ("-y", "--yes"):
                 skip_confirm = True
             else:
-                ccm_core.ccm_die(
-                    f"Unknown flag: {arg}\n"
-                    "Usage: ccm send <name> <message> "
-                    "[--file path] [--stdin] [--force] [--start] "
-                    "[--no-enter] [-y]"
-                )
+                ccm_core.ccm_die(f"Unknown flag: {arg}\n{_SEND_USAGE}")
         else:
             if arg == "-":  # conventional stdin alias
                 use_stdin = True
@@ -95,11 +99,7 @@ def cmd_send(args):
         i += 1
 
     if not target:
-        ccm_core.ccm_die(
-            "Usage: ccm send <name> <message> "
-            "[--file path] [--stdin] [--force] [--start] "
-            "[--no-enter] [-y]"
-        )
+        ccm_core.ccm_die(_SEND_USAGE)
 
     # Resolve message source (exactly one of the three)
     positional_message = " ".join(positional_parts) if positional_parts else None

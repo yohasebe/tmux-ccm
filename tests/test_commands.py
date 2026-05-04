@@ -587,4 +587,30 @@ class TestDispatcherPassthrough:
             ccm_core.dispatch(["attach", "blog", "--bogus-flag"])
         mock_attach.assert_not_called()
 
+    def test_send_help_prints_usage(self, capsys):
+        # Passthrough handler must intercept -h/--help itself since
+        # the dispatcher bypasses argparse.
+        ccm_core.dispatch(["send", "--help"])
+        out = capsys.readouterr().out
+        assert "Usage: ccm send" in out
+
+    def test_capture_help_prints_usage(self, capsys):
+        ccm_core.dispatch(["capture", "-h"])
+        out = capsys.readouterr().out
+        assert "Usage: ccm capture" in out
+
+    def test_errors_help_prints_usage(self, capsys):
+        ccm_core.dispatch(["errors", "--help"])
+        out = capsys.readouterr().out
+        assert "Usage: ccm errors" in out
+
+    def test_passthrough_set_derived_from_marker(self):
+        # The set must be derived from `_passthrough_argparse_config`
+        # identity, not a hand-maintained list. Adding a new
+        # passthrough subcommand should require no separate edit.
+        names = {n for n, c, _ in ccm_core._SUBCOMMANDS
+                 if c is ccm_core._passthrough_argparse_config}
+        assert names == set(ccm_core._PASSTHROUGH_COMMANDS)
+        assert {"send", "capture", "errors"} <= names
+
 

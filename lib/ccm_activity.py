@@ -28,8 +28,11 @@ turn already ended. Stripping them lets the classifier see the
 real terminator at the end of the tail.
 """
 
-from ccm_constants import BUSY_HOOK_JSONL_WINDOW, TERMINAL_STOP_REASONS
-from ccm_jsonl import JSONL_HOOK_GAP_TOLERANCE
+from ccm_constants import (
+    BUSY_HOOK_JSONL_WINDOW,
+    JSONL_HOOK_GAP_TOLERANCE,
+    TERMINAL_STOP_REASONS,
+)
 
 
 # ─── Event class taxonomy ───

@@ -394,6 +394,9 @@ def cmd_attach(target):
 
 def cmd_capture(args):
     """Capture visible content of a project window."""
+    if any(a in ("-h", "--help") for a in args):
+        print("Usage: ccm capture [--copy|-c] <name|#id|window_index>")
+        return
     copy_mode = False
     target = ""
     for arg in args:
@@ -575,6 +578,12 @@ def cmd_doctor():
     section(f"Active projects ({len(projects)})")
     if not projects:
         row(WARN, "(none registered)", "run `ccm add <dir>` to start")
+    # Map sessionId → Claude Code version from the per-session
+    # JSON files Claude writes to ~/.claude/sessions. Surfaces
+    # mixed-version setups (one window on an old `claude` binary,
+    # another auto-updated mid-day) without an extra subprocess
+    # per session.
+    version_map = ccm_jsonl.read_session_versions()
     for p in projects:
         state_color = {
             "PERMIT": ccm_core._C_YELLOW,
@@ -588,7 +597,9 @@ def cmd_doctor():
             "show-option", "-w", "-t", p.win_target,
             "-qv", "@ccm_session_id",
         ) or "(no session)"
-        row(OK, f"{p.name:<20}", f"{state_label}  {sid}")
+        ver = version_map.get(sid, "")
+        sid_label = f"{sid} v{ver}" if ver else sid
+        row(OK, f"{p.name:<20}", f"{state_label}  {sid_label}")
 
     section("Silent-exception log")
     log_count = 0
@@ -624,6 +635,9 @@ def cmd_errors(args):
     silent-catch barrier fires. An empty log means detection has
     been running cleanly.
     """
+    if args and args[0] in ("-h", "--help"):
+        print("Usage: ccm errors [--clear]")
+        return
     if args and args[0] == "--clear":
         cleared = 0
         for path in (ccm_core.CCM_ERRORS_LOG, ccm_core.CCM_ERRORS_LOG_PREV):

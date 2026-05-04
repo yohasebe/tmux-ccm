@@ -30,7 +30,6 @@ and `SLIVER_HEIGHT_THRESHOLD` are accessed via `ccm_core.X` so test
 mocks routed through `ccm_core` reach this module unchanged.
 """
 
-import ccm_core  # late-bound for tmux_cmd / SHELL_FOREGROUND_COMMANDS / SLIVER_HEIGHT_THRESHOLD
 from ccm_constants import (
     CLAUDE_PROCESS_NAME,
     IGNORED_CHILDREN,
@@ -38,6 +37,13 @@ from ccm_constants import (
     PATTERN_INPUT_PROMPT,
     PATTERN_PERMIT_FOOTER,
 )
+# `import ccm_core` lives at the BOTTOM of this module (after the
+# function definitions) so that when `ccm_pane_state` is the entry
+# point of an import chain, our defs finish executing before
+# ccm_core's bottom-of-file `import ccm_detection` triggers
+# `from ccm_pane_state import detect_window_raw, find_claude_pid`.
+# Functions still call `ccm_core.X` at runtime — by then, the
+# bottom import has populated the module reference.
 
 
 def find_claude_pid(parent_pid, ps_lines):
@@ -219,3 +225,7 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
         elif state == "IDLE" and best != "BUSY":
             best = "IDLE"
     return best
+
+
+# See top-of-file note for why this lives below the function defs.
+import ccm_core  # noqa: E402

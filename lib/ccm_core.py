@@ -787,8 +787,21 @@ def _add_dir_and_name(p):
     p.add_argument("name", nargs="?", default="")
 
 
+def _passthrough_argparse_config(p):
+    """Marker configurer: the subcommand bypasses argparse and
+    receives raw `argv[1:]` as `rest`. The handler does its own
+    flag parsing — necessary for commands that allow flags
+    intermixed with positionals (`ccm capture --copy blog` is as
+    valid as `ccm capture blog --copy`), which `nargs="*"` and
+    `nargs=REMAINDER` both reject. The dispatcher detects this
+    configurer by identity and skips `parse_args`."""
+    p.add_argument("rest", nargs="*")
+
+
 # (subcommand, configurer, handler). Configurers receive the
 # subparser; handlers receive the namespace and dispatch.
+# Use `_passthrough_argparse_config` as the configurer to opt a
+# subcommand into raw-argv passthrough (handler parses its own flags).
 _SUBCOMMANDS = (
     ("status", lambda p: None,
      lambda a: ccm_render.print_status()),
@@ -815,12 +828,12 @@ _SUBCOMMANDS = (
     ("list", lambda p: None,
      lambda a: ccm_commands.cmd_list()),
     ("capture",
-     lambda p: p.add_argument("rest", nargs="*"),
+     _passthrough_argparse_config,
      lambda a: ccm_commands.cmd_capture(a.rest)),
     ("stop", _add_name_arg,
      lambda a: ccm_commands.cmd_stop(a.name)),
     ("send",
-     lambda p: p.add_argument("rest", nargs="*"),
+     _passthrough_argparse_config,
      lambda a: ccm_send.cmd_send(a.rest)),
     ("snapshot-save", _add_name_arg,
      lambda a: ccm_snapshot.cmd_snapshot_save(a.name)),
@@ -833,7 +846,7 @@ _SUBCOMMANDS = (
     ("reset-window", lambda p: None,
      lambda a: ccm_commands.cmd_reset_window()),
     ("errors",
-     lambda p: p.add_argument("rest", nargs="*"),
+     _passthrough_argparse_config,
      lambda a: ccm_commands.cmd_errors(a.rest)),
     ("doctor", lambda p: None,
      lambda a: ccm_commands.cmd_doctor()),
@@ -842,16 +855,13 @@ _SUBCOMMANDS = (
 )
 
 
-# Subcommands whose handlers do their own flag parsing (`--file`,
-# `--copy`, `--clear`, etc.) and accept flags intermixed with
-# positionals (`ccm capture --copy blog` is as valid as
-# `ccm capture blog --copy`). argparse cannot reliably handle this:
-# `nargs="*"` rejects `--copy` as an unknown flag, and
-# `nargs=REMAINDER` rejects leading dashes. So we bypass argparse
-# entirely for these and pass raw args through to the handler. The
-# handlers (`ccm_send.cmd_send`, `ccm_commands.cmd_capture`,
-# `ccm_commands.cmd_errors`) already implement their own arg parsers.
-_PASSTHROUGH_COMMANDS = ("send", "capture", "errors")
+# Derived from the subcommand table: any command whose configurer
+# is `_passthrough_argparse_config` opts into raw-argv passthrough.
+# Adding a new flag-intermixing command requires no change here.
+_PASSTHROUGH_COMMANDS = frozenset(
+    name for name, configure, _ in _SUBCOMMANDS
+    if configure is _passthrough_argparse_config
+)
 
 
 def _build_parser():

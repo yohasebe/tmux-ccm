@@ -31,15 +31,20 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
 
-import ccm_core  # late-bound for read_hook_signal / read_jsonl_tail_info via ccm_core re-exports
-import ccm_jsonl
-import ccm_signals
+# `ccm_jsonl` and `ccm_signals` are deferred-imported inside the
+# functions that use them so module load order does not form a
+# `ccm_rules → ccm_jsonl → ccm_core → ccm_commands → ccm_detection
+# → ccm_rules.Action` cycle when ccm_rules is the entry point. The
+# fast-path functions are only called after the full module graph
+# has finished loading, so the deferred import is free in steady
+# state and only matters for fresh standalone imports.
 from ccm_constants import (
     BUSY_HOOK_JSONL_WINDOW,
     HOOK_FRESH_THRESHOLD,
+    JSONL_HOOK_GAP_TOLERANCE,
+    JSONL_USER_PENDING,
     STARTUP_GRACE_SEC,
 )
-from ccm_jsonl import JSONL_HOOK_GAP_TOLERANCE
 
 
 # ─── Phase taxonomy ───
@@ -272,7 +277,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         # BUSY indefinitely.
         name="jsonl_user_prompt_pending",
         raw_in=("IDLE",),
-        jsonl_last_stop_reason_in=(ccm_jsonl.JSONL_USER_PENDING,),
+        jsonl_last_stop_reason_in=(JSONL_USER_PENDING,),
         jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
         result="BUSY",
         phase="midturn",
@@ -336,6 +341,8 @@ def build_fast_context(prev_state, project_dir,
     query that built the project list) to avoid an O(N) tmux
     subprocess per fast-path refresh.
     """
+    import ccm_jsonl   # deferred — see top-of-file note
+    import ccm_signals
     if now is None:
         now = int(time.time())
 
