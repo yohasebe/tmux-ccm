@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- `ccm send` / `ccm capture` / `ccm errors` rejected their own flags (`--file`, `--copy`, `--clear`, etc.) at the dispatcher level. The argparse subparser refactor (commit b93570b) defined these subcommands with `nargs="*"` for the trailing args, which made argparse intercept any leading-dash token as an unknown flag and exit before the handler could parse it. The three commands now bypass argparse and receive raw `sys.argv` so their hand-rolled parsers see every flag verbatim. Strict argparse validation is preserved for all other subcommands so typos still fail loudly. Regression covered by `TestDispatcherPassthrough` in `tests/test_commands.py`.
+- `❯` input prompt detection now scans the whole visible pane area instead of only the bottom 8 rows. A long multi-line user message pushes the `❯` row well above the footer while the user is still composing, and the tail-only scan was misreading those panes as BUSY. PERMIT footer matching is unchanged (still tail-only) since the modal footer is always at the very bottom. Regression covered by `test_idle_with_children_and_multiline_input` in `tests/test_pane_state.py`.
+
+### Documentation
+- Synced EN/JA guides on the completion marker (`* <elapsed>` everywhere; the stale `✔` placeholder in dashboard mockups, status-icon tables, and completion-tracking explanations is gone).
+- Snapshots → Auto-save now correctly states that `_autosave` is updated every 2 minutes while projects exist, in addition to `ccm stop --all` (matching `lib/ccm_runtime.py::periodic_autosave` and the FAQ).
+
 ## [0.3.0] - 2026-05-01
 
 Initial public release. ccm is a tmux plugin that manages Claude Code sessions as tmux windows, with live state detection, an interactive dashboard, status-bar integration, and snapshot save/restore.

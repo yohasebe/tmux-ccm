@@ -842,6 +842,18 @@ _SUBCOMMANDS = (
 )
 
 
+# Subcommands whose handlers do their own flag parsing (`--file`,
+# `--copy`, `--clear`, etc.) and accept flags intermixed with
+# positionals (`ccm capture --copy blog` is as valid as
+# `ccm capture blog --copy`). argparse cannot reliably handle this:
+# `nargs="*"` rejects `--copy` as an unknown flag, and
+# `nargs=REMAINDER` rejects leading dashes. So we bypass argparse
+# entirely for these and pass raw args through to the handler. The
+# handlers (`ccm_send.cmd_send`, `ccm_commands.cmd_capture`,
+# `ccm_commands.cmd_errors`) already implement their own arg parsers.
+_PASSTHROUGH_COMMANDS = ("send", "capture", "errors")
+
+
 def _build_parser():
     import argparse
     parser = argparse.ArgumentParser(
@@ -857,7 +869,21 @@ def _build_parser():
     return parser, handlers
 
 
+def dispatch(argv):
+    """Run a ccm subcommand. `argv` is the args after the program
+    name (e.g. `["send", "blog", "--file", "msg.txt"]`)."""
+    import argparse
+    if argv and argv[0] in _PASSTHROUGH_COMMANDS:
+        cmd = argv[0]
+        rest = argv[1:]
+        for name, _configure, handler in _SUBCOMMANDS:
+            if name == cmd:
+                handler(argparse.Namespace(cmd=cmd, rest=rest))
+                return
+    parser, handlers = _build_parser()
+    ns = parser.parse_args(argv)
+    handlers[ns.cmd](ns)
+
+
 if __name__ == "__main__":
-    _parser, _handlers = _build_parser()
-    _ns = _parser.parse_args()
-    _handlers[_ns.cmd](_ns)
+    dispatch(sys.argv[1:])

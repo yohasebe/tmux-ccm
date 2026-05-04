@@ -491,3 +491,69 @@ class TestCmdRename:
         mock_auto.assert_called_once()
 
 
+class TestDispatcherPassthrough:
+    """`send` / `capture` / `errors` accept flags intermixed with
+    positionals. The dispatcher must pass raw argv through to the
+    handler instead of letting argparse intercept the flags."""
+
+    @patch("ccm_send.cmd_send")
+    def test_send_with_file_flag_passes_through(self, mock_send):
+        ccm_core.dispatch(["send", "blog", "--file", "/tmp/m.txt"])
+        mock_send.assert_called_once_with(["blog", "--file", "/tmp/m.txt"])
+
+    @patch("ccm_send.cmd_send")
+    def test_send_with_yes_flag_passes_through(self, mock_send):
+        ccm_core.dispatch(["send", "blog", "msg", "-y"])
+        mock_send.assert_called_once_with(["blog", "msg", "-y"])
+
+    @patch("ccm_send.cmd_send")
+    def test_send_with_force_flag_passes_through(self, mock_send):
+        ccm_core.dispatch(["send", "blog", "--force", "queued msg"])
+        mock_send.assert_called_once_with(["blog", "--force", "queued msg"])
+
+    @patch("ccm_send.cmd_send")
+    def test_send_preserves_double_dash_separator(self, mock_send):
+        # `--` lets users send messages that start with `-`
+        ccm_core.dispatch(["send", "blog", "--", "--literal-flag-as-message"])
+        mock_send.assert_called_once_with(
+            ["blog", "--", "--literal-flag-as-message"]
+        )
+
+    @patch("ccm_commands.cmd_capture")
+    def test_capture_with_leading_copy_flag(self, mock_capture):
+        # `ccm capture --copy blog` — flag BEFORE positional. The
+        # original bug: argparse rejected `--copy` because it was
+        # not a defined subparser flag.
+        ccm_core.dispatch(["capture", "--copy", "blog"])
+        mock_capture.assert_called_once_with(["--copy", "blog"])
+
+    @patch("ccm_commands.cmd_capture")
+    def test_capture_with_trailing_copy_flag(self, mock_capture):
+        ccm_core.dispatch(["capture", "blog", "--copy"])
+        mock_capture.assert_called_once_with(["blog", "--copy"])
+
+    @patch("ccm_commands.cmd_errors")
+    def test_errors_with_clear_flag(self, mock_errors):
+        ccm_core.dispatch(["errors", "--clear"])
+        mock_errors.assert_called_once_with(["--clear"])
+
+    @patch("ccm_commands.cmd_errors")
+    def test_errors_with_no_args(self, mock_errors):
+        ccm_core.dispatch(["errors"])
+        mock_errors.assert_called_once_with([])
+
+    def test_unknown_command_still_rejected(self):
+        # Strict argparse validation preserved for non-passthrough
+        # commands (catches typos like `ccm sttatus`).
+        with pytest.raises(SystemExit):
+            ccm_core.dispatch(["nonexistent-cmd"])
+
+    @patch("ccm_commands.cmd_attach")
+    def test_strict_command_with_unknown_flag_still_rejected(self, mock_attach):
+        # `attach` is not a passthrough — argparse should still
+        # reject unknown flags, not silently pass them through.
+        with pytest.raises(SystemExit):
+            ccm_core.dispatch(["attach", "blog", "--bogus-flag"])
+        mock_attach.assert_not_called()
+
+
