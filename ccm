@@ -51,7 +51,7 @@ Usage:
   ccm snapshot load [name]          Load and restore a snapshot
   ccm snapshot list                 List available snapshots
   ccm snapshot delete [name]        Delete a snapshot
-  ccm start [snapshot]              Start from a snapshot
+  ccm start <snapshot>              Start from a snapshot
   ccm stop [--all|name]             Stop project window(s)
   ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
                                     flags: --file <path> | --stdin | --no-enter

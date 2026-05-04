@@ -566,8 +566,8 @@ export CCM_COMPLETED_AT_TIMEOUT=60
 # Earlier hooks.log bloat warning (10 MB)
 export CCM_HOOKS_LOG_WARN_BYTES=10485760
 
-# Lower polling cost on slow / battery-bound machines
-export CCM_STATUS_INTERVAL=10
+# Lower polling cost on slow / battery-bound machines (tmux option, not an env var)
+# Add to ~/.tmux.conf:  set -g status-interval 10
 
 # Diagnostic kill-switch: bypass the event-log path entirely
 export CCM_USE_EVENT_LOG=off

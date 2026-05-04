@@ -566,8 +566,8 @@ export CCM_COMPLETED_AT_TIMEOUT=60
 # hooks.log 肥大化警告を早めに（10 MB）
 export CCM_HOOKS_LOG_WARN_BYTES=10485760
 
-# 低速マシンやバッテリー駆動時のポーリングコスト削減
-export CCM_STATUS_INTERVAL=10
+# 低速マシンやバッテリー駆動時のポーリングコスト削減 (tmux オプション、env var ではない)
+# ~/.tmux.conf に追加:  set -g status-interval 10
 
 # 診断用 kill-switch: event-log path をバイパス
 export CCM_USE_EVENT_LOG=off
