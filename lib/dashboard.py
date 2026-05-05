@@ -56,6 +56,7 @@ from ccm_core import (
 from ccm_window import reset_window_after_attach
 from ccm_canaries import (
     disable_all_hooks_warning,
+    errors_log_burst_warning,
     hooks_log_warning,
     managed_hooks_only_warning,
     shell_cluster_warnings,
@@ -579,6 +580,14 @@ class Dashboard:
             # Per-project SHELL cluster canary (#48069 silent-exit regression)
             for cluster_msg in shell_cluster_warnings(projects):
                 self._addstr(stdscr, row, 2, "⚠ " + cluster_msg, curses.color_pair(C_YELLOW))
+                row += 1
+
+            # Silent-exception burst canary — surfaces poll-cycle bugs
+            # within minutes rather than the operator having to think
+            # to run `ccm errors`.
+            burst_warning = errors_log_burst_warning()
+            if burst_warning:
+                self._addstr(stdscr, row, 2, "⚠ " + burst_warning, curses.color_pair(C_YELLOW))
                 row += 1
 
             if not projects:

@@ -674,6 +674,9 @@ def cmd_doctor():
     else:
         row(WARN, "errors.log",
             f"{log_count} record(s) — view with `ccm errors`")
+    burst = ccm_canaries.errors_log_burst_warning()
+    if burst:
+        row(WARN, "errors burst", burst)
 
     section("Configuration")
     for key in ("CCM_ROOT", "CCM_TMP_DIR", "CCM_DATA_DIR", "CCM_HOOK_DIR"):

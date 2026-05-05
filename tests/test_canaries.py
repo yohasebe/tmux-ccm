@@ -65,6 +65,85 @@ class TestHooksLogWarning:
         assert ": > ~/.claude/hooks.log" in msg
 
 
+# ─── errors.log burst canary ───
+
+class TestErrorsLogBurstWarning:
+    """Burst canary surfaces poll-cycle silent-fail bugs (autosave
+    NameError class) within minutes instead of the operator having
+    to think to run `ccm errors`."""
+
+    @staticmethod
+    def _write_log(path, *, recent: int, old: int, window_sec: int = 300):
+        """Write `recent` records inside the burst window and `old`
+        records before it. Each line is one JSON record matching the
+        format that `log_caught_exception` writes."""
+        import json, time
+        now = int(time.time())
+        recent_ts = now - 5  # comfortably inside any window
+        old_ts = now - (window_sec * 2)  # comfortably outside
+        with open(path, "w", encoding="utf-8") as f:
+            for _ in range(recent):
+                f.write(json.dumps({"ts": recent_ts, "scope": "x",
+                                    "type": "RuntimeError", "msg": "y",
+                                    "traceback": "..."}) + "\n")
+            for _ in range(old):
+                f.write(json.dumps({"ts": old_ts, "scope": "x",
+                                    "type": "RuntimeError", "msg": "y",
+                                    "traceback": "..."}) + "\n")
+
+    def test_no_file_returns_empty(self, tmp_path, monkeypatch):
+        import ccm_core
+        monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG",
+                            str(tmp_path / "missing.log"))
+        assert ccm_canaries.errors_log_burst_warning() == ""
+
+    def test_below_threshold_returns_empty(self, tmp_path, monkeypatch):
+        import ccm_core
+        log = tmp_path / "errors.log"
+        self._write_log(log, recent=5, old=0)
+        monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG", str(log))
+        monkeypatch.setattr(ccm_canaries, "ERRORS_BURST_COUNT", 20)
+        monkeypatch.setattr(ccm_canaries, "ERRORS_BURST_WINDOW", 300)
+        assert ccm_canaries.errors_log_burst_warning() == ""
+
+    def test_above_threshold_fires_warning(self, tmp_path, monkeypatch):
+        import ccm_core
+        log = tmp_path / "errors.log"
+        self._write_log(log, recent=25, old=0)
+        monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG", str(log))
+        monkeypatch.setattr(ccm_canaries, "ERRORS_BURST_COUNT", 20)
+        monkeypatch.setattr(ccm_canaries, "ERRORS_BURST_WINDOW", 300)
+        msg = ccm_canaries.errors_log_burst_warning()
+        assert "25 silent-fail records" in msg
+        assert "ccm errors" in msg
+
+    def test_old_records_outside_window_ignored(self, tmp_path, monkeypatch):
+        # 100 stale records from yesterday + 5 fresh — must not fire.
+        import ccm_core
+        log = tmp_path / "errors.log"
+        self._write_log(log, recent=5, old=100)
+        monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG", str(log))
+        monkeypatch.setattr(ccm_canaries, "ERRORS_BURST_COUNT", 20)
+        monkeypatch.setattr(ccm_canaries, "ERRORS_BURST_WINDOW", 300)
+        assert ccm_canaries.errors_log_burst_warning() == ""
+
+    def test_malformed_lines_are_skipped(self, tmp_path, monkeypatch):
+        # Garbage in the middle must not crash the canary.
+        import ccm_core, json, time
+        log = tmp_path / "errors.log"
+        with open(log, "w", encoding="utf-8") as f:
+            now = int(time.time())
+            for _ in range(25):
+                f.write(json.dumps({"ts": now}) + "\n")
+            f.write("not-json\n")
+            f.write("\n")  # blank line
+        monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG", str(log))
+        monkeypatch.setattr(ccm_canaries, "ERRORS_BURST_COUNT", 20)
+        monkeypatch.setattr(ccm_canaries, "ERRORS_BURST_WINDOW", 300)
+        msg = ccm_canaries.errors_log_burst_warning()
+        assert "25 silent-fail records" in msg
+
+
 # ─── disableAllHooks canary ───
 
 class TestDisableAllHooksWarning:

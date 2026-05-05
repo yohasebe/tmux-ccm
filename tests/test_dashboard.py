@@ -49,6 +49,7 @@ def _stub_dashboard_environment(monkeypatch):
     monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda: "")
     monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda: "")
     monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
+    monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
     monkeypatch.setattr("dashboard.get_session", lambda: "0")
     monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
     monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")

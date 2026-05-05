@@ -80,6 +80,67 @@ def hooks_log_warning() -> str:
     )
 
 
+# ─── Silent-exception burst canary ───
+# `log_caught_exception` records every silent catch in errors.log
+# and is wrapped around hot paths (inject_status, dashboard refresh,
+# build_project_list, autosave). A bug that fires every poll cycle
+# (e.g. the autosave NameError that ran 38 hours undetected before
+# we caught it) writes ~30 entries per minute. Without a canary,
+# operators only notice when they happen to run `ccm errors`.
+#
+# The canary scans errors.log itself (no separate counter state to
+# get out of sync) and fires when the burst rate suggests a
+# poll-cycle failure rather than a one-off blip. Threshold and
+# window are env-overridable for tuning if real-world usage shows
+# the defaults are too tight or too loose.
+
+ERRORS_BURST_COUNT = int(os.environ.get("CCM_ERRORS_BURST_THRESHOLD", "20"))
+ERRORS_BURST_WINDOW = int(os.environ.get("CCM_ERRORS_BURST_WINDOW", "300"))
+
+
+def errors_log_burst_warning() -> str:
+    """Return a one-line warning string when errors.log has at
+    least `ERRORS_BURST_COUNT` entries within the last
+    `ERRORS_BURST_WINDOW` seconds, or "" otherwise.
+
+    The poll-cycle failure mode (a hot path raising on every refresh)
+    accumulates ~30 records/min; a burst of 20 in 5 min is well
+    above one-off noise but well below the runaway pattern, so
+    crossing this threshold reliably indicates "something is
+    looping". Active log only — rotated `errors.log.1` is ignored
+    because by the time rotation has happened, the burst is over."""
+    log_path = ccm_core.CCM_ERRORS_LOG
+    try:
+        if not os.path.exists(log_path):
+            return ""
+    except OSError:
+        return ""
+    cutoff = time.time() - ERRORS_BURST_WINDOW
+    count = 0
+    try:
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                ts = rec.get("ts")
+                if isinstance(ts, (int, float)) and ts >= cutoff:
+                    count += 1
+    except OSError:
+        return ""
+    if count < ERRORS_BURST_COUNT:
+        return ""
+    mins = max(1, ERRORS_BURST_WINDOW // 60)
+    return (
+        f"{count} silent-fail records in last {mins} min — "
+        f"a hot path is looping. Inspect with `ccm errors`."
+    )
+
+
 # ─── Settings flags canary ───
 # Detect configuration in ~/.claude/settings.json that silently
 # disables ccm's fast-path signals. Without these checks, state
