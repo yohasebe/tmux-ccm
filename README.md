@@ -114,6 +114,9 @@ Only the dashboard keybinding is enabled by default to avoid conflicts with othe
 
 To override the dashboard keybinding or enable the optional bindings, add to `~/.tmux.conf`:
 
+> [!IMPORTANT]
+> All `set -g @ccm-*` options must be placed **before** the ccm plugin loads in `~/.tmux.conf` — that means before both the `source-file` line (manual install) and the TPM `run` line (TPM install). The plugin reads these options at load time, so settings placed after will be silently ignored.
+
 ```tmux
 set -g @ccm-key-dashboard "Tab"  # default; override to remap (e.g. "F12")
 set -g @ccm-key-menu "C"         # optional: enable prefix + C for menu
@@ -127,13 +130,11 @@ set -g @ccm-key-search "/"       # optional: enable prefix + / to open the dashb
 > For even quicker access, bind a single key (no prefix) to toggle the dashboard via `@ccm-key-dashboard-noprefix`. For example, to use `F1`:
 >
 > ```tmux
+> # Must come BEFORE the ccm plugin load line (see IMPORTANT above).
 > set -g @ccm-key-dashboard-noprefix "F1"
 > ```
 >
 > Press `F1` to open, `F1` again to close. The coloured ccm logo on the popup title is preserved (writing your own `bind-key -n F1 display-popup …` works mechanically but loses the logo unless you replicate the full `-T` format string).
-
-> [!IMPORTANT]
-> All `set -g @ccm-*` options must be placed **before** the ccm plugin loads in `~/.tmux.conf` — that means before both the `source-file` line (manual install) and the TPM `run` line (TPM install). The plugin reads these options at load time, so settings placed after will not take effect.
 
 ### Desktop Notifications
 

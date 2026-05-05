@@ -136,6 +136,8 @@ set -g @ccm-key-search "/"   # prefix + / でダッシュボードをフィル�
 `prefix + Tab` よりファンクションキー一発で開きたい場合、`@ccm-key-dashboard-noprefix` で直接バインドできます:
 
 ```tmux
+# 必ず ccm プラグインの読み込み行よりも前に配置してください
+# (詳細は README.md#キーバインド の IMPORTANT 参照)。
 set -g @ccm-key-dashboard-noprefix "F1"   # F1 単独 (prefix 不要) → ダッシュボード
 ```
 

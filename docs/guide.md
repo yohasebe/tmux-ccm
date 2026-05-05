@@ -136,6 +136,8 @@ You can also run `ccm search` (or `ccm dashboard --search`) from a shell or anot
 If you prefer a top-row function key over `prefix + Tab`, bind one with `@ccm-key-dashboard-noprefix`:
 
 ```tmux
+# Must come BEFORE the ccm plugin load line — see the
+# IMPORTANT block in README.md#keybindings for the full rule.
 set -g @ccm-key-dashboard-noprefix "F1"   # F1 alone (no prefix) → dashboard
 ```
 

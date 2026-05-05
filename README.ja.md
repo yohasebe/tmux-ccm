@@ -114,8 +114,11 @@ ccm init
 
 ダッシュボードのキーを変更したり、任意キーを有効化するには `~/.tmux.conf` に追加してください：
 
+> [!IMPORTANT]
+> すべての `set -g @ccm-*` オプションは、ccm プラグインが読み込まれるよりも**前に** `~/.tmux.conf` で設定する必要があります。`source-file` 行(手動インストール)および TPM の `run` 行(TPM インストール)よりも**前**に配置してください。プラグインは読み込み時にこれらのオプションを参照するため、後に配置された設定は黙って無視されます。
+
 ```tmux
-set -g @ccm-key-dashboard "Tab"  # デフォルト。リマップする場合に上書き（例: "F12"）
+set -g @ccm-key-dashboard "Tab"  # デフォルト。リマップする場合に上書き(例: "F12")
 set -g @ccm-key-menu "C"         # 任意: prefix + C でメニュー
 set -g @ccm-key-tree "T"         # 任意: prefix + T でツリービュー
 set -g @ccm-key-search "/"       # 任意: prefix + / でダッシュボードをライブフィルタ検索で開く
@@ -127,13 +130,11 @@ set -g @ccm-key-search "/"       # 任意: prefix + / でダッシュボード�
 > prefix なしの単一キーでダッシュボードをトグルする場合は `@ccm-key-dashboard-noprefix` を使います。例えば `F1` に割り当てる場合:
 >
 > ```tmux
+> # 必ず ccm プラグインの読み込み行よりも前に配置 (上記 IMPORTANT 参照)。
 > set -g @ccm-key-dashboard-noprefix "F1"
 > ```
 >
 > `F1` で開き、もう一度 `F1` で閉じます。popup タイトルの色付き ccm ロゴもそのまま表示されます (自前で `bind-key -n F1 display-popup …` を書くこともできますが、`-T` の format 文字列を完全にコピーしないとロゴは出ません)。
-
-> [!IMPORTANT]
-> すべての `set -g @ccm-*` オプションは、ccmプラグインが読み込まれるよりも**前に** `~/.tmux.conf` で設定する必要があります。`source-file` 行（手動インストール）およびTPMの `run` 行（TPMインストール）よりも前に配置してください。プラグインは読み込み時にこれらのオプションを参照するため、後に配置された設定は反映されません。
 
 ### デスクトップ通知
 
