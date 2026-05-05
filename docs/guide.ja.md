@@ -527,6 +527,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_STARTUP_GRACE_SEC` | `60`（秒） | legacy `startup_transient_raw_busy` ルールが hook signal 未着の raw=BUSY を IDLE に降格させる claude プロセス年齢の窓。`claude --continue` 起動時の MCP ロード (通常 10-30 秒) をカバー |
 | `CCM_SLIVER_HEIGHT_THRESHOLD` | `4`（行） | ウィンドウの状態集約に参加する tmux ペインの最小高さ。これより小さいペインは Claude の `❯` プロンプトを描画できず、capture-pane 検出が「子プロセスあり + プロンプト不可視」で BUSY と誤判定するため除外する。Agent Teams で意図的に小さいペインを使っており除外したくない場合は上げる、フィルタを完全無効化したい場合は 1 まで下げる |
 | `CCM_HOOK_CMD_TIMEOUT` | `5000`（ms） | Claude Code が ccm の各フック呼び出しに与えるタイムアウト。ccm のフックはシグナルファイル 1 つを書くだけで完結するため、デフォルト値で十分余裕がある。フックのハングを調査する際に下げる用途以外は変更不要 |
+| `CCM_START_WAIT_SEC` | `10`（秒） | `ccm send --start` が SHELL 状態のターゲットに `claude --continue` を送った後、IDLE に到達するまでポーリングする最大秒数。実際の 2 ケースに合わせた値: 通常の resume は 1-5 秒で IDLE に到達、長いセッションの auto-`/compact` は 10-60 秒以上 BUSY が続く (どのみち送信は届かない) → 10 秒で refuse する方が操作者に早く制御を返せる。インタラクティブ実行時は 1 秒ごとに進捗を表示するので待ち時間が可視化される。環境的にもっと必要なら上げる |
 
 ### ランタイムディレクトリ
 

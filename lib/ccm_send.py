@@ -16,8 +16,15 @@ state-based gating policy is the safety story:
     picker) but the refusal is still unconditional; the
     classification only shapes the guidance message
   - **SHELL**: refuse without `--start`. With `--start`, launch
-    Claude (`claude --continue ...`) and wait 2 s for it to
-    initialise before sending
+    Claude (`claude --continue ...`) and poll until the target
+    reaches IDLE before sending. A fixed wait would mis-deliver
+    the message when `claude --continue` triggers a follow-on
+    action — most commonly an auto `/compact` on resume of a
+    long session, or a session-resume picker (PERMIT modal) —
+    because the keystrokes would land mid-modal and be eaten or
+    queued into a dialog. Polling refuses with the captured pane
+    tail so the operator can see exactly what happened and finish
+    by hand
 
 Multi-line messages (`\\n` in body) are converted to `M-Enter`
 between lines + a final `Enter`, matching Claude Code's "newline
@@ -25,11 +32,80 @@ without submit" key convention so a multi-line prompt arrives as
 one turn rather than several.
 """
 
+import os
 import sys
 import time
 
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 from ccm_constants import CLAUDE_CMD
+
+
+# Maximum seconds to wait for a `--start`-launched target to
+# reach IDLE before refusing. Tuned for two real scenarios:
+#
+#   - Normal resume (no auto-action): 1-5 s typical to IDLE.
+#   - Resume into auto-`/compact` (long session): 10-60+ s in
+#     BUSY. No reasonable wait gets the message delivered, so we
+#     refuse early and let the operator verify by hand.
+#
+# 10 s comfortably covers the first case while refusing the
+# second within a useful response time. Override with
+# CCM_START_WAIT_SEC if your environment routinely needs more.
+START_WAIT_SEC = int(os.environ.get("CCM_START_WAIT_SEC", "10"))
+
+# How often the wait loop reports progress. The loop polls more
+# frequently (so IDLE is caught quickly) but only prints when the
+# tick interval has elapsed, so the operator gets a sign-of-life
+# every second without log spam.
+_WAIT_PROGRESS_TICK_SEC = 1.0
+
+
+def _wait_for_target_idle(project_name, timeout_sec=None,
+                          progress=False):
+    """Poll the named project until its detected state is IDLE,
+    or return the last observed non-IDLE state at timeout.
+
+    Used by the `--start` path so the message-send only proceeds
+    once the target is genuinely at the input prompt — not still
+    initialising MCP servers, not in an auto-`/compact`, not on a
+    session-resume picker. Polls every 0.5 s up to `timeout_sec`
+    (default `START_WAIT_SEC`).
+
+    Returns either the string `"IDLE"` (success), or the last
+    non-IDLE state seen (one of `BUSY` / `PERMIT` / `SHELL` /
+    `DOWN`). PERMIT and DOWN short-circuit the wait — they will
+    not transition to IDLE without operator action, so further
+    polling is wasted time and delays the refusal message that
+    the operator needs.
+
+    With `progress=True` the function prints one short status line
+    per second while waiting, so an operator running an
+    interactive `ccm send --start` knows something is happening
+    rather than staring at a frozen terminal until the timeout.
+    """
+    if timeout_sec is None:
+        timeout_sec = START_WAIT_SEC
+    started = time.time()
+    deadline = started + timeout_sec
+    last_state = None
+    last_progress = started
+    while time.time() < deadline:
+        time.sleep(0.5)
+        projects = ccm_core.build_project_list(fast=False)
+        target = next((p for p in projects if p.name == project_name), None)
+        if target is None:
+            return "DOWN"
+        last_state = target.state
+        if last_state in ("IDLE", "PERMIT", "DOWN"):
+            return last_state
+        now = time.time()
+        if progress and now - last_progress >= _WAIT_PROGRESS_TICK_SEC:
+            elapsed = now - started
+            ccm_core.ccm_info(
+                f"  [waiting {elapsed:.1f}s] state={last_state}"
+            )
+            last_progress = now
+    return last_state or "BUSY"
 
 
 _SEND_USAGE = (
@@ -198,10 +274,40 @@ def cmd_send(args):
         ccm_core.ccm_info(f"Starting Claude in {project_name}...")
         ccm_core.tmux_cmd("send-keys", "-t", win_target, "-X", "cancel")
         ccm_core.tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
-        # Crude wait for Claude to initialize. Longer would block ccm
-        # pipelines; shorter risks sending before the input prompt is
-        # ready. 2 seconds is a reasonable compromise on modern hardware.
-        time.sleep(2)
+        # Wait for the target to reach the input prompt. A fixed
+        # sleep would mis-deliver the message when `claude
+        # --continue` triggers a follow-on action — most commonly
+        # an auto-`/compact` on resume of a long session, or a
+        # session-resume picker (PERMIT modal). Refuse with the
+        # captured pane tail so the operator sees exactly what
+        # the target is doing and finishes by hand. Progress is
+        # printed when run interactively so the operator does not
+        # see a frozen terminal during the wait.
+        interactive_wait = sys.stdout.isatty()
+        ready_state = _wait_for_target_idle(
+            project_name, progress=interactive_wait,
+        )
+        if ready_state != "IDLE":
+            tail = ccm_core.tmux_cmd(
+                "capture-pane", "-t", win_target, "-p", "-S", "-15",
+            )
+            tail_lines = [l for l in tail.split("\n") if l.strip()]
+            lines = [
+                f"{project_name} did not reach IDLE within "
+                f"{START_WAIT_SEC}s after `claude --continue`.",
+                f"  Last observed state: {ready_state}",
+                "  Likely cause: Claude resumed into an auto-action",
+                "    (e.g. `/compact` on a long session, or a",
+                "    session-resume picker). The message would land",
+                "    in the middle of that action and be eaten,",
+                "    so the send is refused.",
+                "  Switch to the target window, let the action",
+                "    finish (or dismiss the modal), then retry.",
+            ]
+            if tail_lines:
+                lines.append("  Pane tail:")
+                lines.extend(f"    {l}" for l in tail_lines[-15:])
+            ccm_core.ccm_die("\n".join(lines))
 
     if state == "BUSY" and not force:
         ccm_core.ccm_die(

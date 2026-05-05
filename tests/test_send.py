@@ -259,10 +259,23 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
             ccm_send.cmd_send(["blog", "hello"])
 
+    def _patch_start_polling(self, monkeypatch, initial, after_start):
+        """Make `build_project_list` return `initial` on the first
+        call (the lookup at the top of `cmd_send`) and `after_start`
+        on every subsequent call (the `_wait_for_target_idle` poll).
+        Skips the 0.5 s polling sleep so the test runs fast."""
+        call_count = [0]
+        def stub_build(fast=False):
+            call_count[0] += 1
+            return [initial if call_count[0] == 1 else after_start]
+        monkeypatch.setattr(ccm_core, "build_project_list", stub_build)
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+
     def test_send_shell_with_start_launches_claude_first(self, monkeypatch):
-        project = self._make_project(state="SHELL")
-        self._patch_resolution(monkeypatch, project=project)
-        monkeypatch.setattr("time.sleep", lambda _s: None)  # skip the 2s wait
+        initial = self._make_project(state="SHELL")
+        after_start = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, after_start)
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
@@ -280,6 +293,69 @@ class TestCmdSend:
         assert claude_i is not None, "Claude launch not issued"
         assert literal_i is not None, "Message not sent"
         assert claude_i < literal_i
+
+    def test_send_start_refuses_when_target_stays_busy(self, monkeypatch):
+        """`/compact` auto-running on resume keeps the target in
+        BUSY past the timeout. The send must refuse with a clear
+        message and the captured pane tail — never silently
+        deliver keystrokes to a non-prompt screen."""
+        initial = self._make_project(state="SHELL")
+        stuck_busy = self._make_project(state="BUSY")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, stuck_busy)
+        # Force timeout to one poll so the test is fast.
+        monkeypatch.setattr(ccm_send, "START_WAIT_SEC", 0)
+        with patch("ccm_core.tmux_cmd") as mock_tmux, pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        # The literal message must NOT have been sent.
+        literal_sent = any(
+            c == ("send-keys", "-t", "0:5", "-l", "hello") for c in calls
+        )
+        assert not literal_sent, "Refused-send leaked a literal payload"
+
+    def test_send_start_refuses_on_permit_short_circuit(self, monkeypatch):
+        """If `claude --continue` resumes into a session-resume
+        picker or other PERMIT modal, the keystrokes would land on
+        a permission dialog and could accidentally approve/deny.
+        Refuse without waiting for the full timeout."""
+        initial = self._make_project(state="SHELL")
+        permit = self._make_project(state="PERMIT")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, permit)
+        with patch("ccm_core.tmux_cmd") as mock_tmux, pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        literal_sent = any(
+            c == ("send-keys", "-t", "0:5", "-l", "hello") for c in calls
+        )
+        assert not literal_sent
+
+    def test_send_start_proceeds_after_brief_busy(self, monkeypatch):
+        """A short BUSY transient (MCP loading) followed by IDLE
+        should still result in a successful send. Polling must
+        keep retrying until the timeout, not refuse on the first
+        non-IDLE observation."""
+        initial = self._make_project(state="SHELL")
+        busy = self._make_project(state="BUSY")
+        idle = self._make_project(state="IDLE")
+        states = iter([initial, busy, busy, idle, idle])
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(
+            ccm_core, "find_window",
+            lambda sess, name: initial.win_idx if name == initial.name else None,
+        )
+        monkeypatch.setattr(
+            ccm_core, "build_project_list",
+            lambda fast=False: [next(states)],
+        )
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_send.cmd_send(["blog", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
 
     def test_send_idle_state_allowed(self, monkeypatch):
         project = self._make_project(state="IDLE")
