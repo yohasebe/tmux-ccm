@@ -845,6 +845,8 @@ _SUBCOMMANDS = (
      lambda a: ccm_snapshot.cmd_snapshot_delete(a.name)),
     ("reset-window", lambda p: None,
      lambda a: ccm_commands.cmd_reset_window()),
+    ("reset", _add_name_arg,
+     lambda a: ccm_commands.cmd_reset(a.name)),
     ("errors",
      _passthrough_argparse_config,
      lambda a: ccm_commands.cmd_errors(a.rest)),

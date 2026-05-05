@@ -64,6 +64,7 @@ Usage:
   ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
   ccm debug trace <name> [interval]  Live state-detection trace (read-only; Ctrl-C to stop)
   ccm errors [--clear]              View / clear the silent-exception log
+  ccm reset <name>                  Clear stuck runtime state for a project (last-resort recovery)
   ccm doctor                        Self-check: dependencies, hooks, canaries, projects, errors
   ccm clear-notifications           Remove all ccm notifications from macOS Notification Center
   ccm help                          Show this help
@@ -133,6 +134,9 @@ case "${1:-help}" in
         ;;
     reset-window)
         python3 "$CCM_ROOT/lib/ccm_core.py" reset-window || true
+        ;;
+    reset)
+        python3 "$CCM_ROOT/lib/ccm_core.py" reset "${2:-}"
         ;;
     debug)
         # `ccm debug trace <project> [interval]` — live state-detection trace.

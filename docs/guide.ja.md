@@ -452,6 +452,14 @@ ccm capture my-project    # 画面の内容を確認
 
 子プロセスが終了すれば、次の2秒リフレッシュで状態が修正されます。
 
+`(Nm)` suffix が付いて (例: `BUSY (5m)`) BUSY のまま戻らない場合は、ccm が自分のシグナルが stale であることを検出したが「実は IDLE」を証明できない状態です。通常は upstream の double silent fail (Stop hook 喪失 AND JSONL に完了記録なし) が原因。最終手段として:
+
+```bash
+ccm reset my-project      # フックシグナル、event log、キャッシュ済み state option をクリア
+```
+
+`ccm reset` は会話履歴・スナップショット・実行中の `claude` プロセスには触りません — 検出が読む ephemeral な runtime artefact だけを wipe します。次のスキャンで一から再解決されます。通常の「Claude が固まった」状況では `/exit` をペイン内で入力するのが筋です。
+
 ### 全プロジェクトが同じ状態で固まる
 
 **すべて**のプロジェクトが同じ状態（例: 全て BUSY）で固まり、リフレッシュしても更新されない場合、検出サイクル自体が silent な例外を踏んでいる可能性があります。ログを確認:

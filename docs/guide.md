@@ -452,6 +452,14 @@ ccm capture my-project    # check what's on screen
 
 The state will correct itself on the next 2-second refresh cycle once the child processes exit.
 
+If the state persists with a `(Nm)` suffix (e.g. `BUSY (5m)`), ccm has detected its own signals are stale but cannot prove the project is actually idle. This usually indicates an upstream double silent fail (Stop hook missed AND JSONL didn't record completion). As a last resort:
+
+```bash
+ccm reset my-project      # clears hook signals, event log, and cached state options
+```
+
+`ccm reset` does not touch the conversation, snapshots, or the running `claude` process — it only wipes the ephemeral runtime artefacts that detection reads. The next scan re-resolves state from scratch. For ordinary "Claude is hung" situations, `/exit` inside the pane is still the right answer.
+
 ### Every project frozen at the same state
 
 If **all** projects are stuck at the same state (e.g. all BUSY, no longer updating after refresh), the detection cycle itself may have hit a silent exception. Check the log:

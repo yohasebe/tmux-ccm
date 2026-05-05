@@ -488,6 +488,66 @@ def cmd_reset_window():
         ccm_window.reset_window_after_attach(f"{session_name}:{win_idx}")
 
 
+# Per-window tmux options that `ccm reset` unsets. Keep this list
+# narrow: it must touch only ccm-owned ephemeral state, never
+# `@ccm_project` / `@ccm_dir` (the source of truth that identifies
+# the window as a ccm project) or anything tmux-built-in.
+_RESET_WINDOW_OPTIONS = (
+    "@ccm_prev_state",
+    "@ccm_session_id",
+    "@ccm_completed_at",
+    "@ccm_shell_history",
+    "@ccm_bg_active",
+)
+
+
+def cmd_reset(name):
+    """`ccm reset <name>` — clear runtime state for a stuck project.
+
+    Removes the project's ephemeral runtime artefacts:
+      - hook signal / events / pending sentinel under `$HOOK_DIR/`
+      - notify marker, git-branch and port caches under `$TMPDIR`
+      - per-window tmux options that cache resolved state
+        (`@ccm_prev_state`, `@ccm_session_id`, `@ccm_completed_at`,
+        `@ccm_shell_history`, `@ccm_bg_active`)
+
+    Does NOT touch:
+      - the conversation JSONL (`~/.claude/projects/<slug>/...`)
+      - Claude Code's session info (`~/.claude/sessions/<pid>.json`)
+      - the running `claude` process
+      - the tmux window itself (`@ccm_project`, `@ccm_dir`)
+      - snapshots
+
+    Intended as a recovery hatch for the rare cases where a stuck
+    `(Nm)` suffix won't clear (e.g. the upstream double silent fail
+    described in `memory/project_known_limitations.md`). For normal
+    "Claude got stuck" situations, `/exit` inside the pane is still
+    the right answer."""
+    if not name:
+        ccm_core.ccm_die("Usage: ccm reset <name>")
+    session = ccm_core.get_session()
+    win_idx = ccm_core.find_window(session, name)
+    if not win_idx:
+        ccm_core.ccm_die(f"Project not found: {name}")
+    win_target = f"{session}:{win_idx}"
+
+    # Resolve @ccm_dir BEFORE we wipe options, so we can find the
+    # cwd-keyed runtime files.
+    proj_dir = ccm_core.tmux_cmd(
+        "show-option", "-w", "-t", win_target, "-qv", "@ccm_dir",
+    )
+    if proj_dir:
+        ccm_signals.cleanup_project_runtime_files(proj_dir)
+
+    # Unset the cached state options. Use `-u` (unset) rather than
+    # writing an empty string so detection treats the project as
+    # "fresh" on the next scan.
+    for opt in _RESET_WINDOW_OPTIONS:
+        ccm_core.tmux_cmd("set-option", "-w", "-t", win_target, "-u", opt)
+
+    ccm_core.ccm_info(f"Reset runtime state for: {name}")
+
+
 def cmd_doctor():
     """`ccm doctor` — single self-check command. Aggregates dependency
     versions, hook installation state, runtime canaries, project

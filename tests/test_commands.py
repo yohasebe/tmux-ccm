@@ -438,6 +438,81 @@ class TestCmdRemove:
             ccm_commands.cmd_remove("nonexistent")
 
 
+# ─── cmd_reset ───
+
+class TestCmdReset:
+    """`ccm reset <name>` — runtime-state recovery hatch. Must wipe
+    only ephemeral runtime artefacts; the conversation JSONL,
+    Claude Code's session info, and the tmux window itself stay
+    untouched. Whitelist-driven design — see `_RESET_WINDOW_OPTIONS`."""
+
+    def test_reset_empty_name_exits(self):
+        with pytest.raises(SystemExit):
+            ccm_commands.cmd_reset("")
+
+    @patch("ccm_core.find_window", return_value=None)
+    @patch("ccm_core.get_session", return_value="main")
+    def test_reset_not_found_exits(self, mock_session, mock_find):
+        with pytest.raises(SystemExit):
+            ccm_commands.cmd_reset("nonexistent")
+
+    @patch("ccm_signals.cleanup_project_runtime_files")
+    @patch("ccm_core.tmux_cmd", return_value="/x/proj-dir")
+    @patch("ccm_core.find_window", return_value="3")
+    @patch("ccm_core.get_session", return_value="main")
+    def test_reset_calls_cleanup_with_project_dir(
+        self, mock_session, mock_find, mock_tmux, mock_cleanup,
+    ):
+        ccm_commands.cmd_reset("proj")
+        # cleanup_project_runtime_files runs with the resolved @ccm_dir
+        mock_cleanup.assert_called_once_with("/x/proj-dir")
+
+    @patch("ccm_signals.cleanup_project_runtime_files")
+    @patch("ccm_core.tmux_cmd", return_value="/x/proj-dir")
+    @patch("ccm_core.find_window", return_value="3")
+    @patch("ccm_core.get_session", return_value="main")
+    def test_reset_unsets_only_whitelisted_window_options(
+        self, mock_session, mock_find, mock_tmux, mock_cleanup,
+    ):
+        ccm_commands.cmd_reset("proj")
+        unset_options = {
+            c.args[-1] for c in mock_tmux.call_args_list
+            if c.args[:1] == ("set-option",) and "-u" in c.args
+        }
+        # Must touch the whitelisted ephemeral options...
+        assert unset_options == set(ccm_commands._RESET_WINDOW_OPTIONS)
+        # ...and never the source-of-truth options that identify
+        # the window as a ccm project.
+        assert "@ccm_project" not in unset_options
+        assert "@ccm_dir" not in unset_options
+
+    @patch("ccm_signals.cleanup_project_runtime_files")
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.find_window", return_value="3")
+    @patch("ccm_core.get_session", return_value="main")
+    def test_reset_does_not_kill_window_or_exit_claude(
+        self, mock_session, mock_find, mock_tmux, mock_cleanup,
+    ):
+        mock_tmux.return_value = "/x/proj-dir"
+        ccm_commands.cmd_reset("proj")
+        commands = [c.args[0] for c in mock_tmux.call_args_list if c.args]
+        # Recovery, not removal — must not kill or send exit signals.
+        assert "kill-window" not in commands
+        assert "send-keys" not in commands
+
+    @patch("ccm_signals.cleanup_project_runtime_files")
+    @patch("ccm_core.tmux_cmd", return_value="")
+    @patch("ccm_core.find_window", return_value="3")
+    @patch("ccm_core.get_session", return_value="main")
+    def test_reset_skips_cleanup_when_no_proj_dir(
+        self, mock_session, mock_find, mock_tmux, mock_cleanup,
+    ):
+        # `@ccm_dir` empty (e.g. registration drift) — still wipe
+        # window options, but skip cwd-keyed cache cleanup.
+        ccm_commands.cmd_reset("proj")
+        mock_cleanup.assert_not_called()
+
+
 # ─── cmd_rename ───
 
 class TestCmdRename:

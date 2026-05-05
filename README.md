@@ -313,6 +313,7 @@ ccm statusline                    Print one-line status (used by tmux status bar
 ccm inject-status                 Update tmux status bar (called internally)
 ccm debug trace <name> [interval] Live state-detection trace (read-only; Ctrl-C to stop)
 ccm errors [--clear]              View / clear the silent-exception log
+ccm reset <name>                  Clear stuck runtime state (last-resort recovery)
 ccm doctor                        Self-check (deps, hooks, canaries, projects, errors)
 ccm clear-notifications           Remove ccm notifications from macOS Notification Center
 ```

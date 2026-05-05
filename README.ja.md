@@ -313,6 +313,7 @@ ccm statusline                    1行ステータス出力（tmuxステータ�
 ccm inject-status                 tmuxステータスバー更新（内部使用）
 ccm debug trace <name> [interval] 状態検出のライブトレース（読み取り専用、Ctrl-Cで終了）
 ccm errors [--clear]              silent-exception ログの表示／クリア
+ccm reset <name>                  プロジェクトの runtime 状態をリセット (最終手段の復旧)
 ccm doctor                        セルフチェック (依存・フック・カナリア・プロジェクト・エラー)
 ccm clear-notifications           macOS 通知センターから ccm 通知を削除
 ```
