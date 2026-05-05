@@ -29,6 +29,11 @@ import os
 import re
 
 
+# Version string. Keep in sync with the `CCM_VERSION` constant in
+# the bash `ccm` wrapper and with CHANGELOG.md's top entry.
+CCM_VERSION = "0.3.0"
+
+
 # ─── Runtime paths ───
 
 CCM_ROOT = os.environ.get(

@@ -15,6 +15,10 @@ _ccm_resolve() {
 }
 CCM_ROOT="$(_ccm_resolve "$0")"
 
+# Version of this ccm release. Keep in sync with CHANGELOG.md's
+# top entry. Surfaced via `ccm --version` and `ccm version`.
+CCM_VERSION="0.3.0"
+
 # Background commands must not fail on errors
 case "${1:-}" in
     inject-status|reset-window|dashboard|dash|d|search|tree-interactive|ti|init) set +e ;;
@@ -68,6 +72,7 @@ Usage:
   ccm doctor                        Self-check: dependencies, hooks, canaries, projects, errors
   ccm clear-notifications           Remove all ccm notifications from macOS Notification Center
   ccm help                          Show this help
+  ccm version                       Print the ccm version
 USAGE
 }
 
@@ -201,6 +206,9 @@ case "${1:-help}" in
         ;;
     help|--help|-h)
         ccm_usage
+        ;;
+    version|--version|-v)
+        echo "ccm ${CCM_VERSION}"
         ;;
     *)
         ccm_die "Unknown command: $1 (try 'ccm help')"

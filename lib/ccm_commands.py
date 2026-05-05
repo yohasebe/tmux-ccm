@@ -41,7 +41,7 @@ import ccm_render
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
-from ccm_constants import CLAUDE_CMD
+from ccm_constants import CCM_VERSION, CLAUDE_CMD
 from ccm_core import _C_BOLD, _C_RESET
 
 
@@ -565,6 +565,10 @@ def cmd_doctor():
         print(f"  {mark} {label}{('  ' + detail) if detail else ''}")
 
     section("Environment")
+    # ccm itself — surfaces the running version up front so bug
+    # reports include it without anyone having to remember to run
+    # `ccm --version` separately.
+    row(OK, "ccm", CCM_VERSION)
     # claude binary
     claude_path = subprocess.run(
         ["which", "claude"], capture_output=True, text=True,

@@ -1,9 +1,50 @@
 """Tests for ccm_constants — pure constants and the PERMIT-modal
 classifier."""
 
+import os
+import re
+
 import pytest
 
 import ccm_constants
+
+
+class TestCCMVersionConsistency:
+    """`CCM_VERSION` is hand-mirrored across three files (bash
+    wrapper, Python constants, CHANGELOG header). Drift between
+    them would mean `ccm --version` and `ccm doctor` report
+    different things, or the released version doesn't match what
+    CHANGELOG documents. This test fails fast if any pair
+    disagrees, so the only way to ship a release is to bump all
+    three together."""
+
+    def test_python_matches_bash(self):
+        ccm_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        bash_path = os.path.join(ccm_root, "ccm")
+        with open(bash_path, encoding="utf-8") as f:
+            content = f.read()
+        m = re.search(r'^CCM_VERSION="([^"]+)"', content, re.MULTILINE)
+        assert m is not None, "CCM_VERSION not found in ccm bash wrapper"
+        assert m.group(1) == ccm_constants.CCM_VERSION, (
+            f"bash CCM_VERSION={m.group(1)} but Python CCM_VERSION="
+            f"{ccm_constants.CCM_VERSION} — bump both together"
+        )
+
+    def test_python_matches_changelog_top_entry(self):
+        ccm_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        changelog_path = os.path.join(ccm_root, "CHANGELOG.md")
+        with open(changelog_path, encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"^## \[([^\]]+)\]", line)
+                if m:
+                    top_version = m.group(1)
+                    break
+            else:
+                pytest.fail("No version entry found in CHANGELOG.md")
+        assert top_version == ccm_constants.CCM_VERSION, (
+            f"CHANGELOG top entry [{top_version}] but Python CCM_VERSION="
+            f"{ccm_constants.CCM_VERSION} — bump both together"
+        )
 
 
 class TestClassifyPermitModal:
