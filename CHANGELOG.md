@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- `ccm send <name> --start <msg>` no longer silently loses the message when `claude --continue` resumes into an auto-action. The previous fixed two-second wait could deliver keystrokes mid-`/compact` (long-session resume) or into a session-resume picker — the operator saw `Sent to <name>` while the message never reached the prompt. The launch path now polls the target's detected state every 0.5 s and proceeds only when state is `IDLE`. `PERMIT` short-circuits the wait (modal needs operator action; sending keystrokes there could approve/deny tools); the timeout (default 10 s, `CCM_START_WAIT_SEC` overrides) refuses the send with the captured pane tail so the operator can finish by hand. Progress is printed once per second when run interactively.
+
 ## [0.3.0] - 2026-05-05
 
 Initial public release. ccm is a tmux plugin that manages Claude Code sessions as tmux windows, with live state detection, an interactive dashboard, status-bar integration, and snapshot save/restore.

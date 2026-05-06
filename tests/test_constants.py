@@ -31,19 +31,23 @@ class TestCCMVersionConsistency:
         )
 
     def test_python_matches_changelog_top_entry(self):
+        # The top released entry — `[Unreleased]` is the staging
+        # ground for fixes accumulating toward the next patch and
+        # is skipped here.
         ccm_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         changelog_path = os.path.join(ccm_root, "CHANGELOG.md")
+        top_version = None
         with open(changelog_path, encoding="utf-8") as f:
             for line in f:
                 m = re.match(r"^## \[([^\]]+)\]", line)
-                if m:
+                if m and m.group(1) != "Unreleased":
                     top_version = m.group(1)
                     break
-            else:
-                pytest.fail("No version entry found in CHANGELOG.md")
+        if top_version is None:
+            pytest.fail("No released version entry found in CHANGELOG.md")
         assert top_version == ccm_constants.CCM_VERSION, (
-            f"CHANGELOG top entry [{top_version}] but Python CCM_VERSION="
-            f"{ccm_constants.CCM_VERSION} — bump both together"
+            f"CHANGELOG top released entry [{top_version}] but Python "
+            f"CCM_VERSION={ccm_constants.CCM_VERSION} — bump both together"
         )
 
 
