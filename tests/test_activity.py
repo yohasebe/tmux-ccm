@@ -319,17 +319,20 @@ class TestMapActivityToState:
         from ccm_activity import ACTIVITY_AWAITING_PERMIT
         assert self._map(ACTIVITY_AWAITING_PERMIT, raw="PERMIT") == "PERMIT"
 
-    def test_awaiting_permit_with_recent_tool_use_promotes_to_busy(self):
-        # Modal dismissed (raw != PERMIT) but tool actively running.
+    def test_awaiting_permit_maps_to_permit_regardless_of_jsonl(self):
+        # The auto-approved-tool promotion now lives in
+        # `classify_activity` (where event_age is accessible to
+        # bound the heuristic to recent permits). Once the
+        # classifier has decided the activity is AWAITING_PERMIT,
+        # the mapper unconditionally returns PERMIT — fresh
+        # tool_use no longer overrides here. Coverage for the
+        # promotion path lives in `TestClassifyActivity` and the
+        # `TestDeriveStateFromEvents` end-to-end cases.
         from ccm_activity import ACTIVITY_AWAITING_PERMIT
         assert self._map(
             ACTIVITY_AWAITING_PERMIT, raw="BUSY",
             jsonl_stop_reason="tool_use", jsonl_age=5,
-        ) == "BUSY"
-
-    def test_awaiting_permit_with_stale_jsonl_stays_permit(self):
-        # No positive signal of active work → cosmetic stuck PERMIT.
-        from ccm_activity import ACTIVITY_AWAITING_PERMIT
+        ) == "PERMIT"
         assert self._map(
             ACTIVITY_AWAITING_PERMIT, raw="IDLE",
             jsonl_stop_reason="tool_use", jsonl_age=99999,
@@ -458,19 +461,25 @@ class TestDeriveStateFromEvents:
             now=now,
         ) == "BUSY"
 
-    def test_permit_with_idle_pane_and_recent_tool_use_promotes_to_busy(self):
-        """The modal has been dismissed (raw=IDLE = `❯` visible,
-        accept-edits mode), JSONL last assistant record is `tool_use`
-        within the long-tool window. The vast majority of the time
-        this is the post-accept state: tool resumed, Claude is in
-        extended-thinking → next tool_use cycle. JSONL doesn't get
-        rewritten during thinking so the JSONL ts stays slightly
-        OLDER than the permit event, but the user has clearly moved
-        past the modal and the dashboard should reflect that.
-        Promoting to BUSY here is the right answer; the only loss
-        is a 1-cycle false BUSY in the rare Esc-cancel case where
-        JSONL terminal hasn't landed yet.
-        """
+    def test_permit_with_idle_pane_and_jsonl_older_than_event_stays_permit(self):
+        """raw=IDLE with JSONL `tool_use` OLDER than the permit
+        event = ambiguous shape. Two real workflows produce it:
+
+        (A) post-accept extended-thinking briefly between modal
+            dismiss and the next PreToolUse fire (typically a few
+            seconds, since the permit interrupts an in-flight tool);
+        (B) interactive choice menu where Claude rendered an option
+            list as a permit-class event and the user is still
+            reading — JSONL last `tool_use` predates the menu.
+
+        We surface PERMIT here. Case (A) lasts only the brief gap
+        until pretool fires, so a few seconds of "false PERMIT"
+        during thinking is cosmetic. Case (B) lasts as long as the
+        user takes to choose, so a "false BUSY" there persists
+        until the heuristic's window expires — confusing because
+        the dashboard claims activity while the user is genuinely
+        awaiting selection. Holding PERMIT is the correct call for
+        (B) and acceptably brief for (A)."""
         now = int(time.time())
         assert ccm_activity.derive_state_from_events(
             events=({"ts": now - 30, "type": "permit_req"},),
@@ -480,7 +489,7 @@ class TestDeriveStateFromEvents:
             claude_pid_age=400,
             raw="IDLE",
             now=now,
-        ) == "BUSY"
+        ) == "PERMIT"
 
     def test_permit_with_running_tool_and_no_raw_keeps_permit(self):
         """When the caller does not provide a `raw` value (None) we
@@ -1048,28 +1057,60 @@ class TestDeriveStateFromEvents:
             raw="IDLE",
         ) == "BUSY"
 
-    def test_permit_event_post_dismiss_with_recent_tool_use_promotes_to_busy(self):
-        """Post-dismiss state with raw=IDLE (modal physically gone,
-        `❯` visible in accept-edits mode) and JSONL `tool_use`
-        within the long-tool window. The JSONL ts being slightly
-        older than the permit event is the NORMAL accept-then-
-        thinking shape — Claude doesn't write to JSONL while
-        thinking, so the only assistant record we see is the one
-        that triggered the modal in the first place. Promoting to
-        BUSY here keeps the dashboard responsive during long
-        thinking phases (10s+ in practice). The narrow Esc-cancel
-        edge is bounded to one poll cycle: a real cancel produces
-        a terminal `stop_reason` within ~1 s and the
-        `_jsonl_terminal_fresher_than_event` branch above releases
-        to IDLE.
-        """
+    def test_permit_event_post_dismiss_with_jsonl_older_stays_permit(self):
+        """raw=IDLE with JSONL strictly OLDER than the permit
+        event remains PERMIT. The interactive choice menu case
+        (Claude renders option list as permit-class event, user
+        reads while JSONL last record is from BEFORE the menu)
+        and the post-accept-thinking case both produce this shape;
+        absent positive evidence (raw=BUSY or fresher JSONL) we
+        treat the lingering permit as awaiting attention rather
+        than holding cosmetic BUSY for 10+ minutes."""
         assert ccm_activity.derive_state_from_events(
             events=({"ts": 200, "type": "permit_req"},),
             jsonl_stop_reason="tool_use",
             pid_present=True, claude_pid_age=300,
             jsonl_age=120, now=205,           # JSONL older than event
             raw="IDLE",
-        ) == "BUSY"
+        ) == "PERMIT"
+
+    def test_permit_event_interactive_menu_case_returns_permit_immediately(self):
+        """User-reported scenario (2026-05-08): Claude rendered an
+        interactive choice menu as a permit-class hook. Latest
+        event is notify_permit, raw=IDLE because the menu's `❯`
+        selector matches PATTERN_INPUT_PROMPT, JSONL last
+        `tool_use` is from BEFORE the menu was rendered. Earlier
+        versions held false BUSY for the entire
+        `BUSY_HOOK_JSONL_WINDOW` (10 min) until the JSONL aged out
+        of the window. The fix surfaces PERMIT immediately so the
+        dashboard correctly says "this project needs your
+        attention". Tested at multiple post-event ages (2 s, 2 min,
+        10 min) to confirm the verdict does not depend on timing —
+        the discriminator is now the JSONL/event ordering."""
+        # 2 seconds after permit
+        assert ccm_activity.derive_state_from_events(
+            events=({"ts": 1000, "type": "notify_permit"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=2000,
+            jsonl_age=40, now=1002,            # event_age=2, jsonl_age=40
+            raw="IDLE",
+        ) == "PERMIT"
+        # 2 minutes after permit
+        assert ccm_activity.derive_state_from_events(
+            events=({"ts": 1000, "type": "notify_permit"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=2000,
+            jsonl_age=158, now=1120,           # event_age=120, jsonl_age=158
+            raw="IDLE",
+        ) == "PERMIT"
+        # 10 minutes after permit
+        assert ccm_activity.derive_state_from_events(
+            events=({"ts": 1000, "type": "notify_permit"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=2000,
+            jsonl_age=638, now=1600,           # event_age=600, jsonl_age=638
+            raw="IDLE",
+        ) == "PERMIT"
 
     def test_permit_event_post_dismiss_with_terminal_jsonl_returns_idle(self):
         """Esc-cancel resolved: the user dismissed the modal AND

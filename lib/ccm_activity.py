@@ -190,6 +190,39 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
         if _jsonl_terminal_fresher_than_event(
                 latest, jsonl_stop_reason, jsonl_age, now):
             return ACTIVITY_AT_REST, latest
+        # Auto-approved-tool promotion — only on POSITIVE evidence
+        # of activity. The promotion exists to keep the dashboard
+        # honest during the brief gap between "user accepts modal"
+        # and "next PreToolUse hook fires" (typically a few
+        # seconds, since the permission interrupts a tool that's
+        # already in flight). Two disjoint sub-cases qualify:
+        #
+        # 1. raw=BUSY — capture-pane sees tool output (no `❯` at
+        #    column 0, claude has children). Direct evidence the
+        #    tool is running.
+        #
+        # 2. JSONL is STRICTLY FRESHER than the permit event — a
+        #    new tool_use record landed after the permit was
+        #    raised, proving the tool dispatched post-accept.
+        #
+        # Anything else (raw=IDLE with stale or older JSONL,
+        # raw=None, etc.) stays PERMIT. This is what catches the
+        # interactive choice menu case: Claude renders an option
+        # list as a permit-class hook, JSONL latest tool_use
+        # predates the menu, raw=IDLE because PATTERN_INPUT_PROMPT
+        # matches a menu selector. Without this restriction the
+        # heuristic falsely held BUSY for the user's whole reading
+        # time — confusing because the dashboard claimed activity
+        # while the user was waiting on a selection.
+        if (jsonl_stop_reason == "tool_use"
+                and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW):
+            if raw == "BUSY":
+                return ACTIVITY_IN_PROGRESS, latest
+            if raw == "IDLE":
+                event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
+                event_age = (now - event_ts) if (now > 0 and event_ts > 0) else -1
+                if event_age >= 0 and jsonl_age < event_age:
+                    return ACTIVITY_IN_PROGRESS, latest
         return ACTIVITY_AWAITING_PERMIT, latest
 
     if klass == EVENT_CLASS_START:
@@ -239,21 +272,13 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
     elif activity == ACTIVITY_IN_PROGRESS:
         candidate = "BUSY"
     elif activity == ACTIVITY_AWAITING_PERMIT:
-        # Modal raised by the event log. raw=PERMIT (modal still on
-        # screen) is handled by the override below. Otherwise the
-        # modal was dismissed — accept (tool resumed) or Esc (tool
-        # aborted). JSONL `tool_use` within the long-tool window
-        # plus raw in {BUSY, IDLE} means a tool is actively running
-        # post-dismiss; promote to BUSY rather than holding cosmetic
-        # PERMIT for the tool's whole duration. Any other shape
-        # stays PERMIT (the `(Nm)` stale-signal suffix surfaces the
-        # stuck nature to the user).
-        if (jsonl_stop_reason == "tool_use"
-                and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW
-                and raw in ("BUSY", "IDLE")):
-            candidate = "BUSY"
-        else:
-            candidate = "PERMIT"
+        # Permit modal raised AND not auto-resolved by a fresher
+        # JSONL signal — `classify_activity` already promoted the
+        # auto-approved-tool case to `IN_PROGRESS` and the
+        # Esc-dismissed-clean case to `AT_REST`, so anything still
+        # awaiting permit is just PERMIT. raw=PERMIT (modal still
+        # on screen) is handled by the override below.
+        candidate = "PERMIT"
     # ACTIVITY_UNKNOWN: candidate stays None.
 
     if candidate is None:
