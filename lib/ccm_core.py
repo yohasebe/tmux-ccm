@@ -854,6 +854,8 @@ _SUBCOMMANDS = (
      lambda a: ccm_commands.cmd_doctor()),
     ("clear-notifications", lambda p: None, _clear_notifications_handler),
     ("debug", _add_debug_args, _debug_handler),
+    ("bg-list", lambda p: None,
+     lambda a: ccm_render.print_bg_sessions()),
 )
 
 

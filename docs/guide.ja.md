@@ -510,6 +510,48 @@ ccmのダッシュボードやステータスバーで、追加設定なしにAg
 5. ccmのダッシュボードに全チームメイトの集約状態が表示される
 6. チームが作業中に `prefix + Tab` で別プロジェクトに切替可能
 
+## agent view（バックグラウンドセッション）との併用
+
+Claude Code 2.1.139 で導入された [agent view](https://claude.com/blog/agent-view-in-claude-code) は、`claude agents`（TUI）/ `claude --bg <prompt>`（バックグラウンドディスパッチ）/ `claude attach <short>`（フォアグラウンドアタッチ）の 3 つの入口を持ちます。これらはすべてユーザーごとの supervisor daemon の下で動作し、tmux の外側にいます。ccm はこの daemon の状態を読んでダッシュボードに読み取り専用セクションとして表示するため、tmux 管理下のプロジェクトと daemon 管理下のバックグラウンドセッションを 1 つのビューで俯瞰できます。
+
+### セクションを有効にする
+
+デフォルトはオフ（agent view を使わないユーザーには余計な表示は出ません）。3 通りの方法で表示できます:
+
+- ダッシュボードで `b` を押す — その popup の間だけトグル、設定は永続化しない。
+- `~/.tmux.conf` に `set -g @ccm-bg-section "always"` を追加 — 毎回開くたびに表示。
+- ダッシュボードメニュー（`m`）で `Background sessions: …` 行をトグル — 上記オプションを `~/.tmux.conf` に書き込みます。
+
+セクションはプロジェクト一覧の下に表示され、各アクティブワーカーの short ID、正規化された状態（`✽ WORKING` / `✻ NEEDS` / `● IDLE` / `✓ DONE` / `✕ FAILED`）、可読な名前、経過時間、作業ディレクトリを一覧します。
+
+### ダッシュボードから attach する
+
+`↑/↓` で bg 行に選択を移動して（プロジェクト一覧と bg セクション間をシームレスに行き来できます）`Enter` を押すと、ccm が現在の tmux セッションに新規ウィンドウを作成し、その中で `claude attach <short>` を実行します。ウィンドウの作業ディレクトリは bg セッションのものを継承し、ウィンドウ名は `bg-<short>` になるので `prefix + w`（choose-tree）から見つけやすい構成です。
+
+新規ウィンドウは ccm プロジェクトとして登録 **されません** — `@ccm_project` / `@ccm_dir` タグを持たないため、ccm の `auto_start_claude` が `claude --continue` を injection で先回りすることがありません。これが attach と auto-start の競合（Issue 6）に対する構造的回避策です。これなしに ccm 管理ウィンドウから attach すると、`claude attach <short>` がシェルコマンドではなく既存の `claude --continue` への user message として届いてしまいます。claude から detach した後はそのウィンドウを `prefix + &` で閉じてください。
+
+### ライフサイクル操作は `claude` に残す
+
+ccm は daemon を **観察のみ** します — `~/.claude/daemon/` に書き込んだりシグナルを送ったりはしません。Dispatch / 終了は `claude` CLI 側の責務です:
+
+```bash
+claude agents                 # インタラクティブTUI
+claude --bg "<prompt>"        # fire-and-forget バックグラウンド起動
+claude attach <short>         # 既存セッションをフォアグラウンド化
+claude stop <short>           # セッションを停止
+```
+
+ダッシュボード外では `ccm bg list` でカラー付きテーブルを表示できます。
+
+### データソース
+
+リーダーは daemon が書き出す 2 つのファイルを結合します（ccm 側は read-only）:
+
+- `~/.claude/daemon/roster.json` — 現在アクティブなワーカー（pid / sessionId / cwd / cliVersion / dispatch メタデータ）。idle 1 時間程度で `settled (done)` となり roster から外れるため、ccm が表示する範囲は `claude agents` 自身が表示するものと一致します。
+- `~/.claude/jobs/<short>/state.json` — セッションごとのライブ状態（`working` / `needs_input` / `idle` / `done` / `failed`）、tempo、進行中タスク数、自動生成された name。
+
+ファイル欠落・JSON 破損・daemon 未起動はすべて「アクティブなバックグラウンドセッションなし」として安全に解決されるため、agent view の不在がダッシュボードを壊すことはありません。
+
 ## 環境変数
 
 ccmはいくつかのチューニング用環境変数を公開しています。デフォルト値は多くのユーザーにとって適切に動作するよう選ばれており、特定の問題が観察された場合にのみ調整してください。tmuxを起動する前にシェルの rc ファイル（例: `~/.zshrc`）で設定します。

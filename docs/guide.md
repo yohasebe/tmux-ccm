@@ -510,6 +510,48 @@ This means ccm's dashboard and status bar give you visibility into Agent Teams a
 5. ccm's dashboard shows the aggregated state of all teammates
 6. Switch to another project with `prefix + Tab` while the team works
 
+## Using with agent view (background sessions)
+
+Claude Code 2.1.139 introduced an [agent view](https://claude.com/blog/agent-view-in-claude-code): `claude agents` (TUI), `claude --bg <prompt>` (background dispatch), and `claude attach <short>` (foreground attach). All three run sessions as workers under a per-user supervisor daemon, completely outside tmux. ccm reads the daemon's state and surfaces those sessions in a read-only dashboard section so a single view shows both ccm-managed project windows and out-of-tmux background sessions.
+
+### Enabling the section
+
+Off by default — agent-view non-users see no clutter. There are three ways to make it visible:
+
+- Press `b` inside the dashboard — toggles for the current popup only, no config persistence.
+- Set `@ccm-bg-section "always"` in `~/.tmux.conf` — keeps it visible across opens.
+- Toggle the `Background sessions: …` row in the dashboard menu (`m`) — writes the same option back to `~/.tmux.conf`.
+
+The section appears below the project list and lists each active worker with its short ID, normalised state (`✽ WORKING` / `✻ NEEDS` / `● IDLE` / `✓ DONE` / `✕ FAILED`), human-readable name, age, and working directory.
+
+### Attaching from the dashboard
+
+Navigate to a bg row with `↑/↓` (selection moves seamlessly between projects and bg) and press `Enter`. ccm opens a new tmux window in the current session and runs `claude attach <short>` into it. The window's working directory matches the bg session when available, and its name is `bg-<short>` so it's easy to find with `prefix + w` (choose-tree).
+
+The new window is **not** registered as a ccm project — it has no `@ccm_project` / `@ccm_dir` tags, so ccm's `auto_start_claude` never races your attach with a `claude --continue` injection. This is the structural workaround for the attach/auto-start conflict; without it, attaching to a bg session from inside a ccm window would deliver `claude attach <short>` as a user message to the already-running `claude --continue` instead of as a shell command. Close the window with `prefix + &` after you detach from claude.
+
+### Lifecycle stays with `claude`
+
+ccm only **observes** the daemon — it never writes to `~/.claude/daemon/` or sends signals. Dispatch and termination remain the `claude` CLI's responsibility:
+
+```bash
+claude agents                 # interactive TUI
+claude --bg "<prompt>"        # fire-and-forget background job
+claude attach <short>         # foreground attach to an existing session
+claude stop <short>           # terminate a session
+```
+
+Outside the dashboard, `ccm bg list` prints the same data as a coloured table for shell use.
+
+### Data sources
+
+The reader joins two files, both written by the daemon (read-only on the ccm side):
+
+- `~/.claude/daemon/roster.json` — currently-active workers (pid, sessionId, cwd, cliVersion, dispatch metadata). Sessions are removed from this file after ~1 hour idle (`settled (done)`), matching what `claude agents` itself shows.
+- `~/.claude/jobs/<short>/state.json` — per-session live state (`working` / `needs_input` / `idle` / `done` / `failed`), tempo, in-flight task counts, and an auto-generated name.
+
+Missing files, malformed JSON, or a daemon-down state all gracefully resolve to "no background sessions" — agent view's absence never crashes the dashboard.
+
 ## Environment Variables
 
 ccm exposes several tuning knobs via environment variables. Defaults are chosen to work well for most users; adjust only if you observe a specific problem. Set them in your shell rc file (e.g. `~/.zshrc`) before tmux starts.

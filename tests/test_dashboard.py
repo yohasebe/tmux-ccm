@@ -129,6 +129,252 @@ class TestRenderSmoke:
             f"IDLE project); got {len(calls['format_elapsed'])} calls"
         )
 
+    def test_render_with_bg_section_visible(self, monkeypatch):
+        """`b` key reveals the background-sessions block below the
+        project list. The renderer must tolerate both populated and
+        empty bg_sessions without raising — empty is the more common
+        case once a user disables their last `--bg` job but leaves
+        the section toggled on."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_agentview
+
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE")]
+        d.bg_visible = True
+
+        # Populated case
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/tmp/proj",
+                name="agent demo", state="WORKING", raw_state="working",
+                tempo="active", cli_version="2.1.139",
+                session_id="00000000-0000-0000-0000-000000000000",
+                created_at=__import__("time").time() - 120,
+                updated_at=__import__("time").time(),
+                source="slash",
+            )
+        ]
+        d.render(_make_mock_stdscr())  # must not raise
+
+        # Empty case (daemon running but no active sessions)
+        d.bg_sessions = []
+        monkeypatch.setattr("ccm_agentview.daemon_running", lambda: True)
+        d.render(_make_mock_stdscr())  # must not raise
+
+        # Daemon-down case
+        monkeypatch.setattr("ccm_agentview.daemon_running", lambda: False)
+        d.render(_make_mock_stdscr())  # must not raise
+
+    def test_bg_row_enter_opens_new_window_and_attaches(self, monkeypatch):
+        """Enter on a bg row must create a non-ccm tmux window and
+        dispatch `claude attach <short>` to it. We capture every
+        tmux_cmd call and assert the sequence: new-window → send-keys
+        with the right command → select-window.
+
+        The new-window invocation must keep `-t <session>:` adjacent
+        (any flag inserted between them makes tmux read the flag name
+        as the target — a regression we hit once already)."""
+        _stub_dashboard_environment(monkeypatch)
+
+        captured = []
+        def fake_tmux(*args, **kwargs):
+            captured.append(args)
+            if args and args[0] == "new-window":
+                return "0:5"
+            return ""
+
+        monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
+        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = []
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/tmp/proj",
+                name="my agent", state="WORKING", raw_state="working",
+                tempo="active", cli_version="2.1.139",
+                session_id="x", created_at=1.0, updated_at=2.0,
+                source="slash",
+            ),
+        ]
+        d.selected = 0  # First bg row
+
+        action = d._handle_key(13, _make_mock_stdscr())  # Enter
+        assert action == "attached"
+
+        call_names = [c[0] if c else "" for c in captured]
+        assert "new-window" in call_names
+        assert "send-keys" in call_names
+        assert "select-window" in call_names
+
+        send_keys_call = next(c for c in captured if c and c[0] == "send-keys")
+        assert "claude attach abcd1234" in send_keys_call
+
+        # -t must be immediately followed by the session target.
+        # Inserting `-c <cwd>` between them broke new-window silently
+        # (tmux parsed `-c` as the target value and exited non-zero).
+        new_window_call = next(c for c in captured if c and c[0] == "new-window")
+        t_idx = new_window_call.index("-t")
+        assert new_window_call[t_idx + 1] == "0:", (
+            f"-t must point directly at the session target, got "
+            f"{new_window_call[t_idx + 1]!r} (full call: {new_window_call})"
+        )
+
+    def test_bg_attach_skips_cwd_starting_with_dash(self, monkeypatch):
+        """tmux `new-window -c <path>` parses any `-`-prefixed arg as
+        a flag, so a malformed cwd like '-foo' must NOT be passed —
+        we silently drop the -c pair instead (the new window then
+        inherits the caller's pwd, which is the safest fallback)."""
+        _stub_dashboard_environment(monkeypatch)
+
+        captured = []
+        def fake_tmux(*args, **kwargs):
+            captured.append(args)
+            if args and args[0] == "new-window":
+                return "0:5"
+            return ""
+        monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
+        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = []
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=1, cwd="-evil",
+                name="x", state="WORKING", raw_state="working",
+                tempo="active", cli_version="", session_id="",
+                created_at=None, updated_at=None, source="",
+            ),
+        ]
+        d.selected = 0
+        d._handle_key(13, _make_mock_stdscr())
+
+        new_window_call = next(c for c in captured if c and c[0] == "new-window")
+        assert "-c" not in new_window_call, (
+            f"new-window must not receive -c with a -prefixed path: "
+            f"{new_window_call}"
+        )
+
+    def test_bg_attach_refuses_invalid_short(self, monkeypatch):
+        """Defence-in-depth: even if a malformed short somehow reached
+        bg_sessions (e.g. someone bypassed the agentview filter), the
+        attach handler must refuse before tmux send-keys.
+
+        Hits the receiving shell's metachar-interpretation surface."""
+        _stub_dashboard_environment(monkeypatch)
+
+        captured = []
+        monkeypatch.setattr("dashboard.tmux_cmd",
+                            lambda *a, **k: captured.append(a) or "")
+        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = []
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abc;rm", pid=1, cwd="/tmp",
+                name="x", state="WORKING", raw_state="working",
+                tempo="active", cli_version="", session_id="",
+                created_at=None, updated_at=None, source="",
+            ),
+        ]
+        d.selected = 0
+        action = d._handle_key(13, _make_mock_stdscr())
+
+        assert action != "attached"
+        # No tmux operations should have been dispatched
+        assert not any(c and c[0] in ("new-window", "send-keys") for c in captured)
+
+    def test_b_key_toggle_on_fetches_immediately(self, monkeypatch):
+        """Pressing `b` to show the section must do a synchronous
+        fetch so the first paint after toggle is already populated.
+        Without this the user sees "Background sessions (0)" for one
+        refresh cycle before the real list appears."""
+        _stub_dashboard_environment(monkeypatch)
+
+        fetch_calls = []
+        monkeypatch.setattr(
+            "dashboard.Dashboard._fetch_bg_sessions",
+            lambda self: fetch_calls.append("called") or [],
+        )
+
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = []
+        d.bg_visible = False
+        d.bg_sessions = []
+
+        fetch_calls.clear()
+        d._handle_key(ord("b"), _make_mock_stdscr())
+        assert d.bg_visible is True
+        assert len(fetch_calls) == 1, "toggle-on must fetch once"
+
+        # Toggle off should NOT fetch (saves I/O)
+        fetch_calls.clear()
+        d._handle_key(ord("b"), _make_mock_stdscr())
+        assert d.bg_visible is False
+        assert fetch_calls == [], "toggle-off must not fetch"
+
+    def test_enter_with_stale_bg_selection_does_not_crash(self, monkeypatch):
+        """Race: user selected a bg row, refresh tick wiped the bg
+        list, render() hasn't fired yet to clamp self.selected, user
+        presses Enter. The Enter dispatch must NOT IndexError into
+        the project list — it should silently do nothing until the
+        next render normalises the selection."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+            ccm_core.Project("0:2", "2", "beta",  "/tmp/b", "IDLE"),
+        ]
+        d.bg_visible = True
+        d.bg_sessions = []          # the refresh tick just cleared it
+        d.selected = 2              # stale — pointed at the (now gone) bg row
+
+        # Must not raise. Returns "" (no action).
+        action = d._handle_key(13, _make_mock_stdscr())
+        assert action != "attached"
+
+    def test_b_key_clamps_selection_when_hiding_bg(self, monkeypatch):
+        """Toggling bg off while a bg row is selected must move the
+        ▶ marker back into the project list so subsequent navigation
+        starts from a sane position."""
+        _stub_dashboard_environment(monkeypatch)
+
+        import ccm_core
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+            ccm_core.Project("0:2", "2", "beta",  "/tmp/b", "IDLE"),
+        ]
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/tmp",
+                name="x", state="WORKING", raw_state="working",
+                tempo="active", cli_version="", session_id="x",
+                created_at=None, updated_at=None, source="",
+            ),
+        ]
+        d.selected = 2  # bg row (index 2 = projects(0,1) then bg(2))
+
+        d._handle_key(ord("b"), _make_mock_stdscr())
+
+        assert d.bg_visible is False
+        # Selection must have moved back into the project list
+        assert 0 <= d.selected < len(d.projects)
+
     def test_render_with_canary_warnings_active(self, monkeypatch):
         """Exercises every canary banner row at once. Catches
         off-by-one layout bugs and reference-before-assignment errors

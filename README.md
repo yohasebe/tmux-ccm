@@ -282,6 +282,7 @@ Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named
 | `x` | Exit all idle Claude Code sessions |
 | `/` | Search projects |
 | `t` | Switch to tree view |
+| `b` | Toggle [background-sessions section](#background-sessions-section-agent-view-coexistence) |
 | `m` | Switch to menu |
 | `q` / `Esc` / `F1` | Close |
 
@@ -307,6 +308,7 @@ ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
                                   flags: --file --stdin --no-enter --force --start -y --
+ccm bg list                       List external Claude Code agent-view sessions (read-only)
 ccm init                          Interactive setup wizard (hooks, restore, status bar)
 ccm setup-hooks                   Install Claude Code hooks (improved state detection)
 ccm remove-hooks                  Uninstall ccm hooks from Claude Code settings
@@ -419,6 +421,16 @@ set -g @ccm-auto-start "on"     # default: on (set to "off" to disable)
 ```
 
 Also configurable from the dashboard menu (`m`).
+
+### Background-Sessions Section (agent-view coexistence)
+
+Claude Code 2.1.139 introduced an agent view (`claude agents`, `claude --bg`, `claude attach`) that runs sessions under a per-user supervisor daemon. ccm can surface these external sessions as a read-only section below the project list, so a single dashboard shows both ccm-managed project windows and out-of-tmux background sessions.
+
+```tmux
+set -g @ccm-bg-section "always"   # default: off
+```
+
+Off by default — window-as-project workflows are unaffected. Press `b` in the dashboard to toggle on demand without persisting the setting, or set `always` (also reachable from the dashboard menu `m`) to keep it visible across opens. Pressing `Enter` on a bg row opens a fresh tmux window (not a ccm project) and runs `claude attach <short>` — using a non-ccm window prevents the auto-start path from racing your attach. ccm only observes the daemon's `roster.json` and per-session `state.json`; dispatch and stop stay with the `claude` CLI itself. Outside the dashboard, `ccm bg list` prints the same data.
 
 ### Anti-Flicker
 

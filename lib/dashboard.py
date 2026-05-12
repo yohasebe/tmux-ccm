@@ -53,6 +53,7 @@ from ccm_core import (
     tmux_cmd,
     touch_popup_session,
 )
+import ccm_agentview
 from ccm_window import reset_window_after_attach
 from ccm_canaries import (
     disable_all_hooks_warning,
@@ -147,6 +148,16 @@ class Dashboard:
         # Non-blocking message display
         self._msg_text = ""
         self._msg_expires = 0.0
+        # Background-session section (Claude Code agent-view roster).
+        # Defaults to off (window=project purists are unaffected).
+        # `@ccm-bg-section always` makes it visible on every dashboard
+        # open; the `b` key toggles visibility session-locally
+        # regardless of setting. Hides itself automatically when the
+        # daemon isn't running (no clutter for non-users).
+        bg_setting = tmux_cmd("show-option", "-gqv", "@ccm-bg-section") or "off"
+        self.bg_section_setting = bg_setting if bg_setting in ("off", "always") else "off"
+        self.bg_visible = self.bg_section_setting == "always"
+        self.bg_sessions = []
 
     def run(self, stdscr):
         # Curses setup
@@ -166,6 +177,13 @@ class Dashboard:
 
         # Instant first paint from cached state
         self.projects = build_project_list(fast=True)
+        # Fetch bg sessions synchronously on initial paint when the
+        # section is visible, so the user doesn't see "Background
+        # sessions (0)" flicker into the actual list 300 ms later.
+        # Cheap on a non-Dropbox path (~/.claude is local) — a single
+        # roster.json read plus N state.json reads where N is small.
+        if self.bg_visible:
+            self.bg_sessions = self._fetch_bg_sessions()
         if self.mode == "tree":
             self._build_tree()
         elif self.mode == "menu":
@@ -495,6 +513,111 @@ class Dashboard:
                     display_used += ch_w
                     pos += 1
 
+    # Background-session column colour table. Mirrors the bg state
+    # colour mapping in ccm_render._BG_STATE_COLOR but renders via
+    # curses color-pair IDs (ANSI escapes would not work here).
+    _BG_STATE_PAIR = {
+        "NEEDS": C_PERMIT,       # bold yellow — wants attention
+        "WORKING": C_CYAN,
+        "IDLE": C_IDLE,
+        "DONE": C_DIM,
+        "FAILED": C_BUSY,        # use BUSY's salmon for failed
+        "UNKNOWN": C_DIM,
+    }
+
+    def _render_bg_section(self, stdscr, start_row, bg_sessions,
+                           list_height, effective_width):
+        """Render the background-sessions block starting at `start_row`.
+
+        Returns the next available row after the block (so the help-
+        line layout can resume below it). When the daemon isn't
+        running, the header is shown as a gentle hint rather than
+        an empty list — the user pressed `b` (or set the always
+        flag) intentionally and deserves feedback.
+        """
+        # Reserve space for the help / footer rows below.
+        max_row = list_height - 3
+        if start_row >= max_row:
+            return start_row
+
+        row = start_row + 1  # spacer
+        if row >= max_row:
+            return start_row
+
+        header = f"Background sessions ({len(bg_sessions)})"
+        self._addstr(stdscr, row, 2, header,
+                     curses.A_BOLD | curses.color_pair(C_DIM))
+        row += 1
+
+        if not bg_sessions:
+            if row < max_row:
+                hint = (
+                    "  (no active agent-view sessions)"
+                    if ccm_agentview.daemon_running()
+                    else "  (Claude Code agent-view daemon is not running)"
+                )
+                self._addstr(stdscr, row, 2, hint, curses.color_pair(C_DIM))
+                row += 1
+            return row
+
+        # Fixed columns for the bg rows. Designed to align with the
+        # project rows above without forcing them into a sub-grid.
+        COL_SHORT = 4
+        COL_STATE = COL_SHORT + 9          # "12345678 " = 9
+        COL_NAME = COL_STATE + 11          # "✽ WORKING  " = 11 visible cols
+        # Reserve a few cols for age before the cwd.
+        AGE_W = 6
+
+        # Unified selection: bg rows occupy indices [n_projects,
+        # n_projects + len(bg_sessions)) so the ▶ marker can move
+        # smoothly between the two sections with ↑/↓.
+        n_projects = len(self.projects)
+        for bg_i, s in enumerate(bg_sessions):
+            if row >= max_row:
+                break
+
+            is_selected = (self.selected - n_projects) == bg_i
+            prefix = "  ▶ " if is_selected else "    "
+            self._addstr(stdscr, row, 0, prefix, curses.color_pair(C_DIM))
+            self._addstr(stdscr, row, COL_SHORT, s.short, curses.color_pair(C_DIM))
+
+            icon = ccm_agentview.STATE_ICONS.get(s.state, "?")
+            state_label = f"{icon} {s.state}"
+            self._addstr(stdscr, row, COL_STATE, state_label,
+                         curses.color_pair(self._BG_STATE_PAIR.get(s.state, C_DIM)))
+
+            name = s.name or "(unnamed)"
+            self._addstr(stdscr, row, COL_NAME, name, 0)
+
+            name_w = display_width(name)
+            after_name = COL_NAME + name_w + 1
+
+            age_str = ""
+            if s.created_at:
+                age = int(time.time() - s.created_at)
+                if age < 60:
+                    age_str = f"{age}s"
+                elif age < 3600:
+                    age_str = f"{age // 60}m"
+                elif age < 86400:
+                    age_str = f"{age // 3600}h"
+                else:
+                    age_str = f"{age // 86400}d"
+            if age_str:
+                self._addstr(stdscr, row, after_name, age_str,
+                             curses.color_pair(C_DIM))
+
+            cwd_col = after_name + AGE_W
+            if s.cwd and cwd_col < effective_width - 4:
+                cwd_str = format_dir(s.cwd, cwd_col, effective_width)
+                if cwd_str:
+                    self._addstr(stdscr, row, cwd_col, cwd_str,
+                                 curses.color_pair(C_DIM))
+
+            row += 1
+
+        return row
+
     MIN_HEIGHT = 10
     MIN_WIDTH = 40
 
@@ -502,6 +625,21 @@ class Dashboard:
         try:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
+
+            # Clamp selection into the current visible row count.
+            # Background sessions can disappear between refresh ticks
+            # (settled / stopped externally), which would otherwise
+            # leave `self.selected` pointing past the last bg row and
+            # silently hide the ▶ marker until the user pressed a
+            # nav key.
+            with self.lock:
+                n_proj = len(self.projects)
+                bg_count = len(self.bg_sessions) if self.bg_visible else 0
+            total = n_proj + bg_count
+            if total > 0 and self.selected >= total:
+                self.selected = total - 1
+            if self.selected < 0:
+                self.selected = 0
 
             if height < self.MIN_HEIGHT or width < self.MIN_WIDTH:
                 msg = f"Terminal too small ({width}x{height})"
@@ -778,13 +916,29 @@ class Dashboard:
 
                     row += 1
 
+            # Background-session section: read-only display of the
+            # per-user Claude Code agent-view daemon's roster.
+            # Visibility is gated on `self.bg_visible` (off by default;
+            # toggle with `b`; or set @ccm-bg-section=always for
+            # persistent visibility). Always renders below the project
+            # list; we deliberately do not introduce a separate panel
+            # so it competes with neither the preview nor the help
+            # line layout.
+            with self.lock:
+                bg_sessions = list(self.bg_sessions)
+            if self.bg_visible:
+                row = self._render_bg_section(
+                    stdscr, row, bg_sessions, list_height,
+                    list_width if preview_width > 0 else width,
+                )
+
             # Help line — keys highlighted, wraps to 2 lines if needed
             avail_w = (list_width if preview_width > 0 else width) - 4  # padding
             help_items = [
                 "[↑↓/jk] select", "[Enter] attach", "[/] search",
                 "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
                 "[r]emove", "e[x]it all", "[s]ave", "[t]ree",
-                "[m/?] menu", "[q] quit",
+                "[b]g sessions", "[m/?] menu", "[q] quit",
             ]
             # Split into lines that fit within avail_w
             help_lines = []
@@ -916,19 +1070,35 @@ class Dashboard:
 
     def _handle_key(self, key, stdscr):
         n = len(self.projects)
+        # Unified selection: indices [0, n) address projects;
+        # indices [n, n+m) address bg sessions when bg is visible.
+        # Hidden bg never participates in navigation, so the
+        # window=project mental model stays clean for users who
+        # never toggle bg on.
+        bg_count = len(self.bg_sessions) if self.bg_visible else 0
+        total = n + bg_count
 
         if key in (curses.KEY_UP, ord("k")):
-            if n > 0:
-                self.selected = (self.selected - 1) % n
+            if total > 0:
+                self.selected = (self.selected - 1) % total
                 self._last_preview_target = ""  # Force preview refresh
                 self._nav_deadline = time.monotonic() + 0.1
         elif key in (curses.KEY_DOWN, ord("j")):
-            if n > 0:
-                self.selected = (self.selected + 1) % n
+            if total > 0:
+                self.selected = (self.selected + 1) % total
                 self._last_preview_target = ""  # Force preview refresh
                 self._nav_deadline = time.monotonic() + 0.1
         elif key in (curses.KEY_ENTER, 10, 13):
-            if n > 0:
+            bg_idx = self._selected_bg_index()
+            if bg_idx is not None:
+                return self._do_attach_bg(stdscr, bg_idx)
+            # Guard against a stale selection that points past the
+            # project list. The race: user selects a bg row, a refresh
+            # tick removes the bg session, render() hasn't fired yet
+            # (its clamp would otherwise normalise self.selected), and
+            # Enter arrives in the 50 ms gap. Without the bound check
+            # we'd index projects[N] and crash.
+            if 0 <= self.selected < n:
                 return self._do_attach(stdscr)
         elif key in (ord("q"), ord("Q"), 27, curses.KEY_F1):
             return "quit"
@@ -963,8 +1133,100 @@ class Dashboard:
             self.mode = "menu"
             self._build_menu()
             self.menu_selected = 0
+        elif key in (ord("b"), ord("B")):
+            # Session-local toggle for the background-sessions
+            # section. Independent of the @ccm-bg-section persistent
+            # setting — pressing `b` is always allowed even when the
+            # setting is "always" (the user can hide on demand). The
+            # toggle does NOT write back to tmux config; use the menu
+            # for that.
+            self.bg_visible = not self.bg_visible
+            if self.bg_visible:
+                # Sync-fetch on toggle-on so the section appears
+                # populated from frame zero. Without this, the user
+                # sees "Background sessions (0)" until the next
+                # refresh tick (up to REFRESH_INTERVAL seconds).
+                # I/O cost is tiny (single roster.json + N small
+                # state.json files) and bounded.
+                with self.lock:
+                    self.bg_sessions = self._fetch_bg_sessions()
+            elif self.selected >= n:
+                # Clamp selection back into the project list if we
+                # just hid a bg row that was selected. Otherwise the
+                # ▶ indicator would point at no visible row.
+                self.selected = max(0, n - 1)
 
         return ""
+
+    def _selected_bg_index(self):
+        """Return the index into `self.bg_sessions` of the currently
+        selected row, or None when the selection is in the project
+        list (or out of bounds). The bg section is selectable only
+        while visible, so a hidden bg never claims the selection."""
+        if not self.bg_visible:
+            return None
+        n = len(self.projects)
+        if self.selected < n:
+            return None
+        idx = self.selected - n
+        if idx >= len(self.bg_sessions):
+            return None
+        return idx
+
+    def _do_attach_bg(self, stdscr, bg_idx):
+        """Open a new tmux window and run `claude attach <short>` for
+        the selected background session.
+
+        Why a new window (not the current pane / not a split): ccm's
+        `auto_start_claude` fires on attach to any SHELL-state pane in
+        a ccm-tagged window, racing the user's `claude attach` (see
+        Issue 6 in `project_agent_view_findings_2026_05_12`). A
+        brand-new window has no `@ccm_project` / `@ccm_dir` tags, so
+        it stays out of ccm's lifecycle entirely. The send-keys-driven
+        `claude attach` then has a clean shell prompt to dispatch
+        from. The user can close the window with `prefix + &` after
+        detaching from claude.
+        """
+        s = self.bg_sessions[bg_idx]
+        # Defence-in-depth: ccm_agentview already filters non-matching
+        # shorts at the reader, but we re-check here because the value
+        # is about to be embedded in a shell-bound `claude attach
+        # <short>` command via tmux send-keys. The receiving pane's
+        # shell interprets metacharacters in send-keys input.
+        if not ccm_agentview.is_valid_short(s.short):
+            self._show_message(stdscr, f"Refusing to attach: invalid short {s.short!r}", 2)
+            return ""
+        session = get_session()
+        if not session:
+            self._show_message(stdscr, "Cannot attach: no tmux session", 2)
+            return ""
+        # `new-window -t <session>:` (no index) places the window at
+        # the next available index. `-P -F` makes tmux print the new
+        # window's resolved target (`session:idx`), which we then
+        # send-keys to and select. Append `-c <cwd>` (NOT insert) so
+        # we never sit between `-t` and its required value.
+        args = ["new-window", "-t", f"{session}:", "-P",
+                "-F", "#{session_name}:#{window_index}",
+                "-n", f"bg-{s.short}"]
+        cwd = os.path.expanduser(s.cwd) if s.cwd else ""
+        # Reject cwd values that could be mis-parsed by tmux as a
+        # flag (e.g. "-x"). tmux's `new-window -c <path>` does not
+        # accept a `--` separator, so any cwd starting with "-" is
+        # ambiguous; we silently fall back to no -c, which inherits
+        # the caller's pwd. cwd from claude itself is always an
+        # absolute path starting with "/", so this only rejects
+        # upstream-malformed values.
+        if cwd and not cwd.startswith("-") and os.path.isdir(cwd):
+            args.extend(["-c", cwd])
+        new_target = tmux_cmd(*args)
+        if not new_target:
+            self._show_message(stdscr, "Failed to open attach window", 2)
+            return ""
+        new_target = new_target.strip()
+        tmux_cmd("send-keys", "-t", new_target,
+                 f"claude attach {s.short}", "Enter")
+        tmux_cmd("select-window", "-t", new_target)
+        return "attached"
 
     def _do_attach(self, stdscr):
         p = self.projects[self.selected]
@@ -1540,8 +1802,16 @@ class Dashboard:
         time.sleep(0.3)
         try:
             projects = build_project_list(fast=False)
+            # Skip the bg-section roster read when the section is
+            # hidden — users who never use agent view should pay zero
+            # I/O for it. When the user toggles bg on with `b` (or via
+            # the menu), the toggle handler does an immediate
+            # synchronous fetch so the first render after toggle is
+            # already populated, no flicker.
+            bg_sessions = self._fetch_bg_sessions() if self.bg_visible else []
             with self.lock:
                 self.projects = projects
+                self.bg_sessions = bg_sessions
                 self.initial_load = False
                 self.data_dirty = True
         except Exception:
@@ -1557,14 +1827,28 @@ class Dashboard:
                 time.sleep(0.2)
             try:
                 projects = build_project_list(fast=False)
+                bg_sessions = (
+                    self._fetch_bg_sessions() if self.bg_visible else []
+                )
                 with self.lock:
                     self.projects = projects
+                    self.bg_sessions = bg_sessions
                     self.data_dirty = True
                 # Refresh preview content if enabled
                 if self.preview_enabled and self.mode == "dashboard":
                     self._last_preview_target = ""  # Force refresh
             except Exception:
                 log_caught_exception("dashboard._refresh_loop")
+
+    def _fetch_bg_sessions(self):
+        """Read the agent-view roster. Returns `[]` on any failure
+        (missing daemon, malformed file, etc.). Bounded I/O cost —
+        9 small JSON files at most in practice."""
+        try:
+            return ccm_agentview.list_bg_sessions()
+        except Exception:
+            log_caught_exception("dashboard._fetch_bg_sessions")
+            return []
 
     # ─── Tree mode ───
 
@@ -1807,6 +2091,7 @@ class Dashboard:
             (f"Idle timeout: {idle_label}", "idle_timeout"),
             (f"Preview panel: {preview_on}", "preview_toggle"),
             (f"Preview position: {preview_pos_label}", "preview_position"),
+            (f"Background sessions: {self.bg_section_setting}", "bg_section"),
             ("", ""),  # separator
             (f"Notifications: {notify}", "notify"),
         ]
@@ -1926,6 +2211,23 @@ class Dashboard:
                 tmux_cmd("set", "-g", "@ccm-preview-position", new_pos)
                 save_tmux_conf_setting(f"set -g @ccm-preview-position {new_pos}")
                 self._build_menu()
+            elif action == "bg_section":
+                # Toggle the persistent setting between "off" and
+                # "always". The session-local `b` key handles
+                # on-demand visibility separately.
+                new_val = "always" if self.bg_section_setting == "off" else "off"
+                self.bg_section_setting = new_val
+                self.bg_visible = (new_val == "always")
+                if self.bg_visible:
+                    # Same sync-fetch rationale as the `b` key path:
+                    # avoid an empty-then-populated flicker the next
+                    # time the user opens the dashboard.
+                    with self.lock:
+                        self.bg_sessions = self._fetch_bg_sessions()
+                tmux_cmd("set", "-g", "@ccm-bg-section", new_val)
+                save_tmux_conf_setting(f"set -g @ccm-bg-section {new_val}")
+                self._build_menu()
+                self._show_message(stdscr, f"Background sessions: {new_val}", 0.5)
             elif action == "notify":
                 options = ["off", "permit", "completed", "permit,completed", "all"]
                 current = tmux_cmd("show-option", "-gqv", "@ccm-notify") or "permit,completed"

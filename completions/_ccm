@@ -21,6 +21,7 @@ _ccm() {
         'snapshot:Snapshot operations'
         'start:Start from a snapshot'
         'stop:Stop project window(s)'
+        'bg:External Claude Code agent-view sessions'
         'menu:Interactive menu'
         'init:Interactive setup wizard'
         'setup-hooks:Install Claude Code hooks for improved state detection'
@@ -65,6 +66,11 @@ _ccm() {
                 local -a snap_cmds
                 snap_cmds=('save' 'load' 'list' 'delete')
                 compadd -a snap_cmds
+                ;;
+            bg)
+                local -a bg_cmds
+                bg_cmds=('list')
+                compadd -a bg_cmds
                 ;;
             start)
                 _ccm_snapshots

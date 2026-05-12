@@ -349,6 +349,86 @@ def print_tree():
             print(f"{w_pre}{icon_str}{name}{extra}{C_DIM}{d}{C_RESET}")
 
 
+# Colour table for the bg-session state column. Mirrors the
+# intent of `C_STATE` for ccm projects: NEEDS demands attention
+# (yellow), WORKING is in-progress (cyan), IDLE is at-rest (blue),
+# DONE / FAILED are terminal (dim / red).
+_BG_STATE_COLOR = {
+    "NEEDS": "\033[1;33m",       # bold yellow
+    "WORKING": "\033[36m",       # cyan
+    "IDLE": "\033[0;34m",        # blue
+    "DONE": "\033[2m",           # dim
+    "FAILED": "\033[31m",        # red
+    "UNKNOWN": "\033[2m",        # dim
+}
+
+
+def print_bg_sessions():
+    """Print external Claude Code agent-view sessions (the per-user
+    daemon's roster, joined with each session's job state.json).
+
+    Read-only: ccm does not dispatch or stop these sessions; it
+    surfaces them so the user has one place to see both ccm-managed
+    project windows and out-of-tmux background agent-view sessions.
+    Lifecycle stays with Claude Code's own CLI (`claude agents`,
+    `claude attach`, `claude stop`).
+
+    For `ccm bg list` CLI.
+    """
+    import ccm_agentview  # local import keeps cold-start cheap
+
+    sessions = ccm_agentview.list_bg_sessions()
+    if not sessions:
+        if ccm_agentview.daemon_running():
+            print("No active background sessions.")
+        else:
+            print("No background sessions (Claude Code agent-view "
+                  "daemon is not running).")
+            print(f"{C_DIM}Start one with `claude --bg <prompt>` "
+                  f"or `claude agents`.{C_RESET}")
+        return
+
+    print(f"{C_BOLD}{'SHORT':<10} {'STATE':<11} {'NAME':<38} "
+          f"{'AGE':<7} {'DIRECTORY'}{C_RESET}")
+    print(f"{'-----':<10} {'-----':<11} {'----':<38} "
+          f"{'---':<7} {'---------'}")
+
+    for s in sessions:
+        from ccm_agentview import STATE_ICONS as BG_ICONS
+        icon = BG_ICONS.get(s.state, "?")
+        color = _BG_STATE_COLOR.get(s.state, C_DIM)
+        state_field = f"{color}{icon} {s.state:<7}{C_RESET}"
+        # 11 visible cols = "✽ WORKING  " (icon is 1 visible col,
+        # the state word is up to 7, plus separator + padding).
+        # ANSI codes don't count toward width.
+        state_w = 11 + (len(state_field) - display_width(f"{icon} {s.state:<7}"))
+
+        name = s.name or "(unnamed)"
+        if display_width(name) > 38:
+            name = truncate_to_width(name, 37) + "…"
+        name_padded = pad_to_width(name, 38)
+
+        age_str = ""
+        if s.created_at:
+            age = int(time.time() - s.created_at)
+            if age < 60:
+                age_str = f"{age}s"
+            elif age < 3600:
+                age_str = f"{age // 60}m"
+            elif age < 86400:
+                age_str = f"{age // 3600}h"
+            else:
+                age_str = f"{age // 86400}d"
+
+        d = s.cwd.replace(os.path.expanduser("~"), "~") if s.cwd else ""
+
+        short_field = pad_to_width(s.short, 10)
+        age_field = pad_to_width(age_str, 7)
+
+        print(f"{short_field} {state_field:<{state_w}} {name_padded} "
+              f"{age_field} {C_DIM}{d}{C_RESET}")
+
+
 def print_statusline():
     """Print one-line status for tmux status bar (for `ccm statusline`)."""
     projects = ccm_core.build_project_list(fast=True)

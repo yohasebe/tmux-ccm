@@ -282,6 +282,7 @@ set -g @ccm-status-fg-dim     "#5a5a5a"   # 区切り記号やヒント表示
 | `x` | アイドル状態のClaude Codeを一括終了 |
 | `/` | プロジェクト名で検索 |
 | `t` | ツリービューに切替 |
+| `b` | [バックグラウンドセッションセクション](#バックグラウンドセッションセクションagent-view共存) を切替 |
 | `m` | メニューに切替 |
 | `q` / `Esc` / `F1` | 閉じる |
 
@@ -307,6 +308,7 @@ ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
 ccm send <name> <msg> [flags]     他プロジェクトのClaude Codeセッションにプロンプト送信
                                   flags: --file --stdin --no-enter --force --start -y --
+ccm bg list                       外部の Claude Code agent-view セッション一覧（読み取り専用）
 ccm init                          対話型セットアップウィザード（フック・復元・ステータスバー）
 ccm setup-hooks                   Claude Codeフックをインストール（検出精度向上）
 ccm remove-hooks                  Claude Codeフックをアンインストール
@@ -419,6 +421,16 @@ set -g @ccm-auto-start "on"     # デフォルト: on（"off"で無効化）
 ```
 
 ダッシュボードメニュー（`m`）からも設定可能です。
+
+### バックグラウンドセッションセクション（agent-view共存）
+
+Claude Code 2.1.139 で導入された agent view（`claude agents` / `claude --bg` / `claude attach`）は、ユーザーごとの supervisor daemon の下で複数セッションを実行します。ccm はこれら外部セッションをプロジェクト一覧の下に読み取り専用セクションとして表示できるため、tmux 管理下のプロジェクトと daemon 管理下のバックグラウンドセッションを 1 つのダッシュボードで俯瞰できます。
+
+```tmux
+set -g @ccm-bg-section "always"   # デフォルト: off
+```
+
+デフォルトはオフ（「window = project」運用には影響なし）。ダッシュボードで `b` を押すと一時的にトグル（設定は永続化しない）、`always` にすると常時表示されます（ダッシュボードメニュー `m` からも切替可能）。bg 行で `Enter` を押すと新規 tmux ウィンドウ（ccm 管理外）が開き `claude attach <short>` が自動実行されます — ccm 管理外のウィンドウを使うことで auto-start による attach 横取り（Issue 6）を構造的に回避します。ccm は daemon の `roster.json` と各セッションの `state.json` を観察するだけで、dispatch / stop などのライフサイクル操作は `claude` CLI の責務のまま残しています。ダッシュボード外では `ccm bg list` で同じ情報を取得できます。
 
 ### アンチフリッカー
 

@@ -57,6 +57,7 @@ Usage:
   ccm snapshot delete [name]        Delete a snapshot
   ccm start <snapshot>              Start from a snapshot
   ccm stop [--all|name]             Stop project window(s)
+  ccm bg list                       List external Claude Code agent-view sessions (read-only)
   ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
                                     flags: --file <path> | --stdin | --no-enter
                                            --force (BUSY) | --start (SHELL) | -y
@@ -168,6 +169,15 @@ case "${1:-help}" in
             list)  python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-list ;;
             delete|del) python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-delete "${3:-}" ;;
             *)     ccm_die "Usage: ccm snapshot save|load|list|delete [name]" ;;
+        esac
+        ;;
+    bg)
+        # Read-only view of Claude Code agent-view background
+        # sessions (daemon-managed; out of ccm's control). Lifecycle
+        # (dispatch / attach / stop) stays with `claude` itself.
+        case "${2:-list}" in
+            list|ls) python3 "$CCM_ROOT/lib/ccm_core.py" bg-list ;;
+            *)       ccm_die "Usage: ccm bg list" ;;
         esac
         ;;
     start)
