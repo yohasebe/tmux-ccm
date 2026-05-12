@@ -352,3 +352,91 @@ class TestPrintStatus:
         assert "\033[36m3" in row
 
 
+# ─── print_bg_sessions ───
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s):
+    return _ANSI_RE.sub("", s)
+
+
+class TestPrintBgSessions:
+    """Capture-stdout tests for the `ccm bg list` CLI. The function
+    is mostly column formatting on top of the well-tested agent-view
+    reader, so we don't need exhaustive coverage — just the three
+    branches a user will actually see (populated / empty-daemon-up /
+    empty-daemon-down) plus that ANSI escapes survive into stdout
+    without breaking the layout."""
+
+    def _run(self, monkeypatch, capsys, sessions, daemon_running=True):
+        import ccm_agentview
+        monkeypatch.setattr(ccm_agentview, "list_bg_sessions",
+                            lambda: list(sessions))
+        monkeypatch.setattr(ccm_agentview, "daemon_running",
+                            lambda: daemon_running)
+        ccm_render.print_bg_sessions()
+        return capsys.readouterr().out
+
+    def test_empty_with_daemon_running(self, monkeypatch, capsys):
+        out = self._run(monkeypatch, capsys, [], daemon_running=True)
+        assert "No active background sessions" in _strip_ansi(out)
+        # Must NOT advertise the daemon as missing
+        assert "is not running" not in out
+
+    def test_empty_with_daemon_down(self, monkeypatch, capsys):
+        out = self._run(monkeypatch, capsys, [], daemon_running=False)
+        plain = _strip_ansi(out)
+        assert "daemon is not running" in plain
+        # Hint to start one
+        assert "claude --bg" in plain or "claude agents" in plain
+
+    def test_populated_renders_short_state_name(self, monkeypatch, capsys):
+        import ccm_agentview
+        now = time.time()
+        sessions = [
+            ccm_agentview.BgSession(
+                short="8f7bfb5b", pid=11974, cwd="/Users/u/proj",
+                name="Continue agent view work", state="WORKING",
+                raw_state="working", tempo="active",
+                cli_version="2.1.139", session_id="x",
+                created_at=now - 120, updated_at=now,
+                source="slash",
+            ),
+        ]
+        out = self._run(monkeypatch, capsys, sessions)
+        plain = _strip_ansi(out)
+        assert "8f7bfb5b" in plain
+        assert "WORKING" in plain
+        assert "Continue agent view work" in plain
+        # Age column should render minutes (~2m since created_at)
+        assert "2m" in plain
+        # Header row must precede the data row
+        header_pos = plain.find("SHORT")
+        data_pos = plain.find("8f7bfb5b")
+        assert 0 <= header_pos < data_pos
+
+    def test_state_icon_present(self, monkeypatch, capsys):
+        """Each state must produce its agent-view icon (so users
+        moving between `claude agents` TUI and ccm see the same
+        glyphs)."""
+        import ccm_agentview
+        sessions = [
+            ccm_agentview.BgSession(
+                short=f"abc0000{i}", pid=i, cwd="/tmp",
+                name=f"s{i}", state=state, raw_state=state.lower(),
+                tempo="idle", cli_version="", session_id="",
+                created_at=None, updated_at=None, source="",
+            )
+            for i, state in enumerate(["WORKING", "NEEDS", "IDLE",
+                                       "DONE", "FAILED", "UNKNOWN"])
+        ]
+        out = self._run(monkeypatch, capsys, sessions)
+        plain = _strip_ansi(out)
+        # Icons defined in ccm_agentview.STATE_ICONS
+        for icon in ("✽", "✻", "●", "✓", "✕", "?"):
+            assert icon in plain, (
+                f"missing icon {icon!r} in bg list output: {plain!r}"
+            )
+
+
