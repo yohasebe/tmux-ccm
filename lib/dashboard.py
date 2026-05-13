@@ -1308,15 +1308,34 @@ class Dashboard:
         if not directory:
             return
         directory = os.path.expanduser(directory)
+        create_dir = False
         if not os.path.isdir(directory):
-            self._show_message(stdscr, "Directory not found", 1)
-            return
+            # Parent-must-exist gate: matches the CLI handler's
+            # rule and `cmd_add(create_dir=True)`'s internal check.
+            # Surfacing it here lets us give an immediate inline
+            # message instead of bouncing through `_run_cmd` for
+            # an obvious bad input.
+            parent = os.path.dirname(os.path.abspath(directory)) or "/"
+            if not os.path.isdir(parent):
+                self._show_message(
+                    stdscr,
+                    f"Parent does not exist: {parent}",
+                    2,
+                )
+                return
+            answer = self._prompt(stdscr, f"Create '{directory}'? [y/N]: ")
+            if answer is None:
+                return
+            if answer.strip().lower() not in ("y", "yes"):
+                return
+            create_dir = True
         name = self._prompt(stdscr, f"Name [{os.path.basename(directory)}]: ")
         if name is None:
             return
         if not name:
             name = os.path.basename(directory)
-        if self._run_cmd(stdscr, cmd_add, directory, name):
+        if self._run_cmd(stdscr, cmd_add, directory, name,
+                         create_dir=create_dir):
             self._trigger_rebuild()
 
     def _do_rename(self, stdscr):

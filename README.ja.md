@@ -289,7 +289,8 @@ set -g @ccm-status-fg-dim     "#5a5a5a"   # 区切り記号やヒント表示
 ### CLIコマンド
 
 ```
-ccm add <dir> [name]              プロジェクト追加（ウィンドウ作成+Claude起動）
+ccm add <dir> [name]              プロジェクト追加（ウィンドウ作成+Claude起動）。<dir> が
+                                  存在しない場合は作成するか確認（親ディレクトリは存在必須）
 ccm open <dir> [name]             現在のペインでClaude起動（split-pane用）
 ccm register <window> [name]      既存ウィンドウをccmプロジェクトとして登録
 ccm unregister <name>             ccm管理から外す（ウィンドウは残る）

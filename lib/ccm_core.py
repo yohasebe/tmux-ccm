@@ -787,6 +787,41 @@ def _add_dir_and_name(p):
     p.add_argument("name", nargs="?", default="")
 
 
+def _handle_add(args):
+    """`ccm add` handler — prompts for directory creation when the
+    path is missing and stdin is a tty.
+
+    Why the tty gate: existing scripts / snapshot-restore paths
+    that call `ccm add <missing>` expect deterministic "die" today.
+    Adding a prompt unconditionally would (a) hang non-tty
+    callers waiting on stdin or (b) auto-create dirs the script
+    didn't intend. The `sys.stdin.isatty()` gate preserves the
+    contract for automated callers while giving interactive
+    users a one-step "create + add" affordance.
+
+    Parent-must-exist (no recursive `mkdir -p`): typo'd paths
+    are far more common than legitimate deep tree creation
+    requests. Refusing when the parent is missing forces the
+    caller to spell intent explicitly; `cmd_add` enforces the
+    same rule even if `create_dir=True` is supplied.
+    """
+    create_dir = False
+    if args.dir and sys.stdin.isatty():
+        expanded = os.path.expanduser(args.dir)
+        if not os.path.exists(expanded):
+            parent = os.path.dirname(os.path.abspath(expanded)) or "/"
+            if os.path.isdir(parent):
+                try:
+                    ans = input(f"Create '{expanded}'? [y/N] ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    return
+                if ans in ("y", "yes"):
+                    create_dir = True
+                else:
+                    return  # user declined; quietly exit
+    ccm_commands.cmd_add(args.dir, args.name, create_dir=create_dir)
+
+
 def _passthrough_argparse_config(p):
     """Marker configurer: the subcommand bypasses argparse and
     receives raw `argv[1:]` as `rest`. The handler does its own
@@ -811,8 +846,7 @@ _SUBCOMMANDS = (
      lambda a: ccm_render.print_tree()),
     ("statusline", lambda p: None,
      lambda a: ccm_render.print_statusline()),
-    ("add", _add_dir_and_name,
-     lambda a: ccm_commands.cmd_add(a.dir, a.name)),
+    ("add", _add_dir_and_name, _handle_add),
     ("open", _add_dir_and_name,
      lambda a: ccm_commands.cmd_open(a.dir, a.name)),
     ("register", _add_name_pair,

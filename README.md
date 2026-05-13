@@ -289,7 +289,8 @@ Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named
 ### CLI Commands
 
 ```
-ccm add <dir> [name]              Add project (creates window + starts Claude)
+ccm add <dir> [name]              Add project (creates window + starts Claude). If <dir>
+                                  doesn't exist, prompts to create it (parent must exist).
 ccm open <dir> [name]             Start Claude in current pane (split-pane use)
 ccm register <window> [name]      Register existing window as ccm project
 ccm unregister <name>             Unregister window from ccm (keep window)

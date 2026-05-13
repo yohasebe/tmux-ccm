@@ -319,6 +319,65 @@ class TestCmdAdd:
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
     @patch("ccm_core.get_session", return_value="main")
+    def test_add_create_dir_creates_missing_leaf(
+        self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path
+    ):
+        """create_dir=True + missing leaf + existing parent → mkdir
+        then proceed. The created directory is tagged on @ccm_dir
+        and registered as a project."""
+        target = tmp_path / "fresh-project"
+        assert not target.exists()
+
+        def tmux_side_effect(*args, **kwargs):
+            if args[0] == "list-windows":
+                return ""
+            if args[0] == "new-window":
+                return "1"
+            if args[0] == "display-message":
+                return "fresh-project"
+            return ""
+        mock_tmux.side_effect = tmux_side_effect
+
+        ccm_commands.cmd_add(str(target), "fresh-project", create_dir=True)
+
+        assert target.is_dir(), "leaf directory should have been created"
+        assert mock_batch.called
+
+    def test_add_create_dir_refuses_recursive(self, tmp_path):
+        """Parent-must-exist gate: refuse to recursively create.
+        Typo'd deep paths are a far more common failure mode than
+        legitimate deep-tree creation, so the safer default is
+        explicit refusal that forces the caller to spell intent."""
+        target = tmp_path / "gone" / "leaf"
+        with pytest.raises(SystemExit):
+            ccm_commands.cmd_add(str(target), create_dir=True)
+        assert not target.exists()
+        assert not target.parent.exists()
+
+    def test_add_create_dir_refuses_existing_file(self, tmp_path):
+        """A non-directory already at the path is a user error; the
+        underlying mkdir would fail anyway, but the tailored message
+        tells the user exactly why."""
+        f = tmp_path / "afile"
+        f.write_text("x")
+        with pytest.raises(SystemExit):
+            ccm_commands.cmd_add(str(f), create_dir=True)
+
+    def test_add_create_dir_false_is_default(self, tmp_path):
+        """Default behavior is unchanged: missing dir dies, no mkdir.
+        Snapshot-load relies on this — a stale snapshot whose dir
+        was deleted must skip with a warning, not silently re-create
+        an empty directory."""
+        target = tmp_path / "nope"
+        with pytest.raises(SystemExit):
+            ccm_commands.cmd_add(str(target))  # create_dir defaults False
+        assert not target.exists()
+
+    @patch("ccm_commands._autosave_trigger")
+    @patch("ccm_core.hooks_configured", return_value=True)
+    @patch("ccm_core.tmux_batch")
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.get_session", return_value="main")
     def test_add_loading_skips_autosave(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         proj_dir = tmp_path / "loading-test"
         proj_dir.mkdir()

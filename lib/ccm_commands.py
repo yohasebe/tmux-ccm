@@ -61,19 +61,79 @@ def _autosave_trigger():
         ccm_core.ccm_warn(f"Autosave failed: {exc}")
 
 
-def cmd_add(directory, name="", start_claude=True, _loading=False):
-    """Add a new ccm project window."""
+def cmd_add(directory, name="", start_claude=True, _loading=False,
+            create_dir=False):
+    """Add a new ccm project window.
+
+    When `create_dir=True` and the directory does not exist, ccm
+    will `mkdir` it provided the immediate parent already exists
+    — one-level creation only, never recursive `mkdir -p`. The
+    rationale: a typo in the path is a much more common failure
+    mode than "I really want the full parent tree", so refusing
+    when the parent is missing forces the caller to spell the
+    intent explicitly. Default False keeps every existing caller
+    (notably `cmd_snapshot_load`) on the original strict
+    behavior — a stale snapshot whose dir was deleted should
+    skip with a warning, not silently re-create an empty
+    directory the user no longer expects to be there.
+    """
     if not directory:
         ccm_core.ccm_die("Directory is required")
 
     directory = os.path.expanduser(directory)
-    try:
-        directory = os.path.realpath(directory)
-    except OSError:
-        pass
+    if os.path.exists(directory):
+        try:
+            directory = os.path.realpath(directory)
+        except OSError:
+            pass
+    else:
+        # Don't realpath a non-existent path — that would silently
+        # resolve through any symlinks in the parent chain BEFORE
+        # we've validated the leaf. Normalize to absolute so the
+        # mkdir target / error messages are stable.
+        directory = os.path.abspath(directory)
 
     if not os.path.isdir(directory):
-        ccm_core.ccm_die(f"Directory does not exist: {directory}")
+        if not create_dir:
+            ccm_core.ccm_die(f"Directory does not exist: {directory}")
+        # Refuse if a non-directory already sits at the path; the
+        # mkdir would error out anyway, but a tailored message
+        # makes the cause obvious.
+        if os.path.exists(directory):
+            ccm_core.ccm_die(
+                f"Path exists but is not a directory: {directory}"
+            )
+        parent = os.path.dirname(directory) or "/"
+        if not os.path.isdir(parent):
+            ccm_core.ccm_die(
+                f"Cannot create directory: parent does not exist: {parent}"
+            )
+        try:
+            os.mkdir(directory)
+        except FileExistsError:
+            # Raced with another process; only proceed if what's
+            # there is actually a directory now.
+            if not os.path.isdir(directory):
+                ccm_core.ccm_die(
+                    f"Path exists but is not a directory: {directory}"
+                )
+        except PermissionError:
+            ccm_core.ccm_die(
+                f"Permission denied creating directory: {directory}"
+            )
+        except OSError as exc:
+            ccm_core.ccm_die(
+                f"Failed to create directory: {directory} ({exc})"
+            )
+        # Now that the leaf exists, resolve symlinks (in case the
+        # parent chain included any) so the tagged @ccm_dir is the
+        # canonical form — matches the realpath() path taken when
+        # the directory existed at entry.
+        try:
+            directory = os.path.realpath(directory)
+        except OSError:
+            pass
+        ccm_core.ccm_info(f"Created directory: {directory}")
 
     if not name:
         name = os.path.basename(directory)

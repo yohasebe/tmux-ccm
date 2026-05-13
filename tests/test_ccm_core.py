@@ -509,3 +509,129 @@ class TestRaiseOnDie:
         assert "raised" not in result
 
 
+# ─── _handle_add (CLI dispatch wrapper for `ccm add`) ───
+# These exercise the tty-gated prompt that brings the dashboard's
+# "create-on-missing-dir" affordance to CLI users. The hard
+# contract: non-tty (script / CI) MUST behave exactly like before
+# — no prompt, no surprise mkdir. The tty case prompts the user.
+
+class TestHandleAdd:
+    def _args(self, directory, name=""):
+        import argparse
+        return argparse.Namespace(cmd="add", dir=directory, name=name)
+
+    def test_non_tty_missing_dir_passes_through_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """Non-interactive callers (snapshot load, CI scripts) MUST
+        receive the original "Directory does not exist" die — adding
+        a prompt would either hang waiting on stdin or silently
+        mkdir a path the script didn't intend to create."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        captured = {}
+        monkeypatch.setattr(
+            "ccm_commands.cmd_add",
+            lambda *a, **kw: captured.update(kwargs=kw),
+        )
+        ccm_core._handle_add(self._args(str(tmp_path / "nope")))
+        assert captured["kwargs"].get("create_dir") is False
+
+    def test_tty_missing_dir_parent_exists_prompt_yes_passes_create_dir(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _p: "y")
+        captured = {}
+        monkeypatch.setattr(
+            "ccm_commands.cmd_add",
+            lambda *a, **kw: captured.update(kwargs=kw),
+        )
+        ccm_core._handle_add(self._args(str(tmp_path / "fresh")))
+        assert captured["kwargs"].get("create_dir") is True
+
+    def test_tty_missing_dir_prompt_no_skips_call(self, tmp_path, monkeypatch):
+        """User declines — must NOT call cmd_add (otherwise it would
+        die with "directory does not exist" AFTER the user already
+        said no, which is confusing double-feedback)."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _p: "n")
+        hit = {"v": False}
+        monkeypatch.setattr(
+            "ccm_commands.cmd_add",
+            lambda *a, **kw: hit.__setitem__("v", True),
+        )
+        ccm_core._handle_add(self._args(str(tmp_path / "skip")))
+        assert hit["v"] is False
+
+    def test_tty_missing_dir_prompt_empty_treated_as_no(
+        self, tmp_path, monkeypatch
+    ):
+        """Bare Enter at the [y/N] prompt defaults to NO. Treating
+        an empty answer as yes would auto-create on accidental
+        keystrokes — the capital-N convention is established."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _p: "")
+        hit = {"v": False}
+        monkeypatch.setattr(
+            "ccm_commands.cmd_add",
+            lambda *a, **kw: hit.__setitem__("v", True),
+        )
+        ccm_core._handle_add(self._args(str(tmp_path / "default-no")))
+        assert hit["v"] is False
+
+    def test_tty_missing_parent_does_not_prompt(self, tmp_path, monkeypatch):
+        """Parent-must-exist gate (one-level mkdir only). Deep missing
+        parent paths are almost always typos, and prompting only to
+        die after `y` would be a confusing double step. Skip the
+        prompt and let cmd_add die with the right message."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        prompts = {"n": 0}
+
+        def fake_input(_):
+            prompts["n"] += 1
+            return "y"
+        monkeypatch.setattr("builtins.input", fake_input)
+        captured = {}
+        monkeypatch.setattr(
+            "ccm_commands.cmd_add",
+            lambda *a, **kw: captured.update(kwargs=kw),
+        )
+        ccm_core._handle_add(
+            self._args(str(tmp_path / "gone" / "leaf"))
+        )
+        assert prompts["n"] == 0
+        assert captured["kwargs"].get("create_dir") is False
+
+    def test_existing_dir_skips_prompt(self, tmp_path, monkeypatch):
+        """A path that already exists must NOT trigger the prompt —
+        even on tty. Otherwise every `ccm add <existing>` would
+        ask "Create '<existing>'?" which is nonsensical."""
+        existing = tmp_path / "exists"
+        existing.mkdir()
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        prompts = {"n": 0}
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _p: (prompts.__setitem__("n", prompts["n"] + 1), "y")[1],
+        )
+        monkeypatch.setattr("ccm_commands.cmd_add", lambda *a, **kw: None)
+        ccm_core._handle_add(self._args(str(existing)))
+        assert prompts["n"] == 0
+
+    def test_eof_during_prompt_aborts(self, tmp_path, monkeypatch):
+        """Ctrl-D / EOF at the prompt quietly aborts; never crashes
+        with an unhandled EOFError."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        def fake_input(_):
+            raise EOFError
+        monkeypatch.setattr("builtins.input", fake_input)
+        hit = {"v": False}
+        monkeypatch.setattr(
+            "ccm_commands.cmd_add",
+            lambda *a, **kw: hit.__setitem__("v", True),
+        )
+        ccm_core._handle_add(self._args(str(tmp_path / "abort")))
+        assert hit["v"] is False
+
+
