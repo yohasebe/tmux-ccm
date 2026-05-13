@@ -171,11 +171,60 @@ def signal_age_suffix(project_dir, state):
     return f" ({age // 86400}d)"
 
 
+# Minimum elapsed time before the `* elapsed` completion marker
+# becomes visible in dashboard / statusline renderers. Hides the
+# marker during the first few seconds after a BUSY→IDLE transition.
+#
+# Why this exists (added 2026-05-13, ccm 0.3.x post-agent-view):
+#   Multi-turn auto-loop commands — `/goal` is the canonical case,
+#   `/loop` and `/plan`-driven follow-ups have similar shape —
+#   execute as `BUSY → end_turn → (1-3 s IDLE gap) → auto-fired
+#   UserPromptSubmit → BUSY → …`. State detection during the gap
+#   is correct (Claude IS briefly idle waiting for the auto-prompt),
+#   but the dashboard would otherwise render `* 1s` / `* 2s` markers
+#   for each gap — falsely implying the work just completed when
+#   the loop is still mid-flight. Verified empirically on
+#   2026-05-13 with `ccm debug trace` against a 3-turn `/goal`
+#   condition: two ~2 s IDLE windows between turns, both surfaced
+#   the marker. See memory `project_goal_flicker_2026_05_13`.
+#
+#   The notification path (`on-stop.sh` grace sentinel) already
+#   absorbed these gaps via `CCM_COMPLETION_GRACE_SEC=3`. This
+#   constant brings the visual marker into the same window —
+#   conceptually one knob, applied at two layers.
+#
+# When this code can be removed (audit guide):
+#   - Upstream Claude Code exposes a "goal/loop active" signal
+#     (JSONL field or hook payload) that lets us suppress the
+#     marker only during real auto-loops. Then a blanket 3 s rule
+#     is too coarse and this should go.
+#   - `/goal` and similar auto-multi-turn commands disappear
+#     upstream (unlikely). Verify by running the empirical test
+#     below before deleting.
+#   - User reports the 3 s delay on normal completions is
+#     disruptive. In that case the tradeoff was wrong; remove
+#     this and restore immediate marker visibility.
+#
+# How to verify it's still load-bearing:
+#   `ccm debug trace <project> 0.3`, dispatch a `/goal` condition
+#   that requires 3+ turns (e.g. `/goal create files /tmp/x{1,2,3}.txt
+#   one per turn`). If short (<3 s) BUSY→IDLE→BUSY oscillations
+#   still appear in the trace, this suppression is still needed.
+MIN_ELAPSED_DISPLAY_SEC = 3
+
+
 def format_elapsed(ts):
+    """Format a unix timestamp as a short "time since" string.
+
+    Returns "" for the first `MIN_ELAPSED_DISPLAY_SEC` seconds
+    (see the constant's comment above for the auto-loop flicker
+    rationale this guard exists to mitigate). After that, returns
+    `Ns` / `Nm` / `Nh` / `Nd` depending on magnitude.
+    """
     if not ts or ts == 0:
         return ""
     elapsed = int(time.time()) - ts
-    if elapsed < 0:
+    if elapsed < MIN_ELAPSED_DISPLAY_SEC:
         return ""
     if elapsed < 60:
         return f"{elapsed}s"

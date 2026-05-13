@@ -63,6 +63,27 @@ class TestFormatElapsed:
     def test_none_returns_empty(self):
         assert ccm_render.format_elapsed(None) == ""
 
+    def test_below_min_display_returns_empty(self):
+        """The `* elapsed` marker is suppressed for the first few
+        seconds after a BUSY→IDLE transition, to avoid flicker
+        during `/goal`-style auto-loops (BUSY → ~2 s IDLE → BUSY).
+        See the comment on `MIN_ELAPSED_DISPLAY_SEC` in
+        `ccm_render.py` for the why/when-to-remove rationale —
+        this test exists to make sure that intentional suppression
+        survives any incidental refactors of `format_elapsed`."""
+        for age in range(0, ccm_render.MIN_ELAPSED_DISPLAY_SEC):
+            ts = int(time.time()) - age
+            assert ccm_render.format_elapsed(ts) == "", (
+                f"elapsed={age}s should be hidden by the auto-loop "
+                f"flicker guard (threshold = "
+                f"{ccm_render.MIN_ELAPSED_DISPLAY_SEC}s)"
+            )
+
+    def test_at_min_display_threshold_renders(self):
+        ts = int(time.time()) - ccm_render.MIN_ELAPSED_DISPLAY_SEC
+        rendered = ccm_render.format_elapsed(ts)
+        assert rendered == f"{ccm_render.MIN_ELAPSED_DISPLAY_SEC}s"
+
 
 class TestSignalAgeSuffix:
     """The stale-signal display affordance for the dashboard /
