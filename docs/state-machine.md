@@ -115,7 +115,7 @@ This is an information-theoretic invariant ("a completion signal must post-date 
 
 ### `raw=="PERMIT"` precedence
 
-The capture-pane footer (`Esc to cancel · Tab to amend`, `Enter to confirm · Esc to <verb>`, etc.) is the most physical signal we have — the modal is literally on screen waiting for a keypress. This signal trumps all event-log and hook-based derivations. raw=BUSY does **not** get the same precedence: that would re-introduce the false-BUSY-from-leftover-dev-server problem the event-log path was designed to fix.
+The capture-pane footer (`Esc to cancel · Tab to amend` for permission dialogs; `Enter to confirm · Esc to <verb>` for confirmation modals, with intermediate `· <action key>` segments tolerated for forms like the v2.1.144 `/model` picker's `Enter to confirm · d to set as default for new sessions · Esc to cancel`) is the most physical signal we have — the modal is literally on screen waiting for a keypress. This signal trumps all event-log and hook-based derivations. raw=BUSY does **not** get the same precedence: that would re-introduce the false-BUSY-from-leftover-dev-server problem the event-log path was designed to fix.
 
 ### `claude_pid_age < STARTUP_GRACE_SEC`
 
