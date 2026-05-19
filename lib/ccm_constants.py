@@ -137,7 +137,9 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 #   - "Esc to cancel · Tab to amend"          (permission dialog)
 #   - "Esc to cancel · ctrl+e to explain"     (permission dialog alt)
 #   - "Enter to confirm · Esc to cancel"      (session-resume modal)
-#   - "Enter to confirm · Esc to exit"        (/model picker)
+#   - "Enter to confirm · Esc to exit"        (/model picker, pre-v2.1.144)
+#   - "Enter to confirm · d to set as default for new sessions · Esc to cancel"
+#                                             (/model picker, v2.1.144+)
 #
 # All map to the PERMIT state because semantically Claude is
 # blocked pending a single user action — the UX is the same as a
@@ -152,17 +154,29 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # proofs against new modals that pick yet another verb (close,
 # quit, dismiss, ...).
 #
+# Intermediate-segment tolerance: v2.1.144 introduced extra
+# action keys between `Enter to confirm` and `Esc to <verb>` on
+# the /model picker (`· d to set as default for new sessions ·`).
+# Treating these as opaque non-newline filler keeps the matcher
+# resilient against future upstream additions without enumerating
+# every possible middle segment. The line-start anchor + the fact
+# that detect_pane_state() checks the captured-pane TAIL keeps
+# false-positive risk low even with this relaxation — body text
+# containing both phrases would not appear at line start of the
+# pane's last lines.
+#
 # Anchored at line start (after optional whitespace) so the same
 # words inside a Claude response — e.g. "use ctrl+e to explain" in
 # answer text, or a code example containing "Enter to confirm" —
 # do not falsely trigger PERMIT. The bare "Esc to cancel" line
-# used by slash menus (/hooks, /config, /skills, ...) deliberately
-# does NOT match: those menus are free navigation, not a blocked
-# decision.
+# used by slash menus (/hooks, /config, /skills, /resume from
+# v2.1.144 onwards, ...) deliberately does NOT match: those menus
+# are free navigation with type-to-search / preview keys, not a
+# blocked single-decision modal.
 PATTERN_PERMIT_FOOTER = re.compile(
     r"^\s*(?:"
     r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
-    r"|Enter to confirm\s*(?:·|\|)\s*Esc to \w+"
+    r"|Enter to confirm\b[^\n]*?\bEsc to \w+"
     r")"
 )
 
@@ -216,7 +230,10 @@ _PERMIT_GUIDANCE = {
         "Confirmation modal (e.g., /model picker, /exit).\n"
         "Safe to dismiss but requires a user decision.\n"
         "User action required: switch to the target pane and\n"
-        "press Enter to confirm or Esc to cancel."
+        "respond per the footer keys — typically Enter to confirm\n"
+        "and Esc to cancel; some modals expose extras (e.g. the\n"
+        "/model picker's `d` to set as default for new sessions\n"
+        "in Claude Code v2.1.144+)."
     ),
     "unknown-permit": (
         "Unrecognized PERMIT modal. Treat as dangerous by default.\n"

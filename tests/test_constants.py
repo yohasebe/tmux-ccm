@@ -133,3 +133,81 @@ class TestClassifyPermitModal:
         )
         cat, _ = ccm_constants.classify_permit_modal(text)
         assert cat == "permission-request"
+
+
+class TestPermitFooterPattern:
+    """Direct regex tests for `PATTERN_PERMIT_FOOTER`. This is the
+    primary gate that promotes a captured pane to PERMIT state, so
+    every observed Claude Code modal footer shape must match here —
+    and every slash-menu / non-blocking footer must NOT, since
+    matching would cause `ccm send` to refuse and the user to see
+    spurious PERMIT indicators on a screen they can freely close."""
+
+    def _matches(self, text):
+        return bool(ccm_constants.PATTERN_PERMIT_FOOTER.match(text))
+
+    # ── must match (decision-blocking modals) ──
+
+    def test_permission_dialog_tab_to_amend(self):
+        assert self._matches("Esc to cancel · Tab to amend")
+
+    def test_permission_dialog_ctrl_e_to_explain(self):
+        assert self._matches("Esc to cancel · ctrl+e to explain")
+
+    def test_confirm_modal_pre_v2_1_144(self):
+        """Original `/model` / session-resume confirm footer."""
+        assert self._matches("Enter to confirm · Esc to cancel")
+        assert self._matches("Enter to confirm · Esc to exit")
+
+    def test_confirm_modal_v2_1_144_model_picker(self):
+        """v2.1.144 added a `d to set as default` action key between
+        `Enter to confirm` and `Esc to cancel` on `/model`. Without
+        the intermediate-segment tolerance the pre-existing regex
+        would have silently dropped this footer — `ccm send` would
+        then deliver keystrokes into the open picker and could
+        accidentally confirm a model change. Verified empirically
+        2026-05-13 against Claude Code v2.1.144."""
+        assert self._matches(
+            "Enter to confirm · d to set as default for new sessions · Esc to cancel"
+        )
+
+    def test_confirm_modal_with_pipe_separator(self):
+        """`|` separator variant — observed historically as an
+        alternative to `·` on some terminals/themes."""
+        assert self._matches("Enter to confirm | Esc to cancel")
+
+    # ── must NOT match (free-navigation menus) ──
+
+    def test_bare_esc_to_cancel(self):
+        """Slash menus (`/hooks`, `/config`, etc.) with footer
+        `Esc to cancel` alone are free navigation — matching them
+        would trap the user in PERMIT until they Esc'd."""
+        assert not self._matches("Esc to cancel")
+
+    def test_slash_menu_with_type_to_search(self):
+        """`/skills` v2.1.121+ — multiple action keys + Esc, free nav."""
+        assert not self._matches(
+            "Enter to use, / to search, t to sort, Esc to close"
+        )
+
+    def test_resume_picker_v2_1_144(self):
+        """v2.1.144 reformatted `/resume` from a confirm modal into
+        a slash-menu-style picker. The footer has neither `Enter to
+        confirm` prefix nor the permission-dialog keys, so it
+        correctly does NOT match — the picker is browseable without
+        committing, and treating it as PERMIT would block `ccm send`
+        whenever a user opened it in another pane."""
+        assert not self._matches(
+            "Ctrl+A to show all projects · Ctrl+B to only show current "
+            "branch · Space to preview · Ctrl+R to rename · Type to "
+            "search · Esc to cancel"
+        )
+
+    def test_response_body_text_not_at_line_start(self):
+        """Defensive: long-form Claude responses may legitimately
+        contain the phrases `Enter to confirm` and `Esc to exit` in
+        explanatory text. The line-start anchor (`^\\s*`) keeps
+        these from triggering false PERMITs."""
+        assert not self._matches(
+            "documented: press Enter to confirm and then Esc to exit"
+        )
