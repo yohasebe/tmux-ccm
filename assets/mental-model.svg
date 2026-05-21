@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 540"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-labelledby="title desc">
+  <title id="title">ccm mental model</title>
+  <desc id="desc">A tmux session contains multiple windows. Each window equals one project equals one folder, and holds any number of panes — claude code, a shell, a dev server, or another long-running process. The state of each claude code pane (PERMIT, BUSY, IDLE) propagates up to the window it lives in. ccm dashboard lets you switch between windows with prefix + Tab.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 11 9" markerWidth="11" markerHeight="9"
+            refX="11" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L11,4.5 L0,9 z" class="marker-fill"/>
+    </marker>
+    <!-- bi-directional marker reuses the same geometry & color as the forward
+         `arrow` marker so the ccm switch arrows visually belong to the same
+         arrow family as the session→window and window→pane arrows. Reused
+         for ←-pointing start markers on claude code edges (orient
+         "auto-start-reverse" flips it backwards when used as marker-start). -->
+    <marker id="bi-arrow" viewBox="0 0 11 9" markerWidth="11" markerHeight="9"
+            refX="11" refY="4.5" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L11,4.5 L0,9 z" class="marker-fill"/>
+    </marker>
+
+    <!-- Reusable state badges. Drawn as SVG shapes (not Unicode glyphs) so
+         contrast holds on any light fill — `<use>` them via translate(). -->
+    <symbol id="badge-permit" overflow="visible">
+      <path d="M0,-8 L8,6 L-8,6 z" class="badge-permit-fill"/>
+      <path d="M0,-8 L8,6 L-8,6 z" class="badge-permit-stroke" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="badge-busy" overflow="visible">
+      <circle cx="0" cy="0" r="8" class="badge-busy-fill"/>
+      <circle cx="0" cy="0" r="8" class="badge-busy-stroke"/>
+      <circle cx="0" cy="0" r="2.2" class="badge-busy-inner"/>
+    </symbol>
+    <symbol id="badge-idle" overflow="visible">
+      <circle cx="0" cy="0" r="8" class="badge-idle-fill"/>
+      <circle cx="0" cy="0" r="8" class="badge-idle-stroke"/>
+    </symbol>
+  </defs>
+
+  <style>
+    /*
+      Harmonised palette — single cool-blue family with one warm-cool accent:
+
+      All three layers belong to the indigo/violet/blue analogous group,
+      varying hue subtly while keeping the same visual weight (Tailwind's
+      `-100` fill / `-600` stroke / `-900` text). This puts pane back in
+      the family — previously slate read as a neutral gray and floated
+      against the colored session/window.
+
+      `claude code` is highlighted in teal — it shares the cool family
+      so the chart stays unified, but the green-cyan shift makes it pop
+      out from the surrounding indigo/violet/blue without breaking
+      harmony (an orange or pink would have felt like an interruption).
+    */
+    .session-box  { fill: #e0e7ff; stroke: #4f46e5; stroke-width: 1.75; }  /* indigo */
+    .session-text { fill: #312e81; font-size: 14px; }
+    .window-box   { fill: #ede9fe; stroke: #7c3aed; stroke-width: 1.75; }  /* violet */
+    .window-text  { fill: #4c1d95; font-size: 14px; }
+    .pane-box     { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.75; }  /* blue */
+    .pane-text    { fill: #1e3a8a; font-size: 14px; }
+    .edge         { stroke: #94a3b8; stroke-width: 1.5; fill: none; }
+    .marker-fill  { fill: #94a3b8; }
+
+    /* Dark-mode override: the medium-gray arrow color reads fine on a white
+       page but dims into the page background on GitHub's dark theme. Lift
+       the arrow strokes / marker fills to a brighter slate so the
+       relationships stay visible. Box fills/strokes stay as-is (light pastel
+       cards remain a deliberate contrast against the dark page bg). */
+    @media (prefers-color-scheme: dark) {
+      .edge        { stroke: #cbd5e1; }
+      .ccm-arrow   { stroke: #cbd5e1; }
+      .marker-fill { fill: #cbd5e1; }
+    }
+    .accent-tmux   { fill: #059669; font-weight: 700; }                    /* emerald — tmux brand */
+    .accent-claude { fill: #d97706; font-weight: 700; }                    /* amber — claude code */
+    .term          { font-weight: 700; }
+    .ccm-arrow     { stroke: #94a3b8; stroke-width: 1.5; fill: none; }    /* match `.edge` style */
+    /* Mini ccm logo overlay (matches assets/logo-light.svg style):
+       each letter sits on its own filled circle in the brand colors,
+       white text on top — same visual idiom as the project logo. */
+    .ccm-mini-bg   { fill: #ffffff; }
+    .ccm-c1-dot    { fill: #E8967D; }                                     /* coral — BUSY in logo */
+    .ccm-c2-dot    { fill: #E5A84B; }                                     /* amber — PERMIT in logo */
+    .ccm-m-dot     { fill: #5BB98B; }                                     /* green — IDLE in logo */
+    .ccm-mini-letter { fill: #ffffff; font-weight: 700; font-size: 15px; }
+    /* State badges (PERMIT/BUSY/IDLE/SHELL) — rendered as SVG shapes rather
+       than Unicode characters so contrast stays high on any light background.
+       Each badge has a saturated fill + a darker stroke for definition.
+       PERMIT specifically gets a filled triangle (warning shape) so the
+       inherent low-luminance issue of yellow text on a light pane/window
+       background is replaced by a solid colored region the eye reads instantly. */
+    .badge-permit-fill   { fill: #facc15; }                                /* yellow-400 */
+    .badge-permit-stroke { stroke: #a16207; stroke-width: 1.5; fill: none; } /* yellow-700 */
+    .badge-busy-fill     { fill: #fb923c; }                                /* orange-400 */
+    .badge-busy-stroke   { stroke: #9a3412; stroke-width: 1.5; fill: none; } /* orange-800 */
+    .badge-busy-inner    { fill: #ffffff; }
+    .badge-idle-fill     { fill: #3b82f6; }                                /* blue-500 */
+    .badge-idle-stroke   { stroke: #1e3a8a; stroke-width: 1.5; fill: none; } /* blue-900 */
+  </style>
+
+  <!-- tmux session (Y center = 270) -->
+  <rect class="session-box" x="30" y="240" width="160" height="60" rx="8"/>
+  <text class="session-text" x="110" y="270" text-anchor="middle" dominant-baseline="central"><tspan class="accent-tmux">tmux</tspan> <tspan class="term">session</tspan></text>
+
+  <!-- windows (3 rows) -->
+  <rect class="window-box" x="290" y="60"  width="240" height="60" rx="8"/>
+  <text class="window-text" x="395" y="90"  text-anchor="middle" dominant-baseline="central"><tspan class="term">window</tspan> = project = folder</text>
+
+  <rect class="window-box" x="290" y="240" width="240" height="60" rx="8"/>
+  <text class="window-text" x="395" y="270" text-anchor="middle" dominant-baseline="central"><tspan class="term">window</tspan> = project = folder</text>
+
+  <rect class="window-box" x="290" y="420" width="240" height="60" rx="8"/>
+  <text class="window-text" x="395" y="450" text-anchor="middle" dominant-baseline="central"><tspan class="term">window</tspan> = project = folder</text>
+
+  <!-- panes (all x=620, width=180) -->
+  <!-- W1 -->
+  <rect class="pane-box" x="620" y="30"  width="180" height="50" rx="6"/>
+  <text class="pane-text" x="697" y="55"  text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">claude code</tspan></text>
+
+  <rect class="pane-box" x="620" y="100" width="180" height="50" rx="6"/>
+  <text class="pane-text" x="710" y="125" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: shell</text>
+
+  <!-- W2 -->
+  <rect class="pane-box" x="620" y="210" width="180" height="50" rx="6"/>
+  <text class="pane-text" x="697" y="235" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">claude code</tspan></text>
+
+  <rect class="pane-box" x="620" y="280" width="180" height="50" rx="6"/>
+  <text class="pane-text" x="710" y="305" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: dev server</text>
+
+  <!-- W3 -->
+  <rect class="pane-box" x="620" y="390" width="180" height="50" rx="6"/>
+  <text class="pane-text" x="697" y="415" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">claude code</tspan></text>
+
+  <rect class="pane-box" x="620" y="460" width="180" height="50" rx="6"/>
+  <text class="pane-text" x="710" y="485" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: any process</text>
+
+  <!-- Edges: tmux session -> 3 windows (pivot column at x=240) -->
+  <polyline class="edge" points="190,270 240,270 240,90  290,90"  marker-end="url(#arrow)"/>
+  <polyline class="edge" points="190,270 290,270"                 marker-end="url(#arrow)"/>
+  <polyline class="edge" points="190,270 240,270 240,450 290,450" marker-end="url(#arrow)"/>
+
+  <!-- Edges: window N -> 2 panes (pivot column at x=575).
+       The window↔claude-code edges are bidirectional: → containment (window
+       holds the pane), ← state aggregation (pane reports its state up to
+       the window). `marker-start` reuses bi-arrow which auto-reverses at
+       the start endpoint, giving us a left-pointing arrow head landing on
+       the window without drawing an extra polyline. Non-claude panes only
+       have the forward (containment) arrow. -->
+  <polyline class="edge" points="530,90  575,90  575,55  620,55"  marker-start="url(#bi-arrow)" marker-end="url(#arrow)"/>
+  <polyline class="edge" points="530,90  575,90  575,125 620,125" marker-end="url(#arrow)"/>
+
+  <polyline class="edge" points="530,270 575,270 575,235 620,235" marker-start="url(#bi-arrow)" marker-end="url(#arrow)"/>
+  <polyline class="edge" points="530,270 575,270 575,305 620,305" marker-end="url(#arrow)"/>
+
+  <polyline class="edge" points="530,450 575,450 575,415 620,415" marker-start="url(#bi-arrow)" marker-end="url(#arrow)"/>
+  <polyline class="edge" points="530,450 575,450 575,485 620,485" marker-end="url(#arrow)"/>
+
+  <!-- State badges on windows + matching claude code panes (aggregation visible
+       through colour/shape matching: PERMIT ▲ yellow, BUSY ◉ orange, IDLE ● blue). -->
+  <use href="#badge-permit" x="500" y="90"/>
+  <use href="#badge-busy"   x="500" y="270"/>
+  <use href="#badge-idle"   x="500" y="450"/>
+  <use href="#badge-permit" x="775" y="55"/>
+  <use href="#badge-busy"   x="775" y="235"/>
+  <use href="#badge-idle"   x="775" y="415"/>
+
+  <!-- ccm: bidirectional switch arrows between windows + overlay pill labels -->
+  <line class="ccm-arrow" x1="410" y1="132" x2="410" y2="228"
+        marker-start="url(#bi-arrow)" marker-end="url(#bi-arrow)"/>
+  <line class="ccm-arrow" x1="410" y1="312" x2="410" y2="408"
+        marker-start="url(#bi-arrow)" marker-end="url(#bi-arrow)"/>
+
+  <!-- ccm mini-logo overlay on arrow 1 (midpoint y=180) -->
+  <rect class="ccm-mini-bg" x="370" y="164" width="80" height="32" rx="16"/>
+  <circle class="ccm-c1-dot" cx="386" cy="180" r="12"/>
+  <circle class="ccm-c2-dot" cx="410" cy="180" r="12"/>
+  <circle class="ccm-m-dot"  cx="434" cy="180" r="12"/>
+  <text class="ccm-mini-letter" x="386" y="180" text-anchor="middle" dominant-baseline="central">c</text>
+  <text class="ccm-mini-letter" x="410" y="180" text-anchor="middle" dominant-baseline="central">c</text>
+  <text class="ccm-mini-letter" x="434" y="180" text-anchor="middle" dominant-baseline="central">m</text>
+
+  <!-- ccm mini-logo overlay on arrow 2 (midpoint y=360) -->
+  <rect class="ccm-mini-bg" x="370" y="344" width="80" height="32" rx="16"/>
+  <circle class="ccm-c1-dot" cx="386" cy="360" r="12"/>
+  <circle class="ccm-c2-dot" cx="410" cy="360" r="12"/>
+  <circle class="ccm-m-dot"  cx="434" cy="360" r="12"/>
+  <text class="ccm-mini-letter" x="386" y="360" text-anchor="middle" dominant-baseline="central">c</text>
+  <text class="ccm-mini-letter" x="410" y="360" text-anchor="middle" dominant-baseline="central">c</text>
+  <text class="ccm-mini-letter" x="434" y="360" text-anchor="middle" dominant-baseline="central">m</text>
+</svg>

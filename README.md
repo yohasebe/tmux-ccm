@@ -14,6 +14,12 @@ A popup dashboard shows every project's state (busy / idle / waiting for permiss
 
 ccm's value scales with parallelism: useful with 2–3 projects, daily infrastructure with 4+. Best fit for Max-tier users running agents across multiple projects in parallel.
 
+## How ccm models your work
+
+One **project** = one **folder** = one **tmux window**. A window holds any number of panes (claude code, a shell, a dev server, an Agent Teams teammate, …). The state of each claude code pane (PERMIT / BUSY / IDLE) aggregates up to its window, and ccm dashboard (`prefix + Tab`) switches between windows.
+
+![ccm mental model: a tmux session contains windows (each window = one project = one folder), every window holds claude code plus other panes, claude code state aggregates back to the window, and ccm switches between windows with prefix + Tab](assets/mental-model.svg)
+
 **Dashboard** (`prefix + Tab`) with the mode-2 status bar visible at the bottom:
 
 ![ccm dashboard](assets/dashboard.png)

@@ -14,6 +14,12 @@ ccm は、[Claude Code](https://docs.anthropic.com/en/docs/claude-code) を複�
 
 ccm の価値は並行度に応じて伸びます。2–3 プロジェクトでも有用、4 つ以上を並行で動かすと日常のインフラになります。Max プランで複数プロジェクトに agent を並行で走らせている層に最もフィットします。
 
+## ccm のメンタルモデル
+
+1 つの **プロジェクト** = 1 つの **フォルダ** = 1 つの **tmux ウィンドウ**。ウィンドウは任意の数のペインを持ちます (claude code、シェル、開発サーバー、Agent Teams のチームメイト等)。各 claude code ペインの状態 (PERMIT / BUSY / IDLE) はウィンドウへ集約され、ccm ダッシュボード (`prefix + Tab`) でウィンドウ間を切り替えられます。
+
+![ccm メンタルモデル: tmux session が複数のウィンドウを持ち (各ウィンドウ = 1 プロジェクト = 1 フォルダ)、各ウィンドウに claude code とその他のペインが入り、claude code の状態はウィンドウに集約され、ccm が prefix + Tab でウィンドウ間を切り替える](assets/mental-model.svg)
+
 **ダッシュボード** (`prefix + Tab`) — 画面下部のモード 2 ステータスバーも同時に映っています:
 
 ![ccm dashboard](assets/dashboard.png)
