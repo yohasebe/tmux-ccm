@@ -518,6 +518,84 @@ EOF
     [[ -f "$pending" ]] || { echo "pending sentinel not written: $pending"; return 1; }
 }
 
+# Helper for the bg-pending-suppression tests: runs on-stop.sh with a
+# minimal tmux shim that lets project resolution succeed, and returns
+# whether the .pending sentinel was written. Caller passes the JSON
+# payload fragment that follows `cwd`/`session_id` (i.e. extra fields).
+_run_stop_with_payload_extras() {
+    local extras="$1" tmp_home="$2" cwd="$3" sid="$4"
+    local shim_dir="${MOCK_DIR}/stop-bg-shim-${RANDOM}"
+    mkdir -p "$tmp_home" "$shim_dir"
+    cat > "${shim_dir}/tmux" << EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "list-windows" ]]; then
+    printf '%s\t%s\t%s\n' 'main:1' '$cwd' 'proj-bg'
+fi
+exit 0
+EOF
+    chmod +x "${shim_dir}/tmux"
+
+    local payload="{\"cwd\":\"$cwd\",\"session_id\":\"${sid}\"${extras:+,$extras}}"
+    PATH="${shim_dir}:$PATH" TMPDIR="$tmp_home" HOME="$tmp_home" \
+        CCM_COMPLETION_GRACE_SEC=99 \
+        bash -c "cd '${CCM_ROOT}' && \
+                 mkdir -p \"\$TMPDIR/ccm-\$UID/hooks\" && \
+                 echo '$payload' | hooks/on-stop.sh"
+}
+
+@test "on-stop.sh: skips .pending when background_tasks is non-empty" {
+    # Claude Code 2.1.145+ Stop payload includes background_tasks.
+    # When the array is non-empty, the user has work still in flight
+    # (e.g. /bg dispatch, async tool) and a COMPLETED notification at
+    # this Stop would be premature — the grace period catches some
+    # but not all (a /loop sleeping past 3 s would fire false alerts).
+    # The guard is "skip when length > 0", which keeps legacy
+    # payloads (field absent) on the original notify path.
+    local tmp_home="${MOCK_DIR}/stop-bg-tasks"
+    local sid="66666666-6666-6666-6666-666666666666"
+    _run_stop_with_payload_extras \
+        '"background_tasks":[{"id":"task1"}]' \
+        "$tmp_home" "/tmp/stop-bg-tasks" "$sid"
+
+    local pending="${tmp_home}/ccm-${UID}/hooks/${sid}.pending"
+    [[ ! -f "$pending" ]] || {
+        echo "pending sentinel should NOT have been written when background_tasks is non-empty: $pending"; return 1;
+    }
+}
+
+@test "on-stop.sh: skips .pending when session_crons is non-empty" {
+    # Same rationale as background_tasks but for /loop / /schedule
+    # style scheduled wakeups — Claude is technically done with the
+    # current turn but will resume autonomously, so the user's intent
+    # is not yet "done".
+    local tmp_home="${MOCK_DIR}/stop-bg-crons"
+    local sid="77777777-7777-7777-7777-777777777777"
+    _run_stop_with_payload_extras \
+        '"session_crons":[{"name":"loop1"}]' \
+        "$tmp_home" "/tmp/stop-bg-crons" "$sid"
+
+    local pending="${tmp_home}/ccm-${UID}/hooks/${sid}.pending"
+    [[ ! -f "$pending" ]] || {
+        echo "pending sentinel should NOT have been written when session_crons is non-empty: $pending"; return 1;
+    }
+}
+
+@test "on-stop.sh: writes .pending when bg-task fields are present-but-empty" {
+    # Forward-compat: when Claude Code emits the fields but both are
+    # empty arrays, the user genuinely has no outstanding work and we
+    # should fire the COMPLETED notification as on legacy payloads.
+    local tmp_home="${MOCK_DIR}/stop-bg-empty"
+    local sid="88888888-8888-8888-8888-888888888888"
+    _run_stop_with_payload_extras \
+        '"background_tasks":[],"session_crons":[]' \
+        "$tmp_home" "/tmp/stop-bg-empty" "$sid"
+
+    local pending="${tmp_home}/ccm-${UID}/hooks/${sid}.pending"
+    [[ -f "$pending" ]] || {
+        echo "pending sentinel should have been written when both arrays are empty: $pending"; return 1;
+    }
+}
+
 @test "on-pre-tool-use.sh: cancels pending sentinel from prior Stop" {
     local tmp_home="${MOCK_DIR}/pretool-home"
     local cwd="/tmp/pretool-proj"
