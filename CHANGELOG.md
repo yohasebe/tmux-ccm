@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-24
+
 ### Added
 - `ccm add` and the dashboard's `a` action now offer to create the target directory when the path doesn't exist but its parent does — one-level `mkdir` only, no recursive `mkdir -p`. Dashboard prompts inline; CLI prompts when stdin is a tty (scripts and snapshot-restore keep the original "Directory does not exist" die, so automation contracts are unchanged). The parent-must-exist gate is deliberate: a typo'd deep path is a far more common failure mode than legitimate deep-tree creation, and refusing forces the caller to spell intent. `cmd_add(create_dir=False)` default preserves every existing caller (notably `cmd_snapshot_load`, which must keep skipping with a warning rather than silently re-creating an empty directory the user no longer expects to be there).
 - Read-only view of Claude Code's agent-view background sessions (Claude Code 2.1.139's `claude agents` / `claude --bg` / `claude attach`). The per-user supervisor daemon's `~/.claude/daemon/roster.json` plus each session's `~/.claude/jobs/<short>/state.json` are joined and surfaced as a "Background sessions" section in the ccm dashboard. Off by default — window-as-project workflows are unaffected. Toggle on demand with the `b` key, or set `@ccm-bg-section always` for persistent visibility (also reachable via the dashboard menu). Lifecycle (dispatch / stop) stays with `claude` itself; ccm only observes. New `ccm bg list` CLI subcommand prints the same data outside the dashboard. The reader (`lib/ccm_agentview.py`) is strictly read-only and tolerant of missing / malformed daemon files.
