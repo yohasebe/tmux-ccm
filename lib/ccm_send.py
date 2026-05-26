@@ -316,6 +316,40 @@ def cmd_send(args):
             "if that is what you want."
         )
 
+    # `claude agents` TUI guard. The TUI shows an `❯` input prompt that
+    # ccm reads as IDLE, but typing into it dispatches a BRAND-NEW
+    # agent-view session rather than landing in an existing
+    # conversation — a `ccm send` would silently spawn a session the
+    # operator didn't ask for. Refused unconditionally (even with
+    # `--force`): the BUSY-style "queue it anyway" semantic does not
+    # map onto "dispatch a new agent". Check is gated on `state ==
+    # "IDLE"` because the PERMIT / BUSY / SHELL branches above already
+    # refuse or handle their own paths, so we don't pay the
+    # capture-pane cost twice.
+    if state == "IDLE":
+        raw_tail = ccm_core.tmux_cmd(
+            "capture-pane", "-t", win_target, "-p", "-S", "-10"
+        ) or ""
+        if not raw_tail.strip():
+            raw_tail = ccm_core.tmux_cmd(
+                "capture-pane", "-a", "-t", win_target, "-p", "-S", "-10"
+            ) or ""
+        if ccm_core.is_agents_tui(raw_tail):
+            tail_lines = [l for l in raw_tail.split("\n") if l.strip()][-8:]
+            lines = [
+                f"{project_name} is showing the `claude agents` TUI — send refused.",
+                "  Reason: keystrokes typed into the agents TUI dispatch a NEW",
+                "    agent-view session rather than landing in an existing",
+                "    Claude conversation.",
+                "  User action: switch to the target pane and use the TUI's",
+                "    own input (Enter to open a session, ? for shortcuts), or",
+                "    detach from `claude agents` before retrying.",
+            ]
+            if tail_lines:
+                lines.append("  Pane tail:")
+                lines.extend(f"    {l}" for l in tail_lines)
+            ccm_core.ccm_die("\n".join(lines))
+
     # Confirmation prompt (skip when piping or --yes)
     interactive = (
         not skip_confirm

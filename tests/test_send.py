@@ -239,6 +239,41 @@ class TestCmdSend:
         assert "Classification: permission-request" in err
         assert "DANGEROUS" in err or "dangerous" in err
 
+    def test_send_idle_with_agents_tui_refused(self, monkeypatch, capsys):
+        """An IDLE pane that's actually showing the `claude agents`
+        TUI must refuse `ccm send`. The TUI shows an `❯` prompt that
+        reads as IDLE in ccm's state detection, but keystrokes there
+        spawn a NEW agent-view session rather than landing in any
+        existing Claude conversation. Without this guard a casual
+        `ccm send foo "..."` would silently dispatch a session."""
+        project = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=project)
+        tui_tail = (
+            "session a · idle  · 2m\n"
+            "session b · working · 14s\n"
+            "❯ \n"
+            "enter to open · space to reply · ctrl+x to delete · ? for shortcuts"
+        )
+        with patch("ccm_core.tmux_cmd", return_value=tui_tail), \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "hello"])
+        err = capsys.readouterr().err
+        assert "claude agents" in err
+        assert "send refused" in err.lower() or "refused" in err.lower()
+        # Pane tail surfaced so the caller can confirm classification
+        assert "Pane tail:" in err or "pane tail" in err.lower()
+
+    def test_send_agents_tui_refused_even_with_force(self, monkeypatch):
+        """`--force` queues a message into a BUSY target; it does NOT
+        map onto "dispatch a new agent" semantics. The TUI refusal is
+        unconditional, mirroring PERMIT's behaviour."""
+        project = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=project)
+        tui_tail = "enter to open · space to reply · ? for shortcuts"
+        with patch("ccm_core.tmux_cmd", return_value=tui_tail), \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "--force", "hello"])
+
     def test_send_busy_rejected_without_force(self, monkeypatch):
         project = self._make_project(state="BUSY")
         self._patch_resolution(monkeypatch, project=project)

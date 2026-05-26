@@ -211,3 +211,65 @@ class TestPermitFooterPattern:
         assert not self._matches(
             "documented: press Enter to confirm and then Esc to exit"
         )
+
+
+class TestAgentsTUIDetection:
+    """`is_agents_tui` decides whether `ccm send` should refuse the
+    target pane. Misclassification has real safety cost on either
+    side — false positive blocks legitimate sends, false negative
+    silently dispatches an unintended `claude agents` session."""
+
+    def _detect(self, text):
+        return ccm_constants.is_agents_tui(text)
+
+    def test_canonical_agents_footer(self):
+        """The v2.1.139+ TUI footer ccm refuses against."""
+        text = (
+            "  session a · idle  · 2m\n"
+            "  session b · working · 14s\n"
+            "❯ \n"
+            "enter to open · space to reply · ctrl+x to delete · ? for shortcuts"
+        )
+        assert self._detect(text)
+
+    def test_case_insensitive(self):
+        """Upstream tweaks capitalization periodically; the matcher
+        is IGNORECASE so we don't have to chase wording drift."""
+        assert self._detect("Enter to open · ? for shortcuts")
+        assert self._detect("ENTER TO OPEN something FOR SHORTCUTS")
+
+    def test_empty_and_none(self):
+        assert not self._detect("")
+        assert not self._detect(None)
+
+    def test_regular_claude_repl_not_matched(self):
+        """A normal claude --continue REPL with an input prompt must
+        NOT be classified as TUI — otherwise `ccm send` would refuse
+        for every project, breaking the headline cross-project
+        messaging feature."""
+        text = (
+            "Some response text from claude.\n"
+            "❯ \n"
+            "──────────────────────────────────────────\n"
+            "  ~/code/foo  main  Opus 4.7  ██░░░░ 22%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)"
+        )
+        assert not self._detect(text)
+
+    def test_permit_footer_not_matched(self):
+        """PERMIT footers (`Esc to cancel · Tab to amend` etc.) are
+        a separate concept handled by PATTERN_PERMIT_FOOTER. Make
+        sure they don't accidentally classify as agents TUI."""
+        assert not self._detect("Esc to cancel · Tab to amend")
+        assert not self._detect("Enter to confirm · Esc to cancel")
+
+    def test_body_text_with_phrases_not_at_line_start(self):
+        """Defensive: claude could mention these phrases in answer
+        text. The line-start MULTILINE anchor keeps body text from
+        false-tripping the matcher — only the actual footer line
+        at column 0 (after optional whitespace) qualifies."""
+        text = (
+            "I see you have `enter to open` mapped in your TUI; the "
+            "documentation says `? for shortcuts` shows the help."
+        )
+        assert not self._detect(text)

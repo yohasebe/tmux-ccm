@@ -55,6 +55,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     IDLE_EXIT_TIMEOUT,
     IGNORED_CHILDREN,
     PATTERN_ACCEPT_EDITS,
+    PATTERN_AGENTS_FOOTER,
     PATTERN_INPUT_PROMPT,
     PATTERN_MODEL_PICKER,
     PATTERN_PERMISSION_DIALOG,
@@ -67,6 +68,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     STATE_ICONS,
     STATE_PRIORITY,
     classify_permit_modal,
+    is_agents_tui,
 )
 
 

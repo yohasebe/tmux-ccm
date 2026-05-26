@@ -245,6 +245,52 @@ _PERMIT_GUIDANCE = {
 }
 
 
+# ─── `claude agents` TUI signature ───
+# The agent view TUI (Claude Code 2.1.139+, opened via `claude agents`
+# or `← ←` detach from a session) shows an `❯`-style input prompt at
+# the bottom — which ccm's `PATTERN_INPUT_PROMPT` reads as IDLE, so
+# the surrounding window appears send-able. But unlike a regular
+# Claude REPL, typing into the agents TUI dispatches a BRAND-NEW
+# agent-view session rather than landing in an existing conversation.
+# A `ccm send` to that pane would silently spawn an unintended session
+# (Issue 5 in `project_agent_view_findings_2026_05_12`).
+#
+# `cmd_send` checks `PATTERN_AGENTS_FOOTER` against the captured pane
+# tail and refuses on match, with a tailored guidance message.
+#
+# Footer shape observed on v2.1.139+:
+#   "enter to open · space to reply · ctrl+x to delete · ? for shortcuts"
+#
+# The "enter to open" prefix + "? for shortcuts" suffix together are
+# specific enough to the TUI that a permissive `.*?` between them is
+# safe — Claude response text containing those phrases at line start
+# is implausible, and the footer line lives at the captured-pane tail
+# (the only place `cmd_send` looks). IGNORECASE absorbs upstream
+# wording case shifts; MULTILINE lets `^` match any line so multi-row
+# capture works without splitting per-line.
+PATTERN_AGENTS_FOOTER = re.compile(
+    r"^\s*enter to open\b.*?\bfor shortcuts\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def is_agents_tui(pane_text) -> bool:
+    """True when the captured pane shows the `claude agents` TUI
+    footer. `cmd_send` uses this to refuse sending into the TUI,
+    because keystrokes there spawn a fresh agent-view session
+    instead of landing in an existing conversation.
+
+    Defensively reject non-string input (None, MagicMock from
+    mocked-without-return_value tests, etc.) — the matcher would
+    otherwise raise TypeError on the first regex call and the
+    safest interpretation of "I cannot read the pane" is False
+    (the same as "pane doesn't look like TUI"), which lets the
+    send proceed and matches the legacy behaviour."""
+    if not isinstance(pane_text, str) or not pane_text:
+        return False
+    return bool(PATTERN_AGENTS_FOOTER.search(pane_text))
+
+
 def classify_permit_modal(pane_text: str):
     """Classify a PERMIT-state pane by content signature.
 
