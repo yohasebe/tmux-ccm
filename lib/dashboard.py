@@ -82,6 +82,15 @@ MSG_MAX_LEN = 200
 
 REFRESH_INTERVAL = 2
 
+# Visual cols reserved at the right edge of each project row for the
+# `* elapsed` marker (`* ` + 3-char padded elapsed + 1 col margin).
+# Always reserved (even on rows without elapsed) so the path column's
+# right-clip width stays constant across refresh ticks, which in turn
+# keeps the path's horizontal position stable as the marker appears,
+# disappears, and ticks across 1↔2 digit boundaries. Paired with
+# `format_elapsed`'s 3-char right-padding in lib/ccm_render.py.
+ELAPSED_RIGHT_SLOT = 6
+
 _IS_MACOS = platform.system() == "Darwin"
 
 # Color pair IDs (curses-specific, stay in dashboard.py)
@@ -769,6 +778,15 @@ class Dashboard:
                 # Format: per-project dict with the resolved
                 # strings + the cluster's total width for
                 # COL_DIR alignment.
+                #
+                # NOTE: `elapsed` is intentionally NOT in the cluster
+                # width calc — it's rendered in a right-anchored slot
+                # at the end of each row, not between name and path.
+                # Including it here would make COL_DIR move every
+                # second as the timer ticks and every time the marker
+                # appears/disappears, dragging every project's path
+                # left and right. The right-anchored placement keeps
+                # paths visually stable across refresh ticks.
                 annotations = []
                 for proj in projects:
                     pieces = []  # widths for COL_DIR calc
@@ -796,9 +814,6 @@ class Dashboard:
                     # character appears.
                     if pane_marker:
                         pieces.append(display_width(pane_marker))
-                    if elapsed_str:
-                        # "* " (2) + elapsed
-                        pieces.append(2 + display_width(elapsed_str))
                     if suffix_str:
                         pieces.append(display_width(suffix_str))
                     elif proj.bg_active:
@@ -871,15 +886,11 @@ class Dashboard:
                         self._addstr(stdscr, y, col + 1 + display_width(n), "]", curses.color_pair(C_DIM))
                         col += display_width(ann["pane_marker"]) + 1
 
-                    # Completion marker "* elapsed": asterisk
-                    # green to flag a freshly-finished response,
-                    # elapsed dim.
-                    if ann["elapsed"]:
-                        self._addstr(stdscr, y, col, "*",
-                                     curses.color_pair(C_COMPLETED))
-                        self._addstr(stdscr, y, col + 1, " " + ann["elapsed"],
-                                     curses.color_pair(C_DIM))
-                        col += 2 + display_width(ann["elapsed"]) + 1
+                    # NOTE: `* elapsed` used to live here inline. It
+                    # was relocated to a right-anchored slot at the
+                    # end of the row (rendered after the path below)
+                    # so the path column stays put when the timer
+                    # ticks or the marker appears/disappears.
 
                     # Stale-signal age (BUSY/PERMIT) or
                     # background-activity (IDLE) — disjoint, shared
@@ -907,12 +918,41 @@ class Dashboard:
                     # column is vertically aligned across rows
                     # regardless of which inline annotations were
                     # rendered for this row.
+                    #
+                    # `effective_w - ELAPSED_RIGHT_SLOT` reserves
+                    # constant space on the right for the
+                    # right-anchored `* elapsed` marker (rendered
+                    # below), so a long path never overlaps the
+                    # marker even when both are shown.
                     if p.dir:
                         effective_w = list_width if preview_width > 0 else width
-                        dir_str = format_dir(p.dir, COL_DIR, effective_w)
+                        dir_str = format_dir(
+                            p.dir, COL_DIR,
+                            effective_w - ELAPSED_RIGHT_SLOT,
+                        )
                         if dir_str:
                             self._addstr(stdscr, y, COL_DIR, dir_str,
                                          curses.color_pair(C_DIM))
+
+                    # Right-anchored `* elapsed` marker. Lives in a
+                    # fixed-width slot at the row's right edge so
+                    # its appearance/disappearance and tick-induced
+                    # width changes do not perturb any column on
+                    # the left (most importantly, the path column).
+                    # The slot is always reserved (above, via the
+                    # format_dir clip) so non-IDLE rows simply leave
+                    # the slot blank.
+                    if ann["elapsed"]:
+                        effective_w = list_width if preview_width > 0 else width
+                        # "* " (2 visible cols) + 3-char elapsed = 5
+                        # visible cols. Anchor at effective_w - 6 so
+                        # the trailing 1 col is a right-margin gap.
+                        elapsed_x = effective_w - 6
+                        self._addstr(stdscr, y, elapsed_x, "*",
+                                     curses.color_pair(C_COMPLETED))
+                        self._addstr(stdscr, y, elapsed_x + 1,
+                                     " " + ann["elapsed"],
+                                     curses.color_pair(C_DIM))
 
                     row += 1
 

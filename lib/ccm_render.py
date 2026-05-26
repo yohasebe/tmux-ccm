@@ -219,7 +219,11 @@ def format_elapsed(ts):
     Returns "" for the first `MIN_ELAPSED_DISPLAY_SEC` seconds
     (see the constant's comment above for the auto-loop flicker
     rationale this guard exists to mitigate). After that, returns
-    `Ns` / `Nm` / `Nh` / `Nd` depending on magnitude.
+    a **fixed 3-character** right-padded string (`" 5s"`, `"10s"`,
+    `" 1m"`, …) so the completion marker `* elapsed` has constant
+    visual width — required by the dashboard's right-anchored
+    elapsed slot, which would otherwise wobble at 1↔2 digit
+    boundaries as the counter ticks.
     """
     if not ts or ts == 0:
         return ""
@@ -227,12 +231,12 @@ def format_elapsed(ts):
     if elapsed < MIN_ELAPSED_DISPLAY_SEC:
         return ""
     if elapsed < 60:
-        return f"{elapsed}s"
+        return f"{elapsed:>2d}s"
     if elapsed < 3600:
-        return f"{elapsed // 60}m"
+        return f"{elapsed // 60:>2d}m"
     if elapsed < 86400:
-        return f"{elapsed // 3600}h"
-    return f"{elapsed // 86400}d"
+        return f"{elapsed // 3600:>2d}h"
+    return f"{elapsed // 86400:>2d}d"
 
 
 def format_dir(directory, prefix_len, cols):

@@ -129,6 +129,68 @@ class TestRenderSmoke:
             f"IDLE project); got {len(calls['format_elapsed'])} calls"
         )
 
+    def test_elapsed_marker_does_not_perturb_path_column(self, monkeypatch):
+        """Whether or not a project has the `* elapsed` marker, every
+        path must render at the same X column. Before this change,
+        elapsed lived inside the inline annotation cluster between
+        name and path, which pushed COL_DIR right (and every project
+        row's path with it) whenever the marker was shown. With
+        elapsed relocated to a right-anchored slot, the path column
+        stays put across refresh ticks.
+
+        We render the SAME project list twice — once with no recent
+        completion (no elapsed) and once with `completed_at = now -
+        10s` (elapsed shown) — and assert that the X position of
+        `format_dir` calls is identical in both renders."""
+        _stub_dashboard_environment(monkeypatch)
+
+        # Track every (x, dir_str) pair format_dir produces. Using
+        # the call's `prefix_len` argument (= the x ccm renders the
+        # path at) is the cleanest signal — that's exactly the
+        # "where does the path start" question this test is about.
+        calls_no_elapsed = []
+        calls_with_elapsed = []
+        active_log = calls_no_elapsed
+
+        def recording_format_dir(directory, prefix_len, cols):
+            active_log.append((prefix_len, directory))
+            return directory  # identity is fine for the assertion
+        monkeypatch.setattr("dashboard.format_dir", recording_format_dir)
+
+        # format_elapsed must return a non-empty 3-char string for
+        # the "with elapsed" render so the right-anchored slot is
+        # actually exercised.
+        monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "10s" if ts else "")
+
+        import ccm_core
+        now = __import__("time").time()
+        projects_no_elapsed = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+            ccm_core.Project("0:2", "2", "beta",  "/tmp/b", "IDLE"),
+        ]
+        projects_with_elapsed = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE",
+                             completed_at=int(now) - 10),
+            ccm_core.Project("0:2", "2", "beta",  "/tmp/b", "IDLE"),
+        ]
+
+        d = Dashboard(initial_mode="dashboard")
+
+        d.projects = projects_no_elapsed
+        d.render(_make_mock_stdscr())
+
+        active_log = calls_with_elapsed
+        d.projects = projects_with_elapsed
+        d.render(_make_mock_stdscr())
+
+        # Compare the X positions of the path column across renders
+        x_no_elapsed = [x for x, _ in calls_no_elapsed]
+        x_with_elapsed = [x for x, _ in calls_with_elapsed]
+        assert x_no_elapsed == x_with_elapsed, (
+            f"path column X drifted when elapsed appeared: "
+            f"no_elapsed={x_no_elapsed}, with_elapsed={x_with_elapsed}"
+        )
+
     def test_render_with_bg_section_visible(self, monkeypatch):
         """`b` key reveals the background-sessions block below the
         project list. The renderer must tolerate both populated and

@@ -41,21 +41,37 @@ from conftest import (
 _iso_ts = iso_ts
 
 class TestFormatElapsed:
-    def test_seconds(self):
+    # Fixed-width (3 visible cols, right-aligned digits) is a hard
+    # contract — the dashboard's right-anchored elapsed slot relies on
+    # this so the marker's right edge doesn't wobble at 1↔2 digit
+    # boundaries as the counter ticks. Don't relax these without also
+    # widening `ELAPSED_RIGHT_SLOT` in `lib/dashboard.py`.
+
+    def test_seconds_two_digit(self):
         ts = int(time.time()) - 30
         assert ccm_render.format_elapsed(ts) == "30s"
 
-    def test_minutes(self):
+    def test_seconds_single_digit_padded(self):
+        """Single-digit seconds get a leading space so the field
+        width stays at 3 visible cols."""
+        ts = int(time.time()) - 5
+        assert ccm_render.format_elapsed(ts) == " 5s"
+
+    def test_minutes_single_digit_padded(self):
         ts = int(time.time()) - 180
-        assert ccm_render.format_elapsed(ts) == "3m"
+        assert ccm_render.format_elapsed(ts) == " 3m"
 
-    def test_hours(self):
-        ts = int(time.time()) - 7200
-        assert ccm_render.format_elapsed(ts) == "2h"
+    def test_minutes_two_digit(self):
+        ts = int(time.time()) - 30 * 60
+        assert ccm_render.format_elapsed(ts) == "30m"
 
-    def test_days(self):
-        ts = int(time.time()) - 172800
-        assert ccm_render.format_elapsed(ts) == "2d"
+    def test_hours_single_digit_padded(self):
+        ts = int(time.time()) - 2 * 3600
+        assert ccm_render.format_elapsed(ts) == " 2h"
+
+    def test_days_single_digit_padded(self):
+        ts = int(time.time()) - 2 * 86400
+        assert ccm_render.format_elapsed(ts) == " 2d"
 
     def test_zero_returns_empty(self):
         assert ccm_render.format_elapsed(0) == ""
@@ -82,7 +98,25 @@ class TestFormatElapsed:
     def test_at_min_display_threshold_renders(self):
         ts = int(time.time()) - ccm_render.MIN_ELAPSED_DISPLAY_SEC
         rendered = ccm_render.format_elapsed(ts)
-        assert rendered == f"{ccm_render.MIN_ELAPSED_DISPLAY_SEC}s"
+        # MIN_ELAPSED_DISPLAY_SEC is currently 3, so " 3s" (padded).
+        # Use the constant in the expected so the test self-updates
+        # if the threshold ever changes.
+        assert rendered == f"{ccm_render.MIN_ELAPSED_DISPLAY_SEC:>2d}s"
+
+    def test_width_is_constant_three_cols(self):
+        """All non-empty returns from format_elapsed must be 3 visible
+        cols. The right-anchored dashboard slot relies on this — a
+        4-char return (e.g. from a future "999s" overflow) would push
+        the elapsed marker past the row's right edge."""
+        now = int(time.time())
+        # Sample a few values per magnitude band
+        for age in (3, 5, 10, 30, 59, 60, 120, 1799, 3600, 7200, 86399, 86400, 172800):
+            ts = now - age
+            s = ccm_render.format_elapsed(ts)
+            assert s == "" or len(s) == 3, (
+                f"elapsed={age}s produced {s!r} (len={len(s)}); "
+                f"required width is 3"
+            )
 
 
 class TestSignalAgeSuffix:
