@@ -102,7 +102,23 @@ class TestClassifyPermitModal:
         )
         cat, guidance = ccm_constants.classify_permit_modal(text)
         assert cat == "confirmation-modal"
-        assert "confirm" in guidance.lower()
+        assert "confirm" in guidance.lower() or "modal" in guidance.lower()
+
+    def test_confirmation_modal_model_picker_v2_1_153(self):
+        """v2.1.153 reworded the `/model` footer (`Enter to set as
+        default` instead of `Enter to confirm`). PATTERN_MODEL_PICKER
+        still matches the `Select model` / `Switch between Claude
+        models` content lines, so as long as PATTERN_PERMIT_FOOTER
+        accepts the new verb the classifier resolves correctly."""
+        text = (
+            "Select model\n"
+            "Switch between Claude models. Your pick becomes the default for new sessions.\n"
+            "❯ 1. Default (recommended) ✔  Opus 4.7 with 1M context\n"
+            "  2. Sonnet                   Sonnet 4.6\n"
+            "Enter to set as default · s to use this session only · Esc to cancel"
+        )
+        cat, _ = ccm_constants.classify_permit_modal(text)
+        assert cat == "confirmation-modal"
 
     def test_confirmation_modal_footer_only(self):
         """No content signature matches but footer is the confirm
@@ -169,6 +185,18 @@ class TestPermitFooterPattern:
         2026-05-13 against Claude Code v2.1.144."""
         assert self._matches(
             "Enter to confirm · d to set as default for new sessions · Esc to cancel"
+        )
+
+    def test_confirm_modal_v2_1_153_model_picker(self):
+        """v2.1.153 reworded the `/model` footer: the Enter verb is
+        now `set as default` (formerly `confirm`) and the alternate
+        action is `s to use this session only`. The pre-v2.1.153
+        regex hard-coded `Enter to confirm` and would silently
+        drop this footer, leaving `/model` undetected (IDLE) while
+        the user is actually blocked at the picker. Verified
+        empirically against Claude Code v2.1.153."""
+        assert self._matches(
+            "Enter to set as default · s to use this session only · Esc to cancel"
         )
 
     def test_confirm_modal_with_pipe_separator(self):

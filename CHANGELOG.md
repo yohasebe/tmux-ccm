@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `/model` picker is detected as PERMIT again on Claude Code v2.1.153+. Upstream reworded the picker's footer from `Enter to confirm · … · Esc to cancel` (the prefix `PATTERN_PERMIT_FOOTER` matched verbatim) to `Enter to set as default · s to use this session only · Esc to cancel` — the Enter verb is no longer literally `confirm`, so the pre-fix regex silently dropped the footer and ccm classified the open picker as IDLE. The dashboard showed `●` instead of `⚠`, no PERMIT notification fired, and `ccm send` would have happily delivered keystrokes into the open modal. The regex now matches the structural shape `Enter to <verb> · … · Esc to <verb>` (separator-anchored: `·` or `|`, not `,`), which keeps free-navigation slash menus (/skills, /resume v2.1.144+) correctly excluded while absorbing any future upstream wording changes to the Enter verb. The content-level modal classifier (`PATTERN_MODEL_PICKER`) was already wording-agnostic, so once the footer matches the modal still resolves to `confirmation-modal` and `ccm send` produces the correct guidance.
+
 ## [0.4.0] - 2026-05-24
 
 ### Added

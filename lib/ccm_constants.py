@@ -139,31 +139,27 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 #   - "Enter to confirm · Esc to cancel"      (session-resume modal)
 #   - "Enter to confirm · Esc to exit"        (/model picker, pre-v2.1.144)
 #   - "Enter to confirm · d to set as default for new sessions · Esc to cancel"
-#                                             (/model picker, v2.1.144+)
+#                                             (/model picker, v2.1.144–v2.1.152)
+#   - "Enter to set as default · s to use this session only · Esc to cancel"
+#                                             (/model picker, v2.1.153+)
 #
 # All map to the PERMIT state because semantically Claude is
 # blocked pending a single user action — the UX is the same as a
 # permission prompt. A fifth "MODAL" state would split hairs
 # without benefit.
 #
-# The Esc-verb after "Enter to confirm" varies per modal author
-# (cancel / exit observed so far; Claude Code upstream is not
-# consistent). `Esc to \w+` is intentionally permissive for the
-# confirm-modal branch — the `Enter to confirm` prefix is strong
-# enough that false-positive risk is negligible, and this future-
-# proofs against new modals that pick yet another verb (close,
-# quit, dismiss, ...).
-#
-# Intermediate-segment tolerance: v2.1.144 introduced extra
-# action keys between `Enter to confirm` and `Esc to <verb>` on
-# the /model picker (`· d to set as default for new sessions ·`).
-# Treating these as opaque non-newline filler keeps the matcher
-# resilient against future upstream additions without enumerating
-# every possible middle segment. The line-start anchor + the fact
-# that detect_pane_state() checks the captured-pane TAIL keeps
-# false-positive risk low even with this relaxation — body text
-# containing both phrases would not appear at line start of the
-# pane's last lines.
+# The verb after "Enter to" varies per modal AND per version
+# (confirm / set as default / ... — Claude Code upstream renames
+# freely between releases). The discriminator that actually
+# matters is the `·` (or `|`) separator structure: blocking
+# modals describe each key with `Key to <action>` segments joined
+# by `·`, while free-navigation slash menus (/skills, /resume from
+# v2.1.144+, ...) join their hints with commas. Matching on that
+# structure instead of a literal verb keeps the regex resilient
+# against upstream wording drift without enumerating every
+# possible verb. Esc-verb after `Esc to` is also permissive
+# (`\w+`) for the same reason — cancel / exit / close / quit /
+# dismiss have all been observed.
 #
 # Anchored at line start (after optional whitespace) so the same
 # words inside a Claude response — e.g. "use ctrl+e to explain" in
@@ -176,7 +172,7 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 PATTERN_PERMIT_FOOTER = re.compile(
     r"^\s*(?:"
     r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
-    r"|Enter to confirm\b[^\n]*?\bEsc to \w+"
+    r"|Enter to \S[^\n]*?\s*(?:·|\|)\s*[^\n]*?\bEsc to \w+"
     r")"
 )
 
@@ -230,10 +226,10 @@ _PERMIT_GUIDANCE = {
         "Confirmation modal (e.g., /model picker, /exit).\n"
         "Safe to dismiss but requires a user decision.\n"
         "User action required: switch to the target pane and\n"
-        "respond per the footer keys — typically Enter to confirm\n"
-        "and Esc to cancel; some modals expose extras (e.g. the\n"
-        "/model picker's `d` to set as default for new sessions\n"
-        "in Claude Code v2.1.144+)."
+        "respond per the footer keys — Enter and Esc are always\n"
+        "present, plus any per-modal extras (e.g. v2.1.153+\n"
+        "/model picker offers `s` to set the model for the\n"
+        "current session only)."
     ),
     "unknown-permit": (
         "Unrecognized PERMIT modal. Treat as dangerous by default.\n"
@@ -313,11 +309,12 @@ def classify_permit_modal(pane_text: str):
     elif PATTERN_MODEL_PICKER.search(pane_text):
         cat = "confirmation-modal"
     elif PATTERN_PERMIT_FOOTER.search(pane_text):
-        # Footer says "Enter to confirm · Esc to ..." but no
-        # content-level signature matched — treat as a generic safe
-        # confirmation rather than unknown. Permission dialogs are
-        # caught above, so what remains is almost always a /<slash>
-        # confirm or a not-yet-cataloged confirm modal.
+        # Footer has the "Enter to … · Esc to …" blocking-modal
+        # shape but no content-level signature matched — treat as
+        # a generic safe confirmation rather than unknown.
+        # Permission dialogs are caught above, so what remains is
+        # almost always a /<slash> confirm or a not-yet-cataloged
+        # confirm modal.
         cat = "confirmation-modal"
     else:
         cat = "unknown-permit"

@@ -239,6 +239,35 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
 
     @patch("ccm_core.tmux_cmd")
+    def test_permit_from_model_picker_v2_1_153_footer(self, mock_tmux):
+        """v2.1.153 reworded the `/model` footer:
+            `Enter to set as default · s to use this session only · Esc to cancel`
+        The Enter verb is no longer literally `confirm`. The
+        pre-v2.1.153 regex required `Enter to confirm` and would
+        miss this entirely, leaving `/model` showing as IDLE while
+        the user is actually blocked at the picker. The relaxed
+        `Enter to \\S[^\\n]*? · ... · Esc to <verb>` shape catches
+        this without regressing free-nav slash menus.
+        """
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        mock_tmux.return_value = (
+            "Select model\n"
+            "Switch between Claude models. Your pick becomes the default for new sessions.\n"
+            "\n"
+            "  ❯ 1. Default (recommended) ✔  Opus 4.7 with 1M context\n"
+            "    2. Sonnet                   Sonnet 4.6\n"
+            "    3. Sonnet (1M context)      Sonnet 4.6 with 1M context\n"
+            "    4. Haiku                    Haiku 4.5\n"
+            "\n"
+            "  ◉ xHigh effort (default) ←/→ to adjust\n"
+            "\n"
+            "  Use /fast to turn on Fast mode (Opus 4.7).\n"
+            "\n"
+            "  Enter to set as default · s to use this session only · Esc to cancel"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
     def test_permit_from_session_resume_modal(self, mock_tmux):
         """The session-resume modal indents its `❯` cursor (so
         PATTERN_INPUT_PROMPT does NOT match at column 0) and uses
