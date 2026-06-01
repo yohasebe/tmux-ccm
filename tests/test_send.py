@@ -433,3 +433,122 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd"), pytest.raises(SystemExit):
             ccm_send.cmd_send(["blog", "--nope", "hi"])
+
+
+class TestSendTrace:
+    """`CCM_SEND_TRACE=1` opt-in mechanism that records every
+    send-keys call to `$CCM_TMP_DIR/send-trace.log`. Used to diff
+    sender intent vs receiver-perceived content when an operator
+    reports a drop. The trace itself must:
+
+      - Be inert when the env var is unset (no file created, no
+        extra subprocess calls).
+      - Be active when the env var is set (every send-keys logged,
+        send-start / send-end markers bracket the loop).
+      - Never block the send (file write errors are swallowed).
+    """
+
+    def _patch_resolution(self, monkeypatch, project=None, session="0"):
+        if project is None:
+            project = ccm_core.Project(
+                win_target="0:5", win_idx="5", name="blog",
+                directory="/tmp/blog", state="IDLE",
+            )
+        monkeypatch.setattr(ccm_core, "get_session", lambda: session)
+        monkeypatch.setattr(
+            ccm_core, "find_window",
+            lambda sess, name: project.win_idx if name == project.name else None,
+        )
+        monkeypatch.setattr(
+            ccm_core, "build_project_list", lambda fast=False: [project],
+        )
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        return project
+
+    def test_trace_off_creates_no_log(self, monkeypatch, tmp_path):
+        """Default state — `CCM_SEND_TRACE` unset — leaves no trace
+        artefact. Important because operators run `ccm send` in
+        every interactive session; an always-on log file would
+        balloon over time and could expose typed prompts to anyone
+        reading $TMPDIR."""
+        monkeypatch.delenv("CCM_SEND_TRACE", raising=False)
+        monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd"):
+            ccm_send.cmd_send(["blog", "hello\nworld"])
+        assert not (tmp_path / "send-trace.log").exists()
+
+    def test_trace_on_records_each_send_keys_call(self, monkeypatch, tmp_path):
+        """`CCM_SEND_TRACE=1` records:
+          - pre-cancel  (the `-X cancel` cleanup),
+          - send-start  (one marker with project / line / byte counts),
+          - one line:N  per non-empty line,
+          - one newline:N  between lines,
+          - final-submit  (the closing Enter),
+          - send-end  (closing marker).
+
+        Each row is tab-separated `<unix-ts>\\t<target>\\t<label>\\t<keys-repr>`."""
+        monkeypatch.setenv("CCM_SEND_TRACE", "1")
+        monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd"):
+            ccm_send.cmd_send(["blog", "line1\nline2"])
+        log = (tmp_path / "send-trace.log").read_text().splitlines()
+        labels = [row.split("\t")[2] for row in log]
+        assert "pre-cancel" in labels
+        assert "send-start" in labels
+        assert "line:0" in labels
+        assert "newline:0" in labels
+        assert "line:1" in labels
+        assert "final-submit" in labels
+        assert "send-end" in labels
+
+    def test_trace_records_literal_line_content(self, monkeypatch, tmp_path):
+        """The trace must preserve the literal text exactly as it was
+        sent to `tmux send-keys -l <line>` — that's the whole point
+        of capturing it. Embedded spaces, brackets, and non-ASCII
+        must survive the `repr()` round-trip."""
+        monkeypatch.setenv("CCM_SEND_TRACE", "1")
+        monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
+        self._patch_resolution(monkeypatch)
+        payload = "  indented 【test】 日本語"
+        with patch("ccm_core.tmux_cmd"):
+            ccm_send.cmd_send(["blog", payload])
+        log = (tmp_path / "send-trace.log").read_text()
+        # The line row should contain repr() of (`-l`, payload) tuple.
+        assert repr(payload) in log
+        assert "'-l'" in log
+
+    @pytest.mark.parametrize("flag_value", ["0", "false", "off", "no", ""])
+    def test_trace_off_for_negative_values(self, monkeypatch, tmp_path, flag_value):
+        """`CCM_SEND_TRACE=0` (and other falsy spellings) must NOT
+        enable tracing. Operators export the var globally for one
+        debugging session and forget to unset it; reading falsy
+        values as off keeps the leak window small."""
+        monkeypatch.setenv("CCM_SEND_TRACE", flag_value)
+        monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd"):
+            ccm_send.cmd_send(["blog", "hi"])
+        assert not (tmp_path / "send-trace.log").exists()
+
+    def test_trace_write_failure_does_not_block_send(self, monkeypatch, tmp_path):
+        """The trace path being non-writable (disk full, permissions,
+        $TMPDIR unwritable) must not break the actual send. The
+        feature is diagnostic — its absence is acceptable, but
+        breaking the message delivery would be a serious regression."""
+        monkeypatch.setenv("CCM_SEND_TRACE", "1")
+        # Point CCM_TMP_DIR at a file (not a directory) so open()
+        # raises OSError on every trace attempt.
+        bad_path = tmp_path / "not-a-dir"
+        bad_path.write_text("blocker")
+        monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(bad_path))
+        self._patch_resolution(monkeypatch)
+        # The send itself must still complete (no exception).
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_send.cmd_send(["blog", "hi"])
+        # Specifically: the literal send-keys still fired despite
+        # the trace write failures.
+        calls = [tuple(c.args) for c in mock_tmux.call_args_list]
+        assert ("send-keys", "-t", "0:5", "-l", "hi") in calls

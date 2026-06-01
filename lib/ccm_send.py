@@ -40,6 +40,47 @@ import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 from ccm_constants import CLAUDE_CMD
 
 
+# ─── Opt-in send trace ───
+# `CCM_SEND_TRACE=1 ccm send ...` appends a per-keystroke log to
+# `$CCM_TMP_DIR/send-trace.log`. Used to diff sender vs receiver
+# when an operator reports "ccm send dropped content" — the trace
+# captures exactly what tmux send-keys saw, so we can rule the ccm
+# layer in or out without round-tripping diagnostic round-trips.
+#
+# Zero overhead when the env var is unset: a single dict lookup
+# per call on the message-delivery loop. The trace file is best-
+# effort (silent OSError) so a non-writable log directory cannot
+# block a send.
+def _trace_enabled():
+    return os.environ.get("CCM_SEND_TRACE", "").lower() in ("1", "true", "yes", "on")
+
+
+def _trace_record(win_target, label, keys):
+    """Append one send-keys event. Format is tab-separated:
+        <unix-ts>\t<win_target>\t<label>\t<key1> <key2> ...
+    Keys are repr'd so embedded whitespace / control chars survive
+    a later `cut`/`awk` pass."""
+    try:
+        path = os.path.join(ccm_core.CCM_TMP_DIR, "send-trace.log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        keys_repr = " ".join(repr(k) for k in keys)
+        with open(path, "a") as f:
+            f.write(f"{time.time():.3f}\t{win_target}\t{label}\t{keys_repr}\n")
+    except OSError:
+        pass  # diagnostic logging must never block the send
+
+
+def _send_keys(win_target, *keys, label=""):
+    """tmux send-keys wrapper with optional CCM_SEND_TRACE logging.
+    When trace is disabled (the default), this is equivalent to a
+    direct `ccm_core.tmux_cmd("send-keys", ...)` call with one extra
+    dict lookup. When enabled, the call is recorded first, then
+    delegated to tmux normally."""
+    if _trace_enabled():
+        _trace_record(win_target, label, keys)
+    ccm_core.tmux_cmd("send-keys", "-t", win_target, *keys)
+
+
 # Maximum seconds to wait for a `--start`-launched target to
 # reach IDLE before refusing. Tuned for two real scenarios:
 #
@@ -374,20 +415,26 @@ def cmd_send(args):
     # Defensively exit any tmux mode on the target pane. Without this,
     # a pane stuck in copy-mode would interpret the message characters
     # as copy-mode bindings rather than typed input.
-    ccm_core.tmux_cmd("send-keys", "-t", win_target, "-X", "cancel")
+    _send_keys(win_target, "-X", "cancel", label="pre-cancel")
 
     # Literal send, converting `\n` into M-Enter (Claude Code's
     # "newline without submit" key) so the body is delivered as a
     # single multi-line prompt rather than multiple submitted turns.
     lines = message.split("\n")
+    if _trace_enabled():
+        _trace_record(win_target, "send-start",
+                      (f"project={project_name}", f"lines={len(lines)}",
+                       f"bytes={len(message)}"))
     for line_i, line in enumerate(lines):
         if line:
-            ccm_core.tmux_cmd("send-keys", "-t", win_target, "-l", line)
+            _send_keys(win_target, "-l", line, label=f"line:{line_i}")
         if line_i < len(lines) - 1:
-            ccm_core.tmux_cmd("send-keys", "-t", win_target, "M-Enter")
+            _send_keys(win_target, "M-Enter", label=f"newline:{line_i}")
 
     # Final submit (unless --no-enter)
     if not no_enter:
-        ccm_core.tmux_cmd("send-keys", "-t", win_target, "Enter")
+        _send_keys(win_target, "Enter", label="final-submit")
+    if _trace_enabled():
+        _trace_record(win_target, "send-end", (f"project={project_name}",))
 
     ccm_core.ccm_info(f"Sent to {project_name}")
