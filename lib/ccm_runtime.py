@@ -28,6 +28,7 @@ modules directly.
 import os
 import time
 
+import ccm_constants
 import ccm_core
 import ccm_detection
 import ccm_snapshot
@@ -140,8 +141,22 @@ def auto_exit_idle(projects):
             time.sleep(0.1)
             ccm_core.tmux_cmd("send-keys", "-t", win_target, "/exit", "Enter")
             time.sleep(0.5)
-            # Clear the pane so auto-restart shows a clean screen.
-            ccm_core.tmux_cmd("send-keys", "-t", win_target, "clear", "Enter")
+            # Send `clear` ONLY if the pane has actually returned to a
+            # shell foreground command. `/exit` can take longer than the
+            # 0.5 s wait on sessions with heavy conversation history
+            # (Claude's shutdown is context-size sensitive); if Claude
+            # is still the foreground process, send-keys would deliver
+            # `clear\n` as literal text into Claude's input box and
+            # submit it as a user prompt. `tmux_cmd` returns "" on
+            # timeout / non-zero exit, so empty / unknown / non-shell
+            # responses all fail-safe to "skip the clear" (cosmetic
+            # cost: stale screen on next attach; safety win: no stray
+            # keystrokes into a live Claude).
+            current_cmd = ccm_core.tmux_cmd(
+                "display-message", "-t", win_target, "-p", "#{pane_current_command}"
+            )
+            if current_cmd in ccm_constants.SHELL_FOREGROUND_COMMANDS:
+                ccm_core.tmux_cmd("send-keys", "-t", win_target, "clear", "Enter")
             ccm_detection._set_win_state(win_target, "SHELL")
             # Force autosave after auto-exit to preserve project in snapshot.
             _force_autosave()
