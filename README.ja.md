@@ -6,6 +6,10 @@
 <br clear="left">
 <br>
 
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.161-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
+
 ccm は、[Claude Code](https://docs.anthropic.com/en/docs/claude-code) を複数プロジェクトで並行して使う開発者のための tmux プラグインです。各 Claude セッションをタグ付きの tmux ウィンドウとして扱い、状態をライブで検出するので、「どれが応答中で、どれが許可待ちで、どれは終わってるんだっけ」と tmux ウィンドウを行き来する必要がなくなります。
 
 実質的に **アテンション・マネージャ** として動きます。各プロジェクトに状態 (BUSY / IDLE / 許可待ち) を付与し、ダッシュボードはそれを優先度順に並べ、キー 1 つで「次に対応すべきウィンドウ」に移動できます。

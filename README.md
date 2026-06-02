@@ -6,6 +6,10 @@
 <br clear="left">
 <br>
 
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.161-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
+
 ccm is a tmux plugin for developers who run [Claude Code](https://docs.anthropic.com/en/docs/claude-code) across several projects at once. Each Claude session becomes a tagged tmux window with live state detection — so you stop tabbing through windows trying to remember which is mid-response, which is waiting for your approval, and which is idle.
 
 It's effectively an **attention manager**: every project gets a state (BUSY / IDLE / waiting for permission), the dashboard sorts them by urgency, and one keystroke takes you to whichever needs you next.
