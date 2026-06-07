@@ -31,6 +31,7 @@ import time
 import ccm_constants
 import ccm_core
 import ccm_detection
+import ccm_pane_state
 import ccm_snapshot
 
 
@@ -136,10 +137,59 @@ def auto_exit_idle(projects):
 
         idle_duration = now - idle_since
         if idle_duration >= idle_timeout:
+            # Target the Claude pane specifically, NOT `win_target`
+            # (which routes send-keys to the window's currently
+            # active pane). If the user split off a shell pane and
+            # left focus on it, send-keys to the window would land
+            # the Escape + `/exit` + Enter sequence in the shell:
+            # in emacs mode Esc becomes the meta prefix, Esc + `/`
+            # is the no-op `complete` widget on an empty prompt, the
+            # literal `exit` characters then fill the buffer, and
+            # the trailing Enter submits `exit` to the shell —
+            # silently killing the user's pane some indeterminate
+            # time after they last touched it.
+            #
+            # The Claude pane is identified by walking each pane's
+            # process tree (the same `find_claude_pid` lookup the
+            # rest of state detection uses), NOT by string-matching
+            # `#{pane_current_command}`. On a standard claude.ai
+            # install the binary lives at .../versions/<X.Y.Z>/
+            # with `claude` as a symlink; macOS's `proc_pidinfo`
+            # then reports `pane_current_command` as the version
+            # string (e.g. "2.1.167") instead of "claude". `ps`'s
+            # `comm` field is "claude" though (Claude Code sets
+            # `p_comm` explicitly), so the process-tree path stays
+            # correct across installs while string-matching the
+            # foreground command would silently mis-fire.
+            panes_raw = ccm_core.tmux_cmd(
+                "list-panes", "-t", win_target,
+                "-F", "#{pane_index}\t#{pane_pid}"
+            )
+            # `ps_snapshot()` returns the raw stdout string; the
+            # process-tree helpers iterate over lines, so split here.
+            # Without this `find_claude_pid` walks one character at a
+            # time and never matches anything, which is what made the
+            # first cut of this fix silently no-op forever.
+            ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+            claude_pane = None
+            for line in (panes_raw or "").split("\n"):
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                if ccm_pane_state.find_claude_pid(parts[1], ps_lines):
+                    claude_pane = f"{win_target}.{parts[0]}"
+                    break
+            if not claude_pane:
+                # No pane currently hosts a Claude process — the
+                # window may be transitioning, Claude was already
+                # backgrounded, or the user manually exited.
+                # Defensive skip; the next polling cycle re-evaluates.
+                continue
+
             # Cancel any partial input, then cleanly exit Claude Code.
-            ccm_core.tmux_cmd("send-keys", "-t", win_target, "Escape")
+            ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "Escape")
             time.sleep(0.1)
-            ccm_core.tmux_cmd("send-keys", "-t", win_target, "/exit", "Enter")
+            ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "/exit", "Enter")
             time.sleep(0.5)
             # Send `clear` ONLY if the pane has actually returned to a
             # shell foreground command. `/exit` can take longer than the
@@ -153,10 +203,10 @@ def auto_exit_idle(projects):
             # cost: stale screen on next attach; safety win: no stray
             # keystrokes into a live Claude).
             current_cmd = ccm_core.tmux_cmd(
-                "display-message", "-t", win_target, "-p", "#{pane_current_command}"
+                "display-message", "-t", claude_pane, "-p", "#{pane_current_command}"
             )
             if current_cmd in ccm_constants.SHELL_FOREGROUND_COMMANDS:
-                ccm_core.tmux_cmd("send-keys", "-t", win_target, "clear", "Enter")
+                ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "clear", "Enter")
             ccm_detection._set_win_state(win_target, "SHELL")
             # Force autosave after auto-exit to preserve project in snapshot.
             _force_autosave()

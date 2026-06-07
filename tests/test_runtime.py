@@ -81,58 +81,98 @@ class TestPeriodicAutosave:
 class TestAutoExitIdle:
     """`auto_exit_idle` walks ccm windows past the idle timeout, sends
     `/exit` to Claude, then `clear` to wipe the screen for the next
-    attach. The `clear` step is the regression hot-spot: if `/exit`
-    takes longer than the 0.5 s wait (heavy conversation history,
-    confirmation modals, …), Claude is still the foreground process
-    when `clear` arrives — and `send-keys "clear" "Enter"` delivers
-    literal text into Claude's input box, submitting it as a user
-    prompt. Empirically observed in long-session blog and ccm panes
-    in 2026-05-31, with the same mechanism explaining earlier "test"
-    one-word injections.
+    attach.
+
+    Two safety properties are pinned here:
+
+      1. `clear` must only be sent after `/exit` has completed. On
+         long sessions Claude's shutdown can exceed the 0.5 s wait
+         window; sending `clear` while Claude is still foreground
+         delivers literal text into its input box and submits it as
+         an unintended user prompt (observed live 2026-05-31, and
+         retro-explains earlier "test" one-word injections).
+      2. Every keystroke must be addressed to the Claude pane
+         directly, not to the window's active pane. If the user
+         split off a shell pane and left focus on it, `send-keys`
+         to the window-level target lands the Escape + `/exit` +
+         Enter sequence in the shell. In emacs mode that becomes
+         `Meta-/` (no-op completion) followed by the literal
+         characters `exit` plus Enter, silently killing the user's
+         shell pane some hours after they last touched it (reported
+         on the ccm-dev window itself, 2026-06-09).
 
     Coverage:
       - Happy path: shell foreground (`zsh`) → `clear` IS sent.
       - Race path:  Claude still alive (`claude`) → `clear` skipped.
-      - Failure path: tmux query returns "" → `clear` skipped (fail-safe).
+      - Failure path: tmux query returns "" → `clear` skipped.
+      - Pane targeting: keystrokes go to the Claude pane, even when
+        a non-Claude pane is active in the window.
+      - Defensive skip: no Claude pane in window → nothing fires.
     """
 
+    # `list-panes -F "#{pane_index}\t#{pane_pid}"` output for a
+    # single-pane window with the Claude pane at index 0 hosting
+    # a shell whose child is `claude`. Format: `<idx>\t<pane_pid>`.
+    DEFAULT_PANES_LISTING = "0\t1000"
+
+    # `ps_snapshot()` returns the raw stdout string from
+    # `ps -eo pid,ppid,pgid,comm,etime`. ccm_runtime splits it into
+    # lines via `.strip().split("\n")`; tests therefore mock the
+    # snapshot as a multi-line string, NOT a Python list. Earlier
+    # versions of these tests provided a list directly, which masked
+    # a production bug where ccm_runtime forgot to split the string
+    # (`find_claude_pid` then iterated character-by-character and
+    # returned None for every pane).
+    DEFAULT_PS_OUTPUT = (
+        "1000 999 1000 zsh 00:01:00\n"
+        "1001 1000 1001 claude 00:00:30\n"
+    )
+
     @staticmethod
-    def _build_tmux_side_effect(pane_current_command):
+    def _build_tmux_side_effect(post_exit_cmd, panes_listing):
         """Wire `tmux_cmd` so it returns the right value for each
         query auto_exit_idle makes during a single past-timeout pass.
 
         - idle-timeout option lookup → ""  (use IDLE_EXIT_TIMEOUT)
-        - display-message session → "main"
-        - display-message window  → "0"
+        - display-message session / window → "main" / "0"
         - list-windows -a -F      → one expired window (non-focused)
-        - display-message #{pane_current_command} → parameterised
+        - list-panes -t <win>     → `panes_listing` (default: single
+                                    pane at index 0 with pane_pid 1000)
+        - display-message -t <pane> #{pane_current_command} →
+                                    `post_exit_cmd` (parameterised:
+                                    zsh / "claude" / empty / version)
         - send-keys / set-option  → ""  (side effects only)
         """
         def side_effect(*args):
             if args[:2] == ("show-option", "-gqv"):
-                return ""  # fall through to IDLE_EXIT_TIMEOUT default
+                return ""
             if args[:2] == ("display-message", "-p"):
                 fmt = args[2]
                 if fmt == "#{session_name}":
                     return "main"
                 if fmt == "#{window_index}":
-                    return "0"  # current focused window
+                    return "0"
             if args[:2] == ("display-message", "-t"):
-                # `display-message -t <target> -p <format>`
                 fmt = args[-1]
                 if fmt == "#{pane_current_command}":
-                    return pane_current_command
+                    return post_exit_cmd
+            if args[0] == "list-panes":
+                return panes_listing
             if args[0] == "list-windows":
                 # Single ccm window at main:1 (NOT main:0 → not focused),
                 # IDLE for 9999 s (well past the 600 s default timeout).
-                old = "1"  # ancient unix ts; idle_since=max → 9999s+ ago
+                old = "1"
                 return f"main:1\tblog\tIDLE\t{old}\t{old}"
-            return ""  # send-keys, set-option, anything else — return value unused
+            return ""
         return side_effect
 
-    def _run(self, pane_current_command):
+    def _run(self, post_exit_cmd, panes_listing=None, ps_output=None):
+        if panes_listing is None:
+            panes_listing = self.DEFAULT_PANES_LISTING
+        if ps_output is None:
+            ps_output = self.DEFAULT_PS_OUTPUT
         send_calls = []
-        tmux_se = self._build_tmux_side_effect(pane_current_command)
+        tmux_se = self._build_tmux_side_effect(post_exit_cmd, panes_listing)
 
         def tmux_recorder(*args):
             if args and args[0] == "send-keys":
@@ -140,6 +180,7 @@ class TestAutoExitIdle:
             return tmux_se(*args)
 
         with patch("ccm_core.tmux_cmd", side_effect=tmux_recorder), \
+             patch("ccm_core.ps_snapshot", return_value=ps_output), \
              patch("ccm_detection._set_win_state"), \
              patch("ccm_runtime._force_autosave"), \
              patch("ccm_runtime.time.sleep"):
@@ -162,7 +203,7 @@ class TestAutoExitIdle:
         (heavy session, confirmation modal, slow shutdown). pane
         foreground is still `claude`. ccm MUST NOT send `clear` —
         otherwise the literal text leaks into Claude's input box as
-        an unintended user prompt. This is the bug we're fixing."""
+        an unintended user prompt."""
         send_calls = self._run("claude")
         sent_strings = [c[3] for c in send_calls if len(c) >= 4]
         assert "clear" not in sent_strings, (
@@ -182,3 +223,77 @@ class TestAutoExitIdle:
             f"`clear` was sent despite a failed pane_current_command "
             f"query — should fail-safe to skip. send-keys: {send_calls}"
         )
+
+    def test_send_keys_targets_claude_pane_not_active_pane(self):
+        """Pane targeting bug fix (2026-06-09): when the window's
+        active pane is NOT the Claude pane (e.g., user split off a
+        shell pane for `ccm update` and left focus on it), every
+        send-keys must address the Claude pane directly via
+        `win:idx.pane_idx`. Without this, the Escape + `/exit` +
+        Enter sequence lands in the user's shell: Meta-/ on an
+        empty prompt is a no-op completion, the literal characters
+        `exit` fill the buffer, and Enter submits `exit` to the
+        shell — silently killing the user's pane."""
+        # Window has shell at pane 0 (pid 2000, no claude child) and
+        # the Claude pane at index 1 (pid 1000 → claude child 1001).
+        ps_output = (
+            "2000 999 2000 zsh 00:01:00\n"           # pane 0 shell, no claude
+            "1000 999 1000 zsh 00:01:00\n"           # pane 1 shell
+            "1001 1000 1001 claude 00:00:30\n"       # claude under pane 1's shell
+        )
+        send_calls = self._run(
+            "zsh",
+            panes_listing="0\t2000\n1\t1000",
+            ps_output=ps_output,
+        )
+        targets = [c[2] for c in send_calls if len(c) >= 3]
+        assert targets, "no send-keys fired; expected the auto-exit sequence"
+        assert all(t == "main:1.1" for t in targets), (
+            f"send-keys leaked to a non-Claude pane: {send_calls}. "
+            "Auto-exit must target `win:idx.pane_idx` for the Claude pane "
+            "so a focused shell pane never receives the keystrokes."
+        )
+
+    def test_skipped_when_no_claude_pane_in_window(self):
+        """Defensive skip: if no pane in the window currently has a
+        `claude` descendant in its process tree (mid-transition,
+        recently exited, detection race), auto-exit must not fire
+        any keystrokes — there is no safe target. The next polling
+        cycle will re-evaluate the window."""
+        ps_output = (
+            "1000 999 1000 zsh 00:01:00\n"           # plain shell
+            "2000 999 2000 nvim 00:00:30\n"          # editor, not claude
+        )
+        send_calls = self._run(
+            "zsh",
+            panes_listing="0\t1000\n1\t2000",
+            ps_output=ps_output,
+        )
+        assert send_calls == [], (
+            f"auto-exit fired send-keys with no Claude pane present: "
+            f"{send_calls}. Should defer to the next polling cycle."
+        )
+
+    def test_claude_pane_found_when_pane_current_command_is_version(self):
+        """Real-world regression (2026-06-09): on standard claude.ai
+        installs the binary lives at `.../versions/<X.Y.Z>/`, with
+        `claude` as a symlink. macOS's `proc_pidinfo` reports the
+        version basename as `#{pane_current_command}` (e.g.
+        "2.1.167"), so a fix that string-matched the foreground
+        command would never identify the Claude pane and auto-exit
+        would silently no-op forever. `ps`'s `comm` field is still
+        "claude" though, so the process-tree path (`find_claude_pid`
+        against `ps_snapshot`) keeps working — pin that here."""
+        # post_exit_cmd is the VERSION string (what tmux returns):
+        # `pane_current_command` shows "2.1.167" instead of "claude",
+        # but the ps-based pane lookup still finds the Claude child.
+        send_calls = self._run("2.1.167")
+        targets = [c[2] for c in send_calls if len(c) >= 3]
+        assert targets, (
+            "auto-exit failed to fire even though ps shows a claude "
+            "child of the pane shell. The process-tree lookup must "
+            "not depend on `#{pane_current_command}` matching `claude`."
+        )
+        # All keystrokes go to the Claude pane (`main:1.0`); the
+        # default scaffold puts Claude at pane index 0.
+        assert all(t == "main:1.0" for t in targets), send_calls
