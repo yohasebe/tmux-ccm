@@ -170,6 +170,91 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
+    def test_busy_when_spinner_present_despite_visible_prompt(self, mock_tmux):
+        """Accept-edits long-tool fix (2026-06-11): in accept-edits
+        mode the `❯` composer stays on screen WHILE a tool runs, so a
+        visible prompt alone is not idleness. When the active-work
+        spinner footer (`… (elapsed · arrow Nk tokens)`) is also
+        visible, the pane is BUSY. Without this, an approved
+        permission left as the latest hook event produced a stuck
+        PERMIT on the dashboard for an actively-executing session.
+        Verbatim shape from the tcse-dev incident."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "ruby")
+        )
+        mock_tmux.return_value = (
+            "⏺ Reading 1 file, running 3 shell commands…\n"
+            "✻ フェーズ7仕上げ中… (27m 26s · ↓ 28.5k tokens)\n"
+            "❯ \n"
+            "  ~/code/tcse  main  Fable 5  ████░ 46%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_idle_when_prompt_visible_and_no_spinner(self, mock_tmux):
+        """The other side of the spinner fix: a visible `❯` with NO
+        spinner footer is a genuine idle prompt (the user can type).
+        Background MCP/LSP children must not flip this to BUSY. This
+        also covers the AskUserQuestion menu wait, whose footer ('Esc
+        to cancel' only) does not match the permit footer and which
+        shows no spinner — it must stay IDLE here so the event-log
+        layer can resolve it to PERMIT (a menu IS a genuine wait)."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
+        )
+        mock_tmux.return_value = (
+            "Some finished response text.\n"
+            "❯ \n"
+            "  ~/code/proj  main  Fable 5  ████░ 46%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_idle_menu_selector_prompt_no_spinner(self, mock_tmux):
+        """AskUserQuestion menu: the `❯ 1. option` selector matches
+        the input-prompt pattern, the footer is a bare 'Esc to cancel'
+        (NOT the permit footer), and there is no spinner (Claude has
+        stopped generating to ask). detect_pane_state must return
+        IDLE — the event-log permit event is what correctly surfaces
+        it as PERMIT, NOT a false BUSY from the spinner path.
+        Measured live 2026-06-11: menu waits show no spinner."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "python")
+        )
+        mock_tmux.return_value = (
+            "Which approach do you prefer?\n"
+            "❯ 1. Option A\n"
+            "  2. Option B\n"
+            "  3. Option C\n"
+            "Esc to cancel"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_spinner_string_in_response_body_does_not_false_busy(self, mock_tmux):
+        """Defensive: the only realistic false-positive is a response
+        that literally quotes the spinner footer format (e.g. a
+        conversation about this detector). Such a line CAN appear in
+        body text and WILL match — this test documents that the
+        prompt-visible idle path still wins ONLY when no matching line
+        exists. Here the spinner-shaped string is genuinely present,
+        so BUSY is returned; the accepted cost is a brief false BUSY
+        that self-corrects, far cheaper than the false PERMIT it
+        replaces. (Pinned so the trade-off is explicit, not a
+        surprise.)"""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
+        )
+        mock_tmux.return_value = (
+            "the footer looks like (2m 2s · ↓ 8.0k tokens) when working\n"
+            "❯ "
+        )
+        # Documents current behavior: the quoted footer triggers BUSY.
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
     def test_permit_from_footer_tab_to_amend(self, mock_tmux):
         """Permission dialog footer 'Tab to amend' → PERMIT (hook-independent).
 

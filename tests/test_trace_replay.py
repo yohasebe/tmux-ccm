@@ -137,51 +137,45 @@ class TestPermitLongTool20260610:
         )
         assert state == "BUSY"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known hole (2026-06-10 incident): an approved permission "
-            "followed by a long-running tool leaves permit_req/"
-            "notify_permit as the newest events; with raw=IDLE (input "
-            "prompt visible) and JSONL older than the permit event, "
-            "classify_activity returns AWAITING_PERMIT and the "
-            "dashboard shows PERMIT for a session that is actively "
-            "executing. Desired: BUSY. Fix design tracked in memory "
-            "project_false_idle_long_tool.md; when it lands this "
-            "xfail flips to an error — remove the marker and the "
-            "probe becomes a permanent regression guard."
-        ),
-    )
-    def test_approved_permission_long_tool_should_be_busy(self):
-        """THE BUG WINDOW. T=22:26:40, 3.5 min after the permission
-        was approved, rspec still running, posttool 2 min away.
+    def test_approved_permission_long_tool_is_busy_with_spinner_raw(self):
+        """THE BUG WINDOW, NOW FIXED (2026-06-11). T=22:26:40, 3.5 min
+        after the permission was approved, rspec still running.
 
-        Inputs verbatim from the incident:
-          - jsonl_stop_reason="tool_use": the assistant's rspec
-            tool_use record is the latest real activity.
-          - jsonl_age=199: that record was written at the pretool
-            (1781097801); nothing since (long shell command).
-            NOTE: older than the permit event (age 193) → the
-            'JSONL strictly fresher' promotion correctly does not
-            fire.
-          - raw="IDLE": `❯` visible in the claude pane (queued-input
-            UI), second pane plain zsh.
+        The fix landed at the RAW layer, not here: `detect_pane_state`
+        now returns raw=BUSY when an active-work spinner footer
+        (`… (elapsed · arrow Nk tokens)`) is visible alongside the
+        `❯` composer (accept-edits keeps the composer on screen during
+        execution). With raw=BUSY, classify_activity's permit branch
+        promotes to IN_PROGRESS. So in production the dashboard now
+        shows BUSY for this window.
+
+        This probe pins the derive layer with raw="BUSY" — the value
+        the spinner-aware detector now produces for a long tool
+        running under an approved permission.
+
+        Inputs verbatim from the incident except raw, which reflects
+        the post-fix detector output:
+          - jsonl_stop_reason="tool_use", jsonl_age=199 (unchanged)
+          - raw="BUSY": spinner present → detect_pane_state(BUSY).
         """
         state = replay_at(
             self.EVENTS, now=1781098000,
-            jsonl_stop_reason="tool_use", jsonl_age=199, raw="IDLE",
+            jsonl_stop_reason="tool_use", jsonl_age=199, raw="BUSY",
         )
         assert state == "BUSY"
 
-    def test_bug_window_current_behavior_is_permit(self):
-        """Companion to the xfail above: pin what the CURRENT code
-        does in the bug window, so the eventual fix is forced to
-        touch exactly this expectation (delete this test, un-xfail
-        the one above) rather than drifting both silently. The
-        PERMIT answer is not *wrong* given the inputs the function
-        sees — it is the documented conservative trade-off from the
-        interactive-menu false-BUSY fix. The corpus records it so
-        the trade-off stays visible."""
+    def test_classify_activity_alone_still_permit_on_raw_idle(self):
+        """Layer boundary: the fix is in raw computation, NOT in
+        classify_activity. If raw were still IDLE here (pre-fix
+        detector, or a future UI change that hides the spinner),
+        classify_activity STILL returns PERMIT — the event-log layer
+        genuinely cannot distinguish an approved-running tool from a
+        menu wait on its own (both: permit-latest, jsonl tool_use
+        older, raw IDLE). This probe documents WHY the fix had to live
+        at the raw layer: it is the only layer with the spinner
+        signal. If a refactor moves the discriminator into
+        classify_activity, this expectation changes and the move is
+        forced to be deliberate."""
         state = replay_at(
             self.EVENTS, now=1781098000,
             jsonl_stop_reason="tool_use", jsonl_age=199, raw="IDLE",

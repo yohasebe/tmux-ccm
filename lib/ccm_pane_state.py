@@ -34,6 +34,7 @@ from ccm_constants import (
     CLAUDE_PROCESS_NAME,
     IGNORED_CHILDREN,
     PATTERN_ACCEPT_EDITS,
+    PATTERN_ACTIVE_SPINNER,
     PATTERN_INPUT_PROMPT,
     PATTERN_PERMIT_FOOTER,
 )
@@ -129,12 +130,18 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
          before the tool subprocess spawns).
       4. Has live children + no input prompt anywhere visible →
          BUSY.
-      5. Has live children + input prompt visible somewhere in the
-         visible pane → IDLE. The prompt is searched across the
-         whole visible area (not just the bottom) because a long
-         multi-line user input pushes the `❯` row well above the
-         bottom 8 lines while the user is still composing.
-      6. No children → IDLE.
+      5. Has live children + input prompt visible + an active-work
+         spinner footer also visible → BUSY. In accept-edits mode
+         the `❯` composer stays on screen WHILE a tool runs, so a
+         visible prompt alone is not proof of idleness; the spinner
+         (`… (elapsed · arrow Nk tokens)`) is rendered only during
+         active generation / tool execution and disambiguates.
+      6. Has live children + input prompt visible + no spinner →
+         IDLE. The prompt is searched across the whole visible area
+         (not just the bottom) because a long multi-line user input
+         pushes the `❯` row well above the bottom 8 lines while the
+         user is still composing.
+      7. No children → IDLE.
     """
     claude_pid = find_claude_pid(pane_pid, ps_lines)
     if not claude_pid:
@@ -159,9 +166,27 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
         # row marks the top of the input area — when the user is
         # composing a multi-line message, the `❯` may be many rows
         # above the pane bottom while the user keeps typing.
-        for line in capture_pane_visible(pane_target):
-            if PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line):
-                return "IDLE"
+        visible = capture_pane_visible(pane_target)
+        prompt_visible = any(
+            PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line)
+            for line in visible
+        )
+        if prompt_visible:
+            # A visible `❯` normally means IDLE (queued-input box).
+            # But accept-edits mode keeps that box on screen while a
+            # tool runs, so check for the active-work spinner first:
+            # its incrementing `(elapsed · arrow Nk tokens)` footer
+            # appears only during generation / tool execution, never
+            # at a true idle prompt or during a menu / permission
+            # wait (Claude has stopped generating to ask). Present →
+            # the pane is BUSY despite the visible prompt. This is
+            # what un-sticks the false PERMIT when an approved
+            # permission is the latest hook event and a long tool is
+            # still running (see PATTERN_ACTIVE_SPINNER docstring).
+            for line in visible:
+                if PATTERN_ACTIVE_SPINNER.search(line):
+                    return "BUSY"
+            return "IDLE"
         return "BUSY"
 
     return "IDLE"

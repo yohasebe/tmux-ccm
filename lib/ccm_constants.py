@@ -131,6 +131,40 @@ _PROMPT_CHARS = "❯"
 _ACCEPT_CHARS = "❯⏵"
 PATTERN_INPUT_PROMPT = re.compile(rf"^[{_PROMPT_CHARS}]\s")
 PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
+
+# Active-work spinner footer. Claude Code renders a status line of
+# the shape `<glyph> <verb>… (<elapsed> · <arrow> <N>k tokens)` ONLY
+# while it is actively generating or running a tool — e.g.
+#   "✻ フェーズ7仕上げ中… (27m 26s · ↓ 28.5k tokens)"
+#   "✶ Spelunking… (59s · ↑ 3.5k tokens)"
+# The animating glyph and the incrementing elapsed timer are what
+# the user sees "blinking". We match the structural tail — the
+# parenthesised `(elapsed · arrow Nk tokens)` group — NOT the glyph
+# (which cycles through many characters and changes between
+# releases) and NOT the verb (localised / arbitrary). The arrow +
+# `Nk tokens` counter is effectively never present in normal
+# conversation text, so the false-positive risk is limited to a
+# response that literally quotes this exact footer format (e.g. a
+# conversation about this very detector); such a case self-corrects
+# on the next turn and only matters in the permit-stuck window.
+#
+# WHY this signal exists: in accept-edits mode the `❯` composer
+# stays on screen WHILE a tool runs, so `detect_pane_state` would
+# read raw=IDLE during active execution. When an approved
+# permission is the latest hook event, that false IDLE makes the
+# event-log derive return a stuck PERMIT (the dashboard shows ⚠ for
+# a session that is actively working). This spinner is the ONLY
+# signal that distinguishes "approved tool running" (spinner
+# present) from "menu / permission wait" (spinner absent — Claude
+# has stopped generating to ask) and "true idle" (spinner absent).
+# Empirically verified 2026-06-11: running panes show the spinner,
+# AskUserQuestion menu waits do not. See memory
+# project_false_idle_long_tool.md.
+#
+# Elapsed forms: "59s" or "2m 2s". Token forms: "8.0k" or "8k".
+PATTERN_ACTIVE_SPINNER = re.compile(
+    r"\((?:\d+m\s+)?\d+s\s*·\s*[↑↓]\s*[\d.]+k\s+tokens\)"
+)
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:
 #
