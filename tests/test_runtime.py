@@ -166,7 +166,8 @@ class TestAutoExitIdle:
             return ""
         return side_effect
 
-    def _run(self, post_exit_cmd, panes_listing=None, ps_output=None):
+    def _run(self, post_exit_cmd, panes_listing=None, ps_output=None,
+             return_side_effects=False):
         if panes_listing is None:
             panes_listing = self.DEFAULT_PANES_LISTING
         if ps_output is None:
@@ -181,10 +182,12 @@ class TestAutoExitIdle:
 
         with patch("ccm_core.tmux_cmd", side_effect=tmux_recorder), \
              patch("ccm_core.ps_snapshot", return_value=ps_output), \
-             patch("ccm_detection._set_win_state"), \
-             patch("ccm_runtime._force_autosave"), \
+             patch("ccm_detection._set_win_state") as mock_set_state, \
+             patch("ccm_runtime._force_autosave") as mock_autosave, \
              patch("ccm_runtime.time.sleep"):
             ccm_runtime.auto_exit_idle([])
+        if return_side_effects:
+            return send_calls, mock_set_state, mock_autosave
         return send_calls
 
     def test_clear_sent_when_shell_foreground(self):
@@ -223,6 +226,77 @@ class TestAutoExitIdle:
             f"`clear` was sent despite a failed pane_current_command "
             f"query — should fail-safe to skip. send-keys: {send_calls}"
         )
+
+    def test_no_auto_exit_when_focused_window_unresolved(self):
+        """Safety guard (adversarial-review finding 2026-06-11): if
+        `display-message` returns empty for the focused session/window
+        (query failed / no client context), current_target would be
+        ":" and protect no window — letting the focused Claude be
+        auto-exited. The function must bail the whole cycle instead."""
+        send_calls = []
+
+        def side_effect(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return ""
+            if args[:2] == ("display-message", "-p"):
+                return ""  # focused session/window unresolved
+            if args[0] == "list-windows":
+                return "main:1\tblog\tIDLE\t1\t1"
+            if args[0] == "list-panes":
+                return self.DEFAULT_PANES_LISTING
+            if args and args[0] == "send-keys":
+                send_calls.append(args)
+            return ""
+
+        with patch("ccm_core.tmux_cmd", side_effect=side_effect), \
+             patch("ccm_core.ps_snapshot", return_value=self.DEFAULT_PS_OUTPUT), \
+             patch("ccm_detection._set_win_state") as mock_set_state, \
+             patch("ccm_runtime._force_autosave") as mock_autosave, \
+             patch("ccm_runtime.time.sleep"):
+            ccm_runtime.auto_exit_idle([])
+
+        assert send_calls == [], (
+            f"auto-exit fired with the focused window unresolved — the "
+            f"focused-window protection was bypassed. send-keys: {send_calls}"
+        )
+        mock_set_state.assert_not_called()
+        mock_autosave.assert_not_called()
+
+    def test_shell_transition_and_autosave_gated_on_exit_success(self):
+        """Side-effect gating (adversarial-review finding 2026-06-11):
+        the SHELL state write and the autosave must fire ONLY when
+        `/exit` actually completed (pane foreground back to a shell).
+        On the race path (Claude still foreground) declaring SHELL
+        would be a one-cycle state lie that the next detection pass
+        has to undo, plus a spurious autosave against it.
+
+        Happy path (zsh): SHELL write + autosave fire."""
+        _, mock_set_state, mock_autosave = self._run(
+            "zsh", return_side_effects=True
+        )
+        mock_set_state.assert_called_once()
+        assert mock_set_state.call_args.args[1] == "SHELL"
+        mock_autosave.assert_called_once()
+
+    def test_no_shell_transition_when_exit_did_not_complete(self):
+        """Race path (claude still foreground): NO SHELL write, NO
+        autosave — the window keeps its real state for the next poll
+        to re-derive. This is the regression the gating prevents."""
+        _, mock_set_state, mock_autosave = self._run(
+            "claude", return_side_effects=True
+        )
+        mock_set_state.assert_not_called()
+        mock_autosave.assert_not_called()
+
+    def test_no_shell_transition_when_pane_query_fails(self):
+        """Query-failure path ("" foreground): treat as exit-not-
+        confirmed, skip the SHELL write and autosave. Detection
+        re-derives the true state next cycle."""
+        _, mock_set_state, mock_autosave = self._run(
+            "", return_side_effects=True
+        )
+        mock_set_state.assert_not_called()
+        mock_autosave.assert_not_called()
 
     def test_send_keys_targets_claude_pane_not_active_pane(self):
         """Pane targeting bug fix (2026-06-09): when the window's

@@ -132,6 +132,13 @@ def cmd_snapshot_load(name=""):
     except (json.JSONDecodeError, OSError) as e:
         ccm_core.ccm_die(f"Snapshot unreadable: {name} ({e})")
 
+    # json.load accepts a top-level array / scalar / null without
+    # raising, so a hand-edited or truncated snapshot can parse to a
+    # non-dict. Guard before `.get` or it crashes with AttributeError
+    # instead of the readable die this function promises.
+    if not isinstance(data, dict):
+        ccm_core.ccm_die(f"Snapshot malformed: {name} (top level is not an object)")
+
     snap_projects = data.get("projects", [])
     if not isinstance(snap_projects, list):
         ccm_core.ccm_die(f"Snapshot malformed: {name} (projects is not a list)")

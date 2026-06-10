@@ -93,6 +93,15 @@ def auto_exit_idle(projects):
 
     current_session = ccm_core.tmux_cmd("display-message", "-p", "#{session_name}")
     current_win = ccm_core.tmux_cmd("display-message", "-p", "#{window_index}")
+    # The focused window is never auto-exited (logging the user out
+    # from under their cursor would be hostile). That protection hinges
+    # on identifying the focused window — if either query came back
+    # empty (display-message failed / ran without a client context),
+    # `current_target` would be ":" and match no real window, silently
+    # removing the protection and letting the focused Claude be exited.
+    # Bail this cycle instead; the next poll retries with a real target.
+    if not current_session or not current_win:
+        return
     current_target = f"{current_session}:{current_win}"
 
     activity_raw = ccm_core.tmux_cmd(
@@ -171,6 +180,14 @@ def auto_exit_idle(projects):
             # time and never matches anything, which is what made the
             # first cut of this fix silently no-op forever.
             ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+            # Multi-Claude windows (Agent Teams split panes) resolve to
+            # the FIRST pane hosting a Claude, in pane-index order. Only
+            # that one is exited; a teammate in another pane keeps
+            # running. This is acceptable: auto-exit's whole reason to
+            # exist is reclaiming idle resources, and a window idle long
+            # enough to trip the timeout has all its teammates idle too.
+            # The shell-foreground gate below means the window is only
+            # marked SHELL once the targeted Claude has actually exited.
             claude_pane = None
             for line in (panes_raw or "").split("\n"):
                 parts = line.split("\t")
@@ -191,25 +208,33 @@ def auto_exit_idle(projects):
             time.sleep(0.1)
             ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "/exit", "Enter")
             time.sleep(0.5)
-            # Send `clear` ONLY if the pane has actually returned to a
-            # shell foreground command. `/exit` can take longer than the
-            # 0.5 s wait on sessions with heavy conversation history
-            # (Claude's shutdown is context-size sensitive); if Claude
-            # is still the foreground process, send-keys would deliver
-            # `clear\n` as literal text into Claude's input box and
-            # submit it as a user prompt. `tmux_cmd` returns "" on
-            # timeout / non-zero exit, so empty / unknown / non-shell
-            # responses all fail-safe to "skip the clear" (cosmetic
-            # cost: stale screen on next attach; safety win: no stray
-            # keystrokes into a live Claude).
+            # Confirm `/exit` actually completed before committing any
+            # side effect. `/exit` can take longer than the 0.5 s wait
+            # on sessions with heavy conversation history (Claude's
+            # shutdown is context-size sensitive), or be swallowed
+            # entirely if Claude is parked at a confirmation modal. A
+            # ccm-launched Claude always runs as a child of the pane's
+            # shell, so a SUCCESSFUL exit returns the pane's foreground
+            # to that shell; anything else (still `claude`, the version-
+            # string masking, or "" from a failed/timed-out query) means
+            # the exit has not landed. Gate all three side effects on
+            # that positive shell evidence:
+            #   - `clear`: otherwise it lands as literal text in Claude's
+            #     input box and submits as a stray user prompt.
+            #   - SHELL state write: otherwise we declare SHELL while
+            #     Claude is still alive (a one-cycle state lie that the
+            #     next detection pass would have to undo) and fire a
+            #     spurious autosave against it.
+            # When the exit hasn't completed, do nothing this cycle; the
+            # window keeps its real state and the next poll re-evaluates.
             current_cmd = ccm_core.tmux_cmd(
                 "display-message", "-t", claude_pane, "-p", "#{pane_current_command}"
             )
             if current_cmd in ccm_constants.SHELL_FOREGROUND_COMMANDS:
                 ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "clear", "Enter")
-            ccm_detection._set_win_state(win_target, "SHELL")
-            # Force autosave after auto-exit to preserve project in snapshot.
-            _force_autosave()
+                ccm_detection._set_win_state(win_target, "SHELL")
+                # Force autosave after auto-exit to preserve project in snapshot.
+                _force_autosave()
 
 
 # ─── Autosave ───
