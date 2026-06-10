@@ -34,7 +34,15 @@ case "$NOTIFY_TYPE" in
         NOW=$(date +%s)
         if [[ -f "$SIGNAL_FILE" ]]; then
             EXISTING=$(cat "$SIGNAL_FILE" 2>/dev/null)
-            EXISTING_STATE="${EXISTING##* }"
+            # Signal format: "<ts> <state>" or "<ts> <state> <detail>".
+            # The state is the SECOND field — strip the leading ts,
+            # then take everything up to the next space. A last-field
+            # extraction (`##* `) would return the detail's last word
+            # instead of the state whenever a detail is present.
+            # (BUSY writers don't pass details today, but the parse
+            # must not silently break the day one does.)
+            EXISTING_REST="${EXISTING#* }"
+            EXISTING_STATE="${EXISTING_REST%% *}"
             EXISTING_TS="${EXISTING%% *}"
             if [[ "$EXISTING_STATE" == "BUSY" && "$EXISTING_TS" -ge "$NOW" ]] 2>/dev/null; then
                 exit 0

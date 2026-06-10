@@ -169,11 +169,21 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # v2.1.144 onwards, ...) deliberately does NOT match: those menus
 # are free navigation with type-to-search / preview keys, not a
 # blocked single-decision modal.
+#
+# re.MULTILINE: the pattern is consumed two ways — per-line
+# `.match(line)` in detect_pane_state (unaffected by the flag) and
+# whole-tail `.search(pane_text)` in classify_permit_modal, where
+# the footer sits on the LAST line of a multi-line capture. Without
+# MULTILINE the `^` anchor only matches at position 0 of the joined
+# string, so the classifier's footer fallback silently never fired
+# and unrecognized confirm modals fell through to "unknown-permit"
+# instead of "confirmation-modal".
 PATTERN_PERMIT_FOOTER = re.compile(
     r"^\s*(?:"
     r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
     r"|Enter to \S[^\n]*?\s*(?:·|\|)\s*[^\n]*?\bEsc to \w+"
-    r")"
+    r")",
+    re.MULTILINE,
 )
 
 

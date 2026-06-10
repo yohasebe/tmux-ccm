@@ -129,6 +129,24 @@ class TestClassifyPermitModal:
         cat, _ = ccm_constants.classify_permit_modal(text)
         assert cat == "confirmation-modal"
 
+    def test_confirmation_modal_footer_on_last_line_of_tail(self):
+        """The realistic shape: classify_permit_modal receives the
+        whole captured tail (multiple lines joined with newlines) and
+        the footer sits on the LAST line, not at position 0. Without
+        re.MULTILINE on PATTERN_PERMIT_FOOTER the `^` anchor only
+        matched the start of the joined string, so this fallback
+        branch silently never fired and a not-yet-cataloged confirm
+        modal fell through to unknown-permit — surfacing the scary
+        "Treat as dangerous" guidance for a harmless dialog."""
+        text = (
+            "Some new modal ccm has no content signature for\n"
+            "❯ 1. Option A\n"
+            "  2. Option B\n"
+            "Enter to select · Esc to dismiss"
+        )
+        cat, _ = ccm_constants.classify_permit_modal(text)
+        assert cat == "confirmation-modal"
+
     def test_unknown_permit_no_signature(self):
         """PERMIT was detected by the state engine but none of our
         known modal signatures are present — could be a new Claude

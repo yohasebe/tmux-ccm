@@ -306,7 +306,12 @@ _ccm_instant_notify() {
         prev_ts="${content%% *}"
         prev_state="${content##* }"
         now_ts=$(date +%s)
-        if [[ "$prev_state" == "$state" ]] && (( now_ts - prev_ts < 10 )) 2>/dev/null; then
+        # Validate the stored ts is numeric before doing arithmetic on
+        # it — a corrupt/truncated marker would otherwise evaluate as 0
+        # in (( )), making the age look huge and silently disabling the
+        # dedup (duplicate notifications) instead of failing visibly.
+        if [[ "$prev_ts" =~ ^[0-9]+$ ]] && [[ "$prev_state" == "$state" ]] \
+            && (( now_ts - prev_ts < 10 )) 2>/dev/null; then
             return 0
         fi
     fi

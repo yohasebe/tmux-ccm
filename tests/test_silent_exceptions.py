@@ -139,12 +139,26 @@ class TestDashboardRefreshLoopSmoke:
         monkeypatch.setattr("dashboard.REFRESH_INTERVAL", 0.0)
         monkeypatch.setattr("dashboard.time.sleep", lambda *_: None)
 
-        # Stub data sources.
+        # The loop's own `except Exception: log_caught_exception(...)`
+        # would swallow exactly the NameError/AttributeError class of
+        # bug this smoke test exists to catch — making the test pass
+        # while its mission fails. Record every silent catch and
+        # assert none happened. (This is not hypothetical: this test's
+        # own scaffold once lacked `bg_visible` after the bg-section
+        # feature added that attribute, and the AttributeError was
+        # silently logged — to the user's REAL errors.log — on every
+        # pytest run while the test kept passing. 2026-06-07.)
+        caught = []
         monkeypatch.setattr(
-            "dashboard.build_project_list", lambda fast=False: []
+            "dashboard.log_caught_exception",
+            lambda scope: caught.append(scope),
         )
 
-        # Construct without curses (avoid full render path).
+        # Construct without curses (avoid full render path). Every
+        # attribute `_refresh_loop` touches must be initialised here;
+        # when adding an attribute to Dashboard.__init__ that the
+        # refresh loop reads, add it here too or this test will flag
+        # the omission via the `caught` assertion below.
         d = dashboard.Dashboard.__new__(dashboard.Dashboard)
         import threading
         d.lock = threading.Lock()
@@ -155,25 +169,22 @@ class TestDashboardRefreshLoopSmoke:
         d.preview_enabled = False
         d.mode = "dashboard"
         d._last_preview_target = ""
+        d.bg_visible = False
+        d.bg_sessions = []
 
-        # Schedule the loop to exit after one body cycle.
-        original_set = lambda val: setattr(d, "data_dirty", val)
-        first_iteration = {"done": False}
-
-        def stop_after_one(value):
-            original_set(value)
-            if not first_iteration["done"]:
-                first_iteration["done"] = True
-                d.running = False
-
-        # Patch `data_dirty` setter via property would be heavy; instead
-        # we override `running` from the build_project_list stub so the
-        # next outer-loop check exits.
+        # Exit after one body cycle: the data-source stub flips
+        # `running` off so the next outer-loop check terminates.
         def stop_loop(*_a, **_kw):
             d.running = False
             return []
 
         monkeypatch.setattr("dashboard.build_project_list", stop_loop)
 
-        # The loop must complete without NameError / AttributeError.
+        # The loop must complete without swallowing any exception.
         d._refresh_loop()
+        assert caught == [], (
+            f"_refresh_loop silently caught exception(s) in scope(s) "
+            f"{caught} — the smoke test scaffold is missing an "
+            f"attribute the loop now reads, or the loop body has a "
+            f"real NameError-class bug."
+        )

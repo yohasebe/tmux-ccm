@@ -120,13 +120,21 @@ def cmd_snapshot_load(name=""):
 
     name = _sanitize_snapshot_name(name)
     file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
-    if not os.path.exists(file_path):
+    # Open directly rather than exists-then-open: the file can vanish
+    # between the two calls (concurrent delete, Dropbox sync), and a
+    # malformed snapshot (truncated write, hand-edit) must die with a
+    # message instead of a traceback.
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
         ccm_core.ccm_die(f"Snapshot not found: {name}")
-
-    with open(file_path, encoding="utf-8") as f:
-        data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        ccm_core.ccm_die(f"Snapshot unreadable: {name} ({e})")
 
     snap_projects = data.get("projects", [])
+    if not isinstance(snap_projects, list):
+        ccm_core.ccm_die(f"Snapshot malformed: {name} (projects is not a list)")
     print(f"Loading snapshot: {name} ({len(snap_projects)} projects)")
 
     session = ccm_core.get_session()
@@ -135,6 +143,9 @@ def cmd_snapshot_load(name=""):
                          "`tmux new-session` first")
 
     for proj in snap_projects:
+        if not isinstance(proj, dict):
+            ccm_core.ccm_warn(f"Skipping malformed snapshot entry: {proj!r}")
+            continue
         proj_name = proj.get("name", "")
         proj_dir = proj.get("dir", "")
         if not proj_name or proj_name == "null":
@@ -212,8 +223,10 @@ def cmd_snapshot_delete(name=""):
 
     name = _sanitize_snapshot_name(name)
     file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
-    if not os.path.exists(file_path):
+    # unlink directly rather than exists-then-unlink — the file can
+    # vanish between the two calls (concurrent delete, Dropbox sync).
+    try:
+        os.unlink(file_path)
+    except FileNotFoundError:
         ccm_core.ccm_die(f"Snapshot not found: {name}")
-
-    os.unlink(file_path)
     ccm_core.ccm_info(f"Snapshot deleted: {name}")

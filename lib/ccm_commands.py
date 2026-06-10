@@ -631,7 +631,7 @@ def cmd_doctor():
     row(OK, "ccm", CCM_VERSION)
     # claude binary
     claude_path = subprocess.run(
-        ["which", "claude"], capture_output=True, text=True,
+        ["which", "claude"], capture_output=True, text=True, timeout=5,
     ).stdout.strip()
     if not claude_path:
         row(FAIL, "claude",
@@ -644,13 +644,13 @@ def cmd_doctor():
         row(OK, "claude", version_out or claude_path)
     # tmux
     tmux_ver = subprocess.run(
-        ["tmux", "-V"], capture_output=True, text=True,
+        ["tmux", "-V"], capture_output=True, text=True, timeout=5,
     ).stdout.strip()
     row(OK if tmux_ver else FAIL, "tmux", tmux_ver or "not found")
     # jq, fzf
     for tool in ("jq", "fzf"):
         path = subprocess.run(
-            ["which", tool], capture_output=True, text=True,
+            ["which", tool], capture_output=True, text=True, timeout=5,
         ).stdout.strip()
         row(OK if path else WARN, tool, path or "not found (recommended)")
 
@@ -890,7 +890,7 @@ def cmd_debug_trace(project_match, interval=0.3):
         # Fresh ps + pane snapshots each tick. No caching — we want to
         # observe real kernel/tmux state, not anything ccm has
         # memoized.
-        ps_lines = ccm_core.ps_snapshot().split("\n")
+        ps_lines = ccm_core.ps_snapshot().strip().split("\n")
         # Match build_project_list's 6-field format so detect_window_raw
         # has the same sliver-exclusion / aggregation inputs during
         # trace runs as in production. Truncated tuples would fall

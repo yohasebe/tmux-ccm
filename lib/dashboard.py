@@ -1867,7 +1867,13 @@ class Dashboard:
             # the menu), the toggle handler does an immediate
             # synchronous fetch so the first render after toggle is
             # already populated, no flicker.
-            bg_sessions = self._fetch_bg_sessions() if self.bg_visible else []
+            #
+            # `bg_visible` is toggled by the main thread (under the
+            # lock); snapshot it under the lock here too so this
+            # thread never reads a torn / mid-toggle value.
+            with self.lock:
+                bg_visible = self.bg_visible
+            bg_sessions = self._fetch_bg_sessions() if bg_visible else []
             with self.lock:
                 self.projects = projects
                 self.bg_sessions = bg_sessions
@@ -1886,8 +1892,10 @@ class Dashboard:
                 time.sleep(0.2)
             try:
                 projects = build_project_list(fast=False)
+                with self.lock:
+                    bg_visible = self.bg_visible
                 bg_sessions = (
-                    self._fetch_bg_sessions() if self.bg_visible else []
+                    self._fetch_bg_sessions() if bg_visible else []
                 )
                 with self.lock:
                     self.projects = projects

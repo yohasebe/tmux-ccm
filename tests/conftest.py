@@ -19,6 +19,30 @@ def reset_state():
     yield
 
 
+@pytest.fixture(autouse=True)
+def isolate_errors_log(tmp_path, monkeypatch):
+    """Redirect the silent-exception log away from the user's real
+    `$TMPDIR/ccm-$UID/errors.log` for every test.
+
+    `CCM_ERRORS_LOG` is computed at import time from `CCM_TMP_DIR`,
+    so tests that monkeypatch `CCM_TMP_DIR` do NOT redirect the
+    error log — any test that exercises a silent-catch path (or has
+    a bug in its scaffolding) would append garbage entries to the
+    real log that `ccm errors` then shows the user as if they were
+    production failures. This actually happened: a stale
+    `Dashboard.__new__` scaffold in test_silent_exceptions.py was
+    missing the `bg_visible` attribute, and the resulting
+    AttributeError was logged to the real errors.log on every test
+    run, masquerading as a production dashboard bug (2026-06-07).
+    """
+    import ccm_core
+    monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG",
+                        str(tmp_path / "errors.log"))
+    monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG_PREV",
+                        str(tmp_path / "errors.log.1"))
+    yield
+
+
 # ─── JSONL helpers ───
 # Used by tests that simulate Claude Code's per-session JSONL log.
 

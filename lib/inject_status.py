@@ -77,12 +77,17 @@ def acquire_lockfile():
     fd = open(lockfile, "w", encoding="utf-8")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # The pid note is diagnostic only (lets a human inspect who
+        # holds the lock); a write failure (disk full, …) must not
+        # leak the fd — without the close the flock would stay held
+        # for the process lifetime and every later poll cycle would
+        # silently skip its status update.
+        fd.write(str(os.getpid()))
+        fd.flush()
+        return fd  # Keep fd open to hold the lock
     except (IOError, OSError):
         fd.close()
-        return None  # Another instance holds the lock
-    fd.write(str(os.getpid()))
-    fd.flush()
-    return fd  # Keep fd open to hold the lock
+        return None  # Another instance holds the lock (or write failed)
 
 
 def detect_external_status_change():
