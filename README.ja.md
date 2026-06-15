@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.177-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.178-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
