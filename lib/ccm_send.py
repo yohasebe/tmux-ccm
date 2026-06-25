@@ -149,6 +149,75 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
     return last_state or "BUSY"
 
 
+# ─── Post-launch delivery verification (--start path) ───
+# `--start` launches `claude --continue` into a SHELL pane, then
+# waits for IDLE before sending. But the `❯` composer becomes
+# visible (so detection reads IDLE) a moment BEFORE Claude's input
+# handler actually accepts keystrokes — during that window a
+# send-keys is silently eaten, the body never lands, yet ccm
+# printed "Sent". Confirmed 2026-06-24 (acceptability project):
+# target SHELL → --start → "Sent" shown but the input box held only
+# its placeholder, body zero; re-sending after IDLE settled
+# delivered the full text.
+#
+# Fix: after typing the body (but BEFORE the committing Enter),
+# verify a signature of the message actually appears in the pane.
+# If not, clear the composer and re-type, up to a few times with a
+# short settle. Only send Enter once the body is confirmed present,
+# so a premature-IDLE drop is caught and retried instead of
+# silently lost — and Enter-after-verify means a retry can never
+# double-submit. Scoped to the launch path; an already-IDLE target
+# (normal send) was genuinely ready and is left on the fast path.
+_DELIVERY_VERIFY_RETRIES = 2
+_DELIVERY_VERIFY_SETTLE_SEC = 1.0
+# Minimum signature length to verify against. A very short message
+# (< this) cannot be matched in the pane without false positives,
+# so verification is skipped for it (rare for delegation messages).
+_DELIVERY_SIG_MIN_LEN = 8
+
+
+def _message_signature(message):
+    """Return a distinctive substring of `message` to look for in
+    the target's input box, or None when the message is too short
+    to verify reliably. Uses the longest of the first few non-empty
+    lines (truncated) so wrapping / multi-line composers still match
+    on the leading row."""
+    candidates = [ln.strip() for ln in message.split("\n") if ln.strip()]
+    if not candidates:
+        return None
+    sig = max(candidates[:5], key=len)
+    if len(sig) < _DELIVERY_SIG_MIN_LEN:
+        return None
+    # Cap the signature so a long line that wraps in the composer
+    # still matches on its visible head.
+    return sig[:40]
+
+
+def _body_landed(win_target, signature):
+    """True iff `signature` appears in the target pane's visible
+    text — i.e. the typed body reached the `❯` composer. Captures
+    the whole visible area (the composer grows upward for multi-line
+    input, so a tail-only read can miss the leading row)."""
+    cap = ccm_core.tmux_cmd("capture-pane", "-t", win_target, "-p") or ""
+    if not cap.strip():
+        cap = ccm_core.tmux_cmd(
+            "capture-pane", "-a", "-t", win_target, "-p"
+        ) or ""
+    return signature in cap
+
+
+def _type_body(win_target, lines):
+    """Type the message body into the target's composer: each
+    non-empty line literally, with `M-Enter` (newline-without-submit)
+    between lines. Does NOT send the committing Enter — the caller
+    decides when (and whether) to submit."""
+    for line_i, line in enumerate(lines):
+        if line:
+            _send_keys(win_target, "-l", line, label=f"line:{line_i}")
+        if line_i < len(lines) - 1:
+            _send_keys(win_target, "M-Enter", label=f"newline:{line_i}")
+
+
 _SEND_USAGE = (
     "Usage: ccm send <name|#idx> <message> "
     "[--file path] [--stdin] [--force] [--start] [--no-enter] [-y]"
@@ -306,6 +375,11 @@ def cmd_send(args):
             lines.extend(f"    {l}" for l in tail_lines)
         ccm_core.ccm_die("\n".join(lines))
 
+    # True once we actually launched Claude this invocation (SHELL +
+    # --start). Gates post-send delivery verification: only a
+    # freshly-launched target can be in the premature-IDLE window
+    # where the `❯` composer shows before input is accepted.
+    did_launch = False
     if state == "SHELL":
         if not auto_start:
             ccm_core.ccm_die(
@@ -315,6 +389,7 @@ def cmd_send(args):
         ccm_core.ccm_info(f"Starting Claude in {project_name}...")
         ccm_core.tmux_cmd("send-keys", "-t", win_target, "-X", "cancel")
         ccm_core.tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
+        did_launch = True
         # Wait for the target to reach the input prompt. A fixed
         # sleep would mis-deliver the message when `claude
         # --continue` triggers a follow-on action — most commonly
@@ -425,11 +500,44 @@ def cmd_send(args):
         _trace_record(win_target, "send-start",
                       (f"project={project_name}", f"lines={len(lines)}",
                        f"bytes={len(message)}"))
-    for line_i, line in enumerate(lines):
-        if line:
-            _send_keys(win_target, "-l", line, label=f"line:{line_i}")
-        if line_i < len(lines) - 1:
-            _send_keys(win_target, "M-Enter", label=f"newline:{line_i}")
+    _type_body(win_target, lines)
+
+    # Post-launch delivery verification. On the --start path the
+    # body can be eaten by a not-yet-ready input handler even though
+    # detection saw IDLE (see the _DELIVERY_* note above). Verify the
+    # body actually reached the composer BEFORE committing the Enter;
+    # if not, clear and re-type a few times, then refuse honestly
+    # rather than print a false "Sent". Verifying before Enter means
+    # a retry can never double-submit. Skipped when we didn't launch
+    # (an already-IDLE target was genuinely ready) or when the
+    # message is too short to match without false positives.
+    signature = _message_signature(message) if did_launch else None
+    if signature is not None and not _body_landed(win_target, signature):
+        landed = False
+        for _ in range(_DELIVERY_VERIFY_RETRIES):
+            time.sleep(_DELIVERY_VERIFY_SETTLE_SEC)
+            # Clear the composer (C-u) first so a partial landing from
+            # the previous attempt cannot duplicate text on re-type.
+            _send_keys(win_target, "C-u", label="retry-clear")
+            _type_body(win_target, lines)
+            if _body_landed(win_target, signature):
+                landed = True
+                break
+        if not landed:
+            if _trace_enabled():
+                _trace_record(win_target, "send-unverified",
+                              (f"project={project_name}",))
+            ccm_core.ccm_die(
+                f"Delivery to {project_name} could not be confirmed: the "
+                f"message did not appear in its input box after "
+                f"{_DELIVERY_VERIFY_RETRIES} retries.\n"
+                "  Likely cause: Claude had just launched (--start) and its "
+                "input handler was not yet accepting keystrokes — the body "
+                "was eaten.\n"
+                "  The send was NOT completed (no Enter submitted). Switch "
+                "to the target window, confirm it is idle at the prompt, "
+                "then resend (without --start, since Claude is now running)."
+            )
 
     # Final submit (unless --no-enter)
     if not no_enter:

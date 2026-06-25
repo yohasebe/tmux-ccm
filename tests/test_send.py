@@ -400,6 +400,111 @@ class TestCmdSend:
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "hi") in calls
 
+    # --- post-launch delivery verification (premature-IDLE fix) ---
+
+    # A message long enough to clear `_DELIVERY_SIG_MIN_LEN` so the
+    # verification path actually engages (short messages skip it).
+    _VERIFY_MSG = "delegate the region-shade implementation task"
+
+    def _run_start_with_captures(self, monkeypatch, message, capture_responses):
+        """Drive a SHELL + --start send where `build_project_list`
+        reports IDLE after launch, and each `capture-pane` call (made
+        only by the delivery-verification `_body_landed`) returns the
+        next item of `capture_responses` (last item repeats). Returns
+        (send_calls, raised) where `raised` is True iff cmd_send exited
+        via ccm_die (delivery unconfirmed)."""
+        initial = self._make_project(state="SHELL")
+        idle = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, idle)
+
+        cap_idx = [0]
+        send_calls = []
+
+        def tmux_side_effect(*args):
+            if args and args[0] == "send-keys":
+                send_calls.append(args)
+                return ""
+            if args and args[0] == "capture-pane":
+                i = min(cap_idx[0], len(capture_responses) - 1)
+                cap_idx[0] += 1
+                return capture_responses[i]
+            return ""
+
+        raised = False
+        with patch("ccm_core.tmux_cmd", side_effect=tmux_side_effect):
+            try:
+                ccm_send.cmd_send(["blog", "--start", "--yes", message])
+            except SystemExit:
+                raised = True
+        return send_calls, raised
+
+    def test_start_delivery_verified_then_submits(self, monkeypatch):
+        """Happy path: after --start launch reaches IDLE, the typed
+        body IS present in the composer on the first capture, so the
+        final Enter is committed and the send completes."""
+        send_calls, raised = self._run_start_with_captures(
+            monkeypatch, self._VERIFY_MSG,
+            capture_responses=[f"❯ {self._VERIFY_MSG}"],
+        )
+        assert not raised, "verified delivery should not refuse"
+        assert ("send-keys", "-t", "0:5", "-l", self._VERIFY_MSG) in send_calls
+        # The committing Enter (bare, no payload) was sent.
+        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+
+    def test_start_premature_idle_refuses_without_false_sent(self, monkeypatch):
+        """Premature-IDLE bug (2026-06-24): the composer shows but the
+        input handler eats the keystrokes, so the body never lands.
+        Every capture returns only the placeholder. After retries the
+        send must refuse (SystemExit) and must NOT commit the Enter —
+        no false 'Sent', no half-delivered prompt."""
+        placeholder = '❯ Try "how does .tags work?"'
+        send_calls, raised = self._run_start_with_captures(
+            monkeypatch, self._VERIFY_MSG,
+            capture_responses=[placeholder],  # never contains the body
+        )
+        assert raised, "unverified delivery must refuse, not claim Sent"
+        # The committing Enter must NOT have been sent.
+        assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
+        # It retried: the body was typed more than once.
+        body_types = [
+            c for c in send_calls
+            if c == ("send-keys", "-t", "0:5", "-l", self._VERIFY_MSG)
+        ]
+        assert len(body_types) >= 2, "expected at least one retry re-type"
+        # Each retry cleared the composer first.
+        assert ("send-keys", "-t", "0:5", "C-u") in send_calls
+
+    def test_start_premature_idle_retry_then_succeeds(self, monkeypatch):
+        """The body is eaten on the first attempt but lands on a
+        retry (input handler became ready). The send then commits the
+        Enter and succeeds — the retry rescued the delivery."""
+        placeholder = '❯ Try "how does .tags work?"'
+        send_calls, raised = self._run_start_with_captures(
+            monkeypatch, self._VERIFY_MSG,
+            # 1st capture: not landed → retry; 2nd capture: landed.
+            capture_responses=[placeholder, f"❯ {self._VERIFY_MSG}"],
+        )
+        assert not raised, "a successful retry should not refuse"
+        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+
+    def test_start_short_message_skips_verification(self, monkeypatch):
+        """A message shorter than the signature minimum cannot be
+        matched in the pane without false positives, so verification
+        is skipped and the send proceeds as before (no capture-based
+        refusal). Guards against the fix breaking tiny --start sends."""
+        initial = self._make_project(state="SHELL")
+        idle = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, idle)
+        # capture-pane would return empty (no body), but a short
+        # message skips verification entirely, so no refusal.
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+            ccm_send.cmd_send(["blog", "--start", "--yes", "hi"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "hi") in calls
+        assert ("send-keys", "-t", "0:5", "Enter") in calls
+
     # --- error paths ---
 
     def test_send_unknown_project_rejected(self, monkeypatch):
