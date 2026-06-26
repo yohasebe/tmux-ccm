@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Footer-less permission dialogs are now detected as PERMIT. Some permission prompts (observed 2026-06-26 on a WebFetch / web-content request raised by a background subagent: `Do you want to allow Claude to fetch this content?`) carry no separate `Esc to cancel · Tab to amend` footer — the `(esc)` is inline on the deny option (`N. No, and tell Claude what to do differently (esc)`). `PATTERN_PERMIT_FOOTER` matched none of its existing alternatives, so the dashboard showed IDLE for a blocking dialog the user had to answer. The deny-option line is now a third PERMIT signature, anchored both by a leading numbered-option prefix (`\d+.`) and a trailing inline `(esc)`; the `(esc)` requirement keeps a Claude response that merely quotes the option text in a numbered list (including a conversation about this very detector) from false-triggering PERMIT, and footer'd dialogs are unaffected since they match the `Esc to cancel · …` alternative. `PATTERN_PERMISSION_DIALOG` also gained the `Do you want to allow Claude to …` question and the same deny-option line so `ccm send` classifies these as the dangerous permission-request kind rather than a safe confirmation modal. Verified live against the paused dialog (`detect_window_raw → PERMIT`). Known limitation: the underlying cause is that a subagent's `PermissionRequest` hook fires under the subagent's own session_id, which ccm's main-session hook lookup misses, so this footer fallback only catches the dialog while it is visible in the pane (see memory `project_known_limitations.md`).
+
 ## [0.5.0] - 2026-06-25
 
 ### Added

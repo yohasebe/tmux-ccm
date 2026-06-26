@@ -120,6 +120,25 @@ class TestClassifyPermitModal:
         cat, _ = ccm_constants.classify_permit_modal(text)
         assert cat == "confirmation-modal"
 
+    def test_footerless_webfetch_permission_is_permission_request(self):
+        """Footer-less WebFetch / web-content permission dialog
+        (observed 2026-06-26, raised by a background subagent). It
+        must classify as the DANGEROUS permission-request kind, not a
+        safe confirmation-modal — `ccm send` warns the operator not
+        to dismiss a permission prompt from another pane, and that
+        guidance would be wrong if this were called a confirmation
+        modal. Both the `Do you want to allow Claude to …` question
+        and the deny-option line carry it to permission-request."""
+        text = (
+            "Do you want to allow Claude to fetch this content?\n"
+            "❯ 1. Yes\n"
+            "  2. Yes, and don't ask again for www.example.com\n"
+            "  3. No, and tell Claude what to do differently (esc)"
+        )
+        cat, guidance = ccm_constants.classify_permit_modal(text)
+        assert cat == "permission-request"
+        assert "DANGEROUS" in guidance or "dangerous" in guidance
+
     def test_confirmation_modal_footer_only(self):
         """No content signature matches but footer is the confirm
         shape — classify as a generic confirmation-modal (not unknown).
@@ -222,6 +241,41 @@ class TestPermitFooterPattern:
         alternative to `·` on some terminals/themes."""
         assert self._matches("Enter to confirm | Esc to cancel")
 
+    def test_footerless_permission_dialog_deny_option(self):
+        """Footer-less permission dialog (observed 2026-06-26 on a
+        WebFetch permission raised by a background subagent):
+            Do you want to allow Claude to fetch this content?
+            ❯ 1. Yes
+              2. Yes, and don't ask again for www.example.com
+              3. No, and tell Claude what to do differently (esc)
+        There is NO `Esc to cancel · Tab to amend` footer here — the
+        `(esc)` is inline on the deny option. The deny-option line is
+        the PERMIT signal. ccm showed IDLE for this blocking dialog
+        until the deny-option alternative was added; verified live
+        against the paused dialog."""
+        assert self._matches(
+            "  3. No, and tell Claude what to do differently (esc)"
+        )
+
+    def test_deny_option_other_numbers_and_spacing(self):
+        """The deny option is not always number 3, and spacing
+        varies — match any `<n>. No, and tell Claude what to do
+        differently … (esc)` line. The trailing `(esc)` is required
+        (it disambiguates the live dialog from prose; see
+        test_deny_phrase_in_prose_not_matched)."""
+        assert self._matches("2. No, and tell Claude what to do differently (esc)")
+        assert self._matches("   4.  No,  and tell Claude what to do differently  (esc)")
+
+    def test_deny_option_without_inline_esc_not_matched(self):
+        """A numbered deny line WITHOUT the inline `(esc)` does not
+        match this alternative — a footer-less dialog always carries
+        the inline `(esc)`, and requiring it is what keeps a Claude
+        response that quotes the option text (a numbered list in
+        prose) from false-triggering PERMIT. Footer'd dialogs, whose
+        deny option lacks the inline `(esc)`, are matched by the
+        `Esc to cancel · …` alternative instead, so nothing is lost."""
+        assert not self._matches("3. No, and tell Claude what to do differently")
+
     # ── must NOT match (free-navigation menus) ──
 
     def test_bare_esc_to_cancel(self):
@@ -256,6 +310,31 @@ class TestPermitFooterPattern:
         these from triggering false PERMITs."""
         assert not self._matches(
             "documented: press Enter to confirm and then Esc to exit"
+        )
+
+    def test_deny_phrase_in_prose_not_matched(self):
+        """Defensive for the deny-option signature: Claude could
+        mention the phrase in answer text (e.g. explaining the
+        permission UI). Two guards keep prose from false-triggering
+        PERMIT: the leading `<n>.` numbered-option prefix AND the
+        trailing inline `(esc)`. A numbered list in prose that quotes
+        the option but continues past it (no `(esc)` at the end) is
+        the realistic false-positive vector — including THIS very
+        conversation about the detector — and must not match."""
+        assert not self._matches(
+            "you can choose No, and tell Claude what to do differently"
+        )
+        assert not self._matches(
+            "the option reads 'No, and tell Claude what to do differently'"
+        )
+        # A numbered list line in prose: has the `<n>.` prefix and the
+        # phrase, but trails off in explanation rather than ending at
+        # an inline `(esc)`. Must stay IDLE.
+        assert not self._matches(
+            "3. No, and tell Claude what to do differently is the deny option"
+        )
+        assert not self._matches(
+            "  3. No, and tell Claude what to do differently — this dismisses it"
         )
 
 

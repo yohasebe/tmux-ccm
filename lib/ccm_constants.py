@@ -176,6 +176,13 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 #                                             (/model picker, v2.1.144–v2.1.152)
 #   - "Enter to set as default · s to use this session only · Esc to cancel"
 #                                             (/model picker, v2.1.153+)
+#   - "3. No, and tell Claude what to do differently (esc)"
+#                                             (footer-less permission dialog —
+#                                              WebFetch / web-content prompts,
+#                                              subagent permission requests:
+#                                              the deny option carries an inline
+#                                              `(esc)` instead of a separate
+#                                              "Esc to cancel · …" footer line)
 #
 # All map to the PERMIT state because semantically Claude is
 # blocked pending a single user action — the UX is the same as a
@@ -212,10 +219,26 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 # string, so the classifier's footer fallback silently never fired
 # and unrecognized confirm modals fell through to "unknown-permit"
 # instead of "confirmation-modal".
+# The third alternative matches the deny option of a permission
+# prompt that has no separate "Esc to cancel · …" footer (observed
+# 2026-06-26 on a WebFetch permission raised by a background
+# subagent: `Do you want to allow Claude to fetch this content?`
+# with the `(esc)` carried inline on `No, and tell Claude what to
+# do differently (esc)`). Two anchors keep this specific to a real
+# dialog: the leading `\d+\.` (an actual numbered option line) AND
+# a trailing inline `(esc)`. The `(esc)` is what disambiguates the
+# live dialog from PROSE that merely quotes the option text — e.g.
+# a Claude response (including this very conversation about the
+# detector) writing "3. No, and tell Claude what to do differently
+# is the deny option" would otherwise false-trigger PERMIT. The
+# footer'd permission dialogs are already matched by the
+# "Esc to cancel · …" alternative above, so requiring `(esc)` here
+# costs nothing for them and only tightens the footer-less case.
 PATTERN_PERMIT_FOOTER = re.compile(
     r"^\s*(?:"
     r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
     r"|Enter to \S[^\n]*?\s*(?:·|\|)\s*[^\n]*?\bEsc to \w+"
+    r"|\d+\.\s*No,\s*and tell Claude what to do differently[^\n]*\(esc\)"
     r")",
     re.MULTILINE,
 )
@@ -238,7 +261,18 @@ PATTERN_RESUME_MODAL = re.compile(
 )
 PATTERN_PERMISSION_DIALOG = re.compile(
     r"Do you want to proceed\?"
+    r"|Do you want to allow Claude to "
     r"|Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
+    # Footer-less permission dialogs (WebFetch / web-content,
+    # subagent permission requests) ask "Do you want to allow
+    # Claude to <fetch this content|run …|…>?" and carry the deny
+    # option with an inline `(esc)`. Classify these as the
+    # dangerous permission-request kind (not a safe confirmation
+    # modal) so `ccm send` warns the operator not to dismiss them
+    # from another pane. The trailing `(esc)` is required for the
+    # same reason as in PATTERN_PERMIT_FOOTER — it keeps prose that
+    # merely quotes the option text from mis-classifying.
+    r"|\d+\.\s*No,\s*and tell Claude what to do differently[^\n]*\(esc\)"
 )
 PATTERN_MODEL_PICKER = re.compile(
     r"Switch between Claude models"
