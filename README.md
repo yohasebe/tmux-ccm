@@ -63,6 +63,12 @@ set -g @plugin 'yohasebe/tmux-ccm'
 
 Reload tmux and press `prefix + I` to install.
 
+> ccm uses the standard plugin entry point, so any TPM-compatible
+> plugin manager works — [TPM](https://github.com/tmux-plugins/tpm)
+> or a drop-in replacement such as
+> [tpack](https://github.com/tmuxpack/tpack). No ccm-specific
+> configuration is needed either way.
+
 ### Manual
 
 ```bash

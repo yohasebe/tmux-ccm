@@ -63,6 +63,12 @@ set -g @plugin 'yohasebe/tmux-ccm'
 
 tmuxをリロードし、`prefix + I` でインストール。
 
+> ccm は標準的なプラグインエントリポイントを使用するため、TPM 互換の
+> プラグインマネージャであれば動作します。[TPM](https://github.com/tmux-plugins/tpm)
+> でも、その drop-in replacement である
+> [tpack](https://github.com/tmuxpack/tpack) でも、ccm 固有の追加設定は
+> 不要です。
+
 ### 手動インストール
 
 ```bash
