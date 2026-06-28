@@ -136,7 +136,8 @@ case "${1:-help}" in
         python3 "$CCM_ROOT/lib/ccm_core.py" statusline
         ;;
     inject-status)
-        python3 "$CCM_ROOT/lib/inject_status.py" || true
+        # Forward flags (e.g. --fast for the focus-refresh path).
+        python3 "$CCM_ROOT/lib/inject_status.py" "$@" || true
         ;;
     reset-window)
         python3 "$CCM_ROOT/lib/ccm_core.py" reset-window || true

@@ -246,14 +246,32 @@ def scan_active_windows(projects, include_all=False):
     return [p for p in projects if p.state in ("BUSY", "PERMIT")]
 
 
-def inject_status():
-    """Main inject-status logic."""
+def inject_status(force_fast=False):
+    """Main inject-status logic.
+
+    `force_fast=True` skips the full detection pass and renders from
+    the cached `@ccm_prev_state` instead. Used by the focus-refresh
+    path (window switch): the only thing that changed is which window
+    is current, the per-project states are already known, and a full
+    detection here would add ~250 ms of lag to a switch that should
+    feel instant. The next regular poll tick re-detects."""
     lock_fd = acquire_lockfile()
     if lock_fd is None:
         return  # Another instance running
 
     try:
-        _inject_status_impl()
+        _inject_status_impl(force_fast=force_fast)
+        if force_fast:
+            # The focus-refresh path sets the mode-1/2 status options
+            # directly; unlike the periodic path (driven by the
+            # status-right `#(...)`, whose re-run inherently redraws),
+            # setting status-format here does NOT force a screen
+            # redraw on its own — the new highlight would otherwise
+            # wait for the next status-interval tick, which is the
+            # exact lag this path exists to remove. `refresh-client
+            # -S` forces the status redraw now (same trick the hook
+            # signal writer in hooks/lib.sh uses for instant updates).
+            tmux_cmd("refresh-client", "-S")
     finally:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -262,7 +280,7 @@ def inject_status():
             pass
 
 
-def _inject_status_impl():
+def _inject_status_impl(force_fast=False):
     # Detect external status-right changes
     detect_external_status_change()
     sanitize_orig_status()
@@ -283,8 +301,11 @@ def _inject_status_impl():
     # Get mode
     mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "2"
 
-    # Build project list — use fast mode when dashboard handles full detection
-    projects = build_project_list(fast=dashboard_running)
+    # Build project list — use fast mode when dashboard handles full
+    # detection, or when the caller forced it (focus-refresh on a
+    # window switch, which only needs the cached states + the new
+    # current-window highlight).
+    projects = build_project_list(fast=dashboard_running or force_fast)
 
     # Check for instant PERMIT flag set by hook (bypass polling delay)
     permit_pending = tmux_cmd("show-option", "-gqv", "@ccm-permit-pending")
@@ -693,7 +714,10 @@ def _write_cache(cache_file, content):
 
 if __name__ == "__main__":
     try:
-        inject_status()
+        # `--fast` forces the cached-state render (focus-refresh on
+        # window switch); the default path runs full detection.
+        import sys as _sys
+        inject_status(force_fast="--fast" in _sys.argv[1:])
     except Exception:
         # Never crash — tmux will retry. But log so the next
         # detection-cycle regression is debuggable without users

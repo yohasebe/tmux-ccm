@@ -108,6 +108,25 @@ tmux run-shell -b "sleep 1 && $CCM_BIN inject-status 2>/dev/null || true"
 # The delay lets the theme finish re-rendering before ccm re-injects.
 tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_BIN inject-status 2>/dev/null || true'"
 
+# Reflect the focused project in the status bar immediately on a
+# window switch, instead of waiting up to status-interval for the
+# next tick. The mode-1/2 status bakes the "current window"
+# highlight into a static status string when inject-status runs, so
+# the highlight only moves when inject-status re-runs; a bare
+# `refresh-client -S` redraws the cached `#(...)` output and does
+# not move it. `session-window-changed` fires whenever the active
+# window changes; re-running inject-status there rewrites the
+# highlight. `--fast` is the point: the per-project states are
+# already cached in `@ccm_prev_state` and a window switch changes
+# only WHICH window is current, so the focus refresh skips the full
+# detection pass (~250 ms) and re-renders from the cache (~10 ms),
+# making the highlight feel instant — exactly the "the info is
+# already known, reflect it now" case. The next regular poll tick
+# re-detects. `-ga` appends so a theme/user hook on the same event
+# is preserved; `-b` keeps the switch itself snappy and the inject
+# lockfile prevents pile-up during rapid switching.
+tmux set-hook -ga session-window-changed "run-shell -b '$CCM_BIN inject-status --fast 2>/dev/null || true'"
+
 # Auto-restore: load _autosave snapshot on tmux start
 # Controlled by @ccm-auto-restore: "on" or "off" (default)
 CCM_AUTO_RESTORE=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)
