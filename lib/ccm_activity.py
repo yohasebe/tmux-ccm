@@ -191,38 +191,44 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
                 latest, jsonl_stop_reason, jsonl_age, now):
             return ACTIVITY_AT_REST, latest
         # Auto-approved-tool promotion — only on POSITIVE evidence
-        # of activity. The promotion exists to keep the dashboard
-        # honest during the brief gap between "user accepts modal"
-        # and "next PreToolUse hook fires" (typically a few
-        # seconds, since the permission interrupts a tool that's
-        # already in flight). Two disjoint sub-cases qualify:
+        # of activity. The promotion keeps the dashboard honest
+        # during the gap between "user accepts modal" and "next
+        # PreToolUse hook fires" (which can be MINUTES on a long
+        # tool, since Claude Code does not re-fire PreToolUse after
+        # approval). Two disjoint sub-cases qualify:
         #
-        # 1. raw=BUSY — capture-pane sees tool output (no `❯` at
-        #    column 0, claude has children). Direct evidence the
-        #    tool is running.
+        # 1. raw=BUSY — capture-pane sees Claude actively working:
+        #    an active-work spinner (`… (elapsed · arrow Nk tokens)`)
+        #    is on screen, or children are running with no prompt
+        #    visible. This is DIRECT evidence and does NOT need JSONL
+        #    corroboration — a permission wait shows no spinner
+        #    (Claude has stopped generating to ask) and its options
+        #    make raw PERMIT or IDLE, never BUSY. Gating this behind
+        #    `jsonl_stop_reason == "tool_use"` used to hide a real
+        #    BUSY as PERMIT whenever the JSONL signal was absent —
+        #    notably a background subagent's WebFetch, whose tool_use
+        #    lands in the SUBAGENT's JSONL, not the main session's, so
+        #    the main JSONL showed no fresh tool_use while the fetch
+        #    ran for minutes (2026-06-30 monadic-chat incident).
+        if raw == "BUSY":
+            return ACTIVITY_IN_PROGRESS, latest
         #
-        # 2. JSONL is STRICTLY FRESHER than the permit event — a
-        #    new tool_use record landed after the permit was
-        #    raised, proving the tool dispatched post-accept.
-        #
-        # Anything else (raw=IDLE with stale or older JSONL,
-        # raw=None, etc.) stays PERMIT. This is what catches the
-        # interactive choice menu case: Claude renders an option
-        # list as a permit-class hook, JSONL latest tool_use
-        # predates the menu, raw=IDLE because PATTERN_INPUT_PROMPT
-        # matches a menu selector. Without this restriction the
-        # heuristic falsely held BUSY for the user's whole reading
-        # time — confusing because the dashboard claimed activity
-        # while the user was waiting on a selection.
+        # 2. raw=IDLE (queued-input box / menu selector visible) but
+        #    JSONL is STRICTLY FRESHER than the permit event — a new
+        #    tool_use record landed after the permit was raised,
+        #    proving the tool dispatched post-accept. Requiring the
+        #    JSONL to be fresher than the event is what keeps the
+        #    interactive-menu case as PERMIT: a menu's latest
+        #    tool_use predates the menu event, so it does not promote,
+        #    and the user's whole reading time correctly reads as
+        #    "your selection is needed" rather than false BUSY.
         if (jsonl_stop_reason == "tool_use"
-                and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW):
-            if raw == "BUSY":
+                and 0 <= jsonl_age <= BUSY_HOOK_JSONL_WINDOW
+                and raw == "IDLE"):
+            event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
+            event_age = (now - event_ts) if (now > 0 and event_ts > 0) else -1
+            if event_age >= 0 and jsonl_age < event_age:
                 return ACTIVITY_IN_PROGRESS, latest
-            if raw == "IDLE":
-                event_ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
-                event_age = (now - event_ts) if (now > 0 and event_ts > 0) else -1
-                if event_age >= 0 and jsonl_age < event_age:
-                    return ACTIVITY_IN_PROGRESS, latest
         return ACTIVITY_AWAITING_PERMIT, latest
 
     if klass == EVENT_CLASS_START:

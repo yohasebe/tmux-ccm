@@ -979,21 +979,27 @@ class TestDeriveStateFromEvents:
             raw="PERMIT",  # modal on screen
         ) == "PERMIT"
 
-    def test_permit_event_with_stale_jsonl_keeps_permit(self):
-        """If JSONL terminal is OLDER than the permit event, the
-        permit was fired AFTER the prior turn ended — actively
-        waiting on a fresh dialog. Don't release."""
-        # event_ts=200 (just now), now=205 → event_age=5
-        # jsonl_age=10 (prior turn ended 10 s ago)
-        # event_age (5) < jsonl_age (10) → permit fresher than JSONL
-        # → keep PERMIT.
+    def test_permit_event_raw_busy_promotes_despite_fresher_permit(self):
+        """raw=BUSY is authoritative current evidence: capture-pane
+        shows Claude actively working (an active-work spinner, or
+        children running with no prompt). A real permission wait
+        BLOCKS execution — no spinner, and its options make raw
+        PERMIT or IDLE, never BUSY. So raw=BUSY promotes to BUSY even
+        when the permit event is fresher than the last JSONL terminal.
+
+        This scenario (permit fresher than a prior end_turn, raw=BUSY)
+        is EXACTLY the 2026-06-30 monadic-chat false-PERMIT: a new
+        turn dispatched a subagent whose WebFetch raised a permit,
+        the fetch ran for minutes (spinner → raw=BUSY), but the old
+        'fresher permit ⇒ keep PERMIT' rule stuck the dashboard at
+        PERMIT. The current on-screen raw signal wins."""
         assert ccm_activity.derive_state_from_events(
             events=({"ts": 200, "type": "permit_req"},),
             jsonl_stop_reason="end_turn",
             pid_present=True, claude_pid_age=300,
             jsonl_age=10, now=205,
             raw="BUSY",
-        ) == "PERMIT"
+        ) == "BUSY"
 
     @pytest.mark.parametrize("event_type", ["permit_req", "notify_permit"])
     def test_permit_event_with_tool_use_jsonl_promotes_to_busy(self, event_type):
@@ -1027,21 +1033,39 @@ class TestDeriveStateFromEvents:
             raw="PERMIT",
         ) == "PERMIT"
 
-    def test_permit_event_with_stale_tool_use_keeps_permit(self):
-        """tool_use beyond BUSY_HOOK_JSONL_WINDOW is too old to
-        trust as an active tool — fall through to PERMIT (cosmetic
-        stuck state)."""
-        # jsonl_age past the long-tool window. claude_pid_age must
-        # be larger than (now - event_ts) so the cross-session
-        # filter doesn't catch the event first; we're testing the
-        # stale-tool_use branch, not the cross-session filter.
+    def test_permit_event_raw_busy_promotes_despite_stale_tool_use(self):
+        """A stale JSONL tool_use (past BUSY_HOOK_JSONL_WINDOW) no
+        longer forces PERMIT when raw=BUSY. The JSONL age governs
+        only the raw=IDLE promotion (where JSONL is the sole activity
+        evidence); raw=BUSY is a fresh on-screen signal that Claude
+        is working NOW, independent of how old the JSONL record is.
+        The old 'stale tool_use ⇒ PERMIT' rule ignored the live raw
+        and produced the sticky false-PERMIT this fix removes."""
         assert ccm_activity.derive_state_from_events(
             events=({"ts": 100, "type": "permit_req"},),
             jsonl_stop_reason="tool_use",
             pid_present=True, claude_pid_age=900,
             jsonl_age=700, now=900,
             raw="BUSY",
-        ) == "PERMIT"
+        ) == "BUSY"
+
+    def test_permit_event_subagent_webfetch_raw_busy_no_jsonl_tool_use(self):
+        """2026-06-30 monadic-chat incident, distilled: a background
+        subagent's WebFetch raised a permit and ran for minutes
+        (spinner → raw=BUSY), but its tool_use record landed in the
+        SUBAGENT's JSONL, so the main session's JSONL showed no fresh
+        tool_use (stop_reason end_turn / None). The old code gated
+        the raw=BUSY promotion behind main-session `jsonl tool_use`
+        and stuck the dashboard at PERMIT for the whole fetch. raw=
+        BUSY must promote to BUSY regardless of the JSONL stop_reason."""
+        for sr in ("end_turn", None):
+            assert ccm_activity.derive_state_from_events(
+                events=({"ts": 100, "type": "notify_permit"},),
+                jsonl_stop_reason=sr,
+                pid_present=True, claude_pid_age=300,
+                jsonl_age=150, now=250,
+                raw="BUSY",
+            ) == "BUSY", f"raw=BUSY must be BUSY with jsonl_stop_reason={sr!r}"
 
     def test_permit_event_with_idle_pane_and_fresh_tool_use_promotes_to_busy(self):
         """raw=IDLE with tool_use AND JSONL fresher than the permit
