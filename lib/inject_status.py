@@ -256,9 +256,19 @@ def inject_status(force_fast=False):
     detection here would add ~250 ms of lag to a switch that should
     feel instant. The next regular poll tick re-detects."""
     lock_fd = acquire_lockfile()
-    if lock_fd is None:
-        return  # Another instance running
-
+    if lock_fd is None and not force_fast:
+        # The periodic (full-detection) path must not double-run: two
+        # detections racing both write @ccm_prev_state and flicker the
+        # state. So it skips when another instance holds the lock.
+        return
+    # force_fast proceeds EVEN IF the lock is held. It is read-only on
+    # @ccm_prev_state (cached render, no detection), so it cannot
+    # cause state flicker — and it must not skip: a window switch
+    # landing while a periodic tick is running (~25% of the time at
+    # status-interval 1, full detection ~250 ms) would otherwise drop
+    # the focus refresh, leaving the highlight stalled until the next
+    # tick. That was the intermittent "status bar didn't switch on
+    # dashboard select" bug (2026-06-30).
     try:
         _inject_status_impl(force_fast=force_fast)
         if force_fast:
@@ -273,11 +283,13 @@ def inject_status(force_fast=False):
             # signal writer in hooks/lib.sh uses for instant updates).
             tmux_cmd("refresh-client", "-S")
     finally:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
-        except OSError:
-            pass
+        # lock_fd is None on the force_fast-without-lock path.
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+            except OSError:
+                pass
 
 
 def _inject_status_impl(force_fast=False):
