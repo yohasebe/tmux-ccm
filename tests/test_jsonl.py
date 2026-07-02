@@ -425,6 +425,54 @@ class TestJsonlTailStopReason:
         # stop_reason comes from the assistant one record back
         assert stop == "tool_use"
 
+    def test_slash_command_records_do_not_promote_to_user_pending(
+        self, tmp_path, monkeypatch
+    ):
+        """A local slash command (/model, /status, …) writes up to
+        three `user` records: <command-name> (isMeta absent),
+        <local-command-stdout> (isMeta absent), and
+        <local-command-caveat> (isMeta: true). None triggers an
+        assistant turn, so NONE must promote to user_pending —
+        otherwise running a slash command while idle falsely shows
+        BUSY for ~10 min. This mirrors the exact real-world /model
+        sequence observed in jwriter (2026-07-02)."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 60, stop_reason="end_turn"),
+            {"type": "user", "timestamp": _iso_ts(now - 5),
+             "message": {"content": "<command-name>/model</command-name>\n"
+                                    "<command-message>model</command-message>\n"
+                                    "<command-args></command-args>"}},
+            {"type": "user", "timestamp": _iso_ts(now - 5),
+             "message": {"content": "<local-command-stdout>Set model to Fable 5"
+                                    "</local-command-stdout>"}},
+            {"type": "user", "timestamp": _iso_ts(now - 4), "isMeta": True,
+             "message": {"content": "<local-command-caveat>Caveat:…"
+                                    "</local-command-caveat>"}},
+        ])
+        age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
+        # All three slash-command records skipped: stop_reason stays
+        # end_turn (→ IDLE), not user_pending (→ false BUSY).
+        assert stop == "end_turn"
+
+    def test_real_prompt_still_promotes_despite_prior_slash_command(
+        self, tmp_path, monkeypatch
+    ):
+        """A genuine prompt after slash-command records still promotes
+        to user_pending — the skip must not suppress real prompts."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 60, stop_reason="end_turn"),
+            {"type": "user", "timestamp": _iso_ts(now - 20),
+             "message": {"content": "<command-name>/model</command-name>"}},
+            {"type": "user", "timestamp": _iso_ts(now - 5),
+             "message": {"content": "real follow-up question"}},
+        ])
+        age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
+        assert stop == ccm_jsonl.JSONL_USER_PENDING
+
     def test_skips_system_records_for_stop_reason(self, tmp_path, monkeypatch):
         """System records (recap / stop_hook_summary) are filtered out
         even when walking for stop_reason. The assistant record buried

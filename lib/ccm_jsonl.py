@@ -58,6 +58,28 @@ JSONL_NON_ACTIVITY_TYPES = frozenset({
     "last-prompt",
 })
 
+# Content-tag prefixes that mark a `user` record as a local slash
+# command wrapper rather than a genuine prompt. A single `/model`
+# (or /status, /clear, …) writes up to three user records:
+#   1. <command-name>/model</command-name>…      (isMeta absent)
+#   2. <local-command-stdout>…</local-command-stdout>  (isMeta absent)
+#   3. <local-command-caveat>…</local-command-caveat>  (isMeta: true)
+# None of them triggers an assistant turn, so none must be counted
+# as real activity nor drive the `user_pending` promotion — otherwise
+# running a slash command while idle falsely shows BUSY for the whole
+# BUSY_HOOK_JSONL_WINDOW (~10 min). isMeta alone only catches #3;
+# the content prefix is required for #1 and #2. Genuine prompts do
+# not begin with these tags.
+JSONL_LOCAL_COMMAND_PREFIXES = (
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+    "<command-contents>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+    "<local-command-caveat>",
+)
+
 # Tail size (bytes) read from each JSONL when looking for the most
 # recent real activity record. Needs to accommodate a single large
 # tool_result record (Read of 2000 lines, long shell output, ...)
@@ -301,6 +323,39 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
 
 # ─── JSONL tail parser ───
 
+def _is_local_command_user_record(rec: dict) -> bool:
+    """True when a `user` record is a local slash-command wrapper
+    (/model, /status, /clear, …) rather than a genuine prompt.
+
+    Two independent signals, either sufficient:
+      - `isMeta: true` (the <local-command-caveat> record), or
+      - the leading text content begins with a local-command tag
+        (the <command-name> / <local-command-stdout> records, which
+        carry no isMeta flag).
+    These records produce no assistant turn, so treating them as
+    real activity would falsely surface BUSY. See
+    JSONL_LOCAL_COMMAND_PREFIXES.
+    """
+    if rec.get("isMeta") is True:
+        return True
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    text: Optional[str] = None
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        for blk in content:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                text = blk.get("text")
+                break
+            if isinstance(blk, str):
+                text = blk
+                break
+    if not isinstance(text, str):
+        return False
+    return text.lstrip().startswith(JSONL_LOCAL_COMMAND_PREFIXES)
+
+
 def _parse_jsonl_tail(
     path: str, mtime: int, size: int
 ) -> Tuple[Optional[int], Optional[str]]:
@@ -373,6 +428,15 @@ def _parse_jsonl_tail(
             continue
         rec_type = rec.get("type")
         if not rec_type or rec_type not in JSONL_ACTIVITY_TYPES:
+            continue
+        # Local slash commands (/model, /status, /clear, …) write
+        # `user` records that produce no assistant turn. Skip them so
+        # they neither count as real activity nor drive the
+        # `user_pending` promotion below — otherwise running a slash
+        # command while idle leaves such a record as the JSONL tail
+        # and the `jsonl_user_prompt_pending` rule falsely shows BUSY
+        # for the whole BUSY_HOOK_JSONL_WINDOW (~10 min).
+        if rec_type == "user" and _is_local_command_user_record(rec):
             continue
         # Parse timestamp — defence-in-depth in case Claude Code adds
         # a whitelisted type that omits the field.
