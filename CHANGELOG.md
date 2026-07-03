@@ -5,8 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.1] - 2026-07-04
 
+### Changed
 - The status bar reflects the focused project immediately on a window switch instead of waiting up to `status-interval` for the next tick. The mode-1/2 status bakes the "current window" highlight into a static status string when `inject-status` runs, so the highlight only moves when `inject-status` re-runs. A `session-window-changed` hook now re-runs `inject-status --fast` on every window switch. Two pieces make it instant: (1) `--fast` skips the full detection pass (~250 ms) and re-renders from the cached `@ccm_prev_state` (~10 ms), since a switch changes only WHICH window is current, not any project's state; (2) the fast path issues an explicit `refresh-client -S` afterward, because — unlike the periodic path driven by the status-right `#(...)` whose re-run inherently redraws — setting `status-format` from a hook does not force a screen redraw on its own, so without it the new highlight still waited for the next tick (the exact lag being removed). The hook is appended with `-ga` so a theme/user hook on the same event is preserved, runs with `-b` so the switch stays snappy. The focus refresh also bypasses the inject lockfile (it is read-only on `@ccm_prev_state`, so it cannot cause the state flicker the lock guards against): otherwise a switch landing while a periodic full-detection tick held the lock — about a quarter of the time at `status-interval` 1 — would silently drop the refresh and the highlight would stall until the next tick, the intermittent "dashboard select didn't move the status bar" symptom. New `ccm inject-status --fast` flag forces the cached-state render.
 
 ### Fixed
