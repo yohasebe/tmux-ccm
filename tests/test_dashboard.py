@@ -73,6 +73,29 @@ class TestRenderSmoke:
         d.projects = []
         d.render(_make_mock_stdscr())  # must not raise
 
+    def test_render_current_forces_full_repaint(self, monkeypatch):
+        """Every render must call stdscr.redrawwin() before drawing.
+
+        tmux's popup overlay clipping (as of 3.7b) lets a pane
+        streaming double-width CJK output behind the popup clobber
+        cells INSIDE the popup. curses diffs against its own model
+        of the physical screen, so without redrawwin() it believes
+        the clobbered cells are still correct and never repaints
+        them — the garbage sticks. redrawwin() marks the window
+        corrupted so the following refresh re-emits every cell,
+        self-healing within one render tick (observed live
+        2026-07-03, dashboard over a streaming CJK response)."""
+        _stub_dashboard_environment(monkeypatch)
+        for mode in ("dashboard", "tree", "menu"):
+            d = Dashboard(initial_mode=mode)
+            d.projects = []
+            stdscr = _make_mock_stdscr()
+            d._render_current(stdscr)
+            assert stdscr.redrawwin.called, (
+                f"mode={mode}: _render_current must force a full "
+                "repaint via redrawwin()"
+            )
+
     def test_render_with_projects(self, monkeypatch):
         """Renders a list with several state variations to walk
         more of the row-rendering code path."""

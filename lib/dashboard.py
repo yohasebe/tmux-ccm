@@ -276,6 +276,21 @@ class Dashboard:
             self._render_current(stdscr)
 
     def _render_current(self, stdscr):
+        # Self-heal external screen corruption. tmux's popup overlay
+        # clipping has (as of 3.7b) cases — notably a pane streaming
+        # double-width CJK output behind the popup — where background
+        # pane updates are drawn INTO the popup region, clobbering our
+        # cells (upstream churn: tmux PR #4920 fixed one shape in 3.7,
+        # PR #4997 another; wide-char cases persist). curses diffs
+        # against its own model of the physical screen, so it believes
+        # those cells are still correct and a normal refresh rewrites
+        # nothing — the garbage sticks forever. redrawwin() marks the
+        # whole window corrupted, forcing the next refresh to re-emit
+        # every cell. Renders run on every keypress and every
+        # REFRESH_INTERVAL tick, so damage heals within ~2 s. Full
+        # re-emit of an 80%×60% popup over the local socket is
+        # negligible.
+        stdscr.redrawwin()
         if self.mode == "dashboard":
             self.render(stdscr)
         elif self.mode == "tree":
@@ -1596,6 +1611,9 @@ class Dashboard:
 
     def _render_search(self, stdscr, buf, filtered, sel, total):
         """Render the quick-filter search UI (list + prompt + help)."""
+        # Same self-heal as _render_current: force a full re-emit so
+        # cells clobbered by tmux's popup-overlay bug get repaired.
+        stdscr.redrawwin()
         stdscr.erase()
         height, width = stdscr.getmaxyx()
 
