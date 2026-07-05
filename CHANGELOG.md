@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- A lone phantom `SubagentStart` event no longer holds a false BUSY for the full 10-minute staleness window. Claude Code sometimes fires a phantom SubagentStart outside any turn (observed at the recap moment when the user returns to an idle session), and in the 2026-07-04 jwriter incident this combined with a second upstream anomaly — hooks going completely silent through a real turn (no prompt / pretool / stop events at all, #16047 class) — to produce an events log containing NOTHING but one subagent event. The existing phantom-subagent strip requires a preceding rest marker (`notify_idle` / `stop` / `session_end`) to anchor against, so it could not fire; the lone subagent then classified as start-class → IN_PROGRESS → BUSY until the combined-stale window (~10 min) expired, while the user looked at an idle composer. The `_strip_phantom_subagents` all-subagent branch even documented the intended behavior ("the classifier will fall through to UNKNOWN") — but no such guard existed. `classify_activity` now implements it: an events log consisting only of subagent events returns UNKNOWN, deferring to the legacy raw+JSONL path (which correctly resolved IDLE within seconds in the incident). Real subagent work is unaffected — a SubagentStart always happens inside a turn, so with healthy hooks its prompt/pretool context precedes it (covered by a new no-over-trigger test), and even with silent hooks real work still surfaces as BUSY via the spinner/process-tree raw signal or fresh JSONL `tool_use`. Regression tests replay the exact incident at three timestamps.
+- `ccm debug trace` now runs the real two-path detection (event-log derive primary, legacy fallback) instead of the legacy rule table alone, and prints the derive result in a new `ev=` column. The trace's own docstring warns that observing a different detection path "defeats the trace tool" — yet it called `evaluate_rules()` directly, skipping `derive_state_from_events` entirely. During the jwriter incident above it printed `default → IDLE` while the live pipeline was resolving derive=BUSY, sending the investigation down the wrong path (the observer itself was the blind spot). Still read-only: the trace calls `resolve_state_from_context`, which has no side effects.
+
 ## [0.5.1] - 2026-07-04
 
 ### Changed

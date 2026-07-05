@@ -880,7 +880,7 @@ def cmd_debug_trace(project_match, interval=0.3):
     sys.stderr.write(
         f"# ccm debug trace: {proj_name} ({win_target}) — {proj_dir}\n"
         f"# interval={interval}s  Ctrl-C to stop\n"
-        f"# columns: time  raw  prev  hook(state,age)  pid_age  jsonl(age,stop)  rule[phase]  →  state[action]\n"
+        f"# columns: time  raw  prev  hook(state,age)  pid_age  jsonl(age,stop)  ev(derive)  rule[phase]  →  state[action]\n"
     )
     sys.stderr.flush()
 
@@ -920,7 +920,17 @@ def cmd_debug_trace(project_match, interval=0.3):
             win_target, proj_dir, prev_state,
             panes_cache, ps_lines, own_pgid,
         )
-        rule, state = ccm_rules.evaluate_rules(ctx)
+        # Use the REAL two-path merge (event-log derive primary,
+        # legacy fallback), not evaluate_rules alone. The trace used
+        # to run only the legacy table, which silently observed a
+        # different detection path than production — during the
+        # 2026-07-04 jwriter phantom-subagent incident it printed
+        # "default → IDLE" while the live pipeline was resolving
+        # derive=BUSY, misdirecting the investigation. Still
+        # read-only: resolve_state_from_context has no side effects
+        # (apply_actions is what writes, and we don't call it).
+        state, rule, event_log_state = (
+            ccm_detection.resolve_state_from_context(ctx, proj_dir))
 
         hook_str = f"{ctx.hook_state or '-'},{ctx.hook_age if ctx.hook_age >= 0 else '-'}"
         pid_age = ctx.claude_pid_age if ctx.claude_pid_age >= 0 else "-"
@@ -936,6 +946,7 @@ def cmd_debug_trace(project_match, interval=0.3):
             f"raw={ctx.raw:5}  prev={prev_state or '-':5}  "
             f"hook={hook_str:10}  pid_age={str(pid_age):4}  "
             f"jsonl={jsonl_str:20}  "
+            f"ev={event_log_state or '-':5}  "
             f"{rule_label:42} → {state:5} [{action_short}]\n"
         )
         sys.stdout.flush()

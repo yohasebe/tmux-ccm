@@ -294,6 +294,55 @@ class TestClassifyActivity:
         assert a == ACTIVITY_AT_REST
         assert e["type"] == "notify_idle"
 
+    def test_all_subagent_log_unknown(self):
+        """An events log consisting ONLY of subagent events defers
+        to legacy (UNKNOWN). Real SubagentStart always happens inside
+        a turn whose prompt/pretool events precede it — a lone
+        subagent means either a phantom fired outside any turn or
+        hooks went silent mid-turn, and the event log is
+        untrustworthy either way. 2026-07-04 jwriter incident: hooks
+        were silent for a whole real turn, then a single phantom
+        subagent event at the recap moment held a false BUSY for the
+        entire 10-minute staleness window because this guard —
+        documented in _strip_phantom_subagents — was never
+        implemented."""
+        from ccm_activity import ACTIVITY_UNKNOWN
+        a, e = self._classify(
+            events=({"ts": 1000, "type": "subagent"},),
+            jsonl_stop_reason="end_turn",
+            jsonl_age=10800,  # last real turn ~3h ago
+            raw="IDLE", now=1200,  # event only 200s old (fresh!)
+        )
+        assert a == ACTIVITY_UNKNOWN
+        assert e["type"] == "subagent"
+
+    def test_all_subagent_log_multiple_events_unknown(self):
+        from ccm_activity import ACTIVITY_UNKNOWN
+        a, _e = self._classify(
+            events=({"ts": 1000, "type": "subagent"},
+                    {"ts": 1010, "type": "subagent"}),
+            jsonl_stop_reason="end_turn",
+            jsonl_age=50, raw="IDLE", now=1100,
+        )
+        assert a == ACTIVITY_UNKNOWN
+
+    def test_subagent_with_turn_context_still_in_progress(self):
+        """The all-subagent guard must not over-trigger: a subagent
+        preceded by the turn's prompt/pretool events is legitimate
+        Task-tool work and stays IN_PROGRESS."""
+        from ccm_activity import ACTIVITY_IN_PROGRESS
+        a, e = self._classify(
+            events=(
+                {"ts": 100, "type": "prompt"},
+                {"ts": 110, "type": "pretool"},
+                {"ts": 120, "type": "subagent"},
+            ),
+            jsonl_stop_reason="tool_use",
+            jsonl_age=5, raw="BUSY", now=200,
+        )
+        assert a == ACTIVITY_IN_PROGRESS
+        assert e["type"] == "subagent"
+
 
 class TestMapActivityToState:
     """`map_activity_to_state` is the small decision tree that maps
@@ -377,6 +426,25 @@ class TestDeriveStateFromEvents:
             pid_present=False, claude_pid_age=-1,
         ) == "SHELL"
 
+    # ─── 2026-07-04 jwriter incident replay ───
+
+    def test_lone_phantom_subagent_defers_to_legacy(self):
+        """Exact replay of the 2026-07-04 jwriter stuck-BUSY: hooks
+        silent through a real turn (last JSONL end_turn ~3 h old),
+        then a single phantom SubagentStart fires at the recap
+        moment. The lone fresh subagent event must NOT hold BUSY —
+        derive defers (None) and legacy resolves from raw=IDLE."""
+        event_ts = 1783142525   # 14:22:05 phantom subagent
+        jsonl_ts = 1783132130   # 11:28:50 last real end_turn
+        for offset in (55, 265, 445):  # 14:23 / 14:26:30 / 14:29:30
+            now = event_ts + offset
+            assert ccm_activity.derive_state_from_events(
+                events=({"ts": event_ts, "type": "subagent"},),
+                jsonl_stop_reason="end_turn",
+                pid_present=True, claude_pid_age=11000,
+                raw="IDLE", jsonl_age=now - jsonl_ts, now=now,
+            ) is None, f"stuck BUSY reproduced at +{offset}s"
+
     def test_pid_absent_with_events_still_shell(self):
         """Process tree is authoritative over stale event log."""
         assert ccm_activity.derive_state_from_events(
@@ -406,12 +474,24 @@ class TestDeriveStateFromEvents:
 
     # ─── Start-class events → BUSY ───
 
+    @staticmethod
+    def _start_events(event_type, ts=100):
+        """A start-class event as the log tail. `subagent` gets its
+        turn's preceding `prompt` for context — a LONE subagent log
+        defers to legacy since the all-subagent guard (2026-07-04
+        jwriter phantom incident); with context it is legitimate
+        Task-tool work and still start-class."""
+        if event_type == "subagent":
+            return ({"ts": ts - 10, "type": "prompt"},
+                    {"ts": ts, "type": event_type})
+        return ({"ts": ts, "type": event_type},)
+
     @pytest.mark.parametrize("event_type", [
         "prompt", "pretool", "posttool", "subagent", "compact",
     ])
     def test_start_class_events_busy(self, event_type):
         assert ccm_activity.derive_state_from_events(
-            events=({"ts": 100, "type": event_type},),
+            events=self._start_events(event_type),
             jsonl_stop_reason=None,
             pid_present=True, claude_pid_age=100,
         ) == "BUSY"
@@ -868,7 +948,7 @@ class TestDeriveStateFromEvents:
         # event_ts=100, now=200 → event_age=100; jsonl_age=10. JSONL
         # is much fresher than the event → IDLE.
         assert ccm_activity.derive_state_from_events(
-            events=({"ts": 100, "type": event_type},),
+            events=self._start_events(event_type),
             jsonl_stop_reason=stop_reason,
             pid_present=True, claude_pid_age=300,
             jsonl_age=10, now=200,

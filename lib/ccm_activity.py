@@ -129,7 +129,8 @@ def _strip_phantom_subagents(events_seq):
         break
     if i < 0:
         # All-subagent log — no rest marker to test against. Keep
-        # as-is; the classifier will fall through to UNKNOWN.
+        # as-is; classify_activity's all-subagent guard maps this
+        # to UNKNOWN (defer to legacy raw+JSONL).
         return events_seq
     if i == len(events_seq) - 1:
         return events_seq  # no trailing subagents
@@ -153,6 +154,25 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
     events_seq = _strip_phantom_subagents(events_seq)
     if not events_seq:
         return ACTIVITY_UNKNOWN, None
+
+    # All-subagent log: no prompt / pretool / stop context at all.
+    # A real SubagentStart always happens inside a turn, and a turn
+    # (with healthy hooks) logs its prompt/pretool first — so a log
+    # consisting ONLY of subagent events is either a phantom
+    # SubagentStart fired outside any turn (observed at the recap
+    # moment when the user returns to an idle session) or a session
+    # whose hooks went silent mid-turn (#16047-class), which makes
+    # the event log untrustworthy either way. Defer to legacy
+    # (raw + JSONL): real subagent work still surfaces as BUSY via
+    # the spinner/process-tree raw signal or fresh JSONL tool_use.
+    # 2026-07-04 jwriter incident: hooks were silent for a whole
+    # real turn, then a lone phantom subagent event at recap held a
+    # false BUSY for the entire 10-minute staleness window. This
+    # guard implements what _strip_phantom_subagents' all-subagent
+    # branch always documented but never enforced.
+    if all(isinstance(e, dict) and e.get("type") == "subagent"
+           for e in events_seq):
+        return ACTIVITY_UNKNOWN, events_seq[-1]
 
     latest = events_seq[-1]
     t = latest.get("type") if isinstance(latest, dict) else None
