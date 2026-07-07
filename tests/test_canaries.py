@@ -594,3 +594,147 @@ class TestShellClusterDetection:
         ccm_window.reset_window_after_attach("0:5")
         assert called_with == ["0:5"]
 
+
+
+class TestHookSilenceCanary:
+    """Opt-in hook-silence canary. `hook_silence_suspect` is the pure
+    predicate (fully unit-testable, no I/O); `hook_silence_warnings`
+    wires it to live JSONL/event-log reads and the opt-in gate.
+
+    The signature it detects: fresh JSONL real-activity whose timestamp
+    leads the newest hook event by a wide margin — real work the hook
+    log never recorded (#16047-class silence). Mirrors the 2026-07-04
+    jwriter incident where hooks went silent through a whole real turn.
+    """
+
+    NOW = 1_000_000
+
+    # ─── pure predicate ───
+
+    def test_fresh_jsonl_far_ahead_of_event_is_silence(self):
+        # JSONL activity 20s ago, newest event 400s ago → 380s gap.
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", 20, self.NOW - 20, self.NOW - 400, self.NOW) is True
+
+    def test_healthy_session_event_tracks_jsonl(self):
+        # Event only 10s behind the JSONL activity → not silence.
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", 30, self.NOW - 30, self.NOW - 40, self.NOW) is False
+
+    def test_long_tool_run_excluded_by_freshness_gate(self):
+        # A long tool freezes the JSONL too (tool_result on completion),
+        # so jsonl_age exceeds the freshness window and this abstains
+        # even though the event log is far behind.
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", 300, self.NOW - 300, self.NOW - 900, self.NOW) is False
+
+    def test_absent_event_log_excluded(self):
+        # event_ts=0 (log absent/empty) → cannot claim silence; this is
+        # what keeps startup and hook-less sessions quiet.
+        assert ccm_canaries.hook_silence_suspect(
+            "IDLE", 20, self.NOW - 20, 0, self.NOW) is False
+
+    def test_no_jsonl_activity_excluded(self):
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", -1, 0, self.NOW - 400, self.NOW) is False
+
+    def test_non_live_state_excluded(self):
+        for state in ("SHELL", "DOWN", ""):
+            assert ccm_canaries.hook_silence_suspect(
+                state, 20, self.NOW - 20, self.NOW - 400, self.NOW) is False
+
+    def test_gap_exactly_at_threshold_fires(self):
+        gap = ccm_canaries.HOOK_SILENCE_GAP
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", 10, self.NOW - 10, self.NOW - 10 - gap, self.NOW) is True
+
+    def test_gap_just_below_threshold_quiet(self):
+        gap = ccm_canaries.HOOK_SILENCE_GAP
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", 10, self.NOW - 10, self.NOW - 10 - (gap - 1),
+            self.NOW) is False
+
+    def test_freshness_boundary(self):
+        fresh = ccm_canaries.HOOK_SILENCE_FRESH
+        gap = ccm_canaries.HOOK_SILENCE_GAP
+        # jsonl_age == fresh → still fresh (inclusive).
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", fresh, self.NOW - fresh,
+            self.NOW - fresh - gap, self.NOW) is True
+        # jsonl_age == fresh + 1 → too stale, abstain.
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", fresh + 1, self.NOW - fresh - 1,
+            self.NOW - fresh - 1 - gap, self.NOW) is False
+
+    def test_custom_thresholds_honored(self):
+        # Tighter gap makes a modest lag qualify.
+        assert ccm_canaries.hook_silence_suspect(
+            "BUSY", 10, self.NOW - 10, self.NOW - 40, self.NOW,
+            fresh=90, gap=20) is True
+
+    # ─── opt-in gate ───
+
+    def test_enabled_reads_tmux_option(self, monkeypatch):
+        for val, expect in (("on", True), ("always", True), ("1", True),
+                            ("off", False), ("", False), (None, False),
+                            ("nonsense", False)):
+            monkeypatch.setattr(ccm_core, "tmux_cmd",
+                                lambda *a, _v=val, **k: _v)
+            assert ccm_canaries.hook_silence_enabled() is expect
+
+    def test_warnings_empty_when_opt_in_off(self, monkeypatch):
+        # Default off → no reads, no warnings, zero impact on default UX.
+        monkeypatch.setattr(ccm_canaries, "hook_silence_enabled",
+                            lambda: False)
+        projects = [ccm_core.Project("0:1", "1", "a", "/tmp/a", "BUSY")]
+        assert ccm_canaries.hook_silence_warnings(projects) == []
+
+    def test_warnings_empty_when_hooks_not_configured(self, monkeypatch):
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: False)
+        projects = [ccm_core.Project("0:1", "1", "a", "/tmp/a", "BUSY")]
+        assert ccm_canaries.hook_silence_warnings(
+            projects, enabled=True) == []
+
+    # ─── end-to-end wiring (jwriter incident replay) ───
+
+    def test_warnings_flag_silent_session(self, monkeypatch):
+        now = self.NOW
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+        monkeypatch.setattr(
+            ccm_canaries, "_read_all_session_ids",
+            lambda: {"0:1": "sid-alpha", "0:2": "sid-beta"})
+        # alpha: fresh JSONL (20s) but event log frozen 400s ago → silent.
+        # beta:  fresh JSONL and fresh event (30s) → healthy.
+        monkeypatch.setattr(
+            "ccm_jsonl.read_jsonl_tail_info",
+            lambda project_dir: {"/tmp/a": (20, "tool_use"),
+                                 "/tmp/b": (30, "tool_use")}[project_dir])
+        monkeypatch.setattr(
+            "ccm_signals.read_events_tail",
+            lambda project_dir, session_id=None: {
+                "/tmp/a": ({"ts": now - 400, "type": "subagent"},),
+                "/tmp/b": ({"ts": now - 30, "type": "pretool"},),
+            }[project_dir])
+        projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "BUSY"),
+            ccm_core.Project("0:2", "2", "beta",  "/tmp/b", "BUSY"),
+        ]
+        msgs = ccm_canaries.hook_silence_warnings(
+            projects, enabled=True, now=now)
+        assert len(msgs) == 1
+        assert "alpha" in msgs[0]
+        assert "beta" not in msgs[0]
+        assert "hooks appear silent" in msgs[0]
+
+    def test_warnings_skip_project_without_session_id(self, monkeypatch):
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+        monkeypatch.setattr(ccm_canaries, "_read_all_session_ids",
+                            lambda: {})  # no session_id resolved
+        called = []
+        monkeypatch.setattr(
+            "ccm_jsonl.read_jsonl_tail_info",
+            lambda project_dir: called.append(project_dir) or (20, "tool_use"))
+        projects = [ccm_core.Project("0:1", "1", "a", "/tmp/a", "BUSY")]
+        assert ccm_canaries.hook_silence_warnings(
+            projects, enabled=True, now=self.NOW) == []
+        assert called == []  # no session_id → no JSONL read attempted

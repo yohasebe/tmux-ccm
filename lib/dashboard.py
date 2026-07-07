@@ -58,6 +58,7 @@ from ccm_window import reset_window_after_attach
 from ccm_canaries import (
     disable_all_hooks_warning,
     errors_log_burst_warning,
+    hook_silence_warnings,
     hooks_log_warning,
     managed_hooks_only_warning,
     shell_cluster_warnings,
@@ -742,6 +743,13 @@ class Dashboard:
             # Per-project SHELL cluster canary (#48069 silent-exit regression)
             for cluster_msg in shell_cluster_warnings(projects):
                 self._addstr(stdscr, row, 2, "⚠ " + cluster_msg, curses.color_pair(C_YELLOW))
+                row += 1
+
+            # Hook-silence canary — opt-in (@ccm-hook-silence), so the
+            # loop is empty for default users and only lights up for an
+            # operator who asked to watch it during calibration.
+            for silence_msg in hook_silence_warnings(projects):
+                self._addstr(stdscr, row, 2, "⚠ " + silence_msg, curses.color_pair(C_YELLOW))
                 row += 1
 
             # Silent-exception burst canary — surfaces poll-cycle bugs

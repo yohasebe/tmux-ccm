@@ -366,3 +366,157 @@ def shell_cluster_warnings(projects) -> list:
             continue
         out.append(_format_cluster_warning(len(history), p.name))
     return out
+
+
+# ─── Hook-silence canary (opt-in, observe-first) ───
+#
+# Detects the upstream failure mode where a session's hook event log
+# stops updating while the conversation is demonstrably still active —
+# the #16047-class regression where hooks silently stop firing
+# mid-session (the 2026-07-04 jwriter incident: hooks silent through a
+# whole real turn). When that happens ccm's precise event-log path goes
+# blind and detection falls back to the coarser raw+JSONL heuristics,
+# where false BUSY/IDLE become possible. Surfacing this tells the
+# operator "detection is degraded for project X, and it's upstream, not
+# ccm".
+#
+# Signature: fresh JSONL real-activity (the session is working right
+# now) whose timestamp is well AHEAD of the newest hook event (the hook
+# log never recorded that activity). Requiring the event log to EXIST
+# and to lag by a wide margin keeps this clear of the benign look-alikes:
+#   - long tool run  → JSONL freezes at tool-start too (tool_result is
+#                       written on completion), so jsonl_age exceeds the
+#                       freshness gate and this abstains
+#   - slash command  → already filtered out of JSONL activity upstream
+#                       in _parse_jsonl_tail, so it never looks fresh
+#   - startup        → no event log yet (no hook has fired), so the
+#                       "event log exists" requirement excludes it
+#   - idle session   → no fresh JSONL activity, freshness gate excludes
+#
+# OBSERVE-FIRST: default OFF. During calibration the operator opts in
+# with `@ccm-hook-silence on` and watches the dashboard footer; a
+# mis-tuned threshold can then only mislead someone who explicitly
+# asked to see it, never a default user. Promote to default-on in a
+# later release once real-session dogfooding confirms zero false fires.
+
+HOOK_SILENCE_FRESH = int(os.environ.get("CCM_HOOK_SILENCE_FRESH", "90"))
+HOOK_SILENCE_GAP = int(os.environ.get("CCM_HOOK_SILENCE_GAP", "120"))
+_HOOK_SILENCE_OPT = "@ccm-hook-silence"
+
+
+def hook_silence_enabled() -> bool:
+    """Whether the opt-in hook-silence canary is turned on. Reads the
+    global `@ccm-hook-silence` tmux option; anything in the truthy set
+    enables it, everything else (including absent) leaves it off."""
+    val = (ccm_core.tmux_cmd("show-option", "-gqv", _HOOK_SILENCE_OPT)
+           or "").strip().lower()
+    return val in ("on", "always", "1", "true", "yes")
+
+
+def hook_silence_suspect(state, jsonl_age, jsonl_ts, event_ts, now,
+                         fresh=None, gap=None) -> bool:
+    """Pure predicate: does this project's hook event log look silent?
+
+    True iff a live session shows fresh JSONL real-activity whose
+    timestamp leads the newest hook event by at least `gap` seconds —
+    i.e. real work the hook log never recorded.
+
+    Arguments (all plain values — no I/O, fully testable):
+        state:      committed ccm state string. Only BUSY/IDLE/PERMIT
+                    qualify; SHELL/DOWN have no live session to track.
+        jsonl_age:  seconds since newest JSONL real-activity, or -1/None
+                    when the JSONL has no activity record.
+        jsonl_ts:   unix ts of that activity (0/None if none).
+        event_ts:   unix ts of the newest hook event (0/None when the
+                    event log is absent or empty — the exclusion that
+                    keeps startup and hook-less sessions quiet).
+        now:        current unix time.
+        fresh/gap:  thresholds; default to the module constants.
+    """
+    fresh = HOOK_SILENCE_FRESH if fresh is None else fresh
+    gap = HOOK_SILENCE_GAP if gap is None else gap
+    if state not in ("BUSY", "IDLE", "PERMIT"):
+        return False
+    if jsonl_age is None or jsonl_age < 0 or jsonl_age > fresh:
+        return False          # no fresh activity for hooks to have missed
+    if not jsonl_ts or not event_ts:
+        return False          # need both anchors; absent event log excluded
+    return (jsonl_ts - event_ts) >= gap
+
+
+def _read_all_session_ids() -> dict:
+    """Return `{win_target: session_id}` for every window in one
+    `tmux list-windows -a` subprocess. Empty session_id values are
+    dropped so callers can treat "present in map" as "resolved"."""
+    raw = ccm_core.tmux_cmd(
+        "list-windows", "-a",
+        "-F", "#{session_name}:#{window_index}\t#{@ccm_session_id}",
+    )
+    out = {}
+    if not raw:
+        return out
+    for line in raw.splitlines():
+        if "\t" not in line:
+            continue
+        win_target, _, sid = line.partition("\t")
+        sid = sid.strip()
+        if sid:
+            out[win_target] = sid
+    return out
+
+
+def _format_hook_silence_warning(project_name: str, lag_sec: int) -> str:
+    label = f"{project_name}: " if project_name else ""
+    lag_min = max(1, lag_sec // 60)
+    return (
+        f"{label}hooks appear silent — event log frozen ~{lag_min}m behind "
+        f"live activity; detection on JSONL fallback (upstream #16047-class)"
+    )
+
+
+def hook_silence_warnings(projects, enabled=None, now=None) -> list:
+    """Return one-line warning strings for every live project whose
+    hook event log looks silent. Opt-in: returns [] unless
+    `@ccm-hook-silence` is on (override with `enabled=` in tests).
+
+    Read-only and off the detection hot path — called only from the
+    status / doctor / dashboard-footer surfaces. The per-project JSONL
+    and event-log reads hit the same mtime+size caches the detection
+    cycle just populated, so the extra cost is a cache lookup, not a
+    re-read.
+    """
+    if enabled is None:
+        enabled = hook_silence_enabled()
+    if not enabled:
+        return []
+    # Absent hooks → absent event logs are expected, not a regression.
+    if not ccm_core.hooks_configured():
+        return []
+
+    # Function-local imports: ccm_jsonl / ccm_signals both import
+    # ccm_core, which top-level-imports this module — importing them at
+    # module scope would close that cycle. Deferring to call time keeps
+    # the import graph acyclic (and costs nothing after first load).
+    import ccm_jsonl
+    import ccm_signals
+
+    if now is None:
+        now = int(time.time())
+    sid_map = _read_all_session_ids()
+    out = []
+    for p in projects:
+        sid = sid_map.get(p.win_target)
+        if not sid:
+            continue
+        jsonl_age, _stop = ccm_jsonl.read_jsonl_tail_info(p.dir)
+        jsonl_ts = (now - jsonl_age) if (jsonl_age is not None
+                                         and jsonl_age >= 0) else 0
+        events = ccm_signals.read_events_tail(p.dir, session_id=sid)
+        event_ts = 0
+        if events:
+            last = events[-1]
+            if isinstance(last, dict):
+                event_ts = last.get("ts", 0) or 0
+        if hook_silence_suspect(p.state, jsonl_age, jsonl_ts, event_ts, now):
+            out.append(_format_hook_silence_warning(p.name, jsonl_ts - event_ts))
+    return out

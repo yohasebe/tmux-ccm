@@ -699,6 +699,20 @@ def cmd_doctor():
         row(OK, "cluster-SHELL transitions",
             f"none in last {ccm_canaries.SHELL_CLUSTER_WINDOW // 60} min")
 
+    # Hook-silence canary is opt-in (observe-first). Report its state
+    # so `ccm doctor` explains why it is or isn't watching, then list
+    # any live suspects (empty unless opted in).
+    if ccm_canaries.hook_silence_enabled():
+        silence_msgs = ccm_canaries.hook_silence_warnings(projects)
+        if silence_msgs:
+            for msg in silence_msgs:
+                row(WARN, "hook-silence", msg)
+        else:
+            row(OK, "hook-silence", "on — no silent sessions")
+    else:
+        row(OK, "hook-silence",
+            "off (opt in with `tmux set -g @ccm-hook-silence on`)")
+
     section(f"Active projects ({len(projects)})")
     if not projects:
         row(WARN, "(none registered)", "run `ccm add <dir>` to start")

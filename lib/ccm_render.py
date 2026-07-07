@@ -279,6 +279,8 @@ def print_status():
             print(f"\033[33m⚠ {warning}\033[0m")
     for cluster_msg in ccm_canaries.shell_cluster_warnings(projects):
         print(f"\033[33m⚠ {cluster_msg}\033[0m")
+    for silence_msg in ccm_canaries.hook_silence_warnings(projects):
+        print(f"\033[33m⚠ {silence_msg}\033[0m")
     print()
 
     print(f"{C_BOLD}{'STATUS':<12} {'PROJECT':<20} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
