@@ -364,6 +364,53 @@ class TestMapActivityToState:
         from ccm_activity import ACTIVITY_IN_PROGRESS
         assert self._map(ACTIVITY_IN_PROGRESS, raw="BUSY") == "BUSY"
 
+    def test_stale_busy_with_idle_screen_defers(self):
+        """BUSY candidate + raw=IDLE + JSONL frozen past the long-tool
+        window → defer to legacy (None → IDLE). A genuinely working
+        session shows a spinner (raw=BUSY), so raw=IDLE here means the
+        event log is stale — a hook-silent turn end or a recap-moment
+        phantom SubagentStart holding a stuck BUSY (2026-07-07
+        monadic-chat incident)."""
+        from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_HOOK_JSONL_WINDOW
+        assert self._map(
+            ACTIVITY_IN_PROGRESS, raw="IDLE",
+            jsonl_stop_reason="tool_use",
+            jsonl_age=BUSY_HOOK_JSONL_WINDOW + 1,
+        ) is None
+
+    def test_stale_busy_guard_does_not_touch_fresh_jsonl(self):
+        """The guard is bounded by the long-tool window: a BUSY
+        candidate with FRESH JSONL (raw=IDLE, e.g. accept-edits) stays
+        BUSY. This is the approved-long-tool case whose fix keeps the
+        composer on screen — jsonl_age is small, well inside the
+        window, so the guard never applies."""
+        from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_HOOK_JSONL_WINDOW
+        assert self._map(
+            ACTIVITY_IN_PROGRESS, raw="IDLE",
+            jsonl_stop_reason="tool_use",
+            jsonl_age=BUSY_HOOK_JSONL_WINDOW - 1,
+        ) == "BUSY"
+
+    def test_stale_busy_guard_does_not_touch_raw_busy(self):
+        """raw=BUSY (spinner visible) is a genuinely active session —
+        the guard requires raw=IDLE, so a long tool stays BUSY even
+        with a stale JSONL."""
+        from ccm_activity import ACTIVITY_IN_PROGRESS
+        assert self._map(
+            ACTIVITY_IN_PROGRESS, raw="BUSY",
+            jsonl_stop_reason="tool_use", jsonl_age=99999) == "BUSY"
+
+    def test_stale_permit_with_idle_screen_stays_permit(self):
+        """PERMIT is deliberately EXCLUDED from the stale-BUSY guard:
+        permit-latest + raw=IDLE + stale JSONL is also the signature
+        of an interactive choice menu whose `❯` selector matches the
+        input prompt (2026-05-08 case), which stays awaiting the
+        user's selection indefinitely. It must remain PERMIT."""
+        from ccm_activity import ACTIVITY_AWAITING_PERMIT
+        assert self._map(
+            ACTIVITY_AWAITING_PERMIT, raw="IDLE",
+            jsonl_stop_reason="tool_use", jsonl_age=99999) == "PERMIT"
+
     def test_awaiting_permit_with_modal_on_screen_returns_permit(self):
         from ccm_activity import ACTIVITY_AWAITING_PERMIT
         assert self._map(ACTIVITY_AWAITING_PERMIT, raw="PERMIT") == "PERMIT"

@@ -310,6 +310,34 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
     if candidate is None:
         return None
 
+    # Stale-event-log vs idle screen (BUSY only). When the pane shows a
+    # genuinely idle prompt — raw=IDLE means the `❯` composer is visible
+    # with NO active-work spinner — yet the event log resolves to BUSY,
+    # and the JSONL has recorded no real activity for longer than the
+    # long-tool window, the event log is stale and must not override the
+    # screen. A genuinely working session ALWAYS shows a spinner
+    # (raw=BUSY), so raw=IDLE + a BUSY candidate + a 10-min-frozen JSONL
+    # is unambiguously stale: a turn that ended without a Stop event
+    # (hook silence, so a start event stays "latest" forever), or a
+    # recap-moment phantom SubagentStart fired when the user returned to
+    # an idle session (2026-07-07 monadic-chat incident: a recap phantom
+    # subagent held a stuck BUSY, raw=IDLE throughout). Defer to legacy,
+    # which reads raw=IDLE → IDLE.
+    #
+    # PERMIT is deliberately EXCLUDED: permit-latest + raw=IDLE + stale
+    # JSONL is genuinely ambiguous — it is also the signature of an
+    # interactive choice menu whose `❯` selector matches the input
+    # prompt (2026-05-08 case), which stays awaiting the user's
+    # selection indefinitely and must remain PERMIT. Unlike BUSY, there
+    # is no spinner to disambiguate, so we keep the existing "surface
+    # PERMIT" behavior there. The window bound also keeps every
+    # long-tool case intact — those carry FRESH JSONL (tool_use within
+    # minutes), well inside the window, so they never reach this guard.
+    if (candidate == "BUSY" and raw == "IDLE"
+            and jsonl_age is not None
+            and jsonl_age > BUSY_HOOK_JSONL_WINDOW):
+        return None
+
     # Capture-pane authority. raw=PERMIT (modal physically rendered)
     # promotes a non-PERMIT candidate to PERMIT — the modal could
     # have appeared after the latest event landed, or the

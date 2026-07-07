@@ -312,3 +312,64 @@ class TestMenuWait20260611:
             jsonl_stop_reason="tool_use", jsonl_age=5, raw="IDLE",
         )
         assert state == "BUSY"
+
+
+class TestRecapPhantomSubagent20260707:
+    """monadic-chat incident, 2026-07-07 ~21:43 JST (observed live
+    during the hook-silence canary observe-first run).
+
+    A real turn ran with tool use and permission prompts until
+    ~21:25, then the turn ended WITHOUT a Stop event (hook silence)
+    and the session went idle — the `❯` composer visible, no spinner
+    (raw=IDLE). The event tail's newest entry stayed a permit-class
+    event, so ccm showed a false PERMIT for ~15 min. Then at 21:40:53,
+    when the user returned to the session, a recap `system/away_summary`
+    JSONL record landed AND a phantom SubagentStart hook fired at the
+    same instant. That lone subagent became the newest event → derive
+    resolved BUSY → the dashboard stuck at BUSY while the pane sat
+    plainly idle.
+
+    Unlike the 2026-07-04 jwriter phantom, this subagent is preceded
+    by a permit sequence (not a rest marker), so neither the
+    rest-marker phantom strip nor the all-subagent guard applies. The
+    fix is the stale-BUSY-vs-idle-screen guard in map_activity_to_state:
+    a BUSY candidate with raw=IDLE and a JSONL frozen past the
+    long-tool window is stale, so derive defers (None) and legacy
+    resolves raw=IDLE → IDLE.
+    """
+
+    EVENTS = load_trace("recap_phantom_subagent_2026-07-07.events.jsonl")
+
+    def test_recap_phantom_subagent_stuck_busy_now_idle(self):
+        """T=21:43:47, 3 min after the recap phantom subagent. JSONL
+        real-activity frozen at 21:25:12 (jsonl_age=1115, past the
+        600 s window), raw=IDLE (❯ visible, no spinner). derive must
+        DEFER (None) so legacy commits IDLE — not the stuck BUSY the
+        phantom subagent would otherwise force."""
+        state = replay_at(
+            self.EVENTS, now=1783428227,
+            jsonl_stop_reason="tool_use", jsonl_age=1115, raw="IDLE",
+        )
+        assert state is None  # → legacy reads raw=IDLE → IDLE
+
+    def test_real_subagent_with_busy_spinner_stays_busy(self):
+        """Guard boundary: the SAME phantom-subagent tail, but a
+        genuinely running subagent shows a spinner → raw=BUSY. The
+        guard requires raw=IDLE, so this stays BUSY. Ensures the fix
+        does not blind ccm to a real in-progress Task."""
+        state = replay_at(
+            self.EVENTS, now=1783428227,
+            jsonl_stop_reason="tool_use", jsonl_age=1115, raw="BUSY",
+        )
+        assert state == "BUSY"
+
+    def test_fresh_jsonl_subagent_stays_busy(self):
+        """Guard boundary: a subagent tail with FRESH JSONL (a real
+        Task just dispatched, tool_use 8 s old) stays BUSY even at
+        raw=IDLE — jsonl_age is well inside the window so the guard
+        never applies."""
+        state = replay_at(
+            self.EVENTS, now=1783427701,
+            jsonl_stop_reason="tool_use", jsonl_age=8, raw="IDLE",
+        )
+        assert state == "BUSY"
