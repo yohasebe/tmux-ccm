@@ -125,7 +125,17 @@ tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_BIN inject-statu
 # re-detects. `-ga` appends so a theme/user hook on the same event
 # is preserved; `-b` keeps the switch itself snappy and the inject
 # lockfile prevents pile-up during rapid switching.
-tmux set-hook -ga session-window-changed "run-shell -b '$CCM_BIN inject-status --fast 2>/dev/null || true'"
+#
+# Append-once guard: re-sourcing .tmux.conf (or reloading TPM) re-runs
+# this script, and a blind `-ga` stacks an identical hook per reload —
+# observed live 2026-07-11 with two copies firing a double --fast
+# render on every switch. Match on the distinctive command substring
+# rather than the full string so an install whose path changed (e.g.
+# a symlinked plugin dir) still counts as "already registered" instead
+# of accumulating a second variant.
+if ! tmux show-hooks -g 2>/dev/null | grep "session-window-changed" | grep -q "inject-status --fast"; then
+    tmux set-hook -ga session-window-changed "run-shell -b '$CCM_BIN inject-status --fast 2>/dev/null || true'"
+fi
 
 # Auto-restore: load _autosave snapshot on tmux start
 # Controlled by @ccm-auto-restore: "on" or "off" (default)
