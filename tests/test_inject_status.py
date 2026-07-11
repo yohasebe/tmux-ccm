@@ -289,3 +289,114 @@ class TestOptColor:
         assert inject_status._opt_color("@ccm-status-bg", "#262626") == "#262626"
 
 
+
+
+# ─── mode-2 layout: tmux status-line ceiling ───
+
+class TestMode2StatusLineCeiling:
+    """tmux's `status` option accepts on/off/2..5 — at most 5 status
+    lines total. The mode-2 layout (1 main bar + 1 gutter + N entry
+    lines) must therefore never ask for more than 3 entry lines.
+
+    Regression for the 2026-07-11 frozen-status-bar incident: with 27
+    projects the layout computed 4 entry lines → `set -g status 6` →
+    tmux rejected it ("unknown value: 6") and, because the whole
+    mode-2 render is one `;`-chained batch, every status-format write
+    aborted with it. All render paths (periodic tick, focus hook,
+    manual) failed identically and silently, so the bar froze at the
+    last good bake — stale states, stale focus highlight, and newly
+    registered projects missing entirely. The symptom was reported as
+    "the focus mechanism broke" but the whole bar was frozen.
+    """
+
+    def _run_mode2(self, monkeypatch, n_projects, term_width=120):
+        """Drive _inject_status_impl through the mode-2 layout with
+        `n_projects` fake projects and capture every batched tmux
+        command."""
+        batches = []
+        projects = [
+            make_project(f"0:{i}", str(i), f"proj-{i:02d}", "SHELL")
+            for i in range(1, n_projects + 1)
+        ]
+
+        def fake_tmux_cmd(*args, **kwargs):
+            if args[:2] == ("display-message", "-p"):
+                if "#{client_width}" in args:
+                    return str(term_width)
+                return "0:1"
+            if args[0] == "show-option":
+                # @ccm-status-line → mode 2; everything else empty.
+                if "@ccm-status-line" in args:
+                    return "2"
+                return ""
+            return ""
+
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake_tmux_cmd)
+        monkeypatch.setattr(inject_status, "tmux_batch",
+                            lambda *cmds: batches.append(cmds))
+        monkeypatch.setattr(inject_status, "build_project_list",
+                            lambda fast=False: projects)
+        monkeypatch.setattr(inject_status, "detect_external_status_change",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "sanitize_orig_status",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "periodic_autosave", lambda: None)
+        monkeypatch.setattr(inject_status, "auto_exit_idle", lambda p: None)
+        monkeypatch.setattr(inject_status, "notify", lambda *a, **k: None)
+        monkeypatch.setattr(inject_status, "signal_age_suffix",
+                            lambda d, s: "")
+        monkeypatch.setattr(
+            inject_status, "read_project_notify_marker", lambda d: 0.0,
+            raising=False)
+        inject_status._inject_status_impl(force_fast=True)
+        return batches
+
+    def _status_values(self, batches):
+        vals = []
+        for batch in batches:
+            for cmd in batch:
+                if (len(cmd) >= 4 and cmd[0] == "set"
+                        and cmd[2] == "status" and cmd[3].isdigit()):
+                    vals.append(int(cmd[3]))
+        return vals
+
+    def test_27_projects_narrow_terminal_stays_within_tmux_limit(
+            self, monkeypatch):
+        """The incident shape: enough projects that the natural
+        layout wants 4+ entry lines. `status` must be clamped to 5."""
+        batches = self._run_mode2(monkeypatch, n_projects=27,
+                                  term_width=120)
+        vals = self._status_values(batches)
+        assert vals, "mode-2 render issued no `set status` at all"
+        assert all(2 <= v <= 5 for v in vals), (
+            f"`set -g status {max(vals)}` exceeds tmux's maximum of 5 "
+            "— tmux rejects it and the whole ;-chained batch aborts "
+            "(frozen status bar)")
+
+    def test_extreme_case_also_clamped(self, monkeypatch):
+        """Degenerate: 60 projects on a very narrow terminal."""
+        batches = self._run_mode2(monkeypatch, n_projects=60,
+                                  term_width=60)
+        vals = self._status_values(batches)
+        assert vals and all(2 <= v <= 5 for v in vals)
+
+    def test_all_entries_still_rendered_when_clamped(self, monkeypatch):
+        """Clamping must pack, not drop: every project name appears
+        somewhere in the emitted status-format lines."""
+        batches = self._run_mode2(monkeypatch, n_projects=27,
+                                  term_width=120)
+        rendered = " ".join(
+            cmd[3] for batch in batches for cmd in batch
+            if len(cmd) >= 4 and cmd[0] == "set"
+            and cmd[2].startswith("status-format["))
+        for i in range(1, 28):
+            assert f"proj-{i:02d}" in rendered, (
+                f"proj-{i:02d} dropped from the clamped layout")
+
+    def test_small_project_count_unchanged(self, monkeypatch):
+        """A handful of projects keeps the natural compact layout
+        (status = 3: main + gutter + 1 entry line)."""
+        batches = self._run_mode2(monkeypatch, n_projects=4,
+                                  term_width=200)
+        vals = self._status_values(batches)
+        assert vals == [3]

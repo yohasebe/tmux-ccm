@@ -233,3 +233,42 @@ class TestDashboardRefreshLoopSmoke:
             f"attribute the loop now reads, or the loop body has a "
             f"real NameError-class bug."
         )
+
+
+class TestTmuxBatchFailureLogging:
+    """`tmux_batch` chains commands with `;` — when tmux rejects ANY
+    command in the chain, it aborts the rest, so one bad value can
+    silently drop every subsequent write. The 2026-07-11 frozen-status
+    -bar incident (`set -g status 6` above tmux's max of 5) stayed
+    invisible for days because the stderr was swallowed here. A
+    non-zero exit must now land in the silent-exception log so the
+    errors-burst canary surfaces the next such bug within minutes."""
+
+    def _read_log(self):
+        import json
+        if not os.path.exists(ccm_core.CCM_ERRORS_LOG):
+            return []
+        with open(ccm_core.CCM_ERRORS_LOG, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_nonzero_exit_is_logged(self, monkeypatch):
+        fake = MagicMock()
+        fake.returncode = 1
+        fake.stderr = "unknown value: 6\n"
+        with patch("ccm_core.subprocess.run", return_value=fake):
+            ccm_core.tmux_batch(
+                ("set", "-g", "status", "6"),
+                ("set", "-g", "status-format[2]", "content"),
+            )
+        records = self._read_log()
+        assert len(records) == 1
+        assert records[0]["scope"] == "tmux_batch"
+        assert "unknown value: 6" in records[0]["msg"]
+
+    def test_zero_exit_logs_nothing(self, monkeypatch):
+        fake = MagicMock()
+        fake.returncode = 0
+        fake.stderr = ""
+        with patch("ccm_core.subprocess.run", return_value=fake):
+            ccm_core.tmux_batch(("set", "-g", "status", "5"))
+        assert self._read_log() == []

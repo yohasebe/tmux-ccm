@@ -99,6 +99,17 @@ def tmux_cmd(*args, timeout=5):
 def tmux_batch(*commands):
     """Run multiple tmux commands in a single subprocess call.
     Each command is a tuple of args. Commands are joined with ';' separator.
+
+    Failure visibility: a non-zero exit is recorded in the
+    silent-exception log. This matters more for batches than for
+    single commands — when ANY command in a `;`-chain is invalid,
+    tmux aborts the REST of the chain too, so one bad value silently
+    drops every subsequent write. That is exactly how the 2026-07-11
+    frozen-status-bar incident stayed invisible for days: `set -g
+    status 6` (above tmux's max of 5) was rejected and took all the
+    status-format writes down with it, every second, with stderr
+    swallowed here. Logging turns the next such bug into an
+    `errors.log` burst the canaries surface within minutes.
     """
     if not commands:
         return
@@ -108,7 +119,16 @@ def tmux_batch(*commands):
             args.append(";")
         args.extend(cmd)
     try:
-        subprocess.run(args, capture_output=True, text=True, timeout=10)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            try:
+                raise RuntimeError(
+                    f"tmux batch failed rc={r.returncode}: "
+                    f"{(r.stderr or '').strip()[:200]!r} "
+                    f"first_cmds={[tuple(c[:4]) for c in commands[:3]]}"
+                )
+            except RuntimeError:
+                log_caught_exception("tmux_batch")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 

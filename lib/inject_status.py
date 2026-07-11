@@ -540,14 +540,24 @@ def _inject_status_impl(force_fast=False):
             total_visible_width += (len(entries) - 1) * SEP_VISIBLE_W if len(entries) > 1 else 0
             entries_per_line = max(1, len(entries) * term_width // max(total_visible_width, 1))
             num_lines = max(1, (len(entries) + entries_per_line - 1) // entries_per_line)
-            # Cap num_lines at what `_clear_mode2_slots_above` can
-            # actually clean up. Without this, an extreme degenerate
-            # case (very narrow terminal × many projects) could write
-            # to slots beyond `_MODE2_MAX_SLOTS`, and the next render
-            # with a smaller layout would leave the high slots stale.
-            # Slot 1 is the gutter, so `num_lines + 1 == _MODE2_MAX_SLOTS`
-            # is the highest entry slot we may write.
-            max_entry_lines = _MODE2_MAX_SLOTS - 1
+            # Cap num_lines at what tmux can actually DISPLAY. The
+            # binding constraint is tmux's `status` option itself:
+            # it accepts on/off/2..5, i.e. AT MOST 5 status lines
+            # total. With 1 main bar + 1 gutter, entry lines max out
+            # at 3. This is NOT theoretical: with 27 projects the
+            # layout wanted 4 entry lines → `set -g status 6` →
+            # tmux rejected it ("unknown value: 6") and — because
+            # the whole mode-2 render is one `;`-chained batch — the
+            # status-format writes died with it. Every render path
+            # (periodic tick, focus hook, manual run) failed the
+            # same way, so the bar froze at the last good bake:
+            # stale states, stale highlight, newly added projects
+            # missing entirely (2026-07-11 incident; the freeze
+            # looked like "the focus mechanism broke" but was the
+            # whole bar). `_MODE2_MAX_SLOTS` still bounds the
+            # cleanup range for slots left over from this bug's era.
+            max_entry_lines = min(_MODE2_MAX_SLOTS - 1,
+                                  _TMUX_STATUS_MAX_LINES - 2)
             if num_lines > max_entry_lines:
                 num_lines = max_entry_lines
                 # Pack remaining entries into the last visible line so
@@ -610,6 +620,14 @@ def _inject_status_impl(force_fast=False):
 # many projects) with plenty of headroom; cheap to over-clear since
 # unsetting an unset option is a no-op.
 _MODE2_MAX_SLOTS = 16
+
+# Hard ceiling on how many status LINES tmux will render. The
+# `status` option accepts on / off / 2..5 — passing anything above 5
+# fails with "unknown value: N" and, inside a `;`-chained batch,
+# takes every subsequent command down with it (the 2026-07-11
+# frozen-status-bar incident). Layout math must never ask for more
+# than this many total lines (main bar + gutter + entry lines).
+_TMUX_STATUS_MAX_LINES = 5
 
 
 def _clear_mode2_slots_above(highest_used: int):
