@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Auto-exit now skips windows with live background work, and announces itself when it does fire. Reported 2026-07-11: a monadic-chat window hosting a long batch job in a split pane went quiet, the 10-minute idle timer expired, and ccm exited the Claude session out from under a project the user considered active — the exit arrived unannounced and read as a mystery timeout. The `window_activity` extension only protects a job while it PRODUCES OUTPUT; a silent job, or the waiting period after output stops, was unprotected. Two changes, both governed by cost asymmetry (wrongly exiting interrupts real work; wrongly keeping costs one idle Claude process): (1) before exiting, `auto_exit_idle` checks the whole window for live work — any sibling pane whose foreground is a non-shell command (batch job, dev server, `tail -f`, an editor), or a live shell child under the Claude process itself (Claude spawns a shell per Bash tool job, foreground or `run_in_background`, and MCP/LSP workers are never bare shells, so the standing worker set does not false-positive) — and skips the window if found. A window permanently hosting a dev server will effectively never auto-exit; that is the intended trade-off. (2) A completed auto-exit now sends a desktop notification ("auto-exited after Nm idle — the conversation restores on next attach") fired only after the shell-foreground gate confirms the exit actually landed; it bypasses the `@ccm-notify` per-state opt-in list (announcing an autonomous destructive-looking action must not depend on the user having predicted it) but honors the global `off`. Check runs only inside the already-rare timeout branch, so the steady-state poll cycle pays nothing. Eleven regression tests cover the guard's boundaries (sibling job / idle-shell split / login-shell dash prefix / Bash-tool shell child / MCP children don't block), the notification (fires on confirmed exit only), and the gating bypass.
+
 ## [0.5.2] - 2026-07-11
 
 ### Added

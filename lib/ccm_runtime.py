@@ -31,6 +31,7 @@ import time
 import ccm_constants
 import ccm_core
 import ccm_detection
+import ccm_notify
 import ccm_pane_state
 import ccm_snapshot
 
@@ -62,6 +63,63 @@ def update_window_names(projects):
 
 
 # ─── Auto-exit idle sessions ───
+
+def _window_has_background_work(panes_raw, ps_lines):
+    """True when any pane in the window shows live background work,
+    meaning auto-exit must leave the window alone.
+
+    Two disjoint signals, either sufficient:
+
+      1. A NON-Claude pane whose foreground command is not a shell —
+         a batch job, dev server, `tail -f`, an editor, anything the
+         user parked in a split. The window IS the project; work
+         running anywhere in it means the project is active even if
+         the Claude conversation has been idle for hours.
+
+      2. The Claude pane's process has a live SHELL child. Claude
+         spawns a shell per Bash tool invocation, and that shell
+         survives exactly as long as the job it runs — foreground OR
+         `run_in_background`. MCP servers / LSP workers are direct
+         children too but are never bare shells, so this does not
+         false-positive on the standing worker set. A live shell
+         child therefore means a tool job (possibly a background
+         task whose completion will re-invoke Claude) is still
+         running, and exiting Claude would orphan it.
+
+    Deliberately conservative: false-keep costs one idle Claude
+    process, false-exit interrupts real work — so anything that
+    LOOKS like work counts as work. A window with a permanently
+    running dev server or a parked editor will effectively never
+    auto-exit; that is the intended trade-off, not a leak.
+
+    Pane detection notes: `pane_current_command` cannot identify the
+    Claude pane (the versioned-install symlink makes it report e.g.
+    "2.1.207"), so Claude panes are identified by the same
+    `find_claude_pid` process-tree walk detection uses, and the
+    foreground-command check applies only to the remaining panes.
+    Login-shell names carry a leading dash ("-zsh"); strip it before
+    the shell-set membership test.
+    """
+    for line in (panes_raw or "").split("\n"):
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        pane_pid = parts[1]
+        pane_cmd = parts[2] if len(parts) >= 3 else ""
+        claude_pid = ccm_pane_state.find_claude_pid(pane_pid, ps_lines)
+        if claude_pid:
+            for pl in ps_lines:
+                p = pl.split()
+                if (len(p) >= 4 and p[1] == str(claude_pid)
+                        and p[3].lstrip("-")
+                        in ccm_constants.SHELL_FOREGROUND_COMMANDS):
+                    return True
+        else:
+            if (pane_cmd and pane_cmd.lstrip("-")
+                    not in ccm_constants.SHELL_FOREGROUND_COMMANDS):
+                return True
+    return False
+
 
 def auto_exit_idle(projects):
     """Send `/exit` to ccm windows that have been IDLE longer than the
@@ -172,7 +230,7 @@ def auto_exit_idle(projects):
             # foreground command would silently mis-fire.
             panes_raw = ccm_core.tmux_cmd(
                 "list-panes", "-t", win_target,
-                "-F", "#{pane_index}\t#{pane_pid}"
+                "-F", "#{pane_index}\t#{pane_pid}\t#{pane_current_command}"
             )
             # `ps_snapshot()` returns the raw stdout string; the
             # process-tree helpers iterate over lines, so split here.
@@ -180,6 +238,21 @@ def auto_exit_idle(projects):
             # time and never matches anything, which is what made the
             # first cut of this fix silently no-op forever.
             ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+
+            # Background-work guard: a window that still hosts live
+            # work must not have its Claude exited, no matter how
+            # long the CONVERSATION has been idle. The cost asymmetry
+            # decides this: wrongly exiting interrupts running work
+            # and surprises the user (2026-07-11 monadic-chat
+            # incident — a sibling-pane batch job's window went
+            # quiet, the 10-min timer fired, and Claude was exited
+            # out from under a project the user considered active),
+            # while wrongly keeping costs one idle Claude process.
+            # Checked only here — inside the already-rare timeout
+            # branch — so the steady-state poll cycle pays nothing.
+            if _window_has_background_work(panes_raw, ps_lines):
+                continue
+
             # Multi-Claude windows (Agent Teams split panes) resolve to
             # the FIRST pane hosting a Claude, in pane-index order. Only
             # that one is exited; a teammate in another pane keeps
@@ -235,6 +308,18 @@ def auto_exit_idle(projects):
                 ccm_detection._set_win_state(win_target, "SHELL")
                 # Force autosave after auto-exit to preserve project in snapshot.
                 _force_autosave()
+                # Tell the user WHAT happened and THAT nothing is
+                # lost. An unannounced exit reads as a crash or a
+                # mystery timeout and sends the user hunting for a
+                # cause (2026-07-11 monadic-chat report); one
+                # notification removes the entire investigation.
+                # Fired only here — after the shell-foreground gate
+                # confirmed the exit actually landed — so it can
+                # never announce an exit that didn't happen.
+                ccm_notify.notify(
+                    "AUTOEXIT", project,
+                    detail=f"{idle_timeout // 60}m",
+                )
 
 
 # ─── Autosave ───

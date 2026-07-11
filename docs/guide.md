@@ -775,6 +775,8 @@ Do **not** close the tmux window directly (e.g., `prefix + &` or `exit` in the s
 
 In most cases, you don't need to manually stop Claude Code at all — idle auto-exit handles it automatically after 10 minutes.
 
+**Auto-exit skips windows with live background work.** Before exiting, ccm checks the whole window: if any sibling pane is running a non-shell command (a batch job, a dev server, `tail -f`, an editor), or Claude itself still has a running Bash job (foreground or background task), the window is left alone no matter how long the conversation has been idle. The trade-off is deliberate: a window that permanently hosts a dev server will effectively never auto-exit — wrongly exiting interrupts real work, while wrongly keeping costs one idle process. When auto-exit does fire, a desktop notification announces it (silenced only by `@ccm-notify off`), so an exited session never reads as a mystery crash; the conversation always restores on the next attach via `claude --continue`.
+
 ### What is the difference between `_autosave` and named snapshots?
 
 | | `_autosave` | Named snapshots |

@@ -184,10 +184,11 @@ class TestAutoExitIdle:
              patch("ccm_core.ps_snapshot", return_value=ps_output), \
              patch("ccm_detection._set_win_state") as mock_set_state, \
              patch("ccm_runtime._force_autosave") as mock_autosave, \
+             patch("ccm_runtime.ccm_notify") as mock_notify, \
              patch("ccm_runtime.time.sleep"):
             ccm_runtime.auto_exit_idle([])
         if return_side_effects:
-            return send_calls, mock_set_state, mock_autosave
+            return send_calls, mock_set_state, mock_autosave, mock_notify
         return send_calls
 
     def test_clear_sent_when_shell_foreground(self):
@@ -271,7 +272,7 @@ class TestAutoExitIdle:
         has to undo, plus a spurious autosave against it.
 
         Happy path (zsh): SHELL write + autosave fire."""
-        _, mock_set_state, mock_autosave = self._run(
+        _, mock_set_state, mock_autosave, _notify = self._run(
             "zsh", return_side_effects=True
         )
         mock_set_state.assert_called_once()
@@ -282,7 +283,7 @@ class TestAutoExitIdle:
         """Race path (claude still foreground): NO SHELL write, NO
         autosave — the window keeps its real state for the next poll
         to re-derive. This is the regression the gating prevents."""
-        _, mock_set_state, mock_autosave = self._run(
+        _, mock_set_state, mock_autosave, _notify = self._run(
             "claude", return_side_effects=True
         )
         mock_set_state.assert_not_called()
@@ -292,7 +293,7 @@ class TestAutoExitIdle:
         """Query-failure path ("" foreground): treat as exit-not-
         confirmed, skip the SHELL write and autosave. Detection
         re-derives the true state next cycle."""
-        _, mock_set_state, mock_autosave = self._run(
+        _, mock_set_state, mock_autosave, _notify = self._run(
             "", return_side_effects=True
         )
         mock_set_state.assert_not_called()
@@ -371,3 +372,145 @@ class TestAutoExitIdle:
         # All keystrokes go to the Claude pane (`main:1.0`); the
         # default scaffold puts Claude at pane index 0.
         assert all(t == "main:1.0" for t in targets), send_calls
+
+
+class TestAutoExitBackgroundWorkGuard:
+    """Auto-exit must leave a window alone while it hosts live
+    background work, however long the Claude conversation has been
+    idle. Cost asymmetry: wrongly exiting interrupts running work
+    (2026-07-11 monadic-chat incident — a sibling-pane batch job's
+    window went quiet for 10 min and Claude was exited out from
+    under an active project); wrongly keeping costs one idle Claude
+    process. Two signals, either sufficient:
+
+      - a non-Claude pane whose foreground is not a shell (batch,
+        dev server, tail, editor);
+      - the Claude process has a live shell child (a Bash tool job,
+        foreground or run_in_background, still running).
+    """
+
+    # Window with Claude pane (idx 0) + sibling pane (idx 1).
+    # 3-field listing: idx \t pane_pid \t pane_current_command.
+    def _panes(self, sibling_cmd):
+        return f"0\t1000\tzsh\n1\t2000\t{sibling_cmd}"
+
+    PS_BASE = (
+        "1000 999 1000 zsh 01:00:00\n"
+        "1001 1000 1001 claude 00:30:00\n"
+        "2000 999 2000 zsh 01:00:00\n"
+    )
+
+    def _run(self, panes_listing, ps_output):
+        helper = TestAutoExitIdle()
+        return helper._run("zsh", panes_listing=panes_listing,
+                           ps_output=ps_output)
+
+    def test_sibling_pane_running_job_skips_exit(self):
+        """The incident shape: batch job (ruby) in the split pane.
+        No keystroke may reach the window."""
+        send_calls = self._run(self._panes("ruby"), self.PS_BASE)
+        assert send_calls == [], (
+            f"auto-exit fired despite a live sibling-pane job: "
+            f"{send_calls}"
+        )
+
+    def test_sibling_pane_idle_shell_still_exits(self):
+        """A plain idle zsh in the split pane is NOT background work
+        — the guard must not block the exit (otherwise any split
+        disables auto-exit entirely)."""
+        send_calls = self._run(self._panes("zsh"), self.PS_BASE)
+        sent = [c[3] for c in send_calls if len(c) >= 4]
+        assert "/exit" in sent
+
+    def test_sibling_login_shell_dash_prefix_still_exits(self):
+        """Login shells report as '-zsh'; the dash must be stripped
+        before the shell-set membership test."""
+        send_calls = self._run(self._panes("-zsh"), self.PS_BASE)
+        sent = [c[3] for c in send_calls if len(c) >= 4]
+        assert "/exit" in sent
+
+    def test_claude_shell_child_skips_exit(self):
+        """A live shell child under the claude process = a Bash tool
+        job (foreground or background task) still running. Exiting
+        would orphan it."""
+        ps = self.PS_BASE + "1002 1001 1002 zsh 00:05:00\n"
+        send_calls = self._run(self._panes("zsh"), ps)
+        assert send_calls == [], (
+            f"auto-exit fired despite a live Bash tool shell under "
+            f"claude: {send_calls}"
+        )
+
+    def test_mcp_children_do_not_block_exit(self):
+        """MCP servers / LSP workers are direct children of claude
+        but never bare shells — the standing worker set must not
+        suppress auto-exit."""
+        ps = self.PS_BASE + (
+            "1003 1001 1003 node 02:00:00\n"
+            "1004 1001 1004 python3 02:00:00\n"
+        )
+        send_calls = self._run(self._panes("zsh"), ps)
+        sent = [c[3] for c in send_calls if len(c) >= 4]
+        assert "/exit" in sent
+
+
+class TestAutoExitNotification:
+    """A completed auto-exit must announce itself: an unannounced
+    exit reads as a crash or a mystery timeout and sends the user
+    hunting for a cause (2026-07-11 monadic-chat report). Fired only
+    after the shell-foreground gate confirmed the exit landed."""
+
+    def test_notify_fired_on_confirmed_exit(self):
+        helper = TestAutoExitIdle()
+        _, _, _, mock_notify = helper._run(
+            "zsh", return_side_effects=True)
+        mock_notify.notify.assert_called_once()
+        args, kwargs = mock_notify.notify.call_args
+        assert args[0] == "AUTOEXIT"
+        assert args[1] == "blog"          # project name from listing
+        assert "m" in kwargs.get("detail", "")  # "10m" etc.
+
+    def test_no_notify_when_exit_did_not_complete(self):
+        """Claude still foreground → exit unconfirmed → no
+        notification (it must never announce an exit that didn't
+        happen)."""
+        helper = TestAutoExitIdle()
+        _, _, _, mock_notify = helper._run(
+            "claude", return_side_effects=True)
+        mock_notify.notify.assert_not_called()
+
+
+class TestNotifyAutoExitGating:
+    """AUTOEXIT bypasses the @ccm-notify per-state opt-in list (it
+    announces an autonomous destructive-looking action) but still
+    honors the global 'off' kill switch."""
+
+    def _notify(self, setting, state="AUTOEXIT"):
+        import ccm_notify
+        sent = []
+        def fake_tmux(*args):
+            if "@ccm-notify" in args and "-gqv" in args:
+                return setting
+            return ""
+        with patch("ccm_core.tmux_cmd", side_effect=fake_tmux), \
+             patch.object(ccm_notify, "_terminal_notifier_path",
+                          return_value=None), \
+             patch("ccm_notify.subprocess.Popen",
+                   side_effect=lambda *a, **k: sent.append(a) or MagicMock()):
+            ccm_notify.notify(state, "proj", detail="10m")
+        return sent
+
+    def test_fires_with_default_setting(self):
+        # default "permit,completed" does not contain "autoexit" —
+        # AUTOEXIT must fire anyway.
+        assert self._notify("permit,completed")
+
+    def test_fires_with_empty_setting(self):
+        assert self._notify("")
+
+    def test_silenced_by_off(self):
+        assert self._notify("off") == []
+
+    def test_other_states_still_gated(self):
+        # sanity: the bypass is AUTOEXIT-only; BUSY stays gated by
+        # the setting list.
+        assert self._notify("permit,completed", state="BUSY") == []

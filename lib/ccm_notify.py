@@ -77,7 +77,13 @@ def notify(state, project, detail=""):
         return
 
     state_lower = state.lower()
-    if setting != "all" and state_lower not in setting:
+    # AUTOEXIT bypasses the per-state opt-in list (though not the
+    # global "off" above): it announces an autonomous, destructive-
+    # looking action ccm just took, and transparency about that must
+    # not depend on the user having predicted the event and added it
+    # to @ccm-notify. Without it an auto-exit reads as a crash or a
+    # mystery timeout (2026-07-11 monadic-chat report).
+    if state != "AUTOEXIT" and setting != "all" and state_lower not in setting:
         return
 
     sound_setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
@@ -98,6 +104,14 @@ def notify(state, project, detail=""):
         "IDLE":   (f"ccm {project}",
                    "Waiting for your input",
                    ""),
+        # detail carries the timeout, e.g. "10m".
+        "AUTOEXIT": (f"ccm ■ {project}",
+                     (f"Auto-exited after {detail} idle — "
+                      "the conversation restores on next attach "
+                      "(claude --continue)") if detail else
+                     ("Auto-exited on idle timeout — the conversation "
+                      "restores on next attach (claude --continue)"),
+                     ""),
     }
 
     if state not in messages:
