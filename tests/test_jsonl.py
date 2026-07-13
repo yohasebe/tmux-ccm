@@ -59,6 +59,30 @@ class TestJsonlFreshness:
         home = os.path.expanduser("~")
         assert slug == (home + "/code/foo").replace("/", "-")
 
+    def test_slug_non_ascii_chars_each_become_dash(self):
+        """Claude Code dashes EVERY non-alphanumeric character, one
+        dash per char — including multi-byte CJK. ccm used to replace
+        only `/`, which missed the JSONL for any non-ASCII project
+        path entirely (2026-07-13 gc-gakkai incident: unresolvable
+        JSONL → a trailing `stop` event could not be confirmed
+        terminal → indefinite false BUSY that even combined-stale
+        could not release, since that needs a valid jsonl_age).
+        Expected value taken verbatim from the real slug directory
+        Claude Code created for the incident project."""
+        assert ccm_jsonl._project_slug(
+            "/Users/example/ほげ/ふが2000/ぴよAB"
+        ) == "-Users-example------2000---AB"
+
+    def test_slug_underscore_becomes_dash(self):
+        # Verified against a real slug: code/test_project →
+        # ...-code-test-project in ~/.claude/projects.
+        assert ccm_jsonl._project_slug(
+            "/Users/yo/code/test_project") == "-Users-yo-code-test-project"
+
+    def test_slug_dots_and_spaces_become_dashes(self):
+        assert ccm_jsonl._project_slug(
+            "/Users/yo/my proj/v1.2") == "-Users-yo-my-proj-v1-2"
+
     def test_age_minus_one_when_no_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         assert ccm_jsonl.read_jsonl_age("/nonexistent/path/foo") == -1

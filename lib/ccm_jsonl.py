@@ -236,11 +236,23 @@ def read_session_versions():
 def _project_slug(project_dir: str) -> str:
     """Convert a project directory to its Claude Code JSONL slug.
 
-    Uses the literal path with `/` → `-`. Tilde is expanded but
-    symlinks are NOT resolved (Claude Code records the cwd as-given).
+    Claude Code replaces EVERY non-alphanumeric character with `-`
+    (not just `/`): `/ほげ/ふが2000` becomes
+    `------2000` (one dash per CJK char) and
+    `test_project` becomes `test-project`. ccm used to replace only
+    `/`, which silently missed the JSONL for any project whose path
+    contains non-ASCII (2026-07-13 gc-gakkai incident: with the JSONL
+    unresolvable, a trailing `stop` event could not be confirmed
+    terminal, the pause-class branch stayed conservative, and the
+    dashboard held a false BUSY indefinitely — the combined-stale
+    release also needs a valid jsonl_age, so nothing ever expired it).
+    Rule verified 2026-07-13 against every existing slug directory in
+    ~/.claude/projects (ASCII paths are unaffected: `/` and `-` both
+    map to `-`). Tilde is expanded but symlinks are NOT resolved
+    (Claude Code records the cwd as-given).
     """
     expanded = os.path.expanduser(project_dir)
-    return expanded.replace("/", "-")
+    return re.sub(r"[^A-Za-z0-9]", "-", expanded)
 
 
 def _jsonl_from_session_info(claude_pid):
@@ -260,7 +272,9 @@ def _jsonl_from_session_info(claude_pid):
     cwd = info.get("cwd")
     if not session_id or not cwd:
         return None
-    slug = cwd.replace("/", "-")
+    # Same sanitisation as _project_slug — Claude Code dashes every
+    # non-alphanumeric character, not just `/`.
+    slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
     path = os.path.join(CLAUDE_PROJECTS_DIR, slug, f"{session_id}.jsonl")
     return path if os.path.exists(path) else None
 
