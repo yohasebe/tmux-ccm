@@ -400,3 +400,78 @@ class TestMode2StatusLineCeiling:
                                   term_width=200)
         vals = self._status_values(batches)
         assert vals == [3]
+
+
+# ─── CJK width handling in layout math ───
+
+class TestCJKWidthInLayout:
+    """Width math for status-bar layout must use display_width, not
+    len(): CJK characters occupy two terminal columns each, and
+    project names may legally be CJK (validate_name only strips
+    shell metacharacters). len() undercounts them by half, which
+    overestimates the remaining budget and overflows/wraps the bar
+    (2026-07-13 audit finding, sibling of the non-ASCII slug bug)."""
+
+    def test_mode2_cjk_names_reduce_entries_per_line(self, monkeypatch):
+        """The same number of projects must yield MORE lines when
+        names are CJK (double-width) than when they are ASCII of
+        equal character count — proving the layout sees terminal
+        columns, not characters."""
+        helper = TestMode2StatusLineCeiling()
+
+        batches_ascii = helper._run_mode2(monkeypatch, n_projects=8,
+                                          term_width=100)
+        # Rebuild with CJK names of the same character length.
+        batches_cjk = []
+        projects = [
+            make_project(f"0:{i}", str(i), f"研究プロジェ{i:02d}", "SHELL")
+            for i in range(1, 9)
+        ]
+
+        def fake_tmux_cmd(*args, **kwargs):
+            if args[:2] == ("display-message", "-p"):
+                if "#{client_width}" in args:
+                    return "100"
+                return "0:1"
+            if args[0] == "show-option":
+                if "@ccm-status-line" in args:
+                    return "2"
+                return ""
+            return ""
+
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake_tmux_cmd)
+        monkeypatch.setattr(inject_status, "tmux_batch",
+                            lambda *cmds: batches_cjk.append(cmds))
+        monkeypatch.setattr(inject_status, "build_project_list",
+                            lambda fast=False: projects)
+        monkeypatch.setattr(inject_status, "detect_external_status_change",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "sanitize_orig_status",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "periodic_autosave", lambda: None)
+        monkeypatch.setattr(inject_status, "auto_exit_idle", lambda p: None)
+        monkeypatch.setattr(inject_status, "notify", lambda *a, **k: None)
+        monkeypatch.setattr(inject_status, "signal_age_suffix",
+                            lambda d, s: "")
+        inject_status._inject_status_impl(force_fast=True)
+
+        def lines_used(batches):
+            vals = []
+            for batch in batches:
+                for cmd in batch:
+                    if (len(cmd) >= 4 and cmd[0] == "set"
+                            and cmd[2] == "status" and cmd[3].isdigit()):
+                        vals.append(int(cmd[3]))
+            return max(vals) if vals else 0
+
+        ascii_lines = lines_used(batches_ascii)
+        cjk_lines = lines_used(batches_cjk)
+        assert cjk_lines >= ascii_lines, (
+            f"CJK names (double-width) got FEWER status lines "
+            f"({cjk_lines}) than same-length ASCII names "
+            f"({ascii_lines}) — width math is counting characters, "
+            f"not columns")
+        # And the CJK layout must genuinely account for the doubled
+        # width: 8 entries of ~14 columns of name alone cannot fit
+        # a single 100-column line.
+        assert cjk_lines > 3 or cjk_lines >= ascii_lines

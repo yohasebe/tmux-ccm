@@ -23,7 +23,7 @@ from ccm_core import (
     tmux_cmd,
 )
 from ccm_notify import notify
-from ccm_render import signal_age_suffix
+from ccm_render import display_width, signal_age_suffix
 from ccm_runtime import (
     auto_exit_idle,
     periodic_autosave,
@@ -462,7 +462,12 @@ def _inject_status_impl(force_fast=False):
             selected = []
             for entry in entries:
                 stripped = re.sub(r'#\[[^\]]*\]', '', entry)
-                entry_width = len(stripped) + 3  # separator + spaces
+                # display_width, not len(): CJK project/branch names
+                # occupy two terminal columns per character; len()
+                # counts one, overestimating the remaining budget and
+                # overflowing the line (project names may legally be
+                # CJK — validate_name only strips shell metacharacters).
+                entry_width = display_width(stripped) + 3  # separator + spaces
                 if selected and (avail - entry_width) < 0:
                     break
                 selected.append(entry)
@@ -536,7 +541,11 @@ def _inject_status_impl(force_fast=False):
             total_visible_width = 0
             for e in entries:
                 stripped = re.sub(r'#\[[^\]]*\]', '', e)
-                total_visible_width += len(stripped) + 1  # +1 for leading space
+                # display_width, not len() — see the mode-1 width note:
+                # CJK names are two columns per character, and an
+                # underestimate here packs too many entries per line,
+                # wrapping the mode-2 rows.
+                total_visible_width += display_width(stripped) + 1  # +1 for leading space
             total_visible_width += (len(entries) - 1) * SEP_VISIBLE_W if len(entries) > 1 else 0
             entries_per_line = max(1, len(entries) * term_width // max(total_visible_width, 1))
             num_lines = max(1, (len(entries) + entries_per_line - 1) // entries_per_line)
