@@ -210,10 +210,25 @@ def _type_body(win_target, lines):
     """Type the message body into the target's composer: each
     non-empty line literally, with `M-Enter` (newline-without-submit)
     between lines. Does NOT send the committing Enter — the caller
-    decides when (and whether) to submit."""
+    decides when (and whether) to submit.
+
+    The `--` terminator before the line text is load-bearing: tmux's
+    argument parser treats any argument starting with `-` as a flag
+    cluster, so without it every line beginning with a dash — most
+    commonly a Markdown bullet (`- item`) — failed the whole
+    send-keys call with "invalid flag" and was SILENTLY DROPPED
+    (stderr is swallowed by tmux_cmd), while the surrounding
+    M-Enters still landed. The receiver saw the message with all
+    its bullet lines missing and a blank line where each had been.
+    This mangled three real cross-project briefs before being
+    diagnosed (monadic-chat design replies 2026-07-10/11 arriving
+    with empty 設計/実装 sections; the ringi contract brief
+    2026-07-14 arriving with an empty slug section) — the delivery
+    verification did not catch it because the signature it checks
+    survived in the non-bullet lines."""
     for line_i, line in enumerate(lines):
         if line:
-            _send_keys(win_target, "-l", line, label=f"line:{line_i}")
+            _send_keys(win_target, "-l", "--", line, label=f"line:{line_i}")
         if line_i < len(lines) - 1:
             _send_keys(win_target, "M-Enter", label=f"newline:{line_i}")
 

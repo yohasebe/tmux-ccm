@@ -56,11 +56,11 @@ class TestCmdSend:
         # Cancel any stuck mode
         assert ("send-keys", "-t", "0:5", "-X", "cancel") in calls
         # Literal send of "hello"
-        assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "hello") in calls
         # Final Enter
         assert ("send-keys", "-t", "0:5", "Enter") in calls
         # Enter comes after the literal send
-        literal_i = calls.index(("send-keys", "-t", "0:5", "-l", "hello"))
+        literal_i = calls.index(("send-keys", "-t", "0:5", "-l", "--", "hello"))
         enter_i = calls.index(("send-keys", "-t", "0:5", "Enter"))
         assert enter_i > literal_i
 
@@ -71,15 +71,39 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "hello", "world"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "hello world") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "hello world") in calls
 
     def test_send_no_enter(self, monkeypatch):
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "--no-enter", "hi"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "hi") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
         assert ("send-keys", "-t", "0:5", "Enter") not in calls
+
+    def test_hyphen_leading_lines_are_flag_safe(self, monkeypatch):
+        """Lines starting with `-` (Markdown bullets, CLI examples)
+        must reach send-keys behind a `--` terminator. Without it,
+        tmux parses the line as a flag cluster, errors with "invalid
+        flag", and the line is SILENTLY dropped while surrounding
+        M-Enters land — the receiver gets the message with every
+        bullet line missing (mangled three real cross-project briefs
+        before diagnosis, 2026-07-10..14). The delivery-verification
+        signature survived in non-bullet lines, so only a
+        content-level comparison would have caught it."""
+        self._patch_resolution(monkeypatch)
+        message = "header\n- bullet one\n- bullet two\n--flag-like"
+        with patch("ccm_core.tmux_cmd") as mock_tmux:
+            ccm_send.cmd_send(["blog", message])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:5", "-l", "--", "- bullet one") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "- bullet two") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "--flag-like") in calls
+        # Every literal-line send must carry the terminator: no
+        # bare ("-l", <text>) form may survive anywhere.
+        for c in calls:
+            if len(c) >= 5 and c[0] == "send-keys" and c[3] == "-l":
+                assert c[4] == "--", f"unterminated literal send: {c}"
 
     def test_send_multiline_uses_m_enter_between_lines(self, monkeypatch):
         self._patch_resolution(monkeypatch)
@@ -87,9 +111,9 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", message])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "line1") in calls
-        assert ("send-keys", "-t", "0:5", "-l", "line2") in calls
-        assert ("send-keys", "-t", "0:5", "-l", "line3") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "line1") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "line2") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "line3") in calls
         # Two M-Enter separators, one final Enter
         m_enter_count = sum(
             1 for c in calls if c == ("send-keys", "-t", "0:5", "M-Enter")
@@ -107,7 +131,7 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "--file", str(f)])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "from file") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "from file") in calls
 
     def test_send_from_stdin(self, monkeypatch):
         self._patch_resolution(monkeypatch)
@@ -116,7 +140,7 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "--stdin"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "piped") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "piped") in calls
 
     def test_send_dash_alias_for_stdin(self, monkeypatch):
         self._patch_resolution(monkeypatch)
@@ -125,7 +149,7 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "-"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "piped2") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "piped2") in calls
 
     def test_send_stdin_from_tty_skips_confirmation(self, monkeypatch):
         """Regression guard for the silent-cancel bug:
@@ -157,7 +181,7 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "--stdin"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "typed body") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "typed body") in calls
         assert ("send-keys", "-t", "0:5", "Enter") in calls
 
     def test_send_double_dash_ends_flag_parsing(self, monkeypatch):
@@ -167,7 +191,7 @@ class TestCmdSend:
             ccm_send.cmd_send(["blog", "--", "--force-looking-message"])
         calls = self._tmux_calls(mock_tmux)
         assert (
-            "send-keys", "-t", "0:5", "-l", "--force-looking-message"
+            "send-keys", "-t", "0:5", "-l", "--", "--force-looking-message"
         ) in calls
 
     def test_send_resolves_numeric_index(self, monkeypatch):
@@ -286,7 +310,7 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "--force", "hello"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "hello") in calls
 
     def test_send_shell_rejected_without_start(self, monkeypatch):
         project = self._make_project(state="SHELL")
@@ -322,7 +346,7 @@ class TestCmdSend:
         )
         literal_i = next(
             (i for i, c in enumerate(calls)
-             if c == ("send-keys", "-t", "0:5", "-l", "hello")),
+             if c == ("send-keys", "-t", "0:5", "-l", "--", "hello")),
             None,
         )
         assert claude_i is not None, "Claude launch not issued"
@@ -345,7 +369,7 @@ class TestCmdSend:
         calls = self._tmux_calls(mock_tmux)
         # The literal message must NOT have been sent.
         literal_sent = any(
-            c == ("send-keys", "-t", "0:5", "-l", "hello") for c in calls
+            c == ("send-keys", "-t", "0:5", "-l", "--", "hello") for c in calls
         )
         assert not literal_sent, "Refused-send leaked a literal payload"
 
@@ -362,7 +386,7 @@ class TestCmdSend:
             ccm_send.cmd_send(["blog", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         literal_sent = any(
-            c == ("send-keys", "-t", "0:5", "-l", "hello") for c in calls
+            c == ("send-keys", "-t", "0:5", "-l", "--", "hello") for c in calls
         )
         assert not literal_sent
 
@@ -390,7 +414,7 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "hello") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "hello") in calls
 
     def test_send_idle_state_allowed(self, monkeypatch):
         project = self._make_project(state="IDLE")
@@ -398,7 +422,7 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd") as mock_tmux:
             ccm_send.cmd_send(["blog", "hi"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "hi") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
 
     # --- post-launch delivery verification (premature-IDLE fix) ---
 
@@ -448,7 +472,7 @@ class TestCmdSend:
             capture_responses=[f"❯ {self._VERIFY_MSG}"],
         )
         assert not raised, "verified delivery should not refuse"
-        assert ("send-keys", "-t", "0:5", "-l", self._VERIFY_MSG) in send_calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", self._VERIFY_MSG) in send_calls
         # The committing Enter (bare, no payload) was sent.
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls
 
@@ -469,7 +493,7 @@ class TestCmdSend:
         # It retried: the body was typed more than once.
         body_types = [
             c for c in send_calls
-            if c == ("send-keys", "-t", "0:5", "-l", self._VERIFY_MSG)
+            if c == ("send-keys", "-t", "0:5", "-l", "--", self._VERIFY_MSG)
         ]
         assert len(body_types) >= 2, "expected at least one retry re-type"
         # Each retry cleared the composer first.
@@ -502,7 +526,7 @@ class TestCmdSend:
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
             ccm_send.cmd_send(["blog", "--start", "--yes", "hi"])
         calls = self._tmux_calls(mock_tmux)
-        assert ("send-keys", "-t", "0:5", "-l", "hi") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
         assert ("send-keys", "-t", "0:5", "Enter") in calls
 
     # --- error paths ---
@@ -656,4 +680,4 @@ class TestSendTrace:
         # Specifically: the literal send-keys still fired despite
         # the trace write failures.
         calls = [tuple(c.args) for c in mock_tmux.call_args_list]
-        assert ("send-keys", "-t", "0:5", "-l", "hi") in calls
+        assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
