@@ -30,6 +30,18 @@ Multi-line messages (`\\n` in body) are converted to `M-Enter`
 between lines + a final `Enter`, matching Claude Code's "newline
 without submit" key convention so a multi-line prompt arrives as
 one turn rather than several.
+
+Delivery-pane resolution: the project state is a WINDOW-level
+aggregation across panes (PERMIT > BUSY > IDLE > SHELL), but
+`send-keys -t <session>:<idx>` delivers to the window's ACTIVE
+pane — which in a split window may be a plain shell sitting next
+to the Claude pane. 2026-07-16 ringi incident: a two-pane window
+(Claude idle in pane A, active zsh in pane B) aggregated to IDLE,
+so a `ccm send --start` decided no launch was needed and typed the
+whole message into zsh. `_resolve_delivery_pane` closes the gap by
+locating the pane that actually hosts the claude process and
+targeting keystrokes (and captures) at that pane id instead of the
+window.
 """
 
 import os
@@ -37,7 +49,8 @@ import sys
 import time
 
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
-from ccm_constants import CLAUDE_CMD
+from ccm_constants import CLAUDE_CMD, SHELL_FOREGROUND_COMMANDS
+from ccm_pane_state import find_claude_pid
 
 
 # ─── Opt-in send trace ───
@@ -233,6 +246,70 @@ def _type_body(win_target, lines):
             _send_keys(win_target, "M-Enter", label=f"newline:{line_i}")
 
 
+# ─── Delivery-pane resolution ───
+# Window state aggregates across panes, but send-keys to a window
+# target lands in the ACTIVE pane. In a split window those can
+# disagree: Claude idle in a side pane makes the window IDLE while
+# the active pane is a bare zsh — and the message would be typed
+# into the shell (2026-07-16 ringi incident: `ccm send --start` saw
+# IDLE, skipped the launch, and flooded zsh with the body as shell
+# commands). Resolving the actual claude-hosting pane and targeting
+# it directly makes state and delivery refer to the same pane.
+
+def _resolve_delivery_pane(win_target):
+    """Return `(pane_target, active_cmd)` for the pane that should
+    receive the keystrokes.
+
+      - When one or more panes host a claude process: the active
+        pane if it hosts claude, else the single claude pane.
+        Multiple claude panes with a non-claude active pane is
+        ambiguous (Agent Teams split) → refuse via ccm_die.
+      - When NO pane hosts claude (SHELL window): the active pane —
+        that is where `--start` will launch Claude.
+
+    `active_cmd` is the active pane's `pane_current_command` (used
+    by the --start path to verify it is really a shell before
+    typing the launch command), or None when pane enumeration
+    failed and we fell back to the window target."""
+    raw = ccm_core.tmux_cmd(
+        "list-panes", "-t", win_target, "-F",
+        "#{pane_id}\t#{pane_pid}\t#{pane_active}\t#{pane_current_command}",
+    )
+    if not raw or not raw.strip():
+        # Defensive fallback: pane enumeration failed (tmux error).
+        # Window target preserves pre-resolution behaviour.
+        return win_target, None
+
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    active_pane = None
+    active_cmd = None
+    claude_panes = []
+    for line in raw.split("\n"):
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        pane_id, pane_pid, pane_active, pane_cmd = parts[:4]
+        if pane_active == "1":
+            active_pane = pane_id
+            active_cmd = pane_cmd
+        if find_claude_pid(pane_pid, ps_lines):
+            claude_panes.append(pane_id)
+
+    if not claude_panes:
+        return (active_pane or win_target), active_cmd
+    if active_pane in claude_panes:
+        return active_pane, active_cmd
+    if len(claude_panes) == 1:
+        return claude_panes[0], active_cmd
+    ccm_core.ccm_die(
+        f"Multiple panes in {win_target} host a claude process "
+        f"({', '.join(claude_panes)}) and the active pane is not one "
+        "of them — the delivery target is ambiguous.\n"
+        "  Switch focus to the pane that should receive the message, "
+        "then retry."
+    )
+
+
 _SEND_USAGE = (
     "Usage: ccm send <name|#idx> <message> "
     "[--file path] [--stdin] [--force] [--start] [--no-enter] [-y]"
@@ -362,6 +439,12 @@ def cmd_send(args):
     project_name = matched.name
     state = matched.state
 
+    # Resolve the pane that actually receives the keystrokes. The
+    # gating state above is a window aggregate; delivery must go to
+    # the claude-hosting pane (or, for SHELL windows, the active
+    # pane where --start will launch). See _resolve_delivery_pane.
+    pane_target, active_cmd = _resolve_delivery_pane(win_target)
+
     # State-based gating
     if state == "PERMIT":
         # Give the caller (human or another Claude) enough information
@@ -371,11 +454,11 @@ def cmd_send(args):
         # misclassification of a real permission dialog could
         # accidentally approve a tool call.
         raw_tail = ccm_core.tmux_cmd(
-            "capture-pane", "-t", win_target, "-p", "-S", "-10"
+            "capture-pane", "-t", pane_target, "-p", "-S", "-10"
         ) or ""
         if not raw_tail.strip():
             raw_tail = ccm_core.tmux_cmd(
-                "capture-pane", "-a", "-t", win_target, "-p", "-S", "-10"
+                "capture-pane", "-a", "-t", pane_target, "-p", "-S", "-10"
             ) or ""
         tail_lines = [l for l in raw_tail.split("\n") if l.strip()][-8:]
         category, guidance = ccm_core.classify_permit_modal(raw_tail)
@@ -401,9 +484,24 @@ def cmd_send(args):
                 f"{project_name} is in SHELL state (Claude not running). "
                 "Use --start to auto-launch Claude before sending."
             )
+        # Guard the launch target. A SHELL window means "no claude
+        # in any pane", but the active pane's foreground could still
+        # be an editor / pager (per-pane detection maps a claude-less
+        # pane to SHELL regardless of what runs in it). Typing the
+        # launch command into vim would edit text, not start Claude —
+        # refuse instead. `active_cmd is None` (pane enumeration
+        # failed) skips the guard to preserve the defensive fallback.
+        if active_cmd is not None and active_cmd not in SHELL_FOREGROUND_COMMANDS:
+            ccm_core.ccm_die(
+                f"{project_name} is in SHELL state but its active pane "
+                f"is running `{active_cmd}`, not a shell — refusing to "
+                "type the Claude launch command into it.\n"
+                "  Switch to the target window, return the pane to a "
+                "shell prompt (or focus a shell pane), then retry."
+            )
         ccm_core.ccm_info(f"Starting Claude in {project_name}...")
-        ccm_core.tmux_cmd("send-keys", "-t", win_target, "-X", "cancel")
-        ccm_core.tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
+        ccm_core.tmux_cmd("send-keys", "-t", pane_target, "-X", "cancel")
+        ccm_core.tmux_cmd("send-keys", "-t", pane_target, CLAUDE_CMD, "Enter")
         did_launch = True
         # Wait for the target to reach the input prompt. A fixed
         # sleep would mis-deliver the message when `claude
@@ -420,7 +518,7 @@ def cmd_send(args):
         )
         if ready_state != "IDLE":
             tail = ccm_core.tmux_cmd(
-                "capture-pane", "-t", win_target, "-p", "-S", "-15",
+                "capture-pane", "-t", pane_target, "-p", "-S", "-15",
             )
             tail_lines = [l for l in tail.split("\n") if l.strip()]
             lines = [
@@ -459,11 +557,11 @@ def cmd_send(args):
     # capture-pane cost twice.
     if state == "IDLE":
         raw_tail = ccm_core.tmux_cmd(
-            "capture-pane", "-t", win_target, "-p", "-S", "-10"
+            "capture-pane", "-t", pane_target, "-p", "-S", "-10"
         ) or ""
         if not raw_tail.strip():
             raw_tail = ccm_core.tmux_cmd(
-                "capture-pane", "-a", "-t", win_target, "-p", "-S", "-10"
+                "capture-pane", "-a", "-t", pane_target, "-p", "-S", "-10"
             ) or ""
         if ccm_core.is_agents_tui(raw_tail):
             tail_lines = [l for l in raw_tail.split("\n") if l.strip()][-8:]
@@ -505,17 +603,17 @@ def cmd_send(args):
     # Defensively exit any tmux mode on the target pane. Without this,
     # a pane stuck in copy-mode would interpret the message characters
     # as copy-mode bindings rather than typed input.
-    _send_keys(win_target, "-X", "cancel", label="pre-cancel")
+    _send_keys(pane_target, "-X", "cancel", label="pre-cancel")
 
     # Literal send, converting `\n` into M-Enter (Claude Code's
     # "newline without submit" key) so the body is delivered as a
     # single multi-line prompt rather than multiple submitted turns.
     lines = message.split("\n")
     if _trace_enabled():
-        _trace_record(win_target, "send-start",
+        _trace_record(pane_target, "send-start",
                       (f"project={project_name}", f"lines={len(lines)}",
                        f"bytes={len(message)}"))
-    _type_body(win_target, lines)
+    _type_body(pane_target, lines)
 
     # Post-launch delivery verification. On the --start path the
     # body can be eaten by a not-yet-ready input handler even though
@@ -527,20 +625,20 @@ def cmd_send(args):
     # (an already-IDLE target was genuinely ready) or when the
     # message is too short to match without false positives.
     signature = _message_signature(message) if did_launch else None
-    if signature is not None and not _body_landed(win_target, signature):
+    if signature is not None and not _body_landed(pane_target, signature):
         landed = False
         for _ in range(_DELIVERY_VERIFY_RETRIES):
             time.sleep(_DELIVERY_VERIFY_SETTLE_SEC)
             # Clear the composer (C-u) first so a partial landing from
             # the previous attempt cannot duplicate text on re-type.
-            _send_keys(win_target, "C-u", label="retry-clear")
-            _type_body(win_target, lines)
-            if _body_landed(win_target, signature):
+            _send_keys(pane_target, "C-u", label="retry-clear")
+            _type_body(pane_target, lines)
+            if _body_landed(pane_target, signature):
                 landed = True
                 break
         if not landed:
             if _trace_enabled():
-                _trace_record(win_target, "send-unverified",
+                _trace_record(pane_target, "send-unverified",
                               (f"project={project_name}",))
             ccm_core.ccm_die(
                 f"Delivery to {project_name} could not be confirmed: the "
@@ -556,8 +654,8 @@ def cmd_send(args):
 
     # Final submit (unless --no-enter)
     if not no_enter:
-        _send_keys(win_target, "Enter", label="final-submit")
+        _send_keys(pane_target, "Enter", label="final-submit")
     if _trace_enabled():
-        _trace_record(win_target, "send-end", (f"project={project_name}",))
+        _trace_record(pane_target, "send-end", (f"project={project_name}",))
 
     ccm_core.ccm_info(f"Sent to {project_name}")

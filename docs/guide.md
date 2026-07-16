@@ -210,6 +210,10 @@ Confirmation is automatically skipped when stdin or stdout is not a TTY, so pipe
 
 Targets can be specified by project name, `#<idx>`, or a bare window index.
 
+### Delivery pane in split windows
+
+The project state is aggregated across all panes of the window, but keystrokes must land in one specific pane. `ccm send` resolves the pane that actually hosts the claude process and types into it directly — even when a plain shell pane happens to be the active (focused) one. If several panes host claude (an Agent Teams split) and the active pane is not one of them, the send is refused as ambiguous: focus the pane that should receive the message, then retry. With `--start` on a SHELL window, Claude is launched in the active pane after verifying its foreground is really a shell (never into an editor or pager).
+
 ## State Detection
 
 ccm uses a hybrid approach: Claude Code hooks (recommended) combined with process tree inspection as fallback.
