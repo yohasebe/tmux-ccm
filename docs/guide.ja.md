@@ -74,12 +74,26 @@ ccm status
 ```
 
 ```
-STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
-------       -------              ------           -----        ---------
-◉ BUSY       my-project           main*            3000         ~/code/my-project
-● IDLE       another-project      feature-x        -            ~/code/another-project
-⚠ PERMIT     api-server           main             8080         ~/code/api-server
+STATUS       PROJECT              MODE     BRANCH           PORTS        DIRECTORY
+------       -------              ----     ------           -----        ---------
+◉ BUSY       my-project           manual   main*            3000         ~/code/my-project
+● IDLE       another-project      accept   feature-x        -            ~/code/another-project
+⚠ PERMIT     api-server           manual   main             8080         ~/code/api-server
 ```
+
+`MODE` 列は各プロジェクトの Claude Code permission mode（`manual` /
+`accept` / `plan` / `auto` / `dontAsk` / `bypass`）を、最新の hook イベント
+から表示します。permission ダイアログを自動解決するモード（`auto`、
+`dontAsk`、`bypass`、およびファイル操作に関する `accept`）では PERMIT
+状態がそもそも発生しないため、マルチプロジェクト管理では重要な情報です —
+「このプロジェクトは一度も許可を求めてこない」と感じたら、検出の不具合を
+疑う前にモードを確認してください。`bypass` は警告色で表示されます
+（すべてのガードレールが無効の状態です）。`-` はモード未取得
+（Claude 未起動、フック未インストール、または起動後まだフックが発火して
+いない）を意味します。ダッシュボードでは同じ情報がプロジェクト名の後の
+`{mode}` バッジとして表示されます（日常のデフォルトである `manual` は
+ノイズ削減のため非表示）。セッション中のモード変更（shift+tab）は次の
+フック発火時に反映されます。
 
 ## ダッシュボード
 
@@ -92,7 +106,7 @@ STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
 > ▶ #5  ⚠ PERMIT  ml-pipeline                ~/code/ml-pipeline
 >   #4  ● IDLE    auth-service     * 2s      ~/code/auth-service
 >   #2  ◉ BUSY    api-gateway                ~/code/api-gateway
->   #3  ● IDLE    web-dashboard              ~/code/web-dashboard
+>   #3  ● IDLE    web-dashboard {accept}     ~/code/web-dashboard
 >   #6  ● IDLE    mobile-app                 ~/code/mobile-app
 >   #7  ■ SHELL   docs-site                  ~/code/docs-site
 >
@@ -259,6 +273,7 @@ ccm setup-hooks
 | **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: モーダルフッター（permission ダイアログの `Esc to cancel · Tab to amend`、confirmation modal の `Enter to confirm · Esc to <verb>` — v2.1.144 の `/model` 形式 `Enter to confirm · d to set as default for new sessions · Esc to cancel` のような中間 `· <action key>` セグメントも許容）をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能 |
 | **完了（`* elapsed`）** | 表示レイヤー | 一時的マーカー: BUSY/PERMIT → IDLE遷移後に30秒間表示、その後クリア。アスタリスクは緑（直近の完了に視線を誘導）、経過時間は dim |
 | **マルチペイン（`[N]`）** | ウィンドウ検査 | tmux ペインを 2 つ以上含むウィンドウに対し、全レンダラー（dashboard / status bar / `ccm status`）でプロジェクト名直後に表示。角括弧 dim、数字 cyan。集約状態が非アクティブペインのものである可能性をユーザーが認識できるようにする。詳細（sliver 保護と PERMIT 自動フォーカス）は下記「Agent Teamsとの併用」を参照 |
+| **Permission mode（`{mode}`）** | Hook payload | Claude Code が hook payload に付与する `permission_mode` field 由来の表示専用バッジ。最新値を `ccm status` の MODE 列と、ダッシュボードのプロジェクト名直後の `{mode}` バッジ（`{accept}` / `{plan}` / `{auto}` / `{dontAsk}` / `{bypass}`）として表示。日常デフォルトの `manual` はダッシュボードでは非表示。`{bypass}` は警告色。ダイアログを自動解決するモードでは PERMIT がそもそも発生しないため、その沈黙を検出不具合と誤診しないためのバッジ。状態検出はこの値を一切参照しない |
 
 ### フックなしでの検出
 

@@ -336,3 +336,91 @@ class TestReadEventsTail:
         # Last 5 records (399, 398, 397, 396, 395) in chronological order
         assert [e["ts"] for e in events] == [395, 396, 397, 398, 399]
 
+    def test_mode_field_preserved(self, tmp_path, monkeypatch):
+        """`mode` (permission_mode annotation from hooks/lib.sh) must
+        survive the reader — the display badge depends on it."""
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            f.write('{"ts":100,"type":"pretool","mode":"acceptEdits"}\n')
+            f.write('{"ts":101,"type":"stop"}\n')
+        events = ccm_signals.read_events_tail("/x/proj")
+        assert events[0] == {"ts": 100, "type": "pretool",
+                             "mode": "acceptEdits"}
+        assert events[1] == {"ts": 101, "type": "stop"}  # no mode key
+
+    def test_mode_field_non_string_dropped(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            f.write('{"ts":100,"type":"pretool","mode":42}\n')
+            f.write('{"ts":101,"type":"stop","mode":""}\n')
+        events = ccm_signals.read_events_tail("/x/proj")
+        assert all("mode" not in e for e in events)
+
+
+class TestReadLatestPermissionMode:
+    TEST_SESSION_ID = "test-session-mode"
+
+    def _setup_hook_dir(self, tmp_path, monkeypatch):
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        monkeypatch.setattr(
+            ccm_signals, "_session_id_from_tmux",
+            lambda _project_dir: self.TEST_SESSION_ID,
+        )
+        ccm_signals._events_cache.clear()
+        return hook_dir
+
+    def _write_events(self, tmp_path, lines):
+        path = os.path.join(
+            str(tmp_path / "hooks"),
+            self.TEST_SESSION_ID + ".events.jsonl")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def test_no_log_returns_empty(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        assert ccm_signals.read_latest_permission_mode("/x/proj") == ""
+
+    def test_returns_newest_mode(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        self._write_events(tmp_path, [
+            '{"ts":100,"type":"pretool","mode":"default"}',
+            '{"ts":101,"type":"pretool","mode":"acceptEdits"}',
+        ])
+        assert ccm_signals.read_latest_permission_mode(
+            "/x/proj") == "acceptEdits"
+
+    def test_skips_trailing_events_without_mode(self, tmp_path, monkeypatch):
+        """A newest event lacking the annotation (e.g. written by a
+        pre-upgrade hook script) must not blank the badge — the scan
+        walks back to the newest mode-bearing record."""
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        self._write_events(tmp_path, [
+            '{"ts":100,"type":"pretool","mode":"bypassPermissions"}',
+            '{"ts":101,"type":"stop"}',
+        ])
+        assert ccm_signals.read_latest_permission_mode(
+            "/x/proj") == "bypassPermissions"
+
+    def test_no_mode_anywhere_returns_empty(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        self._write_events(tmp_path, [
+            '{"ts":100,"type":"prompt"}',
+            '{"ts":101,"type":"stop"}',
+        ])
+        assert ccm_signals.read_latest_permission_mode("/x/proj") == ""
+
+    def test_authoritative_no_session_skips_lookup(self, tmp_path, monkeypatch):
+        """session_id="" (bulk-fetch authoritative "no session") must
+        not fall back to a per-project tmux lookup — this is what
+        keeps build_project_list's subprocess count flat."""
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            ccm_signals, "_session_id_from_tmux",
+            lambda _d: pytest.fail("tmux lookup must not happen"))
+        assert ccm_signals.read_latest_permission_mode(
+            "/x/proj", session_id="") == ""
+

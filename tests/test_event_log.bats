@@ -77,6 +77,34 @@ teardown() {
     [[ "${lines[2]}" == "stop" ]]
 }
 
+@test "append_event: includes mode field when PERMISSION_MODE set" {
+    PERMISSION_MODE="acceptEdits"
+    ccm_append_event "$HOOK_DIR" "$KEY" "pretool"
+    run jq -r '.mode' "$EVENTS_FILE"
+    [[ "$output" == "acceptEdits" ]]
+}
+
+@test "append_event: omits mode field when PERMISSION_MODE empty" {
+    PERMISSION_MODE=""
+    ccm_append_event "$HOOK_DIR" "$KEY" "pretool"
+    run jq -r 'has("mode")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+}
+
+@test "hook_init: extracts and sanitizes permission_mode" {
+    ccm_hook_init <<< '{"session_id":"'"$TEST_SESSION_ID"'","cwd":"/x","permission_mode":"bypassPermissions"}'
+    [[ "$PERMISSION_MODE" == "bypassPermissions" ]]
+    # Hostile value: everything outside [A-Za-z0-9_-] is stripped so
+    # the value can be embedded into the JSONL record verbatim.
+    ccm_hook_init <<< '{"session_id":"'"$TEST_SESSION_ID"'","cwd":"/x","permission_mode":"we\\ird{mo:de"}'
+    [[ "$PERMISSION_MODE" == "weirdmode" ]]
+}
+
+@test "hook_init: permission_mode empty when field absent" {
+    ccm_hook_init <<< '{"session_id":"'"$TEST_SESSION_ID"'","cwd":"/x"}'
+    [[ -z "$PERMISSION_MODE" ]]
+}
+
 @test "append_event: empty args are a silent no-op" {
     run ccm_append_event "" "$KEY" "prompt"
     [[ "$status" -eq 0 ]]
@@ -140,6 +168,13 @@ _latest_type() {
         '{"hook_event_name":"PreToolUse","cwd":"/x/test-project"}'
     run _latest_type
     [[ "$output" == "pretool" ]]
+}
+
+@test "on-pre-tool-use.sh: payload permission_mode lands on event record" {
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","permission_mode":"acceptEdits"}'
+    run jq -rs '.[-1].mode' "$EVENTS_FILE"
+    [[ "$output" == "acceptEdits" ]]
 }
 
 @test "on-pre-tool-use.sh: PostToolUse -> posttool" {

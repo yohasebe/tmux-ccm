@@ -179,10 +179,12 @@ def read_project_notify_marker(project_dir):
 # The per-session event log is written by
 # `hooks/lib.sh::ccm_append_event` as append-only JSONL at
 # `$HOOK_DIR/<sessionId>.events.jsonl`. Each record is
-# `{"ts": unix_seconds, "type": <normalized_type>}`, one per hook
-# invocation. State is derived as a pure function of the event
-# tail by `derive_state_from_events`; this reader is the input
-# side.
+# `{"ts": unix_seconds, "type": <normalized_type>}` plus an optional
+# `"mode"` (the payload's `permission_mode`, sanitized bash-side),
+# one per hook invocation. State is derived as a pure function of
+# the event tail by `derive_state_from_events`, which keys on
+# "type" only — extra fields are opaque to detection; this reader
+# is the input side.
 #
 # The reader uses the same tail-read + bounded-cache pattern as
 # `_parse_jsonl_tail` so per-cycle overhead is ~0 on cache hit and a
@@ -297,12 +299,40 @@ def read_events_tail(project_dir: str, limit: int = 20,
             continue
         if not isinstance(ts, (int, float)):
             continue
-        events_newest_first.append({"ts": int(ts), "type": t})
+        out_rec = {"ts": int(ts), "type": t}
+        # Optional permission-mode annotation. Preserved for display
+        # readers (`read_latest_permission_mode`); detection ignores
+        # any key other than ts/type.
+        mode = rec.get("mode")
+        if isinstance(mode, str) and mode:
+            out_rec["mode"] = mode
+        events_newest_first.append(out_rec)
 
     events_newest_first.reverse()
     result = tuple(events_newest_first)
     _cache_events(path, key, result)
     return result[-limit:] if limit and len(result) > limit else result
+
+
+def read_latest_permission_mode(project_dir: str,
+                                session_id: Optional[str] = None) -> str:
+    """Return the most recent `permission_mode` recorded in a
+    project's event log, or "" when none is known.
+
+    Display-layer helper for the dashboard / `ccm status` mode badge.
+    The value is whatever the newest mode-bearing hook event carried —
+    a mid-session mode change (shift+tab) stays stale until the next
+    hook fires, which is acceptable for a secondary indicator (the
+    state model itself never reads this). Goes through
+    `read_events_tail`, so on a detection-warmed cache this costs a
+    dict lookup, not file I/O.
+    """
+    for rec in reversed(read_events_tail(project_dir,
+                                         session_id=session_id)):
+        mode = rec.get("mode")
+        if isinstance(mode, str) and mode:
+            return mode
+    return ""
 
 
 # ─── Project-wide runtime cleanup ───

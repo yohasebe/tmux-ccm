@@ -70,6 +70,35 @@ class TestDeriveInvariants:
             f"event={event_type} stop_reason={stop_reason} → {result!r}"
         )
 
+    @pytest.mark.parametrize("event_type", [
+        "prompt", "pretool", "posttool", "subagent", "compact",
+        "stop", "permit_req", "notify_permit", "notify_idle",
+        "session_end",
+    ])
+    @pytest.mark.parametrize("mode", [
+        "default", "acceptEdits", "bypassPermissions", "future_mode",
+    ])
+    def test_extra_mode_field_is_opaque_to_derive(self, event_type, mode):
+        """Event records may carry a `mode` annotation (permission
+        mode badge, written by hooks/lib.sh). Fields other than
+        ts/type must not change derive's judgment — the state model
+        never reads the mode. Locks the contract that lets us extend
+        the event schema without touching detection."""
+        common = dict(
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=300,
+            jsonl_age=5, now=200,
+        )
+        bare = ccm_activity.derive_state_from_events(
+            events=({"ts": 100, "type": event_type},), **common)
+        annotated = ccm_activity.derive_state_from_events(
+            events=({"ts": 100, "type": event_type, "mode": mode},),
+            **common)
+        assert bare == annotated, (
+            f"mode annotation changed derive: {bare!r} → {annotated!r} "
+            f"(event={event_type}, mode={mode})"
+        )
+
     @pytest.mark.parametrize("raw", [None, "IDLE", "BUSY", "PERMIT"])
     @pytest.mark.parametrize("event_type", [
         "prompt", "pretool", "posttool", "stop", "permit_req",

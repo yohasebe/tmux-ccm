@@ -406,6 +406,46 @@ class TestPrintStatus:
                    if "trio" in line)
         assert "\033[36m3" in row
 
+    def test_mode_column_renders_cli_vocabulary(self, monkeypatch, capsys):
+        """Payload "default" renders as `manual` — the CLI label users
+        actually type (`--permission-mode manual`)."""
+        projects = [
+            ccm_core.Project(
+                win_target="0:1", win_idx="1", name="modeproj",
+                directory="/tmp/modeproj", state="IDLE",
+                permission_mode="default",
+            ),
+        ]
+        out = self._run_print_status(projects, monkeypatch, capsys)
+        assert "MODE" in out  # header column
+        row = next(line for line in out.splitlines() if "modeproj" in line)
+        assert "manual" in row
+        assert "default" not in row
+
+    def test_bypass_mode_gets_warning_color(self, monkeypatch, capsys):
+        projects = [
+            ccm_core.Project(
+                win_target="0:1", win_idx="1", name="yolo",
+                directory="/tmp/yolo", state="BUSY",
+                permission_mode="bypassPermissions",
+            ),
+        ]
+        out = self._run_print_status(projects, monkeypatch, capsys)
+        row = next(line for line in out.splitlines() if "yolo" in line)
+        # bold yellow (same as PERMIT) wraps the badge
+        assert "\033[1;33mbypass" in row
+
+    def test_unknown_mode_renders_dash(self, monkeypatch, capsys):
+        projects = [
+            ccm_core.Project(
+                win_target="0:1", win_idx="1", name="shellproj",
+                directory="/tmp/shellproj", state="SHELL",
+            ),
+        ]
+        out = self._run_print_status(projects, monkeypatch, capsys)
+        row = next(line for line in out.splitlines() if "shellproj" in line)
+        assert _strip_ansi(row).split()[3] == "-"  # MODE column shows "-"
+
 
 # ─── print_bg_sessions ───
 

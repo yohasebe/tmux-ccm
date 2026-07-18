@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Permission mode visibility across projects. Hook scripts now copy the
+  `permission_mode` field from Claude Code's hook payload onto each event
+  record (`{"ts":…,"type":…,"mode":"acceptEdits"}`), and the newest value is
+  surfaced as a per-project badge: a `MODE` column in `ccm status` and a
+  `{label}` annotation in the dashboard (suppressed for the everyday `manual`
+  mode to keep rows quiet; `bypassPermissions` renders in warning color).
+  Rationale: modes that auto-resolve dialogs (auto / dontAsk /
+  bypassPermissions — and acceptEdits for file operations) never fire
+  PermissionRequest, so "this project never shows PERMIT" is normal there and
+  easy to misdiagnose as broken detection. The badge is display-only — state
+  detection never reads it, and records without the field (pre-upgrade hook
+  scripts) degrade to no badge. Payload value `default` renders as `manual`,
+  matching the CLI vocabulary (`--permission-mode manual`).
+
 ## [0.5.3] - 2026-07-17
 
 ### Fixed

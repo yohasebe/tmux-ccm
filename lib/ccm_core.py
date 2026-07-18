@@ -307,12 +307,12 @@ class Project:
     __slots__ = (
         "win_target", "win_idx", "name", "dir", "state",
         "branch", "ports", "completed_at", "bg_active", "pane_count",
-        "sort_key",
+        "permission_mode", "sort_key",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
                  branch="", ports="", completed_at=0, bg_active=False,
-                 pane_count=1):
+                 pane_count=1, permission_mode=""):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -328,6 +328,11 @@ class Project:
         # splits, orphan panes). Always >= 1; populated by
         # build_project_list from panes_cache.
         self.pane_count = pane_count
+        # Raw `permission_mode` payload value from the newest
+        # mode-bearing hook event ("" when unknown). Display-only —
+        # rendered as a badge by `ccm status` / the dashboard via
+        # `permission_mode_label`; never consulted by detection.
+        self.permission_mode = permission_mode
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
@@ -518,6 +523,22 @@ def build_project_list(fast=False):
         ports = read_cache_file(CCM_PORT_CACHE_DIR, proj_dir) if proj_dir else ""
         pane_count = 1 if fast else _count_panes(panes_cache, row["win_target"])
 
+        # Permission-mode badge (slow path, live sessions only). The
+        # events tail was just read by detection for this same cycle,
+        # so this is a cache hit, not extra I/O. `or ""` collapses the
+        # None-vs-"" session_id semantics to the authoritative "no
+        # session" form — a legacy window without the bulk field must
+        # not trigger a per-project tmux lookup here (display-only
+        # data is not worth a subprocess; it self-heals next cycle).
+        permission_mode = ""
+        if not fast and state in ("BUSY", "IDLE", "PERMIT"):
+            try:
+                permission_mode = ccm_signals.read_latest_permission_mode(
+                    proj_dir, session_id=row["cached_session_id"] or "")
+            except Exception:
+                log_caught_exception(
+                    f"permission_mode[{row['project']}]")
+
         projects.append(Project(
             win_target=row["win_target"],
             win_idx=row["win_target"].split(":")[-1],
@@ -526,6 +547,7 @@ def build_project_list(fast=False):
             bg_active=bool(row["bg_active_str"]
                            and row["bg_active_str"] != "0"),
             pane_count=pane_count,
+            permission_mode=permission_mode,
         ))
 
     projects.sort(key=lambda p: p.sort_key)

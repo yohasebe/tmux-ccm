@@ -314,7 +314,7 @@ ccm rename <name> <new_name>      プロジェクト名を変更
 ccm remove <name>                 プロジェクトウィンドウ削除（ウィンドウを閉じる）
 ccm attach <name|number>          プロジェクトウィンドウに切替
 ccm list                          管理中プロジェクト一覧
-ccm status                        全プロジェクト状態表示（ブランチ・ポート含む）
+ccm status                        全プロジェクト状態表示（permission mode・ブランチ・ポート含む）
 ccm tree                          セッション/ウィンドウ/ペインの階層表示
 ccm ports                         プロジェクトごとのリスニングポート表示
 ccm capture [--copy] <name|#id>   ペイン内容をキャプチャ（--copy: クリップボード）

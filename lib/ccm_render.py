@@ -105,7 +105,12 @@ def pad_to_width(s: str, width: int) -> str:
     field. Wider-than-`width` strings are returned unchanged."""
     pad = width - display_width(s)
     return s + " " * pad if pad > 0 else s
-from ccm_constants import JSONL_HOOK_GAP_TOLERANCE, STATE_ICONS
+from ccm_constants import (
+    JSONL_HOOK_GAP_TOLERANCE,
+    PERMISSION_MODE_WARN,
+    STATE_ICONS,
+    permission_mode_label,
+)
 
 
 # ─── ANSI colour codes ───
@@ -283,8 +288,8 @@ def print_status():
         print(f"\033[33m⚠ {silence_msg}\033[0m")
     print()
 
-    print(f"{C_BOLD}{'STATUS':<12} {'PROJECT':<20} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
-    print(f"{'------':<12} {'-------':<20} {'------':<16} {'-----':<12} {'---------'}")
+    print(f"{C_BOLD}{'STATUS':<12} {'PROJECT':<20} {'MODE':<8} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
+    print(f"{'------':<12} {'-------':<20} {'----':<8} {'------':<16} {'-----':<12} {'---------'}")
 
     for p in projects:
         color = C_STATE.get(p.state, C_DIM)
@@ -312,6 +317,15 @@ def print_status():
         branch = p.branch or "-"
         ports = p.ports or "-"
         d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
+        # Permission-mode badge. A secondary indicator (dim), except
+        # bypassPermissions which means every guardrail is off and
+        # gets the same bold yellow as PERMIT. "-" when unknown
+        # (SHELL/DOWN, hooks not installed, or no mode-bearing hook
+        # event yet).
+        mode_label = permission_mode_label(p.permission_mode) or "-"
+        mode_color = ("\033[1;33m" if p.permission_mode in PERMISSION_MODE_WARN
+                      else C_DIM)
+        mode_field = f"{mode_color}{pad_to_width(mode_label, 8)}{C_RESET}"
         # ANSI codes inflate len() past visible width; reserve the
         # extra characters in the format spec so columns still line
         # up. CJK / emoji project names need `pad_to_width` (terminal
@@ -321,7 +335,7 @@ def print_status():
         status_w = 22 + len(suffix)
         name_pad_w = max(0, 20 - pane_marker_visible_w - display_width(p.name))
         name_field = f"{p.name}{pane_marker}{' ' * name_pad_w}"
-        print(f"{status:<{status_w}} {name_field} "
+        print(f"{status:<{status_w}} {name_field} {mode_field} "
               f"{pad_to_width(branch, 16)} {pad_to_width(ports, 12)} {d}")
 
 

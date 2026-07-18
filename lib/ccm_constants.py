@@ -455,3 +455,37 @@ TERMINAL_STOP_REASONS_TUPLE = tuple(sorted(TERMINAL_STOP_REASONS))
 STATE_ICONS = {
     "PERMIT": "⚠", "BUSY": "◉", "IDLE": "●", "SHELL": "■", "DOWN": "○",
 }
+
+
+# ─── Permission mode display ───
+# Claude Code sends `permission_mode` as an optional common field on
+# every hook payload; `hooks/lib.sh` copies it onto each event record
+# and the display layer surfaces the newest value as a per-project
+# badge. Modes that auto-resolve dialogs (auto / dontAsk /
+# bypassPermissions) never fire PermissionRequest, so "no PERMIT ever
+# shows up" is normal for them — the badge exists to preempt that
+# misdiagnosis. Display-only: the state model never reads the mode.
+#
+# Payload value "default" is what the CLI calls `manual`
+# (`--permission-mode manual`; the payload keeps the legacy name), so
+# the badge renders the CLI vocabulary users actually type and see in
+# Claude Code's own footer ("manual mode on").
+PERMISSION_MODE_LABELS = {
+    "default": "manual",
+    "acceptEdits": "accept",
+    "plan": "plan",
+    "auto": "auto",
+    "dontAsk": "dontAsk",
+    "bypassPermissions": "bypass",
+}
+# Modes rendered in warning colour — every guardrail is off.
+PERMISSION_MODE_WARN = frozenset({"bypassPermissions"})
+
+
+def permission_mode_label(mode: str) -> str:
+    """Short badge label for a payload `permission_mode` value.
+    Unknown (future) modes pass through length-capped so a new
+    upstream mode stays visible without waiting for a ccm release."""
+    if not mode:
+        return ""
+    return PERMISSION_MODE_LABELS.get(mode, mode[:10])

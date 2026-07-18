@@ -50,6 +50,19 @@ ccm_hook_init() {
         CWD=$(realpath "$CWD" 2>/dev/null) || true
     fi
 
+    # permission_mode: optional common field on every hook payload.
+    # `ccm_append_event` copies it onto the event record so the
+    # dashboard / `ccm status` can surface each project's permission
+    # mode. Best-effort: an absent field leaves it empty and the event
+    # record omits it. Unlike the hard-coded event types this value
+    # crosses from the upstream payload into our JSONL, so it is
+    # sanitized to a conservative charset and length-capped — a mode
+    # name will never need escaping downstream.
+    PERMISSION_MODE=$(printf '%s' "$INPUT" | jq -r '.permission_mode // empty' 2>/dev/null) || \
+        PERMISSION_MODE=$(printf '%s' "$INPUT" | grep -o '"permission_mode" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    PERMISSION_MODE="${PERMISSION_MODE//[^A-Za-z0-9_-]/}"
+    PERMISSION_MODE="${PERMISSION_MODE:0:32}"
+
     return 0
 }
 
@@ -74,12 +87,18 @@ ccm_hook_event_name() {
 #
 # Format: JSONL, append-only. One hook invocation = one line.
 # Path: $HOOK_DIR/<session_id>.events.jsonl
-# Schema: {"ts": <unix_seconds>, "type": "<normalized>"}
+# Schema: {"ts": <unix_seconds>, "type": "<normalized>"[, "mode": "<permission_mode>"]}
 #
 # `type` is restricted to the 9-type normalized vocabulary:
 #   prompt, pretool, posttool, subagent, compact, stop,
 #   permit_req, notify_permit, notify_idle, session_end
 # (call sites use hard-coded values, so no escaping needed.)
+#
+# `mode` rides along when the payload carried `permission_mode`
+# (extracted and sanitized by ccm_hook_init in the caller's scope).
+# Fields other than "type" are opaque to the detection layer —
+# `derive_state_from_events` keys on "type" only; display readers use
+# `ccm_signals.read_latest_permission_mode` to surface the mode badge.
 #
 # Atomicity: POSIX O_APPEND makes writes <PIPE_BUF (4KB) atomic
 # without flock. Errors are suppressed: a write failure must not
@@ -88,11 +107,16 @@ ccm_hook_event_name() {
 # Args: $1=HOOK_DIR, $2=KEY (Claude Code session_id), $3=TYPE (normalized event type)
 ccm_append_event() {
     local hook_dir="$1" key="$2" type="$3"
-    local ts events_file
+    local ts events_file mode
     [[ -z "$hook_dir" || -z "$key" || -z "$type" ]] && return 0
     ts=$(date +%s)
     events_file="${hook_dir}/${key}.events.jsonl"
-    printf '{"ts":%s,"type":"%s"}\n' "$ts" "$type" >> "$events_file" 2>/dev/null || true
+    mode="${PERMISSION_MODE:-}"
+    if [[ -n "$mode" ]]; then
+        printf '{"ts":%s,"type":"%s","mode":"%s"}\n' "$ts" "$type" "$mode" >> "$events_file" 2>/dev/null || true
+    else
+        printf '{"ts":%s,"type":"%s"}\n' "$ts" "$type" >> "$events_file" 2>/dev/null || true
+    fi
     return 0
 }
 

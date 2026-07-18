@@ -314,7 +314,7 @@ ccm rename <name> <new_name>      Rename a project
 ccm remove <name>                 Remove project window (kill window)
 ccm attach <name|number>          Switch to project window
 ccm list                          List managed projects
-ccm status                        Show projects with status, branch, ports
+ccm status                        Show projects with status, permission mode, branch, ports
 ccm tree                          Show session/window/pane hierarchy
 ccm ports                         Show listening ports per project
 ccm capture [--copy] <name|#id>   Capture pane content (--copy: clipboard)

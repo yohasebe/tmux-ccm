@@ -37,8 +37,10 @@ from ccm_constants import (
     CLAUDE_CMD,
     COMPLETED_AT_TIMEOUT,
     IDLE_EXIT_TIMEOUT,
+    PERMISSION_MODE_WARN,
     STATE_ICONS,
     STATE_PRIORITY,
+    permission_mode_label,
 )
 from ccm_core import (
     CCMError,
@@ -830,6 +832,17 @@ class Dashboard:
                             elapsed_str = format_elapsed(proj.completed_at) or ""
                     suffix_str = signal_age_suffix(proj.dir, proj.state).strip()
                     pane_marker = f"[{proj.pane_count}]" if proj.pane_count > 1 else ""
+                    # Permission-mode badge `{label}`. The everyday
+                    # default (`manual`) is suppressed to keep rows
+                    # quiet — the badge exists to flag the modes where
+                    # dialogs are skipped or auto-resolved (accept /
+                    # auto / dontAsk / bypass), because "no PERMIT
+                    # ever shows up" is normal there and easy to
+                    # misdiagnose as broken detection.
+                    mode_label = permission_mode_label(proj.permission_mode)
+                    mode_badge = (f"{{{mode_label}}}"
+                                  if mode_label and mode_label != "manual"
+                                  else "")
                     # All width calculations go through `display_width`
                     # (terminal columns), not `len` (codepoints). Names
                     # and branches can contain CJK / emoji; mixing the
@@ -837,6 +850,8 @@ class Dashboard:
                     # character appears.
                     if pane_marker:
                         pieces.append(display_width(pane_marker))
+                    if mode_badge:
+                        pieces.append(display_width(mode_badge))
                     if suffix_str:
                         pieces.append(display_width(suffix_str))
                     elif proj.bg_active:
@@ -849,6 +864,7 @@ class Dashboard:
                     )
                     annotations.append({
                         "pane_marker": pane_marker,
+                        "mode_badge": mode_badge,
                         "elapsed": elapsed_str,
                         "suffix": suffix_str,
                         "cluster_w": cluster_w,
@@ -908,6 +924,19 @@ class Dashboard:
                         self._addstr(stdscr, y, col + 1, n, curses.color_pair(C_CYAN))
                         self._addstr(stdscr, y, col + 1 + display_width(n), "]", curses.color_pair(C_DIM))
                         col += display_width(ann["pane_marker"]) + 1
+
+                    # Permission-mode badge {label}: dim as secondary
+                    # info, except bypassPermissions which gets bold
+                    # yellow — every guardrail is off.
+                    if ann["mode_badge"]:
+                        if p.permission_mode in PERMISSION_MODE_WARN:
+                            badge_attr = (curses.color_pair(C_YELLOW)
+                                          | curses.A_BOLD)
+                        else:
+                            badge_attr = curses.color_pair(C_DIM)
+                        self._addstr(stdscr, y, col, ann["mode_badge"],
+                                     badge_attr)
+                        col += display_width(ann["mode_badge"]) + 1
 
                     # NOTE: `* elapsed` used to live here inline. It
                     # was relocated to a right-anchored slot at the

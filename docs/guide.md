@@ -74,12 +74,25 @@ ccm status
 ```
 
 ```
-STATUS       PROJECT              BRANCH           PORTS        DIRECTORY
-------       -------              ------           -----        ---------
-◉ BUSY       my-project           main*            3000         ~/code/my-project
-● IDLE       another-project      feature-x        -            ~/code/another-project
-⚠ PERMIT     api-server           main             8080         ~/code/api-server
+STATUS       PROJECT              MODE     BRANCH           PORTS        DIRECTORY
+------       -------              ----     ------           -----        ---------
+◉ BUSY       my-project           manual   main*            3000         ~/code/my-project
+● IDLE       another-project      accept   feature-x        -            ~/code/another-project
+⚠ PERMIT     api-server           manual   main             8080         ~/code/api-server
 ```
+
+The `MODE` column shows each project's Claude Code permission mode
+(`manual` / `accept` / `plan` / `auto` / `dontAsk` / `bypass`), taken from
+the newest hook event. This matters for multi-project work because modes
+that auto-resolve permission dialogs (`auto`, `dontAsk`, `bypass` — and
+`accept` for file operations) never produce a PERMIT state: if a project
+seems to "never ask for permission", check its mode before suspecting
+detection. `bypass` is shown in warning color — every guardrail is off.
+`-` means no mode is known yet (Claude not running, hooks not installed,
+or no hook has fired since startup). The dashboard shows the same
+information as a `{mode}` badge after the project name, omitted for the
+everyday `manual` mode to keep rows quiet. A mid-session mode change
+(shift+tab) updates on the next hook firing.
 
 ## The Dashboard
 
@@ -92,7 +105,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 > ▶ #5  ⚠ PERMIT  ml-pipeline                ~/code/ml-pipeline
 >   #4  ● IDLE    auth-service     * 2s      ~/code/auth-service
 >   #2  ◉ BUSY    api-gateway                ~/code/api-gateway
->   #3  ● IDLE    web-dashboard              ~/code/web-dashboard
+>   #3  ● IDLE    web-dashboard {accept}     ~/code/web-dashboard
 >   #6  ● IDLE    mobile-app                 ~/code/mobile-app
 >   #7  ■ SHELL   docs-site                  ~/code/docs-site
 >
@@ -259,6 +272,7 @@ To remove: `ccm remove-hooks`
 | **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the modal footer (`Esc to cancel · Tab to amend` for permission dialogs; `Enter to confirm · Esc to <verb>` for confirmation modals, including the v2.1.144 `/model` form `Enter to confirm · d to set as default for new sessions · Esc to cancel` where intermediate `· <action key>` segments are tolerated) — catches sessions where hooks have stopped firing |
 | **Completion (`* elapsed`)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears. Asterisk renders green (drawing the eye to the just-completed transition); the elapsed time is dim |
 | **Multi-pane (`[N]`)** | Window inspection | Marker on every renderer (dashboard, status bar, `ccm status`) when a window holds more than one tmux pane (Agent Teams, casual splits, leftover orphan panes). Brackets dim, digit cyan. Lets you spot windows whose aggregated state may belong to a non-active pane. See "Using with Agent Teams" below for related details (sliver protection and PERMIT auto-focus) |
+| **Permission mode (`{mode}`)** | Hook payload | Display-only badge from the `permission_mode` field Claude Code attaches to hook payloads; the newest value is shown as the `MODE` column in `ccm status` and a `{mode}` badge after the project name in the dashboard (`{accept}`, `{plan}`, `{auto}`, `{dontAsk}`, `{bypass}`). The everyday `manual` mode is suppressed in the dashboard. `{bypass}` renders in warning color. Modes that auto-resolve dialogs never produce PERMIT — the badge preempts misreading that silence as broken detection. Never consulted by state detection |
 
 ### Detection without hooks
 
