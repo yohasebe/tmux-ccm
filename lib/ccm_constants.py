@@ -419,6 +419,27 @@ SHELL_FOREGROUND_COMMANDS = frozenset({
     "zsh", "bash", "sh", "fish", "ksh", "csh", "tcsh", "dash", "ash",
 })
 
+# Interactive programs that sit idle indefinitely without doing work —
+# editors and pagers a user parks in a split pane next to Claude.
+# Auto-exit's background-work guard treats a non-shell sibling-pane
+# foreground as "live work"; these are the exception. Two facts make
+# the exemption safe:
+#   1. ACTIVE use of an editor/pager produces pane output (screen
+#      redraws), which refreshes `window_activity` and resets the
+#      idle timer — so the guard is never needed to protect a pane
+#      the user is actually touching.
+#   2. Exiting Claude leaves the sibling pane untouched (separate
+#      process in a separate pane) — unlike the batch-job case, there
+#      is nothing to orphan or interrupt.
+# Autonomous work (batch jobs, dev servers, `tail -f`) stays guarded:
+# it can be silent for >timeout while still mattering. Editors with a
+# long-running internal job (`:make`) are an accepted edge — the job's
+# output refreshes window_activity in practice.
+PARKED_FOREGROUND_COMMANDS = frozenset({
+    "vim", "nvim", "vi", "view", "emacs", "nano", "pico",
+    "less", "more", "man", "bat",
+})
+
 CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
 
 

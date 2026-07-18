@@ -440,6 +440,23 @@ class TestAutoExitBackgroundWorkGuard:
             f"claude: {send_calls}"
         )
 
+    def test_parked_editor_sibling_still_exits(self):
+        """A parked nvim in the split pane is ambient tooling, not
+        background work. Active editing refreshes window_activity
+        (screen output) and resets the idle timer on its own, and
+        exiting Claude leaves the editor pane untouched — so the
+        guard must not treat it as live work. Without this exemption
+        a split-editor workflow silently disables auto-exit for
+        every window (observed 2026-07-17: three sessions idle 3-4
+        days with @ccm-idle-timeout 10 set, each with a parked nvim
+        in the second pane)."""
+        for editor in ("nvim", "vim", "emacs", "less"):
+            send_calls = self._run(self._panes(editor), self.PS_BASE)
+            sent = [c[3] for c in send_calls if len(c) >= 4]
+            assert "/exit" in sent, (
+                f"parked {editor} wrongly blocked auto-exit"
+            )
+
     def test_mcp_children_do_not_block_exit(self):
         """MCP servers / LSP workers are direct children of claude
         but never bare shells — the standing worker set must not

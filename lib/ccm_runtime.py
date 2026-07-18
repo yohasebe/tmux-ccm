@@ -70,11 +70,23 @@ def _window_has_background_work(panes_raw, ps_lines):
 
     Two disjoint signals, either sufficient:
 
-      1. A NON-Claude pane whose foreground command is not a shell —
-         a batch job, dev server, `tail -f`, an editor, anything the
-         user parked in a split. The window IS the project; work
-         running anywhere in it means the project is active even if
-         the Claude conversation has been idle for hours.
+      1. A NON-Claude pane whose foreground command is not a shell
+         and not a parked interactive tool — a batch job, dev
+         server, `tail -f`, anything autonomous the user left
+         running in a split. The window IS the project; work running
+         anywhere in it means the project is active even if the
+         Claude conversation has been idle for hours.
+
+         Editors and pagers (`PARKED_FOREGROUND_COMMANDS`) are
+         exempt: a parked nvim is ambient tooling, not evidence of
+         activity. Active use of an editor refreshes
+         `window_activity` (screen output) and resets the idle timer
+         on its own, and exiting Claude leaves the sibling pane
+         untouched — so the exemption cannot interrupt anything.
+         Without it, a split-editor workflow silently disables
+         auto-exit for every window (observed 2026-07-17: three
+         sessions idle for 3-4 days with `@ccm-idle-timeout 10` set,
+         each with a parked nvim in the second pane).
 
       2. The Claude pane's process has a live SHELL child. Claude
          spawns a shell per Bash tool invocation, and that shell
@@ -115,8 +127,10 @@ def _window_has_background_work(panes_raw, ps_lines):
                         in ccm_constants.SHELL_FOREGROUND_COMMANDS):
                     return True
         else:
-            if (pane_cmd and pane_cmd.lstrip("-")
-                    not in ccm_constants.SHELL_FOREGROUND_COMMANDS):
+            cmd = pane_cmd.lstrip("-") if pane_cmd else ""
+            if (cmd
+                    and cmd not in ccm_constants.SHELL_FOREGROUND_COMMANDS
+                    and cmd not in ccm_constants.PARKED_FOREGROUND_COMMANDS):
                 return True
     return False
 

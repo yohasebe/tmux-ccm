@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   default-on promotion ("zero false fires" / "caught a real silence" are now
   checkable claims instead of recollections).
 
+### Fixed
+- Idle auto-exit no longer treats a parked editor or pager in a sibling pane
+  as background work. The background-work guard (added 2026-07-11 after a
+  sibling-pane batch job was interrupted) counted any non-shell foreground —
+  including an idle nvim — as live work, so a split-editor workflow silently
+  disabled `@ccm-idle-timeout` entirely (observed: sessions idle for 3-4 days
+  with the timeout set to 10 minutes). Editors/pagers
+  (`PARKED_FOREGROUND_COMMANDS`: vim, nvim, emacs, less, man, …) are now
+  exempt. This is safe on both fronts: actively using an editor refreshes
+  `window_activity` and resets the idle timer on its own, and exiting Claude
+  leaves the sibling pane untouched. Autonomous work (batch jobs, dev
+  servers, `tail -f`, live Bash tool shells under Claude) stays guarded.
+
 ## [0.5.3] - 2026-07-17
 
 ### Fixed
