@@ -738,3 +738,93 @@ class TestHookSilenceCanary:
         assert ccm_canaries.hook_silence_warnings(
             projects, enabled=True, now=self.NOW) == []
         assert called == []  # no session_id → no JSONL read attempted
+
+
+class TestHookSilenceFiringLog:
+    """Evidence log for the default-on promotion review: every canary
+    firing appends one JSON record, rate-limited per project so the
+    ~2 s warning-surface polls do not turn one episode into a flood.
+    The log path is sandboxed per-test by the autouse
+    `isolate_hook_silence_log` conftest fixture."""
+
+    NOW = 1_000_000
+
+    def _fire(self, monkeypatch, now, project="alpha", pdir="/tmp/a"):
+        """Run hook_silence_warnings with a silent-session setup and
+        return the produced warnings."""
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+        monkeypatch.setattr(ccm_canaries, "_read_all_session_ids",
+                            lambda: {"0:1": "sid-alpha"})
+        monkeypatch.setattr("ccm_jsonl.read_jsonl_tail_info",
+                            lambda project_dir: (20, "tool_use"))
+        monkeypatch.setattr(
+            "ccm_signals.read_events_tail",
+            lambda project_dir, session_id=None:
+                ({"ts": now - 400, "type": "subagent"},))
+        projects = [ccm_core.Project("0:1", "1", project, pdir, "BUSY")]
+        return ccm_canaries.hook_silence_warnings(
+            projects, enabled=True, now=now)
+
+    def _read_log(self):
+        with open(ccm_canaries.hook_silence_log_path()) as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_firing_writes_one_evidence_record(self, monkeypatch):
+        msgs = self._fire(monkeypatch, self.NOW)
+        assert len(msgs) == 1
+        records = self._read_log()
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["project"] == "alpha"
+        assert rec["state"] == "BUSY"
+        assert rec["ts"] == self.NOW
+        assert rec["jsonl_age"] == 20
+        # gap = jsonl_ts - event_ts = (NOW-20) - (NOW-400) = 380
+        assert rec["gap"] == 380
+
+    def test_repeat_firing_within_interval_not_logged(self, monkeypatch):
+        self._fire(monkeypatch, self.NOW)
+        # 2 s later — same episode, warning still returned but the
+        # log must not grow.
+        msgs = self._fire(monkeypatch, self.NOW + 2)
+        assert len(msgs) == 1  # warning surface unaffected
+        assert len(self._read_log()) == 1
+
+    def test_firing_after_interval_logged_again(self, monkeypatch):
+        self._fire(monkeypatch, self.NOW)
+        marker_dir = ccm_canaries.hook_silence_log_path() + ".markers"
+        marker = os.path.join(marker_dir, ccm_core.md5_hash("/tmp/a"))
+        # The rate limit compares the caller's `now` against the
+        # marker's filesystem mtime; align the marker with the test's
+        # synthetic timebase so the interval math is meaningful.
+        os.utime(marker, (self.NOW, self.NOW))
+        self._fire(monkeypatch, self.NOW + ccm_canaries.HOOK_SILENCE_LOG_INTERVAL + 5)
+        assert len(self._read_log()) == 2
+
+    def test_healthy_session_logs_nothing(self, monkeypatch):
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+        monkeypatch.setattr(ccm_canaries, "_read_all_session_ids",
+                            lambda: {"0:1": "sid-alpha"})
+        monkeypatch.setattr("ccm_jsonl.read_jsonl_tail_info",
+                            lambda project_dir: (20, "tool_use"))
+        monkeypatch.setattr(
+            "ccm_signals.read_events_tail",
+            lambda project_dir, session_id=None:
+                ({"ts": self.NOW - 30, "type": "pretool"},))
+        projects = [ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "BUSY")]
+        assert ccm_canaries.hook_silence_warnings(
+            projects, enabled=True, now=self.NOW) == []
+        assert ccm_canaries.hook_silence_log_count() == 0
+        assert not os.path.exists(ccm_canaries.hook_silence_log_path())
+
+    def test_log_count_matches_records(self, monkeypatch):
+        assert ccm_canaries.hook_silence_log_count() == 0
+        self._fire(monkeypatch, self.NOW)
+        assert ccm_canaries.hook_silence_log_count() == 1
+
+    def test_log_write_failure_never_breaks_warnings(self, monkeypatch):
+        """Evidence logging is best-effort: a broken log path must not
+        take down the warning surface it observes."""
+        monkeypatch.setenv("CCM_HOOK_SILENCE_LOG", "/dev/null/impossible/x.log")
+        msgs = self._fire(monkeypatch, self.NOW)
+        assert len(msgs) == 1

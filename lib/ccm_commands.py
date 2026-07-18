@@ -709,6 +709,16 @@ def cmd_doctor():
                 row(WARN, "hook-silence", msg)
         else:
             row(OK, "hook-silence", "on — no silent sessions")
+        # Firing-log evidence count (default-on promotion review):
+        # each past firing is one JSON line in the log; zero across a
+        # long dogfood window is the "no false fires" evidence.
+        fired = ccm_canaries.hook_silence_log_count()
+        if fired:
+            row(OK, "hook-silence log",
+                f"{fired} firing(s) recorded — inspect "
+                f"{ccm_canaries.hook_silence_log_path()}")
+        else:
+            row(OK, "hook-silence log", "no firings recorded")
     else:
         row(OK, "hook-silence",
             "off (opt in with `tmux set -g @ccm-hook-silence on`)")

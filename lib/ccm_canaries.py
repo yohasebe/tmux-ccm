@@ -403,6 +403,98 @@ HOOK_SILENCE_FRESH = int(os.environ.get("CCM_HOOK_SILENCE_FRESH", "90"))
 HOOK_SILENCE_GAP = int(os.environ.get("CCM_HOOK_SILENCE_GAP", "120"))
 _HOOK_SILENCE_OPT = "@ccm-hook-silence"
 
+# ─── Firing log (evidence for the default-on promotion) ───
+# Warnings alone leave no trace: the promotion criteria ("zero false
+# fires across N days of dogfood", "caught at least one real
+# silence") cannot be evaluated from memory. Every firing appends one
+# JSON line so the calibration record survives dashboard restarts and
+# reboots. The log lives under the persistent data dir (NOT
+# $TMPDIR — macOS purges that within days, which would erase exactly
+# the multi-week evidence this exists to collect) and is deliberately
+# separate from errors.log so firings can't trip the
+# `errors_log_burst_warning` canary or drown real silent-catch
+# records.
+#
+# Rate limit: the warning surfaces re-poll every ~2 s while an
+# episode is live; a per-project marker file caps the log at one
+# record per `HOOK_SILENCE_LOG_INTERVAL` so a 30-minute episode
+# reads as a handful of lines (episode duration stays inferable),
+# not a thousand.
+HOOK_SILENCE_LOG_INTERVAL = int(
+    os.environ.get("CCM_HOOK_SILENCE_LOG_INTERVAL", "600")
+)
+HOOK_SILENCE_LOG_MAX_BYTES = int(
+    os.environ.get("CCM_HOOK_SILENCE_LOG_MAX_BYTES", str(1 * 1024 * 1024))
+)
+
+
+def hook_silence_log_path() -> str:
+    """Resolve the firing-log path at call time so tests (and users)
+    can redirect it via CCM_HOOK_SILENCE_LOG without reload tricks."""
+    return os.environ.get(
+        "CCM_HOOK_SILENCE_LOG",
+        os.path.join(ccm_core.CCM_DATA_DIR, "state", "hook-silence.log"),
+    )
+
+
+def _log_hook_silence_firing(project_name, project_dir, state,
+                             jsonl_age, lag_sec, now) -> None:
+    """Append one JSON evidence record for a canary firing,
+    rate-limited per project.
+
+    Best-effort throughout: evidence logging must never break the
+    warning surface it observes, so every failure path is swallowed.
+    Rotation mirrors `log_caught_exception` (rename to `.1` at the
+    size cap) though at one record per interval the cap is ~decades
+    away — it exists so a pathological loop still cannot eat disk.
+    """
+    try:
+        log_path = hook_silence_log_path()
+        # Rate-limit markers live NEXT TO the log (`<log>.markers/`),
+        # not under $TMPDIR: one path knob isolates both in tests,
+        # and marker mtimes survive reboots so an episode spanning a
+        # dashboard restart is not double-logged.
+        marker_dir = log_path + ".markers"
+        os.makedirs(marker_dir, exist_ok=True)
+        marker = os.path.join(
+            marker_dir, ccm_core.md5_hash(project_dir or project_name))
+        try:
+            if now - os.path.getmtime(marker) < HOOK_SILENCE_LOG_INTERVAL:
+                return
+        except OSError:
+            pass  # no marker yet → first firing for this project
+
+        try:
+            if os.path.getsize(log_path) >= HOOK_SILENCE_LOG_MAX_BYTES:
+                os.replace(log_path, log_path + ".1")
+        except OSError:
+            pass
+        record = {
+            "ts": int(now),
+            "project": project_name,
+            "state": state,
+            "jsonl_age": int(jsonl_age),
+            "gap": int(lag_sec),
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(str(int(now)))
+    except Exception:
+        pass
+
+
+def hook_silence_log_count() -> int:
+    """Number of firing records in the active log (rotated `.1` not
+    counted). `ccm doctor` shows this so the promotion review has its
+    evidence count one command away. Returns 0 when the log is
+    absent or unreadable."""
+    try:
+        with open(hook_silence_log_path(), encoding="utf-8") as f:
+            return sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+
 
 def hook_silence_enabled() -> bool:
     """Whether the opt-in hook-silence canary is turned on. Reads the
@@ -518,5 +610,8 @@ def hook_silence_warnings(projects, enabled=None, now=None) -> list:
             if isinstance(last, dict):
                 event_ts = last.get("ts", 0) or 0
         if hook_silence_suspect(p.state, jsonl_age, jsonl_ts, event_ts, now):
-            out.append(_format_hook_silence_warning(p.name, jsonl_ts - event_ts))
+            lag = jsonl_ts - event_ts
+            out.append(_format_hook_silence_warning(p.name, lag))
+            _log_hook_silence_firing(
+                p.name, p.dir, p.state, jsonl_age, lag, now)
     return out

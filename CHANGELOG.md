@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   detection never reads it, and records without the field (pre-upgrade hook
   scripts) degrade to no badge. Payload value `default` renders as `manual`,
   matching the CLI vocabulary (`--permission-mode manual`).
+- Hook-silence canary firing log. Each `@ccm-hook-silence` warning now also
+  appends one JSON evidence record (project / state / jsonl_age / gap /
+  timestamp) to `~/.local/share/ccm/state/hook-silence.log`, rate-limited to
+  one record per project per 10 minutes (`CCM_HOOK_SILENCE_LOG_INTERVAL`).
+  `ccm doctor` reports the recorded firing count. This turns the
+  observe-first dogfood into a reviewable dataset for the canary's future
+  default-on promotion ("zero false fires" / "caught a real silence" are now
+  checkable claims instead of recollections).
 
 ## [0.5.3] - 2026-07-17
 
