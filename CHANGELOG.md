@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   default-on promotion ("zero false fires" / "caught a real silence" are now
   checkable claims instead of recollections).
 
+### Added (internal)
+- Regression tests for executable bits in the git index
+  (`tests/test_permissions.bats`): plugin entry points (`ccm`, `ccm.tmux`),
+  every `hooks/on-*.sh`, and dev scripts must be recorded as 100755, and
+  `hooks/lib.sh` must stay source-only 644. Guards against the
+  Dropbox-normalizes-local-permissions accident where a newly added script's
+  forgotten `chmod +x` ships as 644 via TPM and breaks user installs while
+  the local checkout keeps working (same incident class as the 2026-07 gem
+  releases, engtagger#20 et al.; ccm's git-based distribution is immune to
+  the 0600 variant, leaving the exec bit as the one remaining exposure).
+
 ### Fixed
 - Idle auto-exit no longer treats a parked editor or pager in a sibling pane
   as background work. The background-work guard (added 2026-07-11 after a
