@@ -104,9 +104,14 @@ case "$cmd" in
             esac
         done
         ;;
-    has-session)    return 0 ;;
-    rename-window)  return 0 ;;
-    *)              return 0 ;;
+    # `exit`, NOT `return`: this case sits at the top level of the
+    # EXECUTED mock script, where `return` is a bash error ("can only
+    # be used from a function"). The bug hid for months because no
+    # bats test drove ccm_write_signal through a matching window, so
+    # rename-window / refresh-client (the catch-all) were never hit.
+    has-session)    exit 0 ;;
+    rename-window)  exit 0 ;;
+    *)              exit 0 ;;
 esac
 MOCK_SCRIPT
     chmod +x "${MOCK_DIR}/bin/tmux"
