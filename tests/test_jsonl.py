@@ -63,12 +63,12 @@ class TestJsonlFreshness:
         """Claude Code dashes EVERY non-alphanumeric character, one
         dash per char — including multi-byte CJK. ccm used to replace
         only `/`, which missed the JSONL for any non-ASCII project
-        path entirely (2026-07-13 gc-gakkai incident: unresolvable
-        JSONL → a trailing `stop` event could not be confirmed
-        terminal → indefinite false BUSY that even combined-stale
-        could not release, since that needs a valid jsonl_age).
-        Expected value taken verbatim from the real slug directory
-        Claude Code created for the incident project."""
+        path entirely: an unresolvable JSONL means a trailing `stop`
+        event cannot be confirmed terminal, producing an indefinite
+        false BUSY that even combined-stale cannot release (it needs
+        a valid jsonl_age). The placeholder path below is fictional
+        (hoge/fuga/piyo dummies); it exercises pure hiragana, a
+        CJK+digit segment (digits survive), and a CJK+ASCII segment."""
         assert ccm_jsonl._project_slug(
             "/Users/example/ほげ/ふが2000/ぴよAB"
         ) == "-Users-example------2000---AB"

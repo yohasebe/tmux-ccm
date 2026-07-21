@@ -238,7 +238,7 @@ def _project_slug(project_dir: str) -> str:
 
     Claude Code replaces EVERY non-alphanumeric character with `-`
     (not just `/`): `/ほげ/ふが2000` becomes
-    `------2000` (one dash per CJK char) and
+    `------2000` (one dash per CJK char, digits survive) and
     `test_project` becomes `test-project`. ccm used to replace only
     `/`, which silently missed the JSONL for any project whose path
     contains non-ASCII (2026-07-13 gc-gakkai incident: with the JSONL
