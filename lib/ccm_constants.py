@@ -161,9 +161,14 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # AskUserQuestion menu waits do not. See memory
 # project_false_idle_long_tool.md.
 #
-# Elapsed forms: "59s" or "2m 2s". Token forms: "8.0k" or "8k".
+# Elapsed forms: "59s" or "2m 2s". Token forms: "8.0k", "8k", or —
+# below 1000 — a bare count with NO k suffix ("557 tokens"; observed
+# 2026-07-22, wp2txt: a fresh turn streamed for 1m39s showing
+# "(1m 39s · ↓ 557 tokens)" and the then-mandatory `k` made the
+# spinner invisible to raw detection, so an accept-edits pane sat at
+# false IDLE through the whole sub-1k window).
 PATTERN_ACTIVE_SPINNER = re.compile(
-    r"\((?:\d+m\s+)?\d+s\s*·\s*[↑↓]\s*[\d.]+k\s+tokens\)"
+    r"\((?:\d+m\s+)?\d+s\s*·\s*[↑↓]\s*[\d.]+k?\s+tokens\)"
 )
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:

@@ -57,6 +57,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   status-interval. BUSY→BUSY hook bursts spawn nothing.
 
 ### Fixed
+- Active-work spinner detection now matches token counts below 1000. The
+  spinner footer renders "(1m 39s · ↓ 557 tokens)" — no `k` suffix — until
+  the count crosses 1000, and `PATTERN_ACTIVE_SPINNER` required the `k`, so
+  every young turn's spinner was invisible to raw detection. In accept-edits
+  mode (composer visible while tools run) that meant false IDLE for the
+  opening stretch of a turn whenever the hook/JSONL layers had nothing to
+  promote with — observed 2026-07-22 on a session suffering session-long
+  upstream hook silence, where the spinner was the only live BUSY signal on
+  screen and the mandatory `k` discarded it.
 - Idle auto-exit no longer treats a parked editor or pager in a sibling pane
   as background work. The background-work guard (added 2026-07-11 after a
   sibling-pane batch job was interrupted) counted any non-shell foreground —

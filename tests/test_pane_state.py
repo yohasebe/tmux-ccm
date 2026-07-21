@@ -192,6 +192,26 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_with_sub_1k_token_count(self, mock_tmux):
+        """Below 1000 tokens the spinner renders a bare count with NO
+        `k` suffix — "(1m 39s · ↓ 557 tokens)". A mandatory `k` in
+        the pattern made every young turn's spinner invisible, so an
+        accept-edits pane sat at false IDLE until the count crossed
+        1000 (observed 2026-07-22, wp2txt: a fresh turn streaming
+        under session-long upstream hook silence had no other signal
+        left to promote it). Verbatim shape from that incident."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
+        )
+        mock_tmux.return_value = (
+            "✻ Kicking off build… (1m 39s · ↓ 557 tokens)\n"
+            "❯ \n"
+            "  ~/code/project-a  main  <model>  ████░ 82%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
     def test_idle_when_prompt_visible_and_no_spinner(self, mock_tmux):
         """The other side of the spinner fix: a visible `❯` with NO
         spinner footer is a genuine idle prompt (the user can type).
