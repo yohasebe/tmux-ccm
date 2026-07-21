@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-22
+
 ### Added
 - Permission mode visibility across projects. Hook scripts now copy the
   `permission_mode` field from Claude Code's hook payload onto each event
