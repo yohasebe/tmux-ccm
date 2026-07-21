@@ -557,3 +557,82 @@ class TestStripLastGrapheme:
         assert Dashboard._strip_last_grapheme("x\U0001f468\u200d\U0001f4bb") == "x"
 
 
+
+
+class TestFastTick:
+    """Hybrid refresh: `_fast_tick` overlays pushed-state TRANSITIONS
+    (`@ccm_prev_state` changes between ticks) onto the displayed list
+    so hook-driven changes appear in ~FAST_TICK_INTERVAL instead of
+    waiting out the 2 s slow poll. Transition-gating is the contract
+    under test: reacting to the absolute pushed value would re-fight
+    the slow path wherever they legitimately diverge (HOLD_NO_WRITE
+    displays), producing a 2 s flicker cycle."""
+
+    def _dash(self, monkeypatch, listing):
+        """Dashboard with one IDLE project and a mutable pushed-state
+        listing. `listing` is a single-element list holding the
+        list-windows output so tests can swap it between ticks."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+            ccm_core.Project("0:2", "2", "beta", "/tmp/b", "BUSY"),
+        ]
+        monkeypatch.setattr("dashboard.tmux_cmd",
+                            lambda *a, **k: listing[0])
+        return d
+
+    def test_first_sample_is_baseline_only(self, monkeypatch):
+        listing = ["0:1\talpha\tBUSY\n0:2\tbeta\tBUSY"]
+        d = self._dash(monkeypatch, listing)
+        d._fast_tick()
+        assert d.projects[0].state == "IDLE"
+        assert d.data_dirty is False
+
+    def test_transition_overlays_state_and_marks_dirty(self, monkeypatch):
+        listing = ["0:1\talpha\tIDLE\n0:2\tbeta\tBUSY"]
+        d = self._dash(monkeypatch, listing)
+        d._fast_tick()  # baseline
+        listing[0] = "0:1\talpha\tPERMIT\n0:2\tbeta\tBUSY"
+        d._fast_tick()
+        assert d.projects[0].state == "PERMIT"
+        assert d.projects[1].state == "BUSY"  # untouched
+        assert d.data_dirty is True
+
+    def test_steady_divergence_never_overlaid(self, monkeypatch):
+        """Pushed value differs from the displayed state but does not
+        CHANGE between ticks (a HOLD_NO_WRITE display) — the fast
+        tick must not touch it, however many ticks pass."""
+        listing = ["0:1\talpha\tBUSY\n0:2\tbeta\tBUSY"]
+        d = self._dash(monkeypatch, listing)
+        for _ in range(5):
+            d._fast_tick()
+        assert d.projects[0].state == "IDLE"
+        assert d.data_dirty is False
+
+    def test_empty_pushed_value_ignored(self, monkeypatch):
+        """A window whose @ccm_prev_state is unset (fresh window, no
+        commit yet) transitions "" → nothing; an empty NEW value must
+        also never blank a displayed state."""
+        listing = ["0:1\talpha\tIDLE\n0:2\tbeta\tBUSY"]
+        d = self._dash(monkeypatch, listing)
+        d._fast_tick()
+        listing[0] = "0:1\talpha\t\n0:2\tbeta\tBUSY"
+        d._fast_tick()
+        assert d.projects[0].state == "IDLE"
+        assert d.data_dirty is False
+
+    def test_scan_failure_degrades_to_polling(self, monkeypatch):
+        """A broken fast tick must not kill the refresh thread — it
+        logs and returns, leaving plain 2 s polling in charge."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [ccm_core.Project("0:1", "1", "a", "/tmp/a", "IDLE")]
+
+        def _boom(*a, **k):
+            raise RuntimeError("tmux gone")
+        monkeypatch.setattr("dashboard.tmux_cmd", _boom)
+        d._fast_tick()  # must not raise
+        assert d.projects[0].state == "IDLE"

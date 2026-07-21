@@ -132,7 +132,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `m` | Menu | Switch to interactive menu |
 | `q` / `Esc` | Quit | Close the dashboard |
 
-The dashboard auto-refreshes every 2 seconds to keep status icons up to date. Navigation keys (`↑↓/jk`) respond instantly without waiting for a refresh.
+The dashboard refreshes on a hybrid cadence: full state detection runs every 2 seconds, and in between, a lightweight fast tick (4×/second) watches the state channel the Claude Code hooks write to — so a hook-driven change (a permission prompt appearing, a prompt submitted) shows up in ~0.3 seconds rather than waiting out the full poll. The status bar gets the same treatment: on a state transition, the hook re-renders the bar immediately instead of waiting for the next 1-second tick. Navigation keys (`↑↓/jk`) respond instantly without waiting for any refresh.
 
 ### Direct-to-filter shortcut
 

@@ -124,6 +124,57 @@ teardown() {
     [[ "$status" -eq 0 ]]
 }
 
+# ─── ccm_write_signal() status-bar push ───
+# On a real state TRANSITION, ccm_write_signal spawns
+# `ccm inject-status --fast` (backgrounded) so mode-0/2 status
+# surfaces re-render from the just-written @ccm_prev_state instead
+# of lagging one status-interval. Gated on transition so BUSY→BUSY
+# bursts (PreToolUse/PostToolUse pairs) spawn nothing. CCM_BIN
+# points the spawn at a recording stub here.
+
+_setup_push_stub() {
+    CCM_STUB_LOG="${MOCK_STATE_DIR}/push-stub.log"
+    CCM_BIN="${MOCK_DIR}/bin/ccm-push-stub"
+    printf '#!/usr/bin/env bash\necho "$@" >> "%s"\n' "$CCM_STUB_LOG" > "$CCM_BIN"
+    chmod +x "$CCM_BIN"
+    export CCM_BIN CCM_STUB_LOG
+}
+
+_wait_for_stub_log() {
+    local i
+    for i in $(seq 1 20); do
+        [[ -s "$CCM_STUB_LOG" ]] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "write_signal: state transition spawns inject-status push" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    _wait_for_stub_log
+    grep -q -- "inject-status --fast" "$CCM_STUB_LOG"
+}
+
+@test "write_signal: same-state repeat does not spawn push" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tBUSY\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    sleep 0.5
+    [[ ! -s "$CCM_STUB_LOG" ]]
+}
+
+@test "write_signal: no matching window spawns nothing" {
+    _setup_push_stub
+    : > "${MOCK_STATE_DIR}/windows"
+    ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    sleep 0.5
+    [[ ! -s "$CCM_STUB_LOG" ]]
+}
+
 # ─── hook_event_name() helper ───
 
 @test "hook_event_name: extracts from JSON payload" {

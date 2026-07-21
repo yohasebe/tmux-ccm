@@ -84,6 +84,15 @@ from ccm_render import (
 MSG_MAX_LEN = 200
 
 REFRESH_INTERVAL = 2
+# Fast-tick cadence for the hybrid refresh loop. Between full
+# detection passes (REFRESH_INTERVAL), the refresh thread samples the
+# PUSHED state channel — `@ccm_prev_state`, written instantly by the
+# Claude Code hooks (and by the slow path's own commits) — with one
+# `list-windows` subprocess per tick (~10 ms). A hook-driven state
+# change therefore reaches the dashboard in ≤ ~0.3 s instead of
+# waiting out the 2 s poll (worst case ~2.3 s), closing most of the
+# latency gap vs purely event-driven consumers of the same hooks.
+FAST_TICK_INTERVAL = 0.25
 
 # Visual cols reserved at the right edge of each project row for the
 # `* elapsed` marker (`* ` + 3-char padded elapsed + 1 col margin).
@@ -132,6 +141,10 @@ class Dashboard:
         self.running = True
         self.data_dirty = False
         self.initial_load = True
+        # Last fast-tick snapshot of the pushed-state channel
+        # ({win_target: @ccm_prev_state}). Only used by the refresh
+        # thread; see `_fast_tick`.
+        self._pushed_states = {}
         self.hooks_on = hooks_configured()
         self.hooks_status = "Hooks: ON" if self.hooks_on else "Hooks: OFF"
         self.mode = initial_mode  # "dashboard", "tree", "menu"
@@ -1938,13 +1951,16 @@ class Dashboard:
             log_caught_exception("dashboard._refresh_loop:initial")
             self.initial_load = False
 
-        # Subsequent refreshes
+        # Subsequent refreshes: hybrid loop. Fast ticks sample the
+        # pushed-state channel between full (slow-path) detection
+        # passes — see FAST_TICK_INTERVAL for the design rationale.
         while self.running:
             # Check running before and after sleep to minimize exit delay
-            for _ in range(int(REFRESH_INTERVAL / 0.2)):
+            for _ in range(max(1, int(REFRESH_INTERVAL / FAST_TICK_INTERVAL))):
                 if not self.running:
                     return
-                time.sleep(0.2)
+                time.sleep(FAST_TICK_INTERVAL)
+                self._fast_tick()
             try:
                 projects = build_project_list(fast=False)
                 with self.lock:
@@ -1961,6 +1977,69 @@ class Dashboard:
                     self._last_preview_target = ""  # Force refresh
             except Exception:
                 log_caught_exception("dashboard._refresh_loop")
+
+    def _scan_pushed_states(self):
+        """One `list-windows` subprocess reading the pushed-state
+        channel: `{win_target: @ccm_prev_state}` for every ccm
+        window. `@ccm_prev_state` is written instantly by the Claude
+        Code hooks (`ccm_write_signal`) and by the slow path's own
+        commits, so its TRANSITIONS are exactly the events worth
+        reacting to between full detection passes."""
+        raw = tmux_cmd(
+            "list-windows", "-a", "-F",
+            "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}",
+        )
+        out = {}
+        if not raw:
+            return out
+        for line in raw.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3 or not parts[1]:
+                continue
+            out[parts[0]] = parts[2]
+        return out
+
+    def _fast_tick(self):
+        """Overlay pushed-state TRANSITIONS onto the displayed list.
+
+        Transition-gated on purpose: the overlay applies only to
+        windows whose pushed value CHANGED since the previous tick —
+        a fresh hook write or a slow-path commit. Reacting to the
+        absolute pushed value instead would re-fight the slow path
+        wherever the two legitimately diverge (HOLD_NO_WRITE rules
+        like the startup transient deliberately display a state
+        WITHOUT committing it to @ccm_prev_state), producing a
+        2-second flicker cycle. Steady divergence is the slow path's
+        call to make; this tick only relays fresh events.
+
+        Runs on the refresh thread (never concurrent with the slow
+        refresh); mutates project states under the lock. Errors are
+        swallowed-but-logged like every other refresh-path failure —
+        a broken fast tick must degrade to plain 2 s polling, not
+        kill the dashboard.
+        """
+        try:
+            pushed = self._scan_pushed_states()
+        except Exception:
+            log_caught_exception("dashboard._fast_tick")
+            return
+        prev = self._pushed_states
+        self._pushed_states = pushed
+        if not prev:
+            return  # first sample is baseline only
+        changed = {t: s for t, s in pushed.items()
+                   if s and prev.get(t) != s}
+        if not changed:
+            return
+        with self.lock:
+            dirty = False
+            for p in self.projects:
+                s = changed.get(p.win_target)
+                if s and s != p.state:
+                    p.state = s
+                    dirty = True
+            if dirty:
+                self.data_dirty = True
 
     def _fetch_bg_sessions(self):
         """Read the agent-view roster. Returns `[]` on any failure

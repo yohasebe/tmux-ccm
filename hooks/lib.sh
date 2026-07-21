@@ -187,14 +187,15 @@ ccm_write_signal() {
     fi
 
     # Direct tmux update for instant status bar reflection
-    # Find the window whose @ccm_dir matches this cwd
-    local win_target project
+    # Find the window whose @ccm_dir matches this cwd. The listing
+    # also carries @ccm_prev_state so the push below can fire only on
+    # a real transition — same subprocess, no extra cost.
+    local win_target project prev_state
     local win_info
-    win_info=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
-        | awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3; exit}')
+    win_info=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}' 2>/dev/null \
+        | awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3"\t"$4; exit}')
     if [[ -n "$win_info" ]]; then
-        win_target="${win_info%%	*}"
-        project="${win_info##*	}"
+        IFS=$'\t' read -r win_target project prev_state <<< "$win_info"
         # Update state option
         tmux set-option -wt "$win_target" @ccm_prev_state "$state" 2>/dev/null
         # Update window name icon for instant status bar change
@@ -218,6 +219,24 @@ ccm_write_signal() {
             # signal writes (PreToolUse / PostToolUse / etc.) without
             # double-refreshing.
             tmux refresh-client -S 2>/dev/null
+        fi
+
+        # Push the freshly written state into the rendered status bar
+        # NOW. The rename-window above updates window NAMES instantly,
+        # but mode 0's status-right icon and mode 2's dedicated
+        # line(s) are literal text baked by inject-status — a plain
+        # refresh-client redraws the STALE bake, so those surfaces
+        # otherwise lag one status-interval (~1 s) behind the hook.
+        # `inject-status --fast` re-renders from @ccm_prev_state
+        # (which this function just wrote) without running detection:
+        # read-only, lock-tolerant, ~100 ms — and backgrounded so
+        # hook latency is unaffected. Gated on a real state
+        # TRANSITION so BUSY→BUSY bursts (PreToolUse/PostToolUse
+        # pairs during rapid tool sequences) spawn nothing.
+        # CCM_BIN exists for tests to stub the spawn target.
+        if [[ "$prev_state" != "$state" ]]; then
+            ( "${CCM_BIN:-$_CCM_HOOK_LIB_DIR/../ccm}" inject-status --fast \
+                </dev/null >/dev/null 2>&1 & ) 2>/dev/null
         fi
     fi
 }

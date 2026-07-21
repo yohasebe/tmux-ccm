@@ -41,6 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   releases, engtagger#20 et al.; ccm's git-based distribution is immune to
   the 0600 variant, leaving the exec bit as the one remaining exposure).
 
+### Changed
+- Sub-second state updates for the dashboard and status bar. The dashboard's
+  refresh loop is now hybrid: full detection still runs every 2 seconds, but a
+  lightweight fast tick (4×/s, one `list-windows` call ≈10 ms) overlays
+  *transitions* of the hook-written `@ccm_prev_state` channel in between, so
+  hook-driven changes appear in ~0.3 s instead of up to ~2.3 s. The overlay is
+  transition-gated on purpose: reacting to the absolute pushed value would
+  re-fight legitimate divergences (HOLD_NO_WRITE displays like the startup
+  transient) and flicker on a 2 s cycle. On the status-bar side,
+  `ccm_write_signal` now spawns `ccm inject-status --fast` (backgrounded,
+  ≈0.3 s, read-only cached-state render) on real state transitions, so mode-0
+  and mode-2 surfaces — whose content is baked text that a plain
+  refresh-client cannot update — re-render immediately instead of lagging one
+  status-interval. BUSY→BUSY hook bursts spawn nothing.
+
 ### Fixed
 - Idle auto-exit no longer treats a parked editor or pager in a sibling pane
   as background work. The background-work guard (added 2026-07-11 after a
