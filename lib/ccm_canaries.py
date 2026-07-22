@@ -600,7 +600,15 @@ def hook_silence_warnings(projects, enabled=None, now=None) -> list:
         sid = sid_map.get(p.win_target)
         if not sid:
             continue
-        jsonl_age, _stop = ccm_jsonl.read_jsonl_tail_info(p.dir)
+        # Scope the JSONL read to the TRACKED session, not newest-by-
+        # mtime. Otherwise a CCM_IGNORE'd sidekick sharing this cwd (a
+        # split-pane second session) whose JSONL is freshly written
+        # would be paired against the tracked session's (possibly idle)
+        # event log — the two belong to different sessions — and the
+        # canary would misfire "hooks silent". Same session on both
+        # sides keeps the comparison honest.
+        jsonl_age, _stop = ccm_jsonl.read_jsonl_tail_info_for_session(
+            p.dir, sid)
         jsonl_ts = (now - jsonl_age) if (jsonl_age is not None
                                          and jsonl_age >= 0) else 0
         events = ccm_signals.read_events_tail(p.dir, session_id=sid)

@@ -543,6 +543,34 @@ def read_jsonl_tail_info(project_dir: str, claude_pid=None) -> Tuple[int, Option
     return int(time.time() - real_ts), stop_reason
 
 
+def read_jsonl_tail_info_for_session(project_dir: str, session_id: str
+                                     ) -> Tuple[int, Optional[str]]:
+    """Like `read_jsonl_tail_info`, but for a SPECIFIC session's JSONL
+    (`<slug(project_dir)>/<session_id>.jsonl`) rather than the newest
+    file in the slug directory.
+
+    Required when several sessions share a cwd — e.g. a CCM_IGNORE'd
+    sidekick running in a split pane of the same window. There,
+    newest-by-mtime picks whichever session wrote last (typically the
+    active sidekick), so any check that pairs the JSONL with a
+    SPECIFIC session's other signals (the hook-silence canary compares
+    it against that session's event log) would cross-contaminate and
+    misfire. Scoping the JSONL read to the same session_id keeps the
+    comparison honest. Returns `(-1, None)` when the file is absent."""
+    if not project_dir or not session_id:
+        return -1, None
+    path = os.path.join(CLAUDE_PROJECTS_DIR,
+                        _project_slug(project_dir), f"{session_id}.jsonl")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return -1, None
+    real_ts, stop_reason = _parse_jsonl_tail(path, int(st.st_mtime), st.st_size)
+    if real_ts is None:
+        return -1, stop_reason
+    return int(time.time() - real_ts), stop_reason
+
+
 def read_jsonl_age(project_dir: str, claude_pid=None) -> int:
     """Thin wrapper around `read_jsonl_tail_info` that returns only the age.
 

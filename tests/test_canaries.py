@@ -706,9 +706,9 @@ class TestHookSilenceCanary:
         # alpha: fresh JSONL (20s) but event log frozen 400s ago → silent.
         # beta:  fresh JSONL and fresh event (30s) → healthy.
         monkeypatch.setattr(
-            "ccm_jsonl.read_jsonl_tail_info",
-            lambda project_dir: {"/tmp/a": (20, "tool_use"),
-                                 "/tmp/b": (30, "tool_use")}[project_dir])
+            "ccm_jsonl.read_jsonl_tail_info_for_session",
+            lambda project_dir, session_id: {"/tmp/a": (20, "tool_use"),
+                                             "/tmp/b": (30, "tool_use")}[project_dir])
         monkeypatch.setattr(
             "ccm_signals.read_events_tail",
             lambda project_dir, session_id=None: {
@@ -732,12 +732,44 @@ class TestHookSilenceCanary:
                             lambda: {})  # no session_id resolved
         called = []
         monkeypatch.setattr(
-            "ccm_jsonl.read_jsonl_tail_info",
-            lambda project_dir: called.append(project_dir) or (20, "tool_use"))
+            "ccm_jsonl.read_jsonl_tail_info_for_session",
+            lambda project_dir, session_id:
+                called.append(project_dir) or (20, "tool_use"))
         projects = [ccm_core.Project("0:1", "1", "a", "/tmp/a", "BUSY")]
         assert ccm_canaries.hook_silence_warnings(
             projects, enabled=True, now=self.NOW) == []
         assert called == []  # no session_id → no JSONL read attempted
+
+
+    def test_sidekick_same_cwd_does_not_misfire(self, monkeypatch):
+        """A CCM_IGNORE'd sidekick in a split pane shares the cwd, so
+        newest-by-mtime JSONL would return the sidekick's fresh writes
+        while the event log belongs to the (idle) tracked session —
+        the exact false 'hooks silent' seen with a live sidekick. The
+        session-scoped JSONL read must return the TRACKED session's
+        JSONL (idle, not fresh) so the canary abstains."""
+        now = self.NOW
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+        monkeypatch.setattr(ccm_canaries, "_read_all_session_ids",
+                            lambda: {"0:1": "sid-main"})
+        # Session-scoped read returns the TRACKED (main) session's JSONL,
+        # which is stale (main is idle) — NOT the sidekick's fresh one.
+        called = {}
+        monkeypatch.setattr(
+            "ccm_jsonl.read_jsonl_tail_info_for_session",
+            lambda project_dir, session_id:
+                called.update(sid=session_id) or (900, "end_turn"))
+        # Main event log frozen 22 min ago (matches the main JSONL age).
+        monkeypatch.setattr(
+            "ccm_signals.read_events_tail",
+            lambda project_dir, session_id=None:
+                ({"ts": now - 1320, "type": "stop"},))
+        projects = [ccm_core.Project("0:1", "1", "wp2txt", "/tmp/w", "BUSY")]
+        msgs = ccm_canaries.hook_silence_warnings(
+            projects, enabled=True, now=now)
+        assert msgs == [], "canary must not misfire on a same-cwd sidekick"
+        assert called["sid"] == "sid-main", (
+            "JSONL must be read for the TRACKED session, not newest-by-mtime")
 
 
 class TestHookSilenceFiringLog:
@@ -755,8 +787,8 @@ class TestHookSilenceFiringLog:
         monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
         monkeypatch.setattr(ccm_canaries, "_read_all_session_ids",
                             lambda: {"0:1": "sid-alpha"})
-        monkeypatch.setattr("ccm_jsonl.read_jsonl_tail_info",
-                            lambda project_dir: (20, "tool_use"))
+        monkeypatch.setattr("ccm_jsonl.read_jsonl_tail_info_for_session",
+                            lambda project_dir, session_id: (20, "tool_use"))
         monkeypatch.setattr(
             "ccm_signals.read_events_tail",
             lambda project_dir, session_id=None:
@@ -805,8 +837,8 @@ class TestHookSilenceFiringLog:
         monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
         monkeypatch.setattr(ccm_canaries, "_read_all_session_ids",
                             lambda: {"0:1": "sid-alpha"})
-        monkeypatch.setattr("ccm_jsonl.read_jsonl_tail_info",
-                            lambda project_dir: (20, "tool_use"))
+        monkeypatch.setattr("ccm_jsonl.read_jsonl_tail_info_for_session",
+                            lambda project_dir, session_id: (20, "tool_use"))
         monkeypatch.setattr(
             "ccm_signals.read_events_tail",
             lambda project_dir, session_id=None:

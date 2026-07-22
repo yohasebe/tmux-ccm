@@ -100,6 +100,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   status-interval. BUSY→BUSY hook bursts spawn nothing.
 
 ### Fixed
+- The opt-in hook-silence canary no longer misfires when a `CCM_IGNORE`'d
+  sidekick shares the window's directory. The canary read the newest JSONL in
+  the cwd's slug directory (newest-by-mtime), so an active sidekick's fresh
+  writes were paired against the tracked session's own (possibly idle) event
+  log — two different sessions — and it warned "hooks appear silent" on every
+  sidekick turn. The JSONL read is now scoped to the tracked session
+  (`read_jsonl_tail_info_for_session`), so both sides of the comparison belong
+  to the same session and only a genuine silence fires.
 - Active-work spinner detection now matches token counts below 1000. The
   spinner footer renders "(1m 39s · ↓ 557 tokens)" — no `k` suffix — until
   the count crosses 1000, and `PATTERN_ACTIVE_SPINNER` required the `k`, so

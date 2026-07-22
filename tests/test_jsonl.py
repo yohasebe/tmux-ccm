@@ -109,6 +109,35 @@ class TestJsonlFreshness:
         age = ccm_jsonl.read_jsonl_age("/x/y")
         assert 2 <= age <= 5  # newest record is ~3s old
 
+    def test_for_session_reads_specific_file_not_newest(
+        self, tmp_path, monkeypatch):
+        """`read_jsonl_tail_info_for_session` must read the named
+        session's JSONL even when another session in the same slug dir
+        (a same-cwd sidekick) wrote more recently. Newest-by-mtime
+        would return the sidekick's fresh activity; the session-scoped
+        read returns the tracked session's (stale) activity."""
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        slug = ccm_jsonl._project_slug("/x/y")
+        d = tmp_path / slug
+        d.mkdir()
+        now = time.time()
+        main = d / "sid-main.jsonl"
+        side = d / "sid-side.jsonl"       # the sidekick, freshest
+        write_jsonl(main, [real_activity_record(now - 900)])
+        write_jsonl(side, [real_activity_record(now - 2)])
+        os.utime(main, (now - 900, now - 900))
+        os.utime(side, (now - 2, now - 2))
+        age, _stop = ccm_jsonl.read_jsonl_tail_info_for_session(
+            "/x/y", "sid-main")
+        assert 890 <= age <= 910, "must read sid-main (stale), not the sidekick"
+
+    def test_for_session_missing_file_returns_minus_one(
+        self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        (tmp_path / ccm_jsonl._project_slug("/x/y")).mkdir()
+        assert ccm_jsonl.read_jsonl_tail_info_for_session(
+            "/x/y", "sid-absent") == (-1, None)
+
     def test_ignores_non_jsonl(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
         slug = ccm_jsonl._project_slug("/x/y")
