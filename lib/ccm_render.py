@@ -314,6 +314,15 @@ def print_status():
         else:
             pane_marker = ""
             pane_marker_visible_w = 0
+        # Ignore marker `⊘`: a CCM_IGNORE'd sidekick pane is present
+        # but untracked. Dim so it reads as a quiet aside, not a
+        # state. `⊘` (U+2298) is one terminal column.
+        if getattr(p, "ignored_panes", 0):
+            ignore_marker = f" {C_DIM}⊘{C_RESET}"
+            pane_marker_visible_w += 2  # " ⊘"
+        else:
+            ignore_marker = ""
+        pane_marker += ignore_marker
         branch = p.branch or "-"
         ports = p.ports or "-"
         d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""

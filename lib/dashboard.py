@@ -67,8 +67,10 @@ from ccm_canaries import (
 )
 from ccm_commands import (
     cmd_add,
+    cmd_ignore,
     cmd_register,
     cmd_remove,
+    cmd_unignore,
     cmd_unregister,
 )
 from ccm_snapshot import cmd_snapshot_load, cmd_snapshot_save
@@ -136,6 +138,14 @@ class Dashboard:
 
     def __init__(self, initial_mode="dashboard", start_in_search=False):
         self.projects = []
+        # Frozen display order for the dashboard's lifetime: a list of
+        # win_targets in the order first seen. `build_project_list`
+        # re-sorts by state on every refresh, which would reshuffle
+        # rows under the user's cursor mid-interaction; freezing the
+        # order keeps rows put while the popup is open. Each open is a
+        # fresh popup process, so the order is naturally re-decided on
+        # reopen. See `_set_projects_stable`.
+        self._display_order = []
         self.lock = threading.Lock()
         self.selected = 0
         self.running = True
@@ -200,8 +210,9 @@ class Dashboard:
         # Init colors
         self._init_colors()
 
-        # Instant first paint from cached state
-        self.projects = build_project_list(fast=True)
+        # Instant first paint from cached state. This first build
+        # establishes the frozen display order for the popup's lifetime.
+        self._set_projects_stable(build_project_list(fast=True))
         # Fetch bg sessions synchronously on initial paint when the
         # section is visible, so the user doesn't see "Background
         # sessions (0)" flicker into the actual list 300 ms later.
@@ -856,6 +867,10 @@ class Dashboard:
                     mode_badge = (f"{{{mode_label}}}"
                                   if mode_label and mode_label != "manual"
                                   else "")
+                    # Ignore marker `⊘`: a hidden sidekick pane is
+                    # present but untracked. Dim, quiet aside.
+                    ignore_marker = "⊘" if getattr(
+                        proj, "ignored_panes", 0) else ""
                     # All width calculations go through `display_width`
                     # (terminal columns), not `len` (codepoints). Names
                     # and branches can contain CJK / emoji; mixing the
@@ -863,6 +878,8 @@ class Dashboard:
                     # character appears.
                     if pane_marker:
                         pieces.append(display_width(pane_marker))
+                    if ignore_marker:
+                        pieces.append(display_width(ignore_marker))
                     if mode_badge:
                         pieces.append(display_width(mode_badge))
                     if suffix_str:
@@ -877,6 +894,7 @@ class Dashboard:
                     )
                     annotations.append({
                         "pane_marker": pane_marker,
+                        "ignore_marker": ignore_marker,
                         "mode_badge": mode_badge,
                         "elapsed": elapsed_str,
                         "suffix": suffix_str,
@@ -937,6 +955,13 @@ class Dashboard:
                         self._addstr(stdscr, y, col + 1, n, curses.color_pair(C_CYAN))
                         self._addstr(stdscr, y, col + 1 + display_width(n), "]", curses.color_pair(C_DIM))
                         col += display_width(ann["pane_marker"]) + 1
+
+                    # Ignore marker ⊘: a hidden sidekick pane exists.
+                    # Dim — present-but-untracked, not a state.
+                    if ann.get("ignore_marker"):
+                        self._addstr(stdscr, y, col, ann["ignore_marker"],
+                                     curses.color_pair(C_DIM))
+                        col += display_width(ann["ignore_marker"]) + 1
 
                     # Permission-mode badge {label}: dim as secondary
                     # info, except bypassPermissions which gets bold
@@ -1042,7 +1067,7 @@ class Dashboard:
             help_items = [
                 "[↑↓/jk] select", "[Enter] attach", "[/] search",
                 "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
-                "[r]emove", "e[x]it all", "[s]ave", "[t]ree",
+                "[r]emove", "[i]gnore", "e[x]it all", "[s]ave", "[t]ree",
                 "[b]g sessions", "[m/?] menu", "[q] quit",
             ]
             # Split into lines that fit within avail_w
@@ -1222,6 +1247,9 @@ class Dashboard:
                 self._do_remove(stdscr)
         elif key in (ord("g"), ord("G")):
             self._do_register(stdscr)
+        elif key in (ord("i"), ord("I")):
+            if n > 0:
+                self._do_ignore_toggle(stdscr)
         elif key in (ord("x"), ord("X")):
             self._do_exit_all(stdscr)
         elif key == ord("/"):
@@ -1464,6 +1492,20 @@ class Dashboard:
             ok = self._run_cmd(stdscr, cmd_remove, p.name)
         else:
             return
+        if ok:
+            self._trigger_rebuild()
+
+    def _do_ignore_toggle(self, stdscr):
+        """Toggle CCM_IGNORE on the selected project's window. Ignoring
+        hides every claude pane of the window from ccm (state,
+        session tracking, `ccm send`, idle auto-exit) and silences its
+        hooks/notifications; un-ignoring restores it. The current
+        `ignored_panes` count decides the direction."""
+        p = self.projects[self.selected]
+        if getattr(p, "ignored_panes", 0):
+            ok = self._run_cmd(stdscr, cmd_unignore, p.name)
+        else:
+            ok = self._run_cmd(stdscr, cmd_ignore, p.name)
         if ok:
             self._trigger_rebuild()
 
@@ -1739,11 +1781,65 @@ class Dashboard:
 
         stdscr.refresh()
 
+    def _set_projects_stable(self, projects):
+        """Assign `self.projects` while (a) holding the row order stable
+        for the dashboard's lifetime and (b) pinning the selection to
+        the same project across refreshes.
+
+        `build_project_list` re-sorts by state every refresh, so a
+        project changing state (e.g. BUSY→IDLE, or a new PERMIT) would
+        otherwise move rows under the cursor — and since `self.selected`
+        is a positional index, the highlight would jump to a *different*
+        project mid-interaction. Here the order is frozen at first build
+        (state-sorted, as `build_project_list` returns it): later
+        refreshes follow that frozen order, projects opened while the
+        dashboard is up append at the end, and vanished ones drop out.
+        Each popup open is a fresh process, so reopening re-decides the
+        order from current state — matching "decide order on show, keep
+        it while shown". A state change still updates a row's icon/color
+        in place; it just doesn't reshuffle.
+
+        Caller holds `self.lock` (except the single-threaded initial
+        build in `__init__`)."""
+        # Remember the cursor's project by identity (None if the
+        # selection is on a background-session row, past the projects).
+        prev_target = None
+        if 0 <= self.selected < len(self.projects):
+            prev_target = self.projects[self.selected].win_target
+
+        if not self._display_order:
+            # First build establishes the frozen order.
+            self._display_order = [p.win_target for p in projects]
+            ordered = list(projects)
+        else:
+            rank = {t: i for i, t in enumerate(self._display_order)}
+            known = sorted((p for p in projects if p.win_target in rank),
+                           key=lambda p: rank[p.win_target])
+            # Projects opened since the freeze: keep their (state-sorted)
+            # relative order and append to the frozen order so they stay
+            # put on subsequent refreshes. Stale entries in
+            # `_display_order` (a project that vanished) are harmless —
+            # they simply match nothing, and a project that flickers out
+            # and back returns to its original slot.
+            new = [p for p in projects if p.win_target not in rank]
+            self._display_order.extend(p.win_target for p in new)
+            ordered = known + new
+
+        self.projects = ordered
+
+        # Re-pin the cursor: the project's index may have shifted if a
+        # project above it appeared or vanished.
+        if prev_target is not None:
+            for i, p in enumerate(ordered):
+                if p.win_target == prev_target:
+                    self.selected = i
+                    break
+
     def _trigger_rebuild(self):
         """Force a rebuild in the background thread."""
         projects = build_project_list(fast=True)
         with self.lock:
-            self.projects = projects
+            self._set_projects_stable(projects)
             self.data_dirty = True
 
     def _prompt(self, stdscr, prompt_text, path_completion=False):
@@ -1943,7 +2039,7 @@ class Dashboard:
                 bg_visible = self.bg_visible
             bg_sessions = self._fetch_bg_sessions() if bg_visible else []
             with self.lock:
-                self.projects = projects
+                self._set_projects_stable(projects)
                 self.bg_sessions = bg_sessions
                 self.initial_load = False
                 self.data_dirty = True
@@ -1969,7 +2065,7 @@ class Dashboard:
                     self._fetch_bg_sessions() if bg_visible else []
                 )
                 with self.lock:
-                    self.projects = projects
+                    self._set_projects_stable(projects)
                     self.bg_sessions = bg_sessions
                     self.data_dirty = True
                 # Refresh preview content if enabled

@@ -105,6 +105,46 @@ teardown() {
     [[ -z "$PERMISSION_MODE" ]]
 }
 
+# ─── CCM_IGNORE: hide a session from ccm ───
+
+@test "hook_init: CCM_IGNORE early-exits and writes the session marker" {
+    export TMUX_PANE="%5"
+    run env CCM_IGNORE=1 bash -c '
+        source "'"${CCM_ROOT}"'/hooks/lib.sh"
+        ccm_hook_init <<< "{\"session_id\":\"'"$TEST_SESSION_ID"'\",\"cwd\":\"/x\"}"
+        echo "rc=$?"
+    '
+    [[ "$output" == *"rc=1"* ]]                       # suppressed
+    [[ -f "${HOOK_DIR}/${TEST_SESSION_ID}.ignore" ]]  # marker written
+}
+
+@test "hook_init: CCM_IGNORE stamps the @ccm_ignore pane option" {
+    export TMUX_PANE="%5"
+    CCM_IGNORE=1 ccm_hook_init \
+        <<< '{"session_id":"'"$TEST_SESSION_ID"'","cwd":"/x"}' || true
+    # mock_tmux records `set-option -p -t %5 @ccm_ignore 1` under the
+    # pane's options dir.
+    [[ "$(cat "${MOCK_STATE_DIR}/options/%5/@ccm_ignore" 2>/dev/null)" == "1" ]]
+}
+
+@test "hook_init: pre-existing session marker suppresses the hook" {
+    : > "${HOOK_DIR}/${TEST_SESSION_ID}.ignore"
+    run ccm_hook_init <<< '{"session_id":"'"$TEST_SESSION_ID"'","cwd":"/x"}'
+    [[ "$status" -eq 1 ]]   # runtime-ignored → suppressed
+}
+
+@test "hook_init: normal session (no ignore) returns 0" {
+    run ccm_hook_init <<< '{"session_id":"'"$TEST_SESSION_ID"'","cwd":"/x"}'
+    [[ "$status" -eq 0 ]]
+}
+
+@test "on-pre-tool-use.sh: CCM_IGNORE'd session writes no event log" {
+    export TMUX_PANE="%5"
+    printf '%s' "$(_with_session '{"hook_event_name":"PreToolUse","cwd":"/x/test-project"}')" \
+        | env CCM_IGNORE=1 bash "${CCM_ROOT}/hooks/on-pre-tool-use.sh"
+    [[ ! -f "$EVENTS_FILE" ]]   # no event recorded for an ignored session
+}
+
 @test "append_event: empty args are a silent no-op" {
     run ccm_append_event "" "$KEY" "prompt"
     [[ "$status" -eq 0 ]]

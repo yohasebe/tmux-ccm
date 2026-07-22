@@ -608,6 +608,116 @@ def cmd_reset(name):
     ccm_core.ccm_info(f"Reset runtime state for: {name}")
 
 
+# ─── ignore / unignore ───
+# `CCM_IGNORE=1 claude` makes a session invisible to ccm from launch
+# (handled by hooks/lib.sh). These commands do the same at runtime for
+# an already-running session, and reverse it. Both markers are set:
+#   - the `@ccm_ignore` tmux PANE option (detection reads it from the
+#     bulk list-panes query and drops the pane from aggregation,
+#     session tracking, `ccm send`, and idle auto-exit);
+#   - a `$HOOK_DIR/<sessionId>.ignore` file so the session's hooks
+#     early-exit (no signals, no events, no desktop notifications).
+# Scope: no arg → the caller's pane ($TMUX_PANE); a project name →
+# every claude-hosting pane in that project's window (hide the whole
+# project).
+
+_IGNORE_PANE_TITLE = "⊘ ccm-ignored"
+
+
+def _resolve_ignore_targets(name):
+    """Return the list of tmux pane ids to (un)ignore.
+
+    No name → the current pane from $TMUX_PANE (the pane `ccm ignore`
+    was typed in). A project name → all panes of that project's
+    window. Dies with a clear message when the target cannot be
+    resolved."""
+    if not name:
+        pane = os.environ.get("TMUX_PANE", "").strip()
+        if not pane:
+            ccm_core.ccm_die(
+                "ccm ignore: no pane context (run inside a tmux pane, "
+                "or pass a project name)")
+        return [pane]
+    session = ccm_core.get_session()
+    win_idx = ccm_core.find_window(session, name)
+    if not win_idx:
+        ccm_core.ccm_die(f"Project not found: {name}")
+    raw = ccm_core.tmux_cmd(
+        "list-panes", "-t", f"{session}:{win_idx}", "-F", "#{pane_id}")
+    panes = [ln.strip() for ln in (raw or "").split("\n") if ln.strip()]
+    if not panes:
+        ccm_core.ccm_die(f"No panes found for project: {name}")
+    return panes
+
+
+def _pane_session_id(pane_id, ps_lines):
+    """Resolve the claude session_id hosted in a pane, or None. Used to
+    key the hook-suppression marker file on the session, matching how
+    the hooks key their own artefacts."""
+    import ccm_pane_state
+    pane_pid = ccm_core.tmux_cmd(
+        "display-message", "-p", "-t", pane_id, "#{pane_pid}")
+    if not pane_pid:
+        return None
+    claude_pid = ccm_pane_state.find_claude_pid(pane_pid.strip(), ps_lines)
+    if not claude_pid:
+        return None
+    info = ccm_jsonl.read_session_info(claude_pid, ps_lines)
+    return info.get("sessionId") if info else None
+
+
+def _ignore_marker_path(session_id):
+    return os.path.join(ccm_core.CCM_HOOK_DIR, f"{session_id}.ignore")
+
+
+def cmd_ignore(name=""):
+    """`ccm ignore [project]` — hide a pane (default: current) or a
+    whole project's window from ccm."""
+    targets = _resolve_ignore_targets(name)
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    border_optin = (ccm_core.tmux_cmd(
+        "show-option", "-gqv", "@ccm-ignore-pane-border") == "on")
+    n_panes = 0
+    n_sessions = 0
+    for pane in targets:
+        ccm_core.tmux_cmd("set-option", "-p", "-t", pane, "@ccm_ignore", "1")
+        ccm_core.tmux_cmd("select-pane", "-t", pane, "-T", _IGNORE_PANE_TITLE)
+        n_panes += 1
+        sid = _pane_session_id(pane, ps_lines)
+        if sid:
+            try:
+                with open(_ignore_marker_path(sid), "w", encoding="utf-8"):
+                    pass
+                n_sessions += 1
+            except OSError:
+                pass
+    if border_optin:
+        ccm_core.tmux_cmd("set-option", "-g", "pane-border-status", "top")
+    label = name or "current pane"
+    ccm_core.ccm_info(
+        f"Ignoring {label} ({n_panes} pane(s), {n_sessions} claude "
+        f"session(s) silenced). Undo with `ccm unignore"
+        f"{' ' + name if name else ''}`.")
+
+
+def cmd_unignore(name=""):
+    """`ccm unignore [project]` — restore a pane/project to ccm."""
+    targets = _resolve_ignore_targets(name)
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    for pane in targets:
+        ccm_core.tmux_cmd("set-option", "-p", "-t", pane, "-u", "@ccm_ignore")
+        ccm_core.tmux_cmd("select-pane", "-t", pane, "-T", "")
+        sid = _pane_session_id(pane, ps_lines)
+        if sid:
+            try:
+                os.unlink(_ignore_marker_path(sid))
+            except OSError:
+                pass
+    # The global pane-border stays as the user left it — other ignored
+    # panes may still rely on it, and it was an explicit opt-in.
+    ccm_core.ccm_info(f"Restored {name or 'current pane'} to ccm.")
+
+
 def cmd_doctor():
     """`ccm doctor` — single self-check command. Aggregates dependency
     versions, hook installation state, runtime canaries, project

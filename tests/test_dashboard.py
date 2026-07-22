@@ -636,3 +636,85 @@ class TestFastTick:
         monkeypatch.setattr("dashboard.tmux_cmd", _boom)
         d._fast_tick()  # must not raise
         assert d.projects[0].state == "IDLE"
+
+
+class TestStableDisplayOrder:
+    """`_set_projects_stable` freezes the row order for the dashboard's
+    lifetime and pins the selection to the same project by identity, so
+    live state changes (which re-sort build_project_list's output)
+    don't reshuffle rows under the cursor mid-interaction."""
+
+    def _dash(self, monkeypatch):
+        _stub_dashboard_environment(monkeypatch)
+        return Dashboard(initial_mode="dashboard")
+
+    def _mk(self, *specs):
+        import ccm_core
+        return [ccm_core.Project(t, t.split(":")[1], n, f"/tmp/{n}", s)
+                for (t, n, s) in specs]
+
+    def test_first_build_sets_frozen_order(self, monkeypatch):
+        d = self._dash(monkeypatch)
+        d._display_order = []
+        d.selected = 0
+        d.projects = []
+        p = self._mk(("0:1", "a", "IDLE"), ("0:2", "b", "BUSY"))
+        d._set_projects_stable(p)
+        assert d._display_order == ["0:1", "0:2"]
+        assert [x.name for x in d.projects] == ["a", "b"]
+
+    def test_state_change_does_not_reorder(self, monkeypatch):
+        d = self._dash(monkeypatch)
+        d._display_order = []
+        d.selected = 0
+        d.projects = []
+        d._set_projects_stable(self._mk(("0:1", "a", "IDLE"),
+                                        ("0:2", "b", "BUSY")))
+        # Next refresh: build_project_list would sort PERMIT first, so
+        # it hands us b(PERMIT) before a(IDLE). Frozen order must win.
+        d._set_projects_stable(self._mk(("0:2", "b", "PERMIT"),
+                                        ("0:1", "a", "IDLE")))
+        assert [x.name for x in d.projects] == ["a", "b"]
+        assert d.projects[1].state == "PERMIT"  # state updated in place
+
+    def test_selection_follows_project_by_identity(self, monkeypatch):
+        d = self._dash(monkeypatch)
+        d._display_order = []
+        d.projects = []
+        d._set_projects_stable(self._mk(("0:1", "a", "IDLE"),
+                                        ("0:2", "b", "IDLE"),
+                                        ("0:3", "c", "IDLE")))
+        d.selected = 2  # cursor on "c"
+        # "a" (above the cursor) vanishes → c's index would shift 2→1.
+        d._set_projects_stable(self._mk(("0:2", "b", "IDLE"),
+                                        ("0:3", "c", "IDLE")))
+        assert d.projects[d.selected].name == "c", (
+            "selection must stay on the same project, not the same index")
+
+    def test_new_project_appends_and_keeps_frozen(self, monkeypatch):
+        d = self._dash(monkeypatch)
+        d._display_order = []
+        d.projects = []
+        d._set_projects_stable(self._mk(("0:1", "a", "IDLE"),
+                                        ("0:2", "b", "IDLE")))
+        # A newly-opened PERMIT project must NOT jump above the frozen
+        # rows — it appends at the end.
+        d._set_projects_stable(self._mk(("0:3", "c", "PERMIT"),
+                                        ("0:1", "a", "IDLE"),
+                                        ("0:2", "b", "IDLE")))
+        assert [x.name for x in d.projects] == ["a", "b", "c"]
+        assert d._display_order == ["0:1", "0:2", "0:3"]
+
+    def test_vanished_project_returns_to_slot(self, monkeypatch):
+        d = self._dash(monkeypatch)
+        d._display_order = []
+        d.projects = []
+        d._set_projects_stable(self._mk(("0:1", "a", "IDLE"),
+                                        ("0:2", "b", "IDLE"),
+                                        ("0:3", "c", "IDLE")))
+        d._set_projects_stable(self._mk(("0:1", "a", "IDLE"),
+                                        ("0:3", "c", "IDLE")))  # b gone
+        d._set_projects_stable(self._mk(("0:1", "a", "IDLE"),
+                                        ("0:2", "b", "IDLE"),
+                                        ("0:3", "c", "IDLE")))  # b back
+        assert [x.name for x in d.projects] == ["a", "b", "c"]

@@ -307,12 +307,12 @@ class Project:
     __slots__ = (
         "win_target", "win_idx", "name", "dir", "state",
         "branch", "ports", "completed_at", "bg_active", "pane_count",
-        "permission_mode", "sort_key",
+        "ignored_panes", "permission_mode", "sort_key",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
                  branch="", ports="", completed_at=0, bg_active=False,
-                 pane_count=1, permission_mode=""):
+                 pane_count=1, permission_mode="", ignored_panes=0):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -328,6 +328,10 @@ class Project:
         # splits, orphan panes). Always >= 1; populated by
         # build_project_list from panes_cache.
         self.pane_count = pane_count
+        # Number of panes in this window hidden via CCM_IGNORE /
+        # `ccm ignore`. > 0 → a `⊘` marker on the row (a sidekick
+        # session is running but untracked). 0 on the fast path.
+        self.ignored_panes = ignored_panes
         # Raw `permission_mode` payload value from the newest
         # mode-bearing hook event ("" when unknown). Display-only —
         # rendered as a badge by `ccm status` / the dashboard via
@@ -381,21 +385,37 @@ def _force_mock_state() -> bool:
 
 
 def _build_panes_cache():
-    """One bulk `list-panes -a` query returning 6-tuples
-    `(target, pid, pane_id, current_command, pane_active, pane_height)`
-    for every pane across every session. Used by detection and pane-
-    count phases. Empty tuple in fast mode (caller skips ps too)."""
+    """One bulk `list-panes -a` query returning 7-tuples
+    `(target, pid, pane_id, current_command, pane_active, pane_height,
+    ignore)` for every pane across every session. Used by detection
+    and pane-count phases. `ignore` is the `@ccm_ignore` pane option
+    ("1" when the pane hosts a CCM_IGNORE'd session, "" otherwise) —
+    carried here so every detection consumer can drop the pane without
+    an extra tmux call. Empty tuple in fast mode (caller skips ps
+    too)."""
     panes_raw = tmux_cmd(
         "list-panes", "-a", "-F",
         "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t"
-        "#{pane_current_command}\t#{pane_active}\t#{pane_height}"
+        "#{pane_current_command}\t#{pane_active}\t#{pane_height}\t"
+        "#{@ccm_ignore}"
     )
     cache = []
     for line in panes_raw.split("\n"):
         parts = line.split("\t")
         if len(parts) >= 6:
-            cache.append(tuple(parts[:6]))
+            # Pad the ignore field so older tmux output (6 fields)
+            # stays valid — treated as "not ignored".
+            while len(parts) < 7:
+                parts.append("")
+            cache.append(tuple(parts[:7]))
     return cache
+
+
+def _pane_is_ignored(pc) -> bool:
+    """True when a panes_cache entry carries the `@ccm_ignore` marker.
+    Single source of truth for the ignore test so every consumer reads
+    the same field position (index 6)."""
+    return len(pc) >= 7 and bool(pc[6]) and pc[6] != "0"
 
 
 def _parse_window_line(line):
@@ -466,8 +486,18 @@ def _resolve_window_state(row, fast, panes_cache, ps_lines, own_pgid):
 def _count_panes(panes_cache, win_target):
     """Count tmux panes belonging to `win_target` in the bulk panes
     cache. Always returns >= 1 (no panes is impossible for a real
-    window — defensive default)."""
+    window — defensive default). Counts ALL panes including ignored
+    ones (physical truth); the ignored subset is counted separately by
+    `_count_ignored_panes`."""
     return sum(1 for pc in panes_cache if pc[0] == win_target) or 1
+
+
+def _count_ignored_panes(panes_cache, win_target):
+    """Number of `@ccm_ignore`'d panes in the window — surfaces the
+    dashboard/status `⊘` marker so a hidden sidekick session (a second
+    Claude pane) is visible as present-but-untracked."""
+    return sum(1 for pc in panes_cache
+               if pc[0] == win_target and _pane_is_ignored(pc))
 
 
 def build_project_list(fast=False):
@@ -522,6 +552,8 @@ def build_project_list(fast=False):
         branch = read_cache_file(CCM_GIT_CACHE_DIR, proj_dir) if proj_dir else ""
         ports = read_cache_file(CCM_PORT_CACHE_DIR, proj_dir) if proj_dir else ""
         pane_count = 1 if fast else _count_panes(panes_cache, row["win_target"])
+        ignored_panes = (0 if fast
+                         else _count_ignored_panes(panes_cache, row["win_target"]))
 
         # Permission-mode badge (slow path, live sessions only). The
         # events tail was just read by detection for this same cycle,
@@ -548,6 +580,7 @@ def build_project_list(fast=False):
                            and row["bg_active_str"] != "0"),
             pane_count=pane_count,
             permission_mode=permission_mode,
+            ignored_panes=ignored_panes,
         ))
 
     projects.sort(key=lambda p: p.sort_key)
@@ -925,6 +958,10 @@ _SUBCOMMANDS = (
      lambda a: ccm_commands.cmd_reset_window()),
     ("reset", _add_name_arg,
      lambda a: ccm_commands.cmd_reset(a.name)),
+    ("ignore", _add_name_arg,
+     lambda a: ccm_commands.cmd_ignore(a.name)),
+    ("unignore", _add_name_arg,
+     lambda a: ccm_commands.cmd_unignore(a.name)),
     ("errors",
      _passthrough_argparse_config,
      lambda a: ccm_commands.cmd_errors(a.rest)),

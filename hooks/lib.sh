@@ -27,11 +27,43 @@ source "${_CCM_HOOK_LIB_DIR}/../lib/state_meta.sh"
 #
 # Reads stdin exactly once. If a script needs additional fields from
 # the payload, parse them from "$INPUT" after calling ccm_hook_init.
+# Stamp the two ignore markers on the current pane so ccm skips it:
+#   1. the `@ccm_ignore` tmux pane option — read by the Python
+#      detection layer straight out of its bulk `list-panes` query, so
+#      the pane is dropped from state aggregation, session tracking,
+#      `ccm send` delivery, and idle auto-exit;
+#   2. a pane title (visible only when the user runs
+#      `pane-border-status`, opt-in via `@ccm-ignore-pane-border on`).
+# `$TMUX_PANE` is set by tmux in every pane's shell and inherited all
+# the way down to the hook subprocess, so it is the reliable pane id
+# here. No-op outside tmux. The per-session marker file (hook
+# suppression) is written by the caller, which knows the session id.
+_ccm_mark_ignored_pane() {
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    tmux set-option -p -t "$TMUX_PANE" @ccm_ignore 1 2>/dev/null || true
+    tmux select-pane -t "$TMUX_PANE" -T "⊘ ccm-ignored" 2>/dev/null || true
+    # Opt-in: reveal the pane title by turning on tmux's pane border.
+    # This IS a global layout change, so it happens only when the user
+    # explicitly asked for it — otherwise ccm never touches their
+    # tmux chrome (dashboard marker remains the cross-user cue).
+    if [[ "$(tmux show-option -gqv @ccm-ignore-pane-border 2>/dev/null)" == "on" ]]; then
+        tmux set-option -g pane-border-status top 2>/dev/null || true
+    fi
+    return 0
+}
+
 ccm_hook_init() {
     HOOK_DIR="${TMPDIR:-/tmp}/ccm-${UID}/hooks"
     mkdir -p "$HOOK_DIR" 2>/dev/null || true
 
     INPUT=$(cat)
+
+    # CCM_IGNORE: launch-time opt-out (`CCM_IGNORE=1 claude`). Mark the
+    # pane immediately — this only needs $TMUX_PANE, so it works even
+    # if the session id cannot be read below — then suppress the hook.
+    if [[ -n "${CCM_IGNORE:-}" ]]; then
+        _ccm_mark_ignored_pane
+    fi
 
     # session_id: the primary KEY. Try snake_case then camelCase —
     # upstream payload schema uses both depending on the field.
@@ -39,6 +71,18 @@ ccm_hook_init() {
         SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"sessionI?d?_?i?d?" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
     [[ -z "$SESSION_ID" ]] && return 1
     KEY="$SESSION_ID"
+
+    # Ignore gate. Two entry points converge on the same suppression:
+    #   - launch-time `CCM_IGNORE` (drops the session marker now so
+    #     later fires take the same path even if the env var is gone);
+    #   - runtime `ccm ignore`, which wrote `$HOOK_DIR/<sid>.ignore`.
+    # An ignored session writes no signal/event artefacts and fires no
+    # desktop notifications — it is invisible to ccm.
+    if [[ -n "${CCM_IGNORE:-}" ]]; then
+        : > "${HOOK_DIR}/${KEY}.ignore" 2>/dev/null || true
+        return 1
+    fi
+    [[ -f "${HOOK_DIR}/${KEY}.ignore" ]] && return 1
 
     # cwd is used by `_ccm_instant_notify` to find the matching tmux
     # window for project-name lookup, and by the project-name cache

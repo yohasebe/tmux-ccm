@@ -88,6 +88,10 @@ def build_detection_context(win_target, project_dir, prev_state,
         pane_pid = entry[1]
         if wt != win_target:
             continue
+        # Skip CCM_IGNORE'd panes: their session must never become the
+        # window's tracked session (that is the whole point of ignore).
+        if ccm_core._pane_is_ignored(entry):
+            continue
         cp = find_claude_pid(pane_pid, ps_lines)
         if cp:
             claude_pid = cp

@@ -116,6 +116,11 @@ def _window_has_background_work(panes_raw, ps_lines):
         parts = line.split("\t")
         if len(parts) < 2:
             continue
+        # CCM_IGNORE'd panes are invisible to ccm — a hidden sidekick's
+        # editor or Bash job must neither block auto-exit nor count as
+        # the window's work.
+        if len(parts) >= 4 and parts[3] and parts[3] != "0":
+            continue
         pane_pid = parts[1]
         pane_cmd = parts[2] if len(parts) >= 3 else ""
         claude_pid = ccm_pane_state.find_claude_pid(pane_pid, ps_lines)
@@ -245,6 +250,7 @@ def auto_exit_idle(projects):
             panes_raw = ccm_core.tmux_cmd(
                 "list-panes", "-t", win_target,
                 "-F", "#{pane_index}\t#{pane_pid}\t#{pane_current_command}"
+                "\t#{@ccm_ignore}"
             )
             # `ps_snapshot()` returns the raw stdout string; the
             # process-tree helpers iterate over lines, so split here.
@@ -279,6 +285,10 @@ def auto_exit_idle(projects):
             for line in (panes_raw or "").split("\n"):
                 parts = line.split("\t")
                 if len(parts) < 2:
+                    continue
+                # Never target a CCM_IGNORE'd pane for exit — the whole
+                # point of ignore is that ccm keeps its hands off it.
+                if len(parts) >= 4 and parts[3] and parts[3] != "0":
                     continue
                 if ccm_pane_state.find_claude_pid(parts[1], ps_lines):
                     claude_pane = f"{win_target}.{parts[0]}"

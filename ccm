@@ -145,6 +145,15 @@ case "${1:-help}" in
     reset)
         python3 "$CCM_ROOT/lib/ccm_core.py" reset "${2:-}"
         ;;
+    ignore)
+        # `ccm ignore [project]` — hide a pane/project from ccm.
+        # No arg = the current pane ($TMUX_PANE). Passes TMUX_PANE
+        # through so the Python side can target the caller's pane.
+        python3 "$CCM_ROOT/lib/ccm_core.py" ignore "${2:-}"
+        ;;
+    unignore)
+        python3 "$CCM_ROOT/lib/ccm_core.py" unignore "${2:-}"
+        ;;
     debug)
         # `ccm debug trace <project> [interval]` — live state-detection trace.
         shift

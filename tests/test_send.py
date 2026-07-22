@@ -840,3 +840,96 @@ class TestSendTrace:
         # the trace write failures.
         calls = [tuple(c.args) for c in mock_tmux.call_args_list]
         assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
+
+
+class TestSendPeer:
+    """`ccm send --peer <msg>` — deliver to the single OTHER claude
+    pane in the caller's own window (the main + manual sidekick case).
+    The peer's state is checked on demand (it may be CCM_IGNORE'd)."""
+
+    def _patch_peer(self, monkeypatch, panes="%0\t100\n%1\t200",
+                    peer_state="IDLE", project="blog", my_pane="%0"):
+        """Stub a 2-pane window: caller in %0, peer claude in %1."""
+        monkeypatch.setenv("TMUX_PANE", my_pane)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        # pid 200 hosts claude, 100 does not.
+        monkeypatch.setattr(ccm_send, "find_claude_pid",
+                            lambda pid, ps: 201 if pid == "200" else None)
+        monkeypatch.setattr(ccm_send, "detect_pane_state",
+                            lambda pid, pane, ps, pgid: peer_state)
+
+        calls = []
+
+        def _tmux(*a, **k):
+            calls.append(a)
+            if a[:2] == ("display-message", "-p"):
+                return "0:5"
+            if a[0] == "list-panes":
+                return panes
+            if a[0] == "show-option":
+                return project
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", _tmux)
+        return calls
+
+    def test_peer_delivers_to_other_pane(self, monkeypatch):
+        calls = self._patch_peer(monkeypatch)
+        ccm_send.cmd_send(["--peer", "hello"])
+        # Body + Enter go to the PEER pane (%1), never the caller (%0).
+        assert ("send-keys", "-t", "%1", "-l", "--", "hello") in calls
+        assert ("send-keys", "-t", "%1", "Enter") in calls
+        assert not any(c[:3] == ("send-keys", "-t", "%0") for c in calls)
+
+    def test_peer_message_arg_order(self, monkeypatch):
+        """`--peer "msg"` captures msg as the (nonexistent) target; it
+        must be folded back into the message."""
+        calls = self._patch_peer(monkeypatch)
+        ccm_send.cmd_send(["--peer", "hi", "there"])
+        assert ("send-keys", "-t", "%1", "-l", "--", "hi there") in calls
+
+    def test_peer_no_other_claude_pane_refused(self, monkeypatch):
+        # Only the caller's pane; the other pane hosts no claude.
+        self._patch_peer(monkeypatch, panes="%0\t100\n%1\t999")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["--peer", "hi"])
+
+    def test_peer_multiple_claude_panes_ambiguous(self, monkeypatch):
+        # Two OTHER claude panes (%1, %2) → ambiguous.
+        self._patch_peer(monkeypatch, panes="%0\t100\n%1\t200\n%2\t300")
+        monkeypatch.setattr(ccm_send, "find_claude_pid",
+                            lambda pid, ps: 1 if pid in ("200", "300") else None)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["--peer", "hi"])
+
+    def test_peer_not_in_tmux_refused(self, monkeypatch):
+        self._patch_peer(monkeypatch)
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["--peer", "hi"])
+
+    def test_peer_permit_refused(self, monkeypatch):
+        self._patch_peer(monkeypatch, peer_state="PERMIT")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["--peer", "hi"])
+
+    def test_peer_busy_refused_without_force(self, monkeypatch):
+        self._patch_peer(monkeypatch, peer_state="BUSY")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["--peer", "hi"])
+
+    def test_peer_busy_sends_with_force(self, monkeypatch):
+        calls = self._patch_peer(monkeypatch, peer_state="BUSY")
+        ccm_send.cmd_send(["--peer", "--force", "hi"])
+        assert ("send-keys", "-t", "%1", "-l", "--", "hi") in calls
+
+    def test_peer_start_incompatible(self, monkeypatch):
+        self._patch_peer(monkeypatch)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["--peer", "--start", "hi"])
+
+    def test_peer_shell_refused(self, monkeypatch):
+        self._patch_peer(monkeypatch, peer_state="SHELL")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["--peer", "hi"])

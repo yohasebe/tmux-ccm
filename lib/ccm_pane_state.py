@@ -216,12 +216,20 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
     threshold (impossible in practice), all panes are used as a
     last resort.
 
-    `panes_cache` entries are 6-tuples:
-        (win_target, pid, pane_id, current_command, pane_active, pane_height)
+    `panes_cache` entries are 7-tuples:
+        (win_target, pid, pane_id, current_command, pane_active,
+         pane_height, ignore)
+
+    CCM_IGNORE'd panes (index 6 set) are excluded from aggregation, so
+    a hidden sidekick session (a second Claude pane launched with
+    `CCM_IGNORE=1`) never contributes its PERMIT/BUSY to the window's
+    state.
     """
     panes = []
     for pc in panes_cache:
         if pc[0] != win_target:
+            continue
+        if ccm_core._pane_is_ignored(pc):
             continue
         try:
             height = int(pc[5]) if pc[5] else None

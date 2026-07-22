@@ -126,6 +126,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `n` | Rename | Change the selected project's name |
 | `g` | Register | Tag an existing tmux window as a ccm project |
 | `r` | Remove | Choose [u]nregister (keep window) or [d]elete (kill window) |
+| `i` | Ignore | Toggle CCM_IGNORE on the selected project (hide/restore it — see "Running a second model" below) |
 | `x` | Exit all | Exit all idle Claude Code sessions to free resources |
 | `/` | Filter | Live incremental search: type to narrow, `↑↓`/`C-p`/`C-n` to select, `Enter` to attach, `C-u` to clear, `Esc` to cancel. Unicode-safe — Japanese project names match on Japanese substrings |
 | `t` | Tree | Switch to tree view |
@@ -133,6 +134,8 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `q` / `Esc` | Quit | Close the dashboard |
 
 The dashboard refreshes on a hybrid cadence: full state detection runs every 2 seconds, and in between, a lightweight fast tick (4×/second) watches the state channel the Claude Code hooks write to — so a hook-driven change (a permission prompt appearing, a prompt submitted) shows up in ~0.3 seconds rather than waiting out the full poll. The status bar gets the same treatment: on a state transition, the hook re-renders the bar immediately instead of waiting for the next 1-second tick. Navigation keys (`↑↓/jk`) respond instantly without waiting for any refresh.
+
+The row order is decided when the dashboard opens (projects needing attention first) and then held stable while it stays open — a project changing state updates its icon in place but does not jump to a new position, so your selection never lands on the wrong project mid-interaction. Close and reopen the dashboard to re-sort by current state.
 
 ### Direct-to-filter shortcut
 
@@ -216,6 +219,7 @@ ccm send blog --no-enter "TODO: "
 | `--no-enter` | Send the text without the final Enter (useful for prefilling a prompt) |
 | `--force` | Allow sending to a BUSY target (queues into Claude's input buffer) |
 | `--start` | Auto-launch Claude if the target is in SHELL state |
+| `--peer` | Send to the other Claude pane in **this** window instead of naming a project (no `<name>` needed) — for the main + sidekick layout; see "Running a second model as a sidekick" |
 | `-y`, `--yes` | Skip the interactive confirmation prompt |
 | `--` | End of flag parsing (for messages that start with `-`) |
 
@@ -273,6 +277,7 @@ To remove: `ccm remove-hooks`
 | **Completion (`* elapsed`)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears. Asterisk renders green (drawing the eye to the just-completed transition); the elapsed time is dim |
 | **Multi-pane (`[N]`)** | Window inspection | Marker on every renderer (dashboard, status bar, `ccm status`) when a window holds more than one tmux pane (Agent Teams, casual splits, leftover orphan panes). Brackets dim, digit cyan. Lets you spot windows whose aggregated state may belong to a non-active pane. See "Using with Agent Teams" below for related details (sliver protection and PERMIT auto-focus) |
 | **Permission mode (`{mode}`)** | Hook payload | Display-only badge from the `permission_mode` field Claude Code attaches to hook payloads; the newest value is shown as the `MODE` column in `ccm status` and a `{mode}` badge after the project name in the dashboard (`{accept}`, `{plan}`, `{auto}`, `{dontAsk}`, `{bypass}`). The everyday `manual` mode is suppressed in the dashboard. `{bypass}` renders in warning color. Modes that auto-resolve dialogs never produce PERMIT — the badge preempts misreading that silence as broken detection. Never consulted by state detection |
+| **Ignored (`⊘`)** | Pane option | Dim `⊘` on the dashboard and `ccm status` row when the window has a `CCM_IGNORE`'d pane — a session ccm deliberately does not track (see "Running a second model as a sidekick" below). Present-but-untracked; not a state |
 
 ### Detection without hooks
 
@@ -528,6 +533,47 @@ This means ccm's dashboard and status bar give you visibility into Agent Teams a
 5. ccm's dashboard shows the aggregated state of all teammates
 6. Switch to another project with `prefix + Tab` while the team works
 
+## Two-pane peer messaging (CCM_IGNORE)
+
+You can run a second Claude Code session in a split pane of the same window — a sidekick to consult next to your main session — and have the two panes message each other. By default ccm would aggregate both panes into one window state and couldn't tell which session `ccm send` should reach, so `CCM_IGNORE` makes the sidekick invisible to ccm while the main session stays cleanly tracked:
+
+```bash
+# main pane: your primary session, tracked by ccm as usual
+claude --continue
+
+# split pane (prefix %): a sidekick session, hidden from ccm
+CCM_IGNORE=1 claude
+```
+
+An ignored session is dropped from window-state aggregation, session tracking, `ccm send` delivery, and idle auto-exit, and its hooks fire no signals, events, or desktop notifications. The window's state, badges, and `ccm send` routing therefore reflect only your main session. A dim `⊘` on the dashboard / `ccm status` row reminds you a hidden sidekick is running. (The sidekick can be a different model, if you point `claude` at another Anthropic-compatible endpoint via `ANTHROPIC_BASE_URL` — ccm treats it the same either way.)
+
+You can also toggle it on an already-running session:
+
+```bash
+ccm ignore              # hide the pane you're in
+ccm ignore <project>    # hide every claude pane in a project's window
+ccm unignore            # restore the current pane
+ccm unignore <project>  # restore a project
+```
+
+or press `i` on a project in the dashboard.
+
+**Send messages between the two panes** with `ccm send --peer`. From either pane, `ccm send --peer "..."` delivers to the *other* Claude pane in the same window — so you (or the agents themselves) can relay between the main session and the sidekick without naming a project:
+
+```bash
+# from the main pane → the sidekick
+ccm send --peer "review the diff I just described and flag any risks"
+
+# from the sidekick → the main pane
+ccm send --peer "done — the risk is the retry loop in fetch()"
+```
+
+It targets the single other claude-hosting pane (refuses if the sibling is a plain shell, or if 3+ claude panes make it ambiguous), and — because a `CCM_IGNORE`'d sidekick isn't continuously tracked — checks that pane's state on demand, so it still won't type into a permission dialog. This makes the "conversation" channel work while the two sessions stay independent (code is shared via the filesystem/git as usual).
+
+**Make the ignore visible on the pane itself** (optional): ccm sets a `⊘ ccm-ignored` pane title, which tmux shows only if you enable pane borders. Opt in with `tmux set -g @ccm-ignore-pane-border on` — ccm then turns on `pane-border-status` when a session is ignored (a global tmux change, so it happens only with this explicit opt-in). Without it, the dashboard `⊘` remains the cue.
+
+**Caveat — same directory.** Running two Claude Code sessions in the same working directory hits an upstream bug (anthropics/claude-code#48112) where one session's background-task notifications can leak into the other's session log. `CCM_IGNORE` stops ccm from *tracking* the sidekick, but it cannot stop that leak from polluting your main session's log if the sidekick runs background tasks concurrently. Keep the sidekick for interactive consultation (avoid concurrent `run_in_background` work and simultaneous edits to the same files), or give each model its own directory via a git worktree if you need two co-equal agents.
+
 ## Using with agent view (background sessions)
 
 Claude Code 2.1.139 introduced an [agent view](https://claude.com/blog/agent-view-in-claude-code): `claude agents` (TUI), `claude --bg <prompt>` (background dispatch), and `claude attach <short>` (foreground attach). All three run sessions as workers under a per-user supervisor daemon, completely outside tmux. ccm reads the daemon's state and surfaces those sessions in a read-only dashboard section so a single view shows both ccm-managed project windows and out-of-tmux background sessions.
@@ -584,6 +630,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_COMPLETION_GRACE_SEC` | `3` (seconds) | Grace period between a Stop hook firing and the COMPLETED desktop notification. Claude Code fires Stop at every turn boundary (including mid-tool-use); ccm waits this long before alerting so a subsequent PreToolUse / UserPromptSubmit can cancel the pending notification. Lower = faster alerts but higher risk of notifying mid-conversation |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600` (seconds) | Safety net used by the `evaluate_fast` statusline path: a PERMIT hook older than this is treated as stale so the dashboard doesn't lock on PERMIT after an upstream signal-clearing failure |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600` (seconds) | How long a Claude Code session can be IDLE before `x` (exit all) targets it, and how long before auto-exit triggers |
+| `CCM_IGNORE` | unset | Launch-time flag, not a tunable: `CCM_IGNORE=1 claude` starts a session that ccm ignores entirely (see "Running a second model as a sidekick"). Toggle an already-running session with `ccm ignore` / `ccm unignore` instead |
 | `CCM_STARTUP_GRACE_SEC` | `60` (seconds) | Window during which the legacy `startup_transient_raw_busy` rule demotes raw=BUSY to IDLE when no hook signal is present — covers Claude's MCP-loading phase after `claude --continue`, which typically completes in 10–30 s |
 | `CCM_SLIVER_HEIGHT_THRESHOLD` | `4` (rows) | Minimum tmux pane height for a pane to participate in window-state aggregation. Panes shorter than this cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a genuinely BUSY pane. Raise if you have legitimate small Agent Teams panes that should still count; lower (down to 1) to disable the filter entirely |
 | `CCM_HOOK_CMD_TIMEOUT` | `5000` (ms) | Timeout Claude Code applies to each ccm hook invocation. ccm's hooks each do one signal-file write — comfortably within any reasonable value. Lower if you are debugging a hook hang; the default is generous enough that you will only notice it during a Claude Code or filesystem stall |

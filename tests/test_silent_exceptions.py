@@ -208,6 +208,9 @@ class TestDashboardRefreshLoopSmoke:
         import threading
         d.lock = threading.Lock()
         d.projects = []
+        d.selected = 0
+        d._display_order = []
+        d._pushed_states = {}
         d.initial_load = True
         d.data_dirty = False
         d.running = True
