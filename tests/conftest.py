@@ -13,9 +13,106 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
 
+# ─── Live-subprocess guard ───
+# ccm's whole reason to exist is driving a tmux server. A test that
+# forgets to stub `tmux_cmd` / `tmux_batch` / `ps_snapshot` therefore
+# does not just read the developer's LIVE tmux server — it can
+# mutate it (this actually happened: `update_window_names` renamed
+# real windows to `● IDLE` during a pytest run, and mode-2 render
+# tests issued `set -g status 3` against the live server). CLAUDE.md
+# mandates "tmux/ps は mock、subprocess 呼び出しなし"; this fixture
+# makes that policy enforceable instead of aspirational.
+
+#: External commands a test must never execute for real. Stub the ccm
+#: helper that shells out instead (`ccm_core.tmux_cmd`, `tmux_batch`,
+#: `ps_snapshot`, `ccm_notify.notify`, ...).
+BLOCKED_SUBPROCESS_COMMANDS = frozenset({
+    "tmux",
+    "ps",
+    "jq",
+    "osascript",
+    "terminal-notifier",
+    "notify-send",
+})
+
+
+class LiveSubprocessCall(BaseException):
+    """A test invoked a blocked external command for real.
+
+    Inherits from BaseException (not Exception) on purpose: the call
+    sites most likely to leak a live subprocess — `inject_status`,
+    `Dashboard._refresh_loop`, `tmux_batch` — wrap their bodies in
+    broad `except Exception:` / `log_caught_exception` barriers, and
+    a normal exception would be silently swallowed there, turning the
+    guard into a no-op exactly where it matters most.
+    """
+
+
+def _blocked_command(argv):
+    """Return the blocked basename `argv` would exec, or None."""
+    if isinstance(argv, str):
+        # shell=True string form: take the first token.
+        argv = argv.split()
+    if not argv:
+        return None
+    base = os.path.basename(str(argv[0]))
+    return base if base in BLOCKED_SUBPROCESS_COMMANDS else None
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "live_subprocess: allow this test to execute external "
+        "commands for real (opt-out of the block_live_subprocess "
+        "guard; last resort for tests that cannot be stubbed)",
+    )
+
+
 @pytest.fixture(autouse=True)
-def reset_state():
-    """Reset any module-level state between tests."""
+def block_live_subprocess(request, monkeypatch):
+    """Fail fast when test code shells out to tmux/ps/jq/osascript/
+    terminal-notifier/notify-send against the real environment.
+
+    Patches `subprocess.run` and `subprocess.Popen` at the module
+    level. Tests that stub those functions themselves patch AFTER
+    this fixture (fixture setup runs before the test body), so their
+    mocks take precedence and never see the guard; only genuinely
+    unstubbed calls trip it. Non-blocked commands (e.g. `git` in a
+    tmp repo) delegate to the real implementation.
+
+    Opt out per-test with `@pytest.mark.live_subprocess`."""
+    if request.node.get_closest_marker("live_subprocess"):
+        yield
+        return
+
+    import subprocess
+    real_run = subprocess.run
+    real_popen = subprocess.Popen
+
+    def _guard(argv, via):
+        cmd = _blocked_command(argv)
+        if cmd:
+            raise LiveSubprocessCall(
+                f"test invoked live `{cmd}` via {via}: "
+                f"{list(argv) if not isinstance(argv, str) else argv!r}. "
+                "Tests must not touch the real tmux server / process "
+                "table / notification daemons (CLAUDE.md test policy). "
+                "Stub the ccm helper that shells out (tmux_cmd, "
+                "tmux_batch, ps_snapshot, ...); use "
+                "@pytest.mark.live_subprocess only as a last resort."
+            )
+
+    def guarded_run(args, *a, **kw):
+        _guard(args, "subprocess.run")
+        return real_run(args, *a, **kw)
+
+    class GuardedPopen(real_popen):
+        def __init__(self, args, *a, **kw):
+            _guard(args, "subprocess.Popen")
+            super().__init__(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
+    monkeypatch.setattr(subprocess, "Popen", GuardedPopen)
     yield
 
 
