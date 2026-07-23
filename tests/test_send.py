@@ -847,16 +847,24 @@ class TestSendPeer:
     pane in the caller's own window (the main + manual sidekick case).
     The peer's state is checked on demand (it may be CCM_IGNORE'd)."""
 
-    def _patch_peer(self, monkeypatch, panes="%0\t100\n%1\t200",
-                    peer_state="IDLE", project="blog", my_pane="%0"):
-        """Stub a 2-pane window: caller in %0, peer claude in %1."""
+    def _pane(self, pane_id, pid, active=False, ignored=False, claude=False):
+        from ccm_pane_state import PaneInfo
+        return PaneInfo(pane_id, pid, active, "cmd", ignored,
+                        int(pid) + 1 if claude else None)
+
+    def _patch_peer(self, monkeypatch, panes=None, peer_state="IDLE",
+                    project="blog", my_pane="%0"):
+        """Stub a 2-pane window via enumerate_window_panes: caller %0
+        (no claude), peer claude %1."""
         monkeypatch.setenv("TMUX_PANE", my_pane)
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-        # pid 200 hosts claude, 100 does not.
-        monkeypatch.setattr(ccm_send, "find_claude_pid",
-                            lambda pid, ps: 201 if pid == "200" else None)
+        if panes is None:
+            panes = [self._pane("%0", "100", active=True),
+                     self._pane("%1", "200", claude=True)]
+        monkeypatch.setattr(ccm_send, "enumerate_window_panes",
+                            lambda win, ps: panes)
         monkeypatch.setattr(ccm_send, "detect_pane_state",
                             lambda pid, pane, ps, pgid: peer_state)
 
@@ -866,8 +874,6 @@ class TestSendPeer:
             calls.append(a)
             if a[:2] == ("display-message", "-p"):
                 return "0:5"
-            if a[0] == "list-panes":
-                return panes
             if a[0] == "show-option":
                 return project
             return ""
@@ -891,15 +897,18 @@ class TestSendPeer:
 
     def test_peer_no_other_claude_pane_refused(self, monkeypatch):
         # Only the caller's pane; the other pane hosts no claude.
-        self._patch_peer(monkeypatch, panes="%0\t100\n%1\t999")
+        self._patch_peer(monkeypatch, panes=[
+            self._pane("%0", "100", active=True),
+            self._pane("%1", "999")])
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["--peer", "hi"])
 
     def test_peer_multiple_claude_panes_ambiguous(self, monkeypatch):
         # Two OTHER claude panes (%1, %2) → ambiguous.
-        self._patch_peer(monkeypatch, panes="%0\t100\n%1\t200\n%2\t300")
-        monkeypatch.setattr(ccm_send, "find_claude_pid",
-                            lambda pid, ps: 1 if pid in ("200", "300") else None)
+        self._patch_peer(monkeypatch, panes=[
+            self._pane("%0", "100", active=True),
+            self._pane("%1", "200", claude=True),
+            self._pane("%2", "300", claude=True)])
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["--peer", "hi"])
 

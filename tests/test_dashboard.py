@@ -727,42 +727,49 @@ class TestResolvePreviewPane:
     the right session. `capture-pane -t <window>` would otherwise grab
     the active pane."""
 
-    def _dash(self, monkeypatch, panes, live_pids):
+    def _pane(self, pane_id, pid, active=False, ignored=False, claude=False):
+        from ccm_pane_state import PaneInfo
+        return PaneInfo(pane_id, pid, active, "cmd", ignored,
+                        int(pid) + 1 if claude else None)
+
+    def _dash(self, monkeypatch, panes):
         _stub_dashboard_environment(monkeypatch)
         d = Dashboard(initial_mode="dashboard")
-        monkeypatch.setattr("dashboard.tmux_cmd",
-                            lambda *a, **k: panes if a[0] == "list-panes" else "")
         monkeypatch.setattr("dashboard.ps_snapshot", lambda: "")
-        monkeypatch.setattr("dashboard.find_claude_pid",
-                            lambda pid, ps: 1 if pid in live_pids else None)
+        monkeypatch.setattr("dashboard.enumerate_window_panes",
+                            lambda win, ps: panes)
         return d
 
     def test_active_claude_pane_used(self, monkeypatch):
         # active pane hosts claude → use it (unchanged common case)
-        panes = "%0\t100\t1\t\n%1\t200\t0\t"
-        d = self._dash(monkeypatch, panes, {"100"})
+        d = self._dash(monkeypatch, [
+            self._pane("%0", "100", active=True, claude=True),
+            self._pane("%1", "200")])
         assert d._resolve_preview_pane("0:5") == "%0"
 
     def test_claude_in_non_active_pane_preferred_over_focus(self, monkeypatch):
         # active pane is a shell; claude is in the OTHER pane → preview
         # the claude pane, not the focused shell.
-        panes = "%0\t100\t1\t\n%1\t200\t0\t"   # %0 active (shell), %1 claude
-        d = self._dash(monkeypatch, panes, {"200"})
+        d = self._dash(monkeypatch, [
+            self._pane("%0", "100", active=True),          # active shell
+            self._pane("%1", "200", claude=True)])         # claude
         assert d._resolve_preview_pane("0:5") == "%1"
 
     def test_ignored_sidekick_excluded(self, monkeypatch):
         # active pane is a CCM_IGNORE'd claude sidekick; the tracked
         # main claude is in a non-active pane → preview the main, never
         # the ignored sidekick.
-        panes = "%0\t100\t1\t1\n%1\t200\t0\t"  # %0 active+ignored, %1 main
-        d = self._dash(monkeypatch, panes, {"100", "200"})
+        d = self._dash(monkeypatch, [
+            self._pane("%0", "100", active=True, ignored=True, claude=True),
+            self._pane("%1", "200", claude=True)])
         assert d._resolve_preview_pane("0:5") == "%1"
 
     def test_no_claude_falls_back_to_window(self, monkeypatch):
-        panes = "%0\t100\t1\t\n%1\t200\t0\t"   # no claude anywhere
-        d = self._dash(monkeypatch, panes, set())
+        d = self._dash(monkeypatch, [
+            self._pane("%0", "100", active=True),
+            self._pane("%1", "200")])
         assert d._resolve_preview_pane("0:5") == "0:5"
 
     def test_no_panes_falls_back_to_window(self, monkeypatch):
-        d = self._dash(monkeypatch, "", set())
+        d = self._dash(monkeypatch, [])
         assert d._resolve_preview_pane("0:5") == "0:5"

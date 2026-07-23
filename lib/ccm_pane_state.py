@@ -30,6 +30,8 @@ and `SLIVER_HEIGHT_THRESHOLD` are accessed via `ccm_core.X` so test
 mocks routed through `ccm_core` reach this module unchanged.
 """
 
+from collections import namedtuple
+
 from ccm_constants import (
     CLAUDE_PROCESS_NAME,
     IGNORED_CHILDREN,
@@ -58,6 +60,54 @@ def find_claude_pid(parent_pid, ps_lines):
                 and parts[3] == CLAUDE_PROCESS_NAME):
             return parts[0]
     return None
+
+
+# One structured record per pane, produced by `enumerate_window_panes`.
+#   claude_pid: the pane's claude pid, or None (also the has-claude flag)
+#   ignored:    the pane's `@ccm_ignore` option is set
+#   active:     the pane is the window's focused pane
+PaneInfo = namedtuple(
+    "PaneInfo",
+    ["pane_id", "pane_pid", "active", "current_command", "ignored", "claude_pid"],
+)
+
+
+def enumerate_window_panes(win_target, ps_lines):
+    """Enumerate a window's panes into `PaneInfo` records — the single
+    source for the per-window `list-panes` format string, the
+    `@ccm_ignore` parse, and the per-pane claude resolution.
+
+    Several callers need "which pane in this window hosts claude":
+    `ccm send`'s delivery pane and `--peer` (ccm_send), the dashboard
+    preview (dashboard), and idle auto-exit (ccm_runtime). They differ
+    only in POLICY — whether ignored panes are eligible, whether the
+    active pane wins, whether ambiguity refuses or picks the first —
+    so only the enumeration is shared here; each caller filters/selects
+    on the returned list. (The `⊘` count in `build_project_list` is the
+    exception: it reads the bulk `list-panes -a` cache to avoid a
+    per-window query, so it does not use this helper.)
+
+    Robust to short rows: fields past pane_pid degrade to
+    active=False / current_command="" / ignored=False."""
+    raw = ccm_core.tmux_cmd(
+        "list-panes", "-t", win_target, "-F",
+        "#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
+        "#{pane_current_command}\t#{@ccm_ignore}",
+    )
+    out = []
+    for line in (raw or "").split("\n"):
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        out.append(PaneInfo(
+            pane_id=parts[0],
+            pane_pid=parts[1],
+            active=len(parts) >= 3 and parts[2] == "1",
+            current_command=parts[3] if len(parts) >= 4 else "",
+            ignored=bool(len(parts) >= 5 and parts[4] and parts[4] != "0"),
+            claude_pid=find_claude_pid(parts[1], ps_lines),
+        ))
+    return out
 
 
 def has_children(pid, ps_lines, own_pgid):

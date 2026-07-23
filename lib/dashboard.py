@@ -56,7 +56,7 @@ from ccm_core import (
     tmux_cmd,
     touch_popup_session,
 )
-from ccm_pane_state import find_claude_pid
+from ccm_pane_state import enumerate_window_panes
 import ccm_agentview
 from ccm_window import reset_window_after_attach
 from ccm_canaries import (
@@ -378,32 +378,18 @@ class Dashboard:
         CCM_IGNORE'd panes are always excluded — the window's tracked
         state is the primary session, so the preview shows that, never
         a hidden sidekick."""
-        raw = tmux_cmd(
-            "list-panes", "-t", win_target, "-F",
-            "#{pane_id}\t#{pane_pid}\t#{pane_active}\t#{@ccm_ignore}")
-        if not raw or not raw.strip():
-            return win_target
         try:
             ps_lines = ps_snapshot().strip().split("\n")
         except Exception:
             return win_target
-        active_claude = None
-        claude_panes = []
-        for line in raw.split("\n"):
-            parts = line.split("\t")
-            if len(parts) < 3:
-                continue
-            pane_id, pane_pid, pane_active = parts[0], parts[1], parts[2]
-            if len(parts) >= 4 and parts[3] and parts[3] != "0":
-                continue  # CCM_IGNORE'd — never previewed
-            if find_claude_pid(pane_pid, ps_lines):
-                claude_panes.append(pane_id)
-                if pane_active == "1":
-                    active_claude = pane_id
-        if active_claude:
-            return active_claude
-        if claude_panes:
-            return claude_panes[0]
+        # Non-ignored panes that host claude.
+        live = [p for p in enumerate_window_panes(win_target, ps_lines)
+                if not p.ignored and p.claude_pid]
+        active = next((p.pane_id for p in live if p.active), None)
+        if active:
+            return active
+        if live:
+            return live[0].pane_id
         return win_target
 
     def _update_preview(self):

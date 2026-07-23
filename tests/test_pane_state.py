@@ -606,3 +606,41 @@ class TestDetectWindowRaw:
         panes = [("0:1", "100", "%0", "claude", "1", "")]
         assert ccm_pane_state.detect_window_raw("0:1", panes, ps, "99999") == "BUSY"
 
+
+
+class TestEnumerateWindowPanes:
+    """`enumerate_window_panes` is the shared enumeration behind every
+    per-window claude-pane resolver (ccm send delivery / --peer, the
+    dashboard preview, auto-exit). It parses one `list-panes` query +
+    find_claude_pid into structured PaneInfo records."""
+
+    @patch("ccm_core.tmux_cmd")
+    def test_parses_fields_and_resolves_claude(self, mock_tmux, monkeypatch):
+        mock_tmux.return_value = (
+            "%0\t100\t1\tzsh\t\n"          # active, shell, not ignored, no claude
+            "%1\t200\t0\t2.1.218\t1"       # inactive, claude, ignored
+        )
+        monkeypatch.setattr(ccm_pane_state, "find_claude_pid",
+                            lambda pid, ps: 201 if pid == "200" else None)
+        panes = ccm_pane_state.enumerate_window_panes("0:5", [])
+        assert len(panes) == 2
+        p0, p1 = panes
+        assert (p0.pane_id, p0.active, p0.ignored, p0.claude_pid) == \
+            ("%0", True, False, None)
+        assert (p1.pane_id, p1.active, p1.ignored, p1.claude_pid) == \
+            ("%1", False, True, 201)
+
+    @patch("ccm_core.tmux_cmd")
+    def test_empty_output_yields_no_panes(self, mock_tmux):
+        mock_tmux.return_value = ""
+        assert ccm_pane_state.enumerate_window_panes("0:5", []) == []
+
+    @patch("ccm_core.tmux_cmd")
+    def test_short_row_degrades_gracefully(self, mock_tmux, monkeypatch):
+        # Only pane_id + pane_pid (older tmux / missing option fields).
+        mock_tmux.return_value = "%0\t100"
+        monkeypatch.setattr(ccm_pane_state, "find_claude_pid",
+                            lambda pid, ps: None)
+        p = ccm_pane_state.enumerate_window_panes("0:5", [])[0]
+        assert (p.pane_id, p.pane_pid, p.active, p.current_command,
+                p.ignored) == ("%0", "100", False, "", False)

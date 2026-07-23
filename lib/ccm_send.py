@@ -51,7 +51,7 @@ import time
 
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 from ccm_constants import CLAUDE_CMD, SHELL_FOREGROUND_COMMANDS
-from ccm_pane_state import detect_pane_state, find_claude_pid
+from ccm_pane_state import detect_pane_state, enumerate_window_panes
 
 
 # ─── Opt-in send trace ───
@@ -272,36 +272,21 @@ def _resolve_delivery_pane(win_target):
     by the --start path to verify it is really a shell before
     typing the launch command), or None when pane enumeration
     failed and we fell back to the window target."""
-    raw = ccm_core.tmux_cmd(
-        "list-panes", "-t", win_target, "-F",
-        "#{pane_id}\t#{pane_pid}\t#{pane_active}\t#{pane_current_command}"
-        "\t#{@ccm_ignore}",
-    )
-    if not raw or not raw.strip():
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    panes = enumerate_window_panes(win_target, ps_lines)
+    if not panes:
         # Defensive fallback: pane enumeration failed (tmux error).
         # Window target preserves pre-resolution behaviour.
         return win_target, None
 
-    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
-    active_pane = None
-    active_cmd = None
-    claude_panes = []
-    for line in raw.split("\n"):
-        parts = line.split("\t")
-        if len(parts) < 4:
-            continue
-        pane_id, pane_pid, pane_active, pane_cmd = parts[:4]
-        ignored = len(parts) >= 5 and parts[4] and parts[4] != "0"
-        # A CCM_IGNORE'd pane is not a delivery candidate: never treat
-        # it as the claude target, and never let it register as the
-        # active pane (so a hidden sidekick can't capture the send).
-        if ignored:
-            continue
-        if pane_active == "1":
-            active_pane = pane_id
-            active_cmd = pane_cmd
-        if find_claude_pid(pane_pid, ps_lines):
-            claude_panes.append(pane_id)
+    # A CCM_IGNORE'd pane is not a delivery candidate: never the claude
+    # target, and never the "active" pane either (so a hidden sidekick
+    # can't capture the send).
+    live = [p for p in panes if not p.ignored]
+    active = next((p for p in live if p.active), None)
+    active_pane = active.pane_id if active else None
+    active_cmd = active.current_command if active else None
+    claude_panes = [p.pane_id for p in live if p.claude_pid]
 
     if not claude_panes:
         return (active_pane or win_target), active_cmd
@@ -342,20 +327,13 @@ def _resolve_peer_pane():
     )
     if not win_target:
         ccm_core.ccm_die("ccm send --peer: could not resolve the current window.")
-    raw = ccm_core.tmux_cmd(
-        "list-panes", "-t", win_target, "-F", "#{pane_id}\t#{pane_pid}"
-    )
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
-    peers = []
-    for line in (raw or "").split("\n"):
-        parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        pane_id, pane_pid = parts[0], parts[1]
-        if pane_id == my_pane:
-            continue
-        if find_claude_pid(pane_pid, ps_lines):
-            peers.append((pane_id, pane_pid))
+    # Note: ignored panes ARE eligible peers (that's the whole point —
+    # a hidden sidekick is a valid explicit target), so this does NOT
+    # filter on `p.ignored`.
+    peers = [(p.pane_id, p.pane_pid)
+             for p in enumerate_window_panes(win_target, ps_lines)
+             if p.pane_id != my_pane and p.claude_pid]
     if not peers:
         ccm_core.ccm_die(
             f"ccm send --peer: no other claude pane in {win_target}.\n"
