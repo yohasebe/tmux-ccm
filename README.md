@@ -487,7 +487,7 @@ ccm remove-claude-md    # remove it
 
 ### Organize Projects by Category with tmux Sessions
 
-Use separate tmux sessions to group projects by context (e.g., work, OSS, research). ccm manages each session independently — dashboard and status bar only show that session's projects.
+Use separate tmux sessions to group projects by context (e.g., work, OSS, research). `ccm add` creates project windows in your current session, while the dashboard and status bar show projects from all sessions.
 
 ```bash
 tmux new-session -s work       # Work projects

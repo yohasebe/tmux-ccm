@@ -17,11 +17,13 @@ _ccm() {
         'ports:Show listening ports per project'
         'capture:Capture project window visible content'
         'dashboard:Open interactive dashboard'
+        'search:Open dashboard in live-filter search mode'
         'statusline:One-line status for tmux status bar'
         'snapshot:Snapshot operations'
         'start:Start from a snapshot'
         'stop:Stop project window(s)'
         'bg:External Claude Code agent-view sessions'
+        'send:Send a prompt to another project'
         'menu:Interactive menu'
         'init:Interactive setup wizard'
         'setup-hooks:Install Claude Code hooks for improved state detection'
@@ -29,7 +31,14 @@ _ccm() {
         'setup-claude-md:Add ccm section to ~/.claude/CLAUDE.md'
         'remove-claude-md:Remove ccm section from ~/.claude/CLAUDE.md'
         'errors:View / clear the silent-exception log'
+        'reset:Clear stuck runtime state for a project'
+        'reset-window:Internal post-attach reset (not user-facing)'
+        'ignore:Hide a pane/project from ccm'
+        'unignore:Restore a hidden pane/project to ccm'
+        'debug:Live state-detection trace (debug trace)'
         'doctor:Self-check: dependencies, hooks, canaries, projects'
+        'clear-notifications:Remove all ccm notifications from Notification Center'
+        'version:Print the ccm version'
         'help:Show help'
     )
 
@@ -42,7 +51,8 @@ _ccm() {
     local -a snapshots
     _ccm_snapshots() {
         local _snap_dir="${XDG_DATA_HOME:-$HOME/.local/share}/ccm/snapshots"
-        snapshots=(${(f)"$(ls "$_snap_dir"/*.json 2>/dev/null | xargs -I{} basename {} .json)"})
+        # (N:t:r): null-glob, basename, strip .json — safe for names with spaces
+        snapshots=( "$_snap_dir"/*.json(N:t:r) )
         [[ -n "$snapshots" ]] && compadd -a snapshots
     }
 
@@ -50,7 +60,7 @@ _ccm() {
         _describe 'ccm command' subcommands
     elif (( CURRENT == 3 )); then
         case "${words[2]}" in
-            attach|a|unregister|unreg|remove|rm|rename|mv|capture|cap|stop)
+            attach|a|unregister|unreg|remove|rm|rename|mv|capture|cap|stop|send|reset|ignore|unignore)
                 _ccm_projects
                 ;;
             add|open)
@@ -72,6 +82,11 @@ _ccm() {
                 bg_cmds=('list')
                 compadd -a bg_cmds
                 ;;
+            debug)
+                local -a debug_cmds
+                debug_cmds=('trace')
+                compadd -a debug_cmds
+                ;;
             start)
                 _ccm_snapshots
                 ;;
@@ -82,6 +97,13 @@ _ccm() {
                 case "${words[3]}" in
                     load|delete|del)
                         _ccm_snapshots
+                        ;;
+                esac
+                ;;
+            debug)
+                case "${words[3]}" in
+                    trace)
+                        _ccm_projects
                         ;;
                 esac
                 ;;

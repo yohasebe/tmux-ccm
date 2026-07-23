@@ -134,7 +134,7 @@ STATUS       PROJECT              MODE     BRANCH           PORTS        DIRECTO
 | `m` | メニュー | インタラクティブメニューに切替 |
 | `q` / `Esc` | 閉じる | ダッシュボードを閉じる |
 
-ダッシュボードのリフレッシュはハイブリッド方式です: フル状態検出は 2 秒間隔で走り、その合間に軽量な fast tick（毎秒 4 回）が Claude Code フックの書き込む状態チャネルを監視します。フック起因の変化（許可プロンプトの出現、プロンプト送信など）は、ポーリングを待たず約 0.3 秒で表示に反映されます。ステータスバーも同様に、状態遷移時はフックが即座にバーを再描画し、次の 1 秒ティックを待ちません。ナビゲーションキー（`↑↓/jk`）はリフレッシュと無関係に即座に反応します。
+ダッシュボードのリフレッシュはハイブリッド方式です: フル状態検出は 2 秒間隔で走り、その合間に軽量な fast tick（毎秒 4 回）が Claude Code フックの書き込む状態チャネルを監視します。フック起因の変化（許可プロンプトの出現、プロンプト送信など）は、ポーリングを待たず約 0.3 秒で表示に反映されます。ステータスバーも同様に、状態遷移時はフックが即座にバーを再描画し、次の `status-interval` ティックを待ちません。ナビゲーションキー（`↑↓/jk`）はリフレッシュと無関係に即座に反応します。
 
 行の並び順はダッシュボードを開いた時点で決まり（要対応のプロジェクトが上）、開いている間は固定されます。プロジェクトの状態が変わってもアイコンはその場で更新されますが、位置は移動しないため、操作の途中で選択が別のプロジェクトに移ってしまうことがありません。現在の状態で並べ替えたいときは、ダッシュボードを一度閉じて開き直してください。
 
@@ -208,7 +208,7 @@ ccm send blog --no-enter "TODO: "
 |---|---|---|---|
 | **IDLE** | 即送信 | — | — |
 | **BUSY** | 拒否(進行中のターンと混線するため) | 入力バッファにキューして送信 | — |
-| **SHELL**(Claude 未起動) | 拒否 | — | Claude を起動して 2 秒待機後に送信 |
+| **SHELL**(Claude 未起動) | 拒否 | — | Claude を起動し、IDLE 到達をポーリング（最大 `CCM_START_WAIT_SEC` 秒、デフォルト10秒）してから送信 |
 | **PERMIT**(許可ダイアログ表示中) | **強拒否** | **`--force` でも拒否** — permission ダイアログに文字を送ると誤ってツール実行を承認/拒否する危険 | — |
 
 ### フラグ一覧
@@ -261,7 +261,7 @@ ccm setup-hooks
 | `PermissionDenied` | PERMIT | autoモードでの拒否（`/permissions`で再試行） |
 
 > [!NOTE]
-> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれます。BUSY は Claude Code プロセスが生存している限り信頼されます（`Stop`/`SessionEnd` フックまたはプロセス終了でクリア）。PERMIT は安全網として10分後に自動クリアされます。
+> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれます。BUSY は `Stop`/`SessionEnd` フックまたはプロセス終了でクリアされます。BUSY フックと JSONL の両方が `CCM_BUSY_HOOK_JSONL_WINDOW`（デフォルト10分）を超えて沈黙した場合、ccm は古い信号の信頼を打ち切り IDLE へフォールバックするため、`Stop` の取りこぼしで BUSY に張り付くことはありません。PERMIT は安全網として10分後に自動クリアされます。
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
@@ -456,8 +456,10 @@ rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/dashboard.pid"
 ```bash
 # キャッシュをクリア
 rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/status-cache"
-rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/status-right-original"
 tmux source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
+
+# ccm適用前のstatus-rightはtmuxオプションに保持されています（ファイルではありません）:
+tmux show-option -gqv @ccm-orig-status-right   # 保存された元の値を確認
 ```
 
 ### セッションのコンテキストがずれる
@@ -521,7 +523,7 @@ ccmのダッシュボードやステータスバーで、追加設定なしにAg
 
 | 機能 | Agent Teams | ccm | 競合 |
 |------|------------|-----|------|
-| キーボードショートカット | `Shift+↓`, `Ctrl+T`（Claude Code内部） | `prefix + Tab/T/C`（tmuxレベル） | なし |
+| キーボードショートカット | `Shift+↓`, `Ctrl+T`（Claude Code内部） | `prefix + Tab`（tmuxレベル。T/Cはopt-in） | なし |
 | ペイン管理 | ウィンドウ内でペイン分割 | ウィンドウを管理 | なし |
 | ウィンドウ名 | 変更しない | アイコン+名前を設定 | なし |
 
@@ -631,6 +633,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_COMPLETION_GRACE_SEC` | `3`（秒） | Stop hook 発火から COMPLETED デスクトップ通知までの猶予時間。Claude Code は各ターン境界（ツール実行中も含む）で Stop を発火するため、ccm はこの秒数だけ待ってから通知する。その間に次の PreToolUse / UserPromptSubmit が発火すれば通知はキャンセルされる |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600`（秒） | `evaluate_fast` (statusline) パスの安全網: これより古い PERMIT フックを stale 扱いし、上流の signal-clearing 失敗で PERMIT が貼り付くのを防ぐ |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600`（秒） | Claude Code セッションが IDLE 状態でいられる最大時間（`x` 一括終了の対象となる閾値、自動終了のトリガー） |
+| `CCM_IDLE_PROMPT_GUARD_SEC` | `60`（秒） | `on-notification.sh` の idle_prompt ガード。idle_prompt は 10〜60 秒以上遅れて届く（anthropics/claude-code#5186）ため、この秒数より新しい BUSY シグナルは通知の生成「後」に開始された作業によるものである可能性があり、削除すると稼働中セッションが IDLE に落ちる（auto-exit の kill path にも乗る）。ガードより新しいシグナルは保持し、古いものは従来通り削除する。`0` で opt-out して旧挙動（常に削除）に戻る |
 | `CCM_IGNORE` | 未設定 | チューニング値ではなく起動時フラグ: `CCM_IGNORE=1 claude` で ccm が完全に無視するセッションを起動（「別モデルをサイドキックとして使う」参照）。稼働中のセッションは `ccm ignore` / `ccm unignore` でトグル |
 | `CCM_STARTUP_GRACE_SEC` | `60`（秒） | legacy `startup_transient_raw_busy` ルールが hook signal 未着の raw=BUSY を IDLE に降格させる claude プロセス年齢の窓。`claude --continue` 起動時の MCP ロード (通常 10-30 秒) をカバー |
 | `CCM_SLIVER_HEIGHT_THRESHOLD` | `4`（行） | ウィンドウの状態集約に参加する tmux ペインの最小高さ。これより小さいペインは Claude の `❯` プロンプトを描画できず、capture-pane 検出が「子プロセスあり + プロンプト不可視」で BUSY と誤判定するため除外する。Agent Teams で意図的に小さいペインを使っており除外したくない場合は上げる、フィルタを完全無効化したい場合は 1 まで下げる |
@@ -677,6 +680,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_AMBIGUOUS_WIDTH` | `1` | East Asian Ambiguous 文字（IDLE アイコン `●`、SHELL アイコン `■` など）のターミナル列幅。CJK locale ターミナルで Ambiguous 文字が 2 列幅でレンダリングされる場合は `2` に設定すると、ダッシュボード / `ccm status` のカラム整列が崩れない。モジュール読み込み時に評価されるため、変更後は inject-status / dashboard を再起動 |
 | `CCM_ERRORS_LOG_MAX_BYTES` | `1048576`（1 MB） | `$TMPDIR/ccm-$UID/errors.log`（silent-exception ログ）のサイズ上限。上限到達時はアクティブログを `errors.log.1` にローテーションし、新しいログを開始する（ディスク使用量は上限の約 2 倍）。`ccm errors` で表示、`ccm errors --clear` で削除 |
 | `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10`（秒） | session_info の pid 再利用チェックのドリフト許容秒数。`read_session_info` が `ps` snapshot を渡されたとき、Claude Code が記録した `startedAt` と live プロセスの etime 由来の起動時刻を照合する。許容を超える乖離は「pid が再利用された旧セッションの json」と判断して reject（呼び出し側は legacy fallback へ）。10 秒は通常のクロックドリフト・NTP 補正・fork から session_info 書き込みまでの数秒をカバーする値 |
+| `CCM_STATUS_INTERVAL` | `5`（秒） | tmux `status-interval` の目標値 — ステータスバーの再描画間隔。プラグインはロード時に、現在の設定がこの値より大きい場合のみ引き下げる（引き上げはしない）。shell の `export` ではなく `tmux set-environment -g` でプラグインのロード前に設定 — [ステータス更新間隔](#ステータス更新間隔)参照 |
 
 ### チューニング例
 
@@ -687,8 +691,8 @@ export CCM_COMPLETED_AT_TIMEOUT=60
 # hooks.log 肥大化警告を早めに（10 MB）
 export CCM_HOOKS_LOG_WARN_BYTES=10485760
 
-# 低速マシンやバッテリー駆動時のポーリングコスト削減 (tmux オプション、env var ではない)
-# ~/.tmux.conf に追加:  set -g status-interval 10
+# 低速マシンやバッテリー駆動時のポーリングコスト削減 (tmux 環境変数、プラグインのロード時に読まれる)
+tmux set-environment -g CCM_STATUS_INTERVAL 10
 
 # 診断用 kill-switch: event-log path をバイパス
 export CCM_USE_EVENT_LOG=off
@@ -718,10 +722,10 @@ ccmのウィンドウオプション（`@ccm_project`、`@ccm_dir`）はセッ�
 
 ### ステータス更新間隔
 
-ccmのステータスバー更新はtmuxの `status-interval` 設定（デフォルト: 15秒）に依存します。より高速な更新が必要な場合：
+ccmのステータスバー更新はtmuxの `status-interval` に駆動されます。プラグインはロード時に、現在の設定がtmuxデフォルト（15秒）のままなど 5 秒より大きい場合、自動的に 5 秒へ引き下げます（値を下げるだけで、上げることはありません）。別の間隔にしたい場合は、プラグインのロード前にtmux環境変数 `CCM_STATUS_INTERVAL` を設定してください：
 
-```tmux
-set -g status-interval 5    # 5秒ごとに更新
+```bash
+tmux set-environment -g CCM_STATUS_INTERVAL 10   # 10秒ごとのポーリングに変更
 ```
 
 値を下げるとCPU使用量がわずかに増加します。

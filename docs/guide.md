@@ -133,7 +133,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `m` | Menu | Switch to interactive menu |
 | `q` / `Esc` | Quit | Close the dashboard |
 
-The dashboard refreshes on a hybrid cadence: full state detection runs every 2 seconds, and in between, a lightweight fast tick (4×/second) watches the state channel the Claude Code hooks write to — so a hook-driven change (a permission prompt appearing, a prompt submitted) shows up in ~0.3 seconds rather than waiting out the full poll. The status bar gets the same treatment: on a state transition, the hook re-renders the bar immediately instead of waiting for the next 1-second tick. Navigation keys (`↑↓/jk`) respond instantly without waiting for any refresh.
+The dashboard refreshes on a hybrid cadence: full state detection runs every 2 seconds, and in between, a lightweight fast tick (4×/second) watches the state channel the Claude Code hooks write to — so a hook-driven change (a permission prompt appearing, a prompt submitted) shows up in ~0.3 seconds rather than waiting out the full poll. The status bar gets the same treatment: on a state transition, the hook re-renders the bar immediately instead of waiting for the next `status-interval` tick. Navigation keys (`↑↓/jk`) respond instantly without waiting for any refresh.
 
 The row order is decided when the dashboard opens (projects needing attention first) and then held stable while it stays open — a project changing state updates its icon in place but does not jump to a new position, so your selection never lands on the wrong project mid-interaction. Close and reopen the dashboard to re-sort by current state.
 
@@ -207,7 +207,7 @@ ccm send blog --no-enter "TODO: "
 |---|---|---|---|
 | **IDLE** | Send immediately | — | — |
 | **BUSY** | Refused (avoid mixing with active turn) | Queued into input buffer | — |
-| **SHELL** (Claude not running) | Refused | — | Launches Claude, waits 2s, then sends |
+| **SHELL** (Claude not running) | Refused | — | Launches Claude, polls for IDLE (up to `CCM_START_WAIT_SEC`, default 10s), then sends |
 | **PERMIT** (permission dialog open) | **Hard refused** | **Still refused** — typing into a permission dialog could accidentally approve/deny a tool call | — |
 
 ### Flags
@@ -260,7 +260,7 @@ This adds hooks to `~/.claude/settings.json`:
 | `PermissionDenied` | PERMIT | Auto mode denied an action (check `/permissions` to retry) |
 
 > [!NOTE]
-> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/`. BUSY is trusted as long as the Claude Code process is alive (cleared by `Stop`/`SessionEnd` or by process exit); PERMIT auto-clears after 10 min as a safety net.
+> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/`. BUSY is cleared by `Stop`/`SessionEnd` or by process exit; if both the BUSY hook and the JSONL stay silent beyond `CCM_BUSY_HOOK_JSONL_WINDOW` (default 10 min), ccm stops trusting the stale signal and lets the state fall back to IDLE, so a missed `Stop` cannot strand a project in BUSY. PERMIT auto-clears after 10 min as a safety net.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
@@ -455,8 +455,10 @@ rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/dashboard.pid"
 ```bash
 # Clear all caches
 rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/status-cache"
-rm -f "${TMPDIR:-/tmp}/ccm-$(id -u)/status-right-original"
 tmux source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
+
+# The pre-ccm status-right is kept in a tmux option (not a file):
+tmux show-option -gqv @ccm-orig-status-right   # inspect the saved original
 ```
 
 ### Wrong session context
@@ -520,7 +522,7 @@ This means ccm's dashboard and status bar give you visibility into Agent Teams a
 
 | Feature | Agent Teams | ccm | Conflict |
 |---------|------------|-----|----------|
-| Keyboard shortcuts | `Shift+↓`, `Ctrl+T` (inside Claude Code) | `prefix + Tab/T/C` (tmux level) | None |
+| Keyboard shortcuts | `Shift+↓`, `Ctrl+T` (inside Claude Code) | `prefix + Tab` (tmux level; T/C are opt-in) | None |
 | Pane management | Splits panes within window | Manages windows | None |
 | Window naming | Does not rename windows | Sets icon + name | None |
 
@@ -630,6 +632,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_COMPLETION_GRACE_SEC` | `3` (seconds) | Grace period between a Stop hook firing and the COMPLETED desktop notification. Claude Code fires Stop at every turn boundary (including mid-tool-use); ccm waits this long before alerting so a subsequent PreToolUse / UserPromptSubmit can cancel the pending notification. Lower = faster alerts but higher risk of notifying mid-conversation |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600` (seconds) | Safety net used by the `evaluate_fast` statusline path: a PERMIT hook older than this is treated as stale so the dashboard doesn't lock on PERMIT after an upstream signal-clearing failure |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600` (seconds) | How long a Claude Code session can be IDLE before `x` (exit all) targets it, and how long before auto-exit triggers |
+| `CCM_IDLE_PROMPT_GUARD_SEC` | `60` (seconds) | Guard in `on-notification.sh` for the `idle_prompt` Notification: idle_prompt arrives 10–60+ s late (anthropics/claude-code#5186), so a BUSY signal younger than this may have been written by work that started AFTER the notification was generated — deleting it would drop an actively working session to IDLE (and feed auto-exit's kill path). Signals younger than the guard are kept; older ones are cleared as before. Set to `0` to opt out and restore the old always-delete behaviour |
 | `CCM_IGNORE` | unset | Launch-time flag, not a tunable: `CCM_IGNORE=1 claude` starts a session that ccm ignores entirely (see "Running a second model as a sidekick"). Toggle an already-running session with `ccm ignore` / `ccm unignore` instead |
 | `CCM_STARTUP_GRACE_SEC` | `60` (seconds) | Window during which the legacy `startup_transient_raw_busy` rule demotes raw=BUSY to IDLE when no hook signal is present — covers Claude's MCP-loading phase after `claude --continue`, which typically completes in 10–30 s |
 | `CCM_SLIVER_HEIGHT_THRESHOLD` | `4` (rows) | Minimum tmux pane height for a pane to participate in window-state aggregation. Panes shorter than this cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a genuinely BUSY pane. Raise if you have legitimate small Agent Teams panes that should still count; lower (down to 1) to disable the filter entirely |
@@ -676,6 +679,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_AMBIGUOUS_WIDTH` | `1` | Terminal column count for East Asian Ambiguous characters (e.g. the IDLE icon `●`, SHELL icon `■`). Set to `2` on CJK locale terminals where Ambiguous chars render as 2 columns, so dashboard / `ccm status` columns stay aligned. Read at module load — restart inject-status / dashboard to pick up a change |
 | `CCM_ERRORS_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap for `$TMPDIR/ccm-$UID/errors.log` (the silent-exception log). At the cap, the active log rotates to `errors.log.1` and a fresh log starts (total disk use ~2 × cap). View with `ccm errors`; clear with `ccm errors --clear` |
 | `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10` (seconds) | Drift tolerance for the session_info pid-reuse check. When `read_session_info` is given a `ps` snapshot, it cross-checks Claude Code's recorded `startedAt` against the live process's etime-derived start time; a discrepancy beyond this tolerance means the json file is from a recycled pid's prior session and is rejected (caller falls through to legacy detection). 10 s comfortably covers normal clock drift / NTP corrections / the few-second gap between fork and Claude writing session_info |
+| `CCM_STATUS_INTERVAL` | `5` (seconds) | Target tmux `status-interval` — how often the status bar re-renders. On plugin load, ccm lowers `status-interval` to this value if your current setting is higher (it never raises it). Set via `tmux set-environment -g` before the plugin loads, not shell `export` — see [Status refresh interval](#status-refresh-interval) |
 
 ### Tuning examples
 
@@ -686,8 +690,8 @@ export CCM_COMPLETED_AT_TIMEOUT=60
 # Earlier hooks.log bloat warning (10 MB)
 export CCM_HOOKS_LOG_WARN_BYTES=10485760
 
-# Lower polling cost on slow / battery-bound machines (tmux option, not an env var)
-# Add to ~/.tmux.conf:  set -g status-interval 10
+# Lower polling cost on slow / battery-bound machines (tmux env, read on plugin load)
+tmux set-environment -g CCM_STATUS_INTERVAL 10
 
 # Diagnostic kill-switch: bypass the event-log path entirely
 export CCM_USE_EVENT_LOG=off
@@ -717,10 +721,10 @@ ccm's window options (`@ccm_project`, `@ccm_dir`) are not automatically preserve
 
 ### Status refresh interval
 
-ccm's status bar updates are triggered by tmux's `status-interval` setting (default: 15 seconds). To get faster updates:
+ccm's status bar updates are driven by tmux's `status-interval`. On load, the plugin automatically lowers it to 5 seconds (from tmux's default of 15) if your current setting is higher — it only ever lowers the value, never raises it. To use a different target, set `CCM_STATUS_INTERVAL` in tmux's environment before the plugin loads:
 
-```tmux
-set -g status-interval 5    # update every 5 seconds
+```bash
+tmux set-environment -g CCM_STATUS_INTERVAL 10   # poll every 10 seconds instead
 ```
 
 Lower values increase CPU usage slightly.

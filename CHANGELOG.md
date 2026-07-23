@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `inject-status --fast` no longer runs the periodic maintenance tasks
+  (window-name updates, notify-transition cache writes, autosave, and idle
+  auto-exit). The fast path bypasses the flock by design so a focus refresh
+  can run concurrently with a lock-holding periodic instance — but that also
+  meant both instances could pass the idle check for the same window and
+  double-send the Escape + `/exit` + Enter sequence, the late copy landing
+  in the post-exit shell pane where the literal `exit` kills the user's
+  shell. The fast path now only re-renders the status bar; the periodic
+  instance owns all maintenance side effects.
+- Hooks no longer use the bash-4-only `${var,,}` lowercase expansion in
+  `_ccm_instant_notify`. On stock macOS `/bin/bash` (3.2.57) it aborted the
+  whole notification path with "Bad substitution" under
+  `set -euo pipefail`; replaced with a `tr`-based lowercase that bash 3.2
+  accepts.
+
 ### Changed
 - The dashboard preview now shows the tracked Claude pane, not just the focused
   pane. `capture-pane -t <window>` grabs the window's active pane, so in a split
@@ -55,6 +71,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   tracking the sidekick, but cannot immunize the primary session's JSONL from
   the upstream same-cwd task-notification leak (anthropics/claude-code#48112)
   if the sidekick runs background tasks concurrently.
+
+### Fixed
+- `ccm send` re-checks the delivery pane's raw state (`detect_pane_state`)
+  immediately before typing. The state gate runs on a `build_project_list`
+  snapshot, and the interactive confirmation prompt can block for any length
+  of time — a target that transitioned to PERMIT while the operator read the
+  preview would have received the message body *inside the permission dialog*,
+  breaking the "PERMIT never receives keystrokes" safety story. The send now
+  aborts when the re-check sees PERMIT (even with `--force`), SHELL (Claude
+  exited — the body would land in a bare shell), or BUSY without `--force`.
+  A pane that can no longer be enumerated (tmux hiccup) fails open, matching
+  the delivery-pane resolution fallback.
+- `ccm stop --all` works from the CLI again. The bash wrapper forwarded the
+  flag, but the `stop` subparser used a plain positional, so argparse rejected
+  `--all` as an unknown option (exit 2) before the handler ever ran — the
+  documented stop-with-`_autosave`-snapshot path was unreachable. `stop` now
+  uses the same raw-argv passthrough as `capture`/`send`/`errors`;
+  `ccm stop <name>` behaviour is unchanged.
+- The dashboard no longer crashes with `IndexError` when `p`/`n`/`r`/`i` is
+  pressed while a background-session row is selected (or the selection went
+  stale). These keys now guard `0 <= selected < len(projects)` like Enter
+  already did.
+- The dashboard's exit-all and the attach-path auto-start no longer type into
+  the window's *active* pane. `send-keys -t <window>` lands on whatever pane
+  has focus — a shell pane would receive the literal `/exit`, an editor would
+  receive the launch command as text. Exit-all now resolves the Claude pane
+  via `enumerate_window_panes` (skipping windows where none resolves), and
+  `auto_start_claude` resolves a shell pane (`SHELL_FOREGROUND_COMMANDS`,
+  refusing to send when ambiguous) before typing `CLAUDE_CMD` — the same
+  delivery-pane policy as `ccm send`.
+- `ccm doctor` no longer crashes with `FileNotFoundError` when a probed
+  binary (tmux, claude, jq, fzf) is missing — exactly the situation doctor
+  exists to diagnose. Probe failures now render as "not found" rows.
+- `ccm attach` detects Claude on *any* pane of the window, not just the first
+  (a second-pane Claude no longer triggers a spurious auto-start), and treats
+  a failed/non-zero `ps` probe as "Claude may be running" instead of
+  auto-starting a duplicate.
+- Windows sharing a project directory are no longer clobbered. The second
+  window of a same-directory project was absent from `project_states`, so
+  `update_window_names` renamed it to a bogus `● IDLE` every cycle and
+  `ccm send <its-name>` was refused as unregistered. Untracked windows now
+  inherit state from their tracked same-directory sibling (matched by
+  canonical realpath), are skipped when no sibling exists, and `send`
+  resolves them through the sibling for gating while still delivering to the
+  addressed window's own pane.
+- Digit-only project names are rejected by `validate_name` (`ccm add` /
+  `register` / `rename`), since they collide with window-index addressing in
+  `ccm send`/`attach`. Name matching now also takes precedence over numeric
+  index interpretation, so an existing digit-named project stays reachable by
+  name.
+- `signal_age_suffix` no longer spawns a `tmux list-windows -a` subprocess
+  per project per render cycle. The bulk-fetched `@ccm_session_id` is now
+  carried on `Project.cached_session_id` and passed through from the
+  dashboard annotation loop, `inject_status`, and `print_status`; SHELL
+  windows and the `read_events_tail` path pass an authoritative empty id
+  instead of re-querying tmux every scan. (This closes the last gaps in the
+  documented no-N+1 design.)
+- `ccm status` columns no longer shift with the per-state ANSI color-code
+  length (256-color sequences are longer than single-color ones). Padding is
+  now display-width based, and over-long project names are truncated with
+  `truncate_to_width` instead of pushing the table out.
+- `$HOME` → `~` shortening now only rewrites a leading `$HOME` prefix (new
+  `shorten_home` helper). The previous global `str.replace` corrupted paths
+  like `/Users/x2/work` (→ `~2/work`, breaking snapshot restore) and
+  misrendered paths containing the home string mid-path.
+- `acquire_pidfile` verifies the recorded PID still belongs to a dashboard
+  process (`ps -p <pid> -o command=`) before SIGTERM/SIGKILL. A PID recycled
+  after an unclean dashboard exit no longer gets an unrelated process killed;
+  probe failure fails safe (leaves the process alone).
+- A delayed `idle_prompt` notification no longer deletes a fresh BUSY signal.
+  The old guard only spared signals timestamped in the same second or the
+  future, so an idle_prompt arriving 10–60s late (its documented delay) could
+  flip a working session to IDLE — a path into idle auto-exit killing an
+  active session. Deletion is now skipped when the BUSY signal is younger
+  than `CCM_IDLE_PROMPT_GUARD_SEC` (default 60; `0` restores the old
+  behaviour).
+
+### Added (internal)
+- Test-suite isolation guard: an autouse `block_live_subprocess` fixture in
+  `tests/conftest.py` makes any real `tmux`/`ps`/`jq`/`osascript`/
+  `terminal-notifier`/`notify-send` invocation from a test fail fast
+  (`@pytest.mark.live_subprocess` opts out). Previously the suite issued
+  hundreds of real tmux calls and even renamed the developer's live windows.
+- Test coverage for previously untested paths: `cmd_attach` / `cmd_capture` /
+  `cmd_debug_trace`, `notify()` dispatch and AppleScript escaping, the
+  dashboard's interactive handlers (rename/remove/ignore/add/register/
+  search), pidfile identity checks, and bats cases for the idle_prompt BUSY
+  guard.
+- Documentation drift: README's claim that the dashboard/status bar show only
+  the current session's projects (they show all sessions), the default status
+  bar mode (2, not 0), the `--start` wait (polls up to
+  `CCM_START_WAIT_SEC` = 10s, not a fixed 2s), the auto-lowered
+  `status-interval` (previously documented as a manual step; the previously
+  undocumented `CCM_STATUS_INTERVAL` is now covered), the opt-in nature of
+  the `T`/`C` key bindings, the stale `status-right-original` troubleshooting
+  step, and the "BUSY is trusted while the process lives" note (it times out
+  after `CCM_BUSY_HOOK_JSONL_WINDOW`). CLAUDE.md's subcommand list now
+  includes `rename`/`search`/`tree-interactive`/`inject-status`/
+  `reset-window`/`clear-notifications`. English and Japanese docs updated in
+  sync.
+- The zsh completion caught up with the CLI: `send`/`ignore`/`unignore`/
+  `reset`/`reset-window`/`search`/`debug`/`clear-notifications`/`version`
+  added (with project-name completion where applicable), and snapshot-name
+  completion no longer breaks on names containing spaces.
 
 ## [0.6.0] - 2026-07-22
 
