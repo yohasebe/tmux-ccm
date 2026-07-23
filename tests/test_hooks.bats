@@ -9,6 +9,16 @@ setup() {
     export HOME="$MOCK_DIR"
     mkdir -p "${MOCK_DIR}/.claude"
 
+    # Hermetic claude stub: ccm_setup_hooks requires `claude --version`
+    # on PATH, so these tests previously depended on the host's real
+    # claude binary (green locally, red on CI runners without one).
+    # Version-gate tests prepend their own bin to PATH, which overrides
+    # this stub.
+    mkdir -p "${MOCK_DIR}/bin"
+    printf '#!/bin/bash\necho "2.1.218 (Claude Code)"\n' > "${MOCK_DIR}/bin/claude"
+    chmod +x "${MOCK_DIR}/bin/claude"
+    export PATH="${MOCK_DIR}/bin:${PATH}"
+
     source "${CCM_ROOT}/lib/common.sh"
 
     # Override ccm_init_dirs to avoid creating real directories
