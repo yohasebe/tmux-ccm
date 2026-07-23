@@ -100,6 +100,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   status-interval. BUSY→BUSY hook bursts spawn nothing.
 
 ### Fixed
+- The `⊘` sidekick marker no longer lingers after a hidden sidekick's Claude
+  Code exits. `@ccm_ignore` lives on the tmux pane, but the ignored session's
+  own SessionEnd hook early-exits, so the marker was never cleared when the
+  sidekick closed (its pane survives as a shell) — the `⊘` stayed on the row,
+  and a new Claude later launched in that pane would have been silently
+  ignored. The `⊘` count now requires the ignored pane to actually host a
+  claude process, and a stale `@ccm_ignore` (marked but no claude) is unset
+  during detection, so the marker disappears when the sidekick exits and the
+  pane is tracked normally again.
 - The opt-in hook-silence canary no longer misfires when a `CCM_IGNORE`'d
   sidekick shares the window's directory. The canary read the newest JSONL in
   the cwd's slug directory (newest-by-mtime), so an active sidekick's fresh

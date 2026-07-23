@@ -487,17 +487,35 @@ def _count_panes(panes_cache, win_target):
     """Count tmux panes belonging to `win_target` in the bulk panes
     cache. Always returns >= 1 (no panes is impossible for a real
     window — defensive default). Counts ALL panes including ignored
-    ones (physical truth); the ignored subset is counted separately by
-    `_count_ignored_panes`."""
+    ones (physical truth); the live-ignored subset is counted
+    separately by `_resolve_ignored_panes`."""
     return sum(1 for pc in panes_cache if pc[0] == win_target) or 1
 
 
-def _count_ignored_panes(panes_cache, win_target):
-    """Number of `@ccm_ignore`'d panes in the window — surfaces the
-    dashboard/status `⊘` marker so a hidden sidekick session (a second
-    Claude pane) is visible as present-but-untracked."""
-    return sum(1 for pc in panes_cache
-               if pc[0] == win_target and _pane_is_ignored(pc))
+def _resolve_ignored_panes(panes_cache, win_target, ps_lines):
+    """Number of LIVE ignored panes (`@ccm_ignore` set AND currently
+    hosting a claude process) for the window's `⊘` marker — and
+    self-heal stale markers.
+
+    `@ccm_ignore` lives on the tmux PANE, but the sidekick it hides is
+    a SESSION. When that claude exits, the pane keeps the option (the
+    ignored session's own SessionEnd hook early-exits, so nothing
+    clears it, and the pane survives as a shell). Left as-is, the `⊘`
+    would linger after the sidekick is gone, and a NEW claude later
+    launched in that same pane would be silently ignored. So a pane
+    marked ignored but no longer hosting claude is stale: its
+    `@ccm_ignore` is unset here and it is not counted. A genuinely
+    live env-based sidekick (`CCM_IGNORE=1`) re-stamps the marker on
+    its next hook fire, so a rare spurious clear self-corrects."""
+    count = 0
+    for pc in panes_cache:
+        if pc[0] != win_target or not _pane_is_ignored(pc):
+            continue
+        if ccm_detection.find_claude_pid(pc[1], ps_lines):
+            count += 1
+        else:
+            tmux_cmd("set-option", "-p", "-t", pc[2], "-u", "@ccm_ignore")
+    return count
 
 
 def build_project_list(fast=False):
@@ -552,8 +570,8 @@ def build_project_list(fast=False):
         branch = read_cache_file(CCM_GIT_CACHE_DIR, proj_dir) if proj_dir else ""
         ports = read_cache_file(CCM_PORT_CACHE_DIR, proj_dir) if proj_dir else ""
         pane_count = 1 if fast else _count_panes(panes_cache, row["win_target"])
-        ignored_panes = (0 if fast
-                         else _count_ignored_panes(panes_cache, row["win_target"]))
+        ignored_panes = (0 if fast else _resolve_ignored_panes(
+            panes_cache, row["win_target"], ps_lines))
 
         # Permission-mode badge (slow path, live sessions only). The
         # events tail was just read by detection for this same cycle,

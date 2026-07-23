@@ -39,16 +39,47 @@ class TestPaneIsIgnored:
         assert ccm_core._pane_is_ignored(pc) is False
 
 
-class TestCountIgnoredPanes:
-    def test_counts_only_matching_window_ignored(self):
+class TestResolveIgnoredPanes:
+    """`_resolve_ignored_panes` counts only LIVE ignored panes (marker
+    set AND hosting a claude process) and self-heals stale markers left
+    when a sidekick claude exits but its pane survives as a shell."""
+
+    def _live_claude(self, monkeypatch, live_pids):
+        """Stub find_claude_pid so given pane pids read as hosting
+        claude. Returns the list of tmux_cmd calls."""
+        monkeypatch.setattr(
+            "ccm_detection.find_claude_pid",
+            lambda pane_pid, ps: 999 if pane_pid in live_pids else None)
+        calls = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *a, **k: calls.append(a) or "")
+        return calls
+
+    def test_counts_only_ignored_panes_hosting_claude(self, monkeypatch):
+        self._live_claude(monkeypatch, {"100", "300"})
         cache = [
-            ("0:1", "100", "%0", "claude", "1", "40", "1"),   # ignored, win 1
-            ("0:1", "200", "%1", "zsh", "0", "40", ""),       # not, win 1
-            ("0:2", "300", "%2", "claude", "1", "40", "1"),   # ignored, win 2
+            ("0:1", "100", "%0", "claude", "1", "40", "1"),   # ignored+claude
+            ("0:1", "200", "%1", "zsh", "0", "40", ""),       # not ignored
+            ("0:2", "300", "%2", "claude", "1", "40", "1"),   # ignored+claude
         ]
-        assert ccm_core._count_ignored_panes(cache, "0:1") == 1
-        assert ccm_core._count_ignored_panes(cache, "0:2") == 1
-        assert ccm_core._count_ignored_panes(cache, "0:3") == 0
+        assert ccm_core._resolve_ignored_panes(cache, "0:1", []) == 1
+        assert ccm_core._resolve_ignored_panes(cache, "0:2", []) == 1
+        assert ccm_core._resolve_ignored_panes(cache, "0:3", []) == 0
+
+    def test_stale_marker_not_counted_and_cleared(self, monkeypatch):
+        # Ignored pane whose claude has exited (pane is now a shell):
+        # not counted, and its @ccm_ignore is unset.
+        calls = self._live_claude(monkeypatch, set())  # no live claude
+        cache = [("0:1", "56076", "%92", "zsh", "1", "40", "1")]
+        assert ccm_core._resolve_ignored_panes(cache, "0:1", []) == 0
+        assert ("set-option", "-p", "-t", "%92", "-u", "@ccm_ignore") in calls
+
+    def test_live_ignored_pane_marker_left_intact(self, monkeypatch):
+        calls = self._live_claude(monkeypatch, {"100"})
+        cache = [("0:1", "100", "%0", "claude", "1", "40", "1")]
+        assert ccm_core._resolve_ignored_panes(cache, "0:1", []) == 1
+        # A live sidekick's marker must NOT be cleared.
+        assert not any(c[0] == "set-option" and "-u" in c for c in calls)
 
     def test_total_pane_count_includes_ignored(self):
         # `[N]` is physical truth — an ignored sidekick is still a pane.
@@ -57,7 +88,6 @@ class TestCountIgnoredPanes:
             ("0:1", "200", "%1", "claude", "0", "40", "1"),
         ]
         assert ccm_core._count_panes(cache, "0:1") == 2
-        assert ccm_core._count_ignored_panes(cache, "0:1") == 1
 
 
 class TestRawAggregationSkip:
