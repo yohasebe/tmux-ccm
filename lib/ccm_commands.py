@@ -141,7 +141,8 @@ def cmd_add(directory, name="", start_claude=True, _loading=False,
     if not name:
         ccm_core.ccm_die(
             "Invalid project name (alphanumerics / hyphens / underscores only; "
-            "shell metachars and whitespace are stripped)"
+            "shell metachars and whitespace are stripped; digit-only names "
+            "are not allowed — they collide with window-index addressing)"
         )
 
     session = ccm_core.get_session()
@@ -256,7 +257,11 @@ def cmd_register(source_target, new_name=""):
     name = new_name or win_name
     name = ccm_core.validate_name(name)
     if not name:
-        ccm_core.ccm_die("Invalid project name (alphanumerics / hyphens / underscores only)")
+        ccm_core.ccm_die(
+            "Invalid project name (alphanumerics / hyphens / underscores only; "
+            "digit-only names are not allowed — they collide with "
+            "window-index addressing)"
+        )
 
     if ccm_core.project_exists(session, name):
         ccm_core.ccm_die(f"Project name already in use: {name}")
@@ -320,7 +325,11 @@ def cmd_rename(old_name, new_name):
 
     new_name = ccm_core.validate_name(new_name)
     if not new_name:
-        ccm_core.ccm_die("Invalid project name (alphanumerics / hyphens / underscores only)")
+        ccm_core.ccm_die(
+            "Invalid project name (alphanumerics / hyphens / underscores only; "
+            "digit-only names are not allowed — they collide with "
+            "window-index addressing)"
+        )
 
     session = ccm_core.get_session()
     idx = ccm_core.find_window(session, old_name)
@@ -423,25 +432,33 @@ def cmd_attach(target):
 
     win_target = f"{session}:{idx}"
 
-    # Auto-start Claude if SHELL state
-    pane_pid = ccm_core.tmux_cmd("list-panes", "-t", win_target, "-F", "#{pane_pid}")
-    if pane_pid:
-        pane_pid = pane_pid.split("\n")[0]
-        # Check if claude is running as child
+    # Auto-start Claude if SHELL state. Claude may live in ANY pane of
+    # the window (split-pane layouts), not just the first — check all
+    # pane pids before deciding to auto-start.
+    pane_pids_raw = ccm_core.tmux_cmd("list-panes", "-t", win_target, "-F", "#{pane_pid}")
+    if pane_pids_raw:
+        pane_pids = {p.strip() for p in pane_pids_raw.split("\n") if p.strip()}
+        # Check if claude is running as child of any pane
         try:
             ps_out = subprocess.run(["ps", "-eo", "ppid,comm"],
                                     capture_output=True, timeout=5)
-            # macOS truncates `comm` mid-codepoint for apps with
-            # multi-byte names — see ccm_core.ps_snapshot for the
-            # full rationale. Decode permissively so the truncated
-            # row does not abort the scan.
-            ps_text = ps_out.stdout.decode("utf-8", errors="replace")
-            has_claude = False
-            for line in ps_text.strip().split("\n"):
-                fields = line.split()
-                if len(fields) >= 2 and fields[0] == pane_pid and fields[1] == "claude":
-                    has_claude = True
-                    break
+            if ps_out.returncode != 0:
+                # ps exited non-zero: stdout is untrustworthy. Assume
+                # claude is running rather than risk a duplicate
+                # auto-start into a live session.
+                has_claude = True
+            else:
+                # macOS truncates `comm` mid-codepoint for apps with
+                # multi-byte names — see ccm_core.ps_snapshot for the
+                # full rationale. Decode permissively so the truncated
+                # row does not abort the scan.
+                ps_text = ps_out.stdout.decode("utf-8", errors="replace")
+                has_claude = False
+                for line in ps_text.strip().split("\n"):
+                    fields = line.split()
+                    if len(fields) >= 2 and fields[0] in pane_pids and fields[1] == "claude":
+                        has_claude = True
+                        break
         except (subprocess.TimeoutExpired, OSError):
             has_claude = True  # Assume running on error
 
@@ -734,34 +751,37 @@ def cmd_doctor():
     def row(mark, label, detail=""):
         print(f"  {mark} {label}{('  ' + detail) if detail else ''}")
 
+    def _probe(args):
+        """Run a dependency probe, returning stdout or "" when the
+        probe itself fails. doctor is the dependency-check command —
+        a missing `which`/`tmux` binary must surface as a "not found"
+        row, not crash the whole report with FileNotFoundError."""
+        try:
+            return subprocess.run(
+                args, capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
     section("Environment")
     # ccm itself — surfaces the running version up front so bug
     # reports include it without anyone having to remember to run
     # `ccm --version` separately.
     row(OK, "ccm", CCM_VERSION)
     # claude binary
-    claude_path = subprocess.run(
-        ["which", "claude"], capture_output=True, text=True, timeout=5,
-    ).stdout.strip()
+    claude_path = _probe(["which", "claude"])
     if not claude_path:
         row(FAIL, "claude",
             "binary not found — install from https://docs.anthropic.com/en/docs/claude-code")
     else:
-        version_out = subprocess.run(
-            [claude_path, "--version"], capture_output=True, text=True,
-            timeout=5,
-        ).stdout.strip()
+        version_out = _probe([claude_path, "--version"])
         row(OK, "claude", version_out or claude_path)
     # tmux
-    tmux_ver = subprocess.run(
-        ["tmux", "-V"], capture_output=True, text=True, timeout=5,
-    ).stdout.strip()
+    tmux_ver = _probe(["tmux", "-V"])
     row(OK if tmux_ver else FAIL, "tmux", tmux_ver or "not found")
     # jq, fzf
     for tool in ("jq", "fzf"):
-        path = subprocess.run(
-            ["which", tool], capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
+        path = _probe(["which", tool])
         row(OK if path else WARN, tool, path or "not found (recommended)")
 
     section("Setup")

@@ -171,7 +171,8 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # the auto-release window without forcing them to open the
         # popup. Stripped of leading space; we add explicit dim
         # markup before it.
-        stale = signal_age_suffix(p.dir, p.state).strip()
+        stale = signal_age_suffix(
+            p.dir, p.state, session_id=p.cached_session_id or "").strip()
         # Background-activity affordance: state=IDLE but raw=BUSY
         # (leftover dev server etc.). Mutually exclusive with `stale`
         # (which only fires for BUSY/PERMIT) so we can render either
@@ -332,82 +333,97 @@ def _inject_status_impl(force_fast=False):
                     p.state = "PERMIT"
                     break
 
-    # Always update window name icons
-    update_window_names(projects)
+    # Maintenance side effects run ONLY on the periodic (non-fast)
+    # path. The fast path bypasses the flock precisely so it can run
+    # concurrently with a lock-holding periodic instance (see
+    # inject_status()); if it also ran these tasks, both instances
+    # could pass the idle check for the same window and double-send
+    # the Escape + `/exit` + Enter sequence — the late copy landing
+    # in the post-exit shell pane, where the literal `exit` kills the
+    # user's shell (the incident shape documented in
+    # ccm_runtime.py's auto_exit_idle). They also cost several tmux
+    # subprocesses per call, which contradicts the fast path's job:
+    # a ~10 ms cached-state redraw on every hook fire / window switch.
+    if not force_fast:
+        # Always update window name icons
+        update_window_names(projects)
 
-    # Desktop notifications on state transitions
-    # Read previous states BEFORE build_project_list overwrites them
-    # (build_project_list already ran above, so we use a cache file approach)
-    notify_cache = os.path.join(CCM_TMP_DIR, "notify-cache")
-    prev_states = {}
-    try:
-        if os.path.exists(notify_cache):
-            with open(notify_cache, encoding="utf-8") as f:
-                for line in f:
-                    parts = line.strip().split("\t", 1)
-                    if len(parts) == 2:
-                        prev_states[parts[0]] = parts[1]
-    except OSError:
-        pass
+        # Desktop notifications on state transitions
+        # Read previous states BEFORE build_project_list overwrites them
+        # (build_project_list already ran above, so we use a cache file approach)
+        notify_cache = os.path.join(CCM_TMP_DIR, "notify-cache")
+        prev_states = {}
+        try:
+            if os.path.exists(notify_cache):
+                with open(notify_cache, encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split("\t", 1)
+                        if len(parts) == 2:
+                            prev_states[parts[0]] = parts[1]
+        except OSError:
+            pass
 
-    # Per-project instant-notify marker is read inside the loop below
-    # via `read_project_notify_marker`. The marker is per-project so
-    # one project's recent notification cannot suppress another's,
-    # which matters when several concurrent Claude sessions are
-    # running.
-    now = int(time.time())
+        # Per-project instant-notify marker is read inside the loop below
+        # via `read_project_notify_marker`. The marker is per-project so
+        # one project's recent notification cannot suppress another's,
+        # which matters when several concurrent Claude sessions are
+        # running.
+        now = int(time.time())
 
-    # Write current states and check for transitions.
-    # Polling notifications are only a SAFETY NET for the hook-
-    # triggered instant notification path: they fire when the
-    # project's own hook signal corroborates the state. This
-    # prevents late / spurious notifications that would otherwise
-    # fire whenever a fallback detection path derives a state
-    # transition long after the actual event.
-    #
-    # COMPLETED: the Stop hook DELETES the signal file, so there is
-    # no hook signal to corroborate a BUSY→IDLE transition after the
-    # fact. We therefore rely exclusively on the instant path
-    # (`_ccm_instant_notify` called from `on-stop.sh` /
-    # `on-notification.sh idle_prompt`) to deliver completion
-    # notifications. If Stop / idle_prompt never fires (hooks.log
-    # bloat, upstream silent-exit, ...), the fallback detection will
-    # still transition the project to IDLE, but deliberately WITHOUT
-    # a notification — we prefer silence to a late, misleading ping.
-    try:
-        tmp = notify_cache + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            for p in projects:
-                f.write(f"{p.win_target}\t{p.state}\n")
-                prev = prev_states.get(p.win_target, "")
-                # Notify on PERMIT transitions
-                if p.state != prev and p.state == "PERMIT":
-                    # Per-project dedup: if the hook already instant-
-                    # notified PERMIT for THIS project, skip.
-                    marker = read_project_notify_marker(p.dir) if p.dir else None
-                    if marker is not None:
-                        marker_ts, marker_state = marker
-                        if marker_state == p.state and (now - marker_ts) < COMPLETED_AT_TIMEOUT:
+        # Write current states and check for transitions.
+        # Polling notifications are only a SAFETY NET for the hook-
+        # triggered instant notification path: they fire when the
+        # project's own hook signal corroborates the state. This
+        # prevents late / spurious notifications that would otherwise
+        # fire whenever a fallback detection path derives a state
+        # transition long after the actual event.
+        #
+        # COMPLETED: the Stop hook DELETES the signal file, so there is
+        # no hook signal to corroborate a BUSY→IDLE transition after the
+        # fact. We therefore rely exclusively on the instant path
+        # (`_ccm_instant_notify` called from `on-stop.sh` /
+        # `on-notification.sh idle_prompt`) to deliver completion
+        # notifications. If Stop / idle_prompt never fires (hooks.log
+        # bloat, upstream silent-exit, ...), the fallback detection will
+        # still transition the project to IDLE, but deliberately WITHOUT
+        # a notification — we prefer silence to a late, misleading ping.
+        try:
+            tmp = notify_cache + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                for p in projects:
+                    f.write(f"{p.win_target}\t{p.state}\n")
+                    prev = prev_states.get(p.win_target, "")
+                    # Notify on PERMIT transitions
+                    if p.state != prev and p.state == "PERMIT":
+                        # Per-project dedup: if the hook already instant-
+                        # notified PERMIT for THIS project, skip.
+                        marker = read_project_notify_marker(p.dir) if p.dir else None
+                        if marker is not None:
+                            marker_ts, marker_state = marker
+                            if marker_state == p.state and (now - marker_ts) < COMPLETED_AT_TIMEOUT:
+                                continue
+                        hook = (read_hook_signal(
+                            p.dir,
+                            session_id=p.cached_session_id or "")
+                            if p.dir else None)
+                        if not hook:
                             continue
-                    hook = read_hook_signal(p.dir) if p.dir else None
-                    if not hook:
-                        continue
-                    hook_ts, hook_st, hook_detail = hook
-                    if hook_st != p.state:
-                        continue
-                    if (now - hook_ts) >= COMPLETED_AT_TIMEOUT:
-                        continue
-                    detail = hook_detail if p.state == "PERMIT" else ""
-                    notify(p.state, p.name, detail)
-        os.replace(tmp, notify_cache)
-    except OSError:
-        pass
+                        hook_ts, hook_st, hook_detail = hook
+                        if hook_st != p.state:
+                            continue
+                        if (now - hook_ts) >= COMPLETED_AT_TIMEOUT:
+                            continue
+                        detail = hook_detail if p.state == "PERMIT" else ""
+                        notify(p.state, p.name, detail)
+            os.replace(tmp, notify_cache)
+        except OSError:
+            pass
 
-    # Periodic autosave
-    periodic_autosave()
+        # Periodic autosave
+        periodic_autosave()
 
-    # Auto-exit idle sessions
-    auto_exit_idle(projects)
+        # Auto-exit idle sessions
+        auto_exit_idle(projects)
 
     # Status bar rendering (continues even when dashboard is running,
     # using fast-mode project list to stay in sync without race conditions)

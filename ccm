@@ -199,7 +199,10 @@ case "${1:-help}" in
         fi
         ;;
     stop)
-        python3 "$CCM_ROOT/lib/ccm_core.py" stop "${2:-}"
+        # Forward all args (`--all` is a flag, not a name); the Python
+        # side parses them via raw-argv passthrough like capture/send.
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" stop "$@"
         ;;
     send)
         shift

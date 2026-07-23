@@ -44,18 +44,45 @@ def update_window_names(projects):
     all_windows = ccm_core.tmux_cmd(
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{window_name}"
+        "\t#{@ccm_dir}"
     )
     if not all_windows:
         return
 
     project_states = {p.win_target: p.state for p in projects}
+    # build_project_list drops every window after the first that
+    # shares a canonical directory (seen_dirs dedup), so a second
+    # same-dir window never appears in `projects`. Without the dir
+    # fallback below, project_states.get() missed it and the "IDLE"
+    # default rewrote its name to the idle icon every poll cycle —
+    # hiding the window's real state behind a stale lie. Map
+    # canonical directory → state from the tracked (first) window so
+    # the duplicate mirrors its sibling instead. Canonicalization
+    # MUST match build_project_list's dedup key (ccm_core.canonical_dir).
+    # Order-dependent limit: seen_dirs keeps the FIRST window per
+    # directory, so when window 1 is SHELL and window 2 hosts the
+    # running claude, window 2 inherits SHELL and gets the SHELL icon.
+    dir_states = {}
+    for p in projects:
+        if p.dir:
+            dir_states.setdefault(ccm_core.canonical_dir(p.dir), p.state)
 
     for line in all_windows.split("\n"):
         parts = line.split("\t")
         if len(parts) < 3 or not parts[1]:
             continue
         win_target, project, current_name = parts[0], parts[1], parts[2]
-        state = project_states.get(win_target, "IDLE")
+        win_dir = parts[3] if len(parts) >= 4 else ""
+        state = project_states.get(win_target)
+        if state is None and win_dir:
+            state = dir_states.get(ccm_core.canonical_dir(win_dir))
+        if state is None:
+            # Tagged window absent from the project list with no
+            # same-dir sibling to inherit from (e.g. tagged mid-cycle,
+            # after build_project_list ran). Skip rather than stamp a
+            # wrong "IDLE" icon — the next cycle picks it up once the
+            # project list sees it.
+            continue
         icon = ccm_core.STATE_ICONS.get(state, "●")
         new_name = f"{icon} {project}"
         if current_name != new_name:

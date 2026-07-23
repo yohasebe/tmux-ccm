@@ -15,6 +15,106 @@ import ccm_core
 import ccm_snapshot
 
 
+class TestUpdateWindowNames:
+    """`update_window_names` rewrites tmux window names to carry the
+    current state icon. Regression coverage for the same-directory
+    dedup interaction: `build_project_list` drops every window after
+    the first that shares a canonical directory (`seen_dirs`), so the
+    second window is absent from `projects`. The old
+    `project_states.get(win_target, "IDLE")` default then rewrote
+    that window's name to the IDLE icon every poll cycle regardless
+    of its real state. The fix inherits the state from the same-dir
+    sibling that IS tracked, and skips windows with no state source
+    at all instead of stamping a wrong icon."""
+
+    def _project(self, win_target, name, directory, state):
+        return ccm_core.Project(
+            win_target=win_target,
+            win_idx=win_target.split(":")[1],
+            name=name,
+            directory=directory,
+            state=state,
+        )
+
+    def _run(self, projects, listing):
+        """Run update_window_names with a stubbed list-windows;
+        return the list of rename-window call tuples."""
+        renames = []
+
+        def fake_tmux(*args):
+            if args[0] == "list-windows":
+                return listing
+            if args[0] == "rename-window":
+                renames.append(args)
+            return ""
+
+        with patch("ccm_core.tmux_cmd", side_effect=fake_tmux):
+            ccm_runtime.update_window_names(projects)
+        return renames
+
+    def test_renames_stale_name_to_state_icon(self):
+        projects = [self._project("main:1", "blog", "/tmp/blog", "BUSY")]
+        listing = "main:1\tblog\told-name\t/tmp/blog"
+        renames = self._run(projects, listing)
+        assert renames == [("rename-window", "-t", "main:1", "◉ blog")]
+
+    def test_noop_when_name_already_matches(self):
+        projects = [self._project("main:1", "blog", "/tmp/blog", "IDLE")]
+        listing = "main:1\tblog\t● blog\t/tmp/blog"
+        assert self._run(projects, listing) == []
+
+    def test_same_dir_second_window_inherits_sibling_state(self):
+        """The core regression: only the first same-dir window is in
+        `projects` (seen_dirs dedup), but the second window must NOT
+        be rewritten to the IDLE icon — it mirrors the sibling's
+        state instead."""
+        projects = [self._project("main:1", "blog", "/tmp/shared", "BUSY")]
+        listing = (
+            "main:1\tblog\t◉ blog\t/tmp/shared\n"
+            "main:2\tblog2\t● blog2\t/tmp/shared"
+        )
+        renames = self._run(projects, listing)
+        assert renames == [
+            ("rename-window", "-t", "main:2", "◉ blog2")
+        ], (
+            "second same-dir window must inherit the tracked sibling's "
+            "state, not be overwritten with the IDLE icon"
+        )
+
+    def test_same_dir_symlinked_paths_match(self):
+        """The @ccm_dir tag and the project dir may differ textually
+        (symlinked path); canonical_dir must align them the same way
+        build_project_list's dedup key does."""
+        projects = [self._project("main:1", "blog", "/tmp/shared", "PERMIT")]
+        # /tmp vs /private/tmp style divergence (macOS /tmp symlink)
+        import os
+        linked = os.path.realpath("/tmp/shared")
+        listing = (
+            f"main:1\tblog\t⚠ blog\t/tmp/shared\n"
+            f"main:2\tblog2\t● blog2\t{linked}"
+        )
+        renames = self._run(projects, listing)
+        assert renames == [("rename-window", "-t", "main:2", "⚠ blog2")]
+
+    def test_untracked_window_without_sibling_is_skipped(self):
+        """A tagged window absent from `projects` with no same-dir
+        sibling (e.g. tagged mid-cycle) keeps its current name rather
+        than being stamped with a wrong IDLE icon; the next poll
+        picks it up."""
+        projects = [self._project("main:1", "blog", "/tmp/blog", "IDLE")]
+        listing = (
+            "main:1\tblog\t● blog\t/tmp/blog\n"
+            "main:2\tfresh\tfresh\t/tmp/elsewhere"
+        )
+        assert self._run(projects, listing) == []
+
+    def test_untracked_window_with_empty_dir_is_skipped(self):
+        """No @ccm_dir tag → no dir fallback possible → skip."""
+        projects = [self._project("main:1", "blog", "/tmp/blog", "IDLE")]
+        listing = "main:2\tghost\t● ghost\t"
+        assert self._run(projects, listing) == []
+
+
 class TestForceAutosave:
     """`_force_autosave` is called from `auto_exit_idle` after
     closing an idle window, so it must persist the snapshot or the

@@ -49,12 +49,17 @@ def _stub_dashboard_environment(monkeypatch):
     monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda: "")
     monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda: "")
     monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
+    monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
     monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
     monkeypatch.setattr("dashboard.get_session", lambda: "0")
     monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
     monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
     monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
     monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
+    # signal_age_suffix (via ccm_render) reads the per-project hook
+    # signal, which resolves @ccm_session_id through live tmux.
+    import ccm_signals
+    monkeypatch.setattr(ccm_signals, "read_hook_signal", lambda d, session_id=None: None)
     monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
 
 
@@ -773,3 +778,480 @@ class TestResolvePreviewPane:
     def test_no_panes_falls_back_to_window(self, monkeypatch):
         d = self._dash(monkeypatch, [])
         assert d._resolve_preview_pane("0:5") == "0:5"
+
+
+# ─── Project-key selection guard (bg rows) ───
+
+class TestProjectKeySelectionGuard:
+    """While the bg section is visible, rows below the project list
+    are bg sessions, so `self.selected` can be >= len(projects). The
+    project-scoped action keys (p/n/r/i) must no-op there — like
+    Enter already does — instead of IndexError-ing into projects[]
+    via `_do_preview` / `_do_rename` / `_do_remove` /
+    `_do_ignore_toggle`."""
+
+    PROJECT_KEYS = [
+        (ord("p"), "_do_preview"),
+        (ord("n"), "_do_rename"),
+        (ord("r"), "_do_remove"),
+        (ord("i"), "_do_ignore_toggle"),
+    ]
+
+    def _dash(self, monkeypatch, selected=1, bg_count=1):
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+        ]
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/tmp",
+                name="x", state="WORKING", raw_state="working",
+                tempo="active", cli_version="", session_id="x",
+                created_at=None, updated_at=None, source="",
+            ),
+        ][:bg_count]
+        d.selected = selected
+        return d
+
+    @pytest.mark.parametrize("key,method", PROJECT_KEYS)
+    def test_project_key_on_bg_row_is_noop(self, monkeypatch, key, method):
+        # selected=1 with one project → the bg row.
+        d = self._dash(monkeypatch, selected=1)
+        calls = []
+        monkeypatch.setattr(Dashboard, method,
+                            lambda self, stdscr: calls.append(method))
+        action = d._handle_key(key, _make_mock_stdscr())  # must not raise
+        assert action == ""
+        assert calls == [], f"{method} must not run on a bg row"
+
+    @pytest.mark.parametrize("key,method", PROJECT_KEYS)
+    def test_project_key_on_stale_row_is_noop(self, monkeypatch, key,
+                                              method):
+        # Stale selection: bg list was wiped by a refresh tick but
+        # render() hasn't clamped self.selected yet.
+        d = self._dash(monkeypatch, selected=1, bg_count=0)
+        calls = []
+        monkeypatch.setattr(Dashboard, method,
+                            lambda self, stdscr: calls.append(method))
+        d._handle_key(key, _make_mock_stdscr())  # must not raise
+        assert calls == []
+
+    @pytest.mark.parametrize("key,method", PROJECT_KEYS)
+    def test_project_key_on_project_row_still_works(self, monkeypatch,
+                                                    key, method):
+        d = self._dash(monkeypatch, selected=0)
+        calls = []
+        monkeypatch.setattr(Dashboard, method,
+                            lambda self, stdscr: calls.append(method))
+        d._handle_key(key, _make_mock_stdscr())
+        assert calls == [method]
+
+
+# ─── _do_exit_all pane targeting ───
+
+class TestDoExitAllTargetsClaudePane:
+    """`_do_exit_all` must resolve the claude-hosting pane and send
+    Escape + `/exit` to IT — never to the window target, which tmux
+    routes to the window's ACTIVE pane. In a split window with a
+    shell focused, sending to the window would inject `exit` into the
+    user's shell and kill the pane (the incident `auto_exit_idle`'s
+    find_claude_pid resolution already guards against)."""
+
+    def _pane(self, pane_id, pid, active=False, ignored=False,
+              claude=False):
+        from ccm_pane_state import PaneInfo
+        return PaneInfo(pane_id, pid, active, "cmd", ignored,
+                        int(pid) + 1 if claude else None)
+
+    def _dash(self, monkeypatch, panes, answer="y"):
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+        ]
+        monkeypatch.setattr("dashboard.ps_snapshot", lambda: "")
+        monkeypatch.setattr("dashboard.enumerate_window_panes",
+                            lambda win, ps: panes)
+        monkeypatch.setattr(Dashboard, "_prompt",
+                            lambda self, s, text: answer)
+        monkeypatch.setattr(Dashboard, "_show_message",
+                            lambda self, s, msg, duration=1: None)
+        monkeypatch.setattr(Dashboard, "_trigger_rebuild",
+                            lambda self: None)
+        captured = []
+        monkeypatch.setattr("dashboard.tmux_cmd",
+                            lambda *a, **k: captured.append(a) or "")
+        return d, captured
+
+    def test_exit_goes_to_claude_pane_not_active_shell(self,
+                                                       monkeypatch):
+        # Split window: active pane is a shell, claude lives in the
+        # OTHER pane. Every keystroke must target the claude pane.
+        panes = [
+            self._pane("%0", "100", active=True),            # active shell
+            self._pane("%1", "200", claude=True),            # claude
+        ]
+        d, captured = self._dash(monkeypatch, panes)
+        d._do_exit_all(_make_mock_stdscr())
+
+        sends = [c for c in captured if c and c[0] == "send-keys"]
+        assert sends, "expected send-keys calls for the exit sequence"
+        for c in sends:
+            assert c[2] == "%1", (
+                f"send-keys must target the claude pane %1, got {c}"
+            )
+        assert any("/exit" in c for c in sends)
+
+    def test_exit_skipped_when_no_claude_pane(self, monkeypatch):
+        # No pane hosts claude (window transitioning) — there is no
+        # safe target, so nothing may be sent.
+        panes = [
+            self._pane("%0", "100", active=True),
+            self._pane("%1", "200"),
+        ]
+        d, captured = self._dash(monkeypatch, panes)
+        d._do_exit_all(_make_mock_stdscr())
+
+        assert not [c for c in captured if c and c[0] == "send-keys"], (
+            f"no send-keys expected without a claude pane: {captured}"
+        )
+
+    def test_ignored_claude_pane_is_never_targeted(self, monkeypatch):
+        # The only claude pane is CCM_IGNORE'd — ccm keeps its hands
+        # off ignored panes, so the exit is skipped rather than sent
+        # to the window's active shell.
+        panes = [
+            self._pane("%0", "100", active=True),
+            self._pane("%1", "200", ignored=True, claude=True),
+        ]
+        d, captured = self._dash(monkeypatch, panes)
+        d._do_exit_all(_make_mock_stdscr())
+
+        assert not [c for c in captured if c and c[0] == "send-keys"], (
+            f"ignored claude pane must not receive /exit: {captured}"
+        )
+
+
+# ─── _do_attach auto-start routing ───
+
+class TestDoAttachAutoStart:
+    """Attaching to a SHELL project must launch Claude via
+    `ccm_window.auto_start_claude` (which resolves a shell-foreground
+    pane), not via a raw `send-keys -t <window>` that would type the
+    command into whatever pane is active."""
+
+    def test_shell_project_uses_safe_auto_start(self, monkeypatch):
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "SHELL"),
+        ]
+        d.selected = 0
+        started = []
+        monkeypatch.setattr("dashboard.auto_start_claude",
+                            lambda wt: started.append(wt))
+        monkeypatch.setattr("dashboard.reset_window_after_attach",
+                            lambda wt: None)
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+        captured = []
+        monkeypatch.setattr("dashboard.tmux_cmd",
+                            lambda *a, **k: captured.append(a) or "")
+
+        action = d._do_attach(_make_mock_stdscr())
+
+        assert action == "attached"
+        assert started == ["0:1"]
+        # The launch command itself must not be sent straight to the
+        # window target from the dashboard.
+        assert not any(
+            c and c[0] == "send-keys" and any("claude" in str(a) for a in c)
+            for c in captured
+        ), f"launch command bypassed auto_start_claude: {captured}"
+
+
+# ─── Interactive handlers: rename / remove / ignore / add / register / search ───
+#
+# These exercise the representative dialog flows behind the
+# dashboard's action keys (n/r/i/a/g//). Every prompt is stubbed via
+# Dashboard._prompt, every external effect via dashboard.tmux_cmd or
+# the imported cmd_* functions — the assertions pin WHICH command ran
+# with WHICH arguments and whether a rebuild was triggered, so a
+# regression in the dispatch logic (wrong branch, missing confirm
+# gate, lost rebuild) fails loudly.
+
+
+def _interaction_dash(monkeypatch, projects, prompt_answers=()):
+    """Dashboard wired for interaction tests.
+
+    Returns (dashboard, messages, rebuilds, tmux_calls). `_prompt`
+    yields `prompt_answers` in order (then None, which every handler
+    treats as cancel); `_show_message` and `_trigger_rebuild` record;
+    `tmux_cmd` records and returns ""."""
+    _stub_dashboard_environment(monkeypatch)
+    d = Dashboard(initial_mode="dashboard")
+    d.projects = projects
+    d.selected = 0
+    answers = iter(prompt_answers)
+    monkeypatch.setattr(
+        Dashboard, "_prompt",
+        lambda self, s, text, path_completion=False: next(answers, None))
+    messages = []
+    monkeypatch.setattr(
+        Dashboard, "_show_message",
+        lambda self, s, msg, duration=1: messages.append(msg))
+    rebuilds = []
+    monkeypatch.setattr(
+        Dashboard, "_trigger_rebuild",
+        lambda self: rebuilds.append("rebuild"))
+    tmux_calls = []
+    monkeypatch.setattr("dashboard.tmux_cmd",
+                        lambda *a, **k: tmux_calls.append(a) or "")
+    return d, messages, rebuilds, tmux_calls
+
+
+def _one_project(name="alpha", target="0:1", state="IDLE", **kw):
+    import ccm_core
+    return ccm_core.Project(target, target.split(":")[1], name,
+                            f"/tmp/{name}", state, **kw)
+
+
+class TestDoRename:
+    def test_rename_happy_path(self, monkeypatch):
+        d, messages, rebuilds, tmux_calls = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["beta-new"])
+        d._do_rename(_make_mock_stdscr())
+
+        assert ("set-option", "-wt", "0:1", "@ccm_project", "beta-new") in tmux_calls
+        assert ("rename-window", "-t", "0:1", "beta-new") in tmux_calls
+        assert rebuilds == ["rebuild"]
+        assert any("beta-new" in m for m in messages)
+
+    @pytest.mark.parametrize("answer", ["", None])
+    def test_rename_cancelled_touches_nothing(self, monkeypatch, answer):
+        d, messages, rebuilds, tmux_calls = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=[answer])
+        d._do_rename(_make_mock_stdscr())
+
+        assert tmux_calls == []
+        assert rebuilds == []
+
+
+class TestDoRemove:
+    def _cmds(self, monkeypatch):
+        calls = {"unregister": [], "remove": []}
+        monkeypatch.setattr(
+            "dashboard.cmd_unregister",
+            lambda name: calls["unregister"].append(name))
+        monkeypatch.setattr(
+            "dashboard.cmd_remove",
+            lambda name: calls["remove"].append(name))
+        return calls
+
+    def test_unregister_choice(self, monkeypatch):
+        calls = self._cmds(monkeypatch)
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["u"])
+        d._do_remove(_make_mock_stdscr())
+
+        assert calls == {"unregister": ["alpha"], "remove": []}
+        assert rebuilds == ["rebuild"]
+
+    def test_delete_choice(self, monkeypatch):
+        calls = self._cmds(monkeypatch)
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["d"])
+        d._do_remove(_make_mock_stdscr())
+
+        assert calls == {"unregister": [], "remove": ["alpha"]}
+        assert rebuilds == ["rebuild"]
+
+    @pytest.mark.parametrize("answer", ["", "x", None])
+    def test_unconfirmed_choice_is_noop(self, monkeypatch, answer):
+        """Anything but u/d — including Esc (None) — must not touch
+        the project: remove is destructive and gated on an explicit
+        confirmation letter."""
+        calls = self._cmds(monkeypatch)
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=[answer])
+        d._do_remove(_make_mock_stdscr())
+
+        assert calls == {"unregister": [], "remove": []}
+        assert rebuilds == []
+
+    def test_command_failure_shows_error_and_skips_rebuild(self, monkeypatch):
+        import ccm_core
+
+        def _boom(name):
+            raise ccm_core.CCMError("no such project")
+        monkeypatch.setattr("dashboard.cmd_unregister", _boom)
+        monkeypatch.setattr("dashboard.cmd_remove", lambda name: None)
+
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["u"])
+        d._do_remove(_make_mock_stdscr())
+
+        assert any("no such project" in m for m in messages)
+        assert rebuilds == []
+
+
+class TestDoIgnoreToggle:
+    def _cmds(self, monkeypatch):
+        calls = {"ignore": [], "unignore": []}
+        monkeypatch.setattr("dashboard.cmd_ignore",
+                            lambda name: calls["ignore"].append(name))
+        monkeypatch.setattr("dashboard.cmd_unignore",
+                            lambda name: calls["unignore"].append(name))
+        return calls
+
+    def test_plain_project_gets_ignored(self, monkeypatch):
+        calls = self._cmds(monkeypatch)
+        d, _, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project(ignored_panes=0)])
+        d._do_ignore_toggle(_make_mock_stdscr())
+
+        assert calls == {"ignore": ["alpha"], "unignore": []}
+        assert rebuilds == ["rebuild"]
+
+    def test_ignored_project_gets_unignored(self, monkeypatch):
+        calls = self._cmds(monkeypatch)
+        d, _, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project(ignored_panes=1)])
+        d._do_ignore_toggle(_make_mock_stdscr())
+
+        assert calls == {"ignore": [], "unignore": ["alpha"]}
+        assert rebuilds == ["rebuild"]
+
+
+class TestDoAdd:
+    def _cmd_add(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "dashboard.cmd_add",
+            lambda directory, name, create_dir=False:
+                calls.append((directory, name, create_dir)))
+        return calls
+
+    def test_add_existing_dir_default_name(self, monkeypatch):
+        calls = self._cmd_add(monkeypatch)
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+        d, _, rebuilds, _ = _interaction_dash(
+            monkeypatch, [],
+            prompt_answers=["/tmp/existing", ""])  # empty name → basename
+        d._do_add(_make_mock_stdscr())
+
+        assert calls == [("/tmp/existing", "existing", False)]
+        assert rebuilds == ["rebuild"]
+
+    def test_add_cancelled_at_directory_prompt(self, monkeypatch):
+        calls = self._cmd_add(monkeypatch)
+        d, _, rebuilds, _ = _interaction_dash(
+            monkeypatch, [], prompt_answers=[""])
+        d._do_add(_make_mock_stdscr())
+
+        assert calls == []
+        assert rebuilds == []
+
+    def test_add_missing_parent_shows_error(self, monkeypatch):
+        calls = self._cmd_add(monkeypatch)
+        monkeypatch.setattr("os.path.isdir", lambda p: False)
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [], prompt_answers=["/no/such/parent/child"])
+        d._do_add(_make_mock_stdscr())
+
+        assert calls == []
+        assert any("Parent does not exist" in m for m in messages)
+
+
+class TestDoRegister:
+    def test_register_untagged_window(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "dashboard.cmd_register",
+            lambda win, name: calls.append((win, name)))
+        d, _, rebuilds, _ = _interaction_dash(
+            monkeypatch, [], prompt_answers=["free", ""])  # empty name → win
+        monkeypatch.setattr(
+            "dashboard.tmux_cmd",
+            lambda *a, **k: ("0:1\talpha\tproj\n0:2\tfree\t"
+                             if a[0] == "list-windows" else ""))
+        d._do_register(_make_mock_stdscr())
+
+        assert calls == [("free", "free")]
+        assert rebuilds == ["rebuild"]
+
+    def test_no_untagged_windows(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr("dashboard.cmd_register",
+                            lambda win, name: calls.append((win, name)))
+        d, messages, rebuilds, _ = _interaction_dash(monkeypatch, [])
+        monkeypatch.setattr(
+            "dashboard.tmux_cmd",
+            lambda *a, **k: ("0:1\talpha\tproj"
+                             if a[0] == "list-windows" else ""))
+        d._do_register(_make_mock_stdscr())
+
+        assert calls == []
+        assert any("No untagged windows" in m for m in messages)
+
+
+class TestDoSearch:
+    def _dash(self, monkeypatch):
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [
+            ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
+            ccm_core.Project("0:2", "2", "beta", "/tmp/b", "IDLE"),
+            ccm_core.Project("0:3", "3", "gamma", "/tmp/c", "IDLE"),
+        ]
+        d.selected = 0
+        attached = []
+        monkeypatch.setattr(
+            Dashboard, "_do_attach",
+            lambda self, s: attached.append(self.selected) or "attached")
+        return d, attached
+
+    def _stdscr(self, keys):
+        stdscr = _make_mock_stdscr()
+        stdscr.get_wch.side_effect = list(keys)
+        return stdscr
+
+    def test_filter_and_enter_attaches_match(self, monkeypatch):
+        """Typing 'ga' narrows to gamma; Enter attaches the original
+        project index (2), not the position in the filtered list."""
+        d, attached = self._dash(monkeypatch)
+        action = d._do_search(self._stdscr(["g", "a", "\n"]))
+
+        assert action == "attached"
+        assert attached == [2]
+        assert d.selected == 2
+
+    def test_enter_with_empty_query_attaches_first(self, monkeypatch):
+        d, attached = self._dash(monkeypatch)
+        action = d._do_search(self._stdscr(["\n"]))
+
+        assert action == "attached"
+        assert attached == [0]
+
+    def test_esc_cancels_without_attaching(self, monkeypatch):
+        d, attached = self._dash(monkeypatch)
+        action = d._do_search(self._stdscr(["b", "\x1b"]))
+
+        assert action == ""
+        assert attached == []
+        assert d.selected == 0
+
+    def test_backspace_narrows_then_widens_filter(self, monkeypatch):
+        """'be' would match beta only; deleting back to 'b' keeps beta
+        but Enter must still land on the beta row (index 1)."""
+        d, attached = self._dash(monkeypatch)
+        action = d._do_search(self._stdscr(["b", "e", "\x7f", "\n"]))
+
+        assert action == "attached"
+        assert attached == [1]

@@ -170,3 +170,92 @@ class TestAutoFocusAttentionPane:
         assert select_calls == [], (
             f"Sliver pane should be excluded from auto-focus: {select_calls}"
         )
+
+
+class TestAutoStartClaudeLaunchPane:
+    """`auto_start_claude` types the launch command into a
+    shell-foreground pane only. A bare `send-keys -t <window>` lands
+    in the window's ACTIVE pane — in a split window that can be an
+    editor or pager, where the `claude --continue ...` string would
+    be inserted as text instead of starting Claude. Mirrors the
+    SHELL-foreground guard `ccm send` applies via
+    `_resolve_delivery_pane`.
+
+    list-panes rows use `enumerate_window_panes`' format:
+    pane_id \\t pane_pid \\t pane_active \\t current_command \\t @ccm_ignore.
+    """
+
+    def _run(self, monkeypatch, panes_raw, auto_start="on"):
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return auto_start
+            if args[0] == "list-panes":
+                return panes_raw
+            if args[0] == "send-keys":
+                sent.append(args)
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        ccm_window.auto_start_claude("0:5")
+        return sent
+
+    def test_active_shell_pane_receives_launch(self, monkeypatch):
+        sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t")
+        assert len(sent) == 1
+        assert sent[0][:3] == ("send-keys", "-t", "%0")
+        assert sent[0][-1] == "Enter"
+
+    def test_non_shell_active_pane_redirects_to_shell_pane(
+        self, monkeypatch
+    ):
+        """Active pane runs vim; the other pane is a shell. The
+        launch command must go to the shell pane, never into vim."""
+        sent = self._run(
+            monkeypatch,
+            "%0\t100\t1\tvim\t\n"
+            "%1\t200\t0\tzsh\t",
+        )
+        assert len(sent) == 1
+        assert sent[0][:3] == ("send-keys", "-t", "%1")
+
+    def test_no_send_when_active_not_shell_and_shells_ambiguous(
+        self, monkeypatch
+    ):
+        """Active pane is vim and TWO shell panes exist — no safe
+        unique target, so nothing is sent at all."""
+        sent = self._run(
+            monkeypatch,
+            "%0\t100\t1\tvim\t\n"
+            "%1\t200\t0\tzsh\t\n"
+            "%2\t300\t0\tbash\t",
+        )
+        assert sent == []
+
+    def test_ignored_shell_pane_is_not_a_launch_target(self, monkeypatch):
+        """A CCM_IGNORE'd shell pane must not receive the launch
+        command either — ignore means ccm keeps its hands off it."""
+        sent = self._run(
+            monkeypatch,
+            "%0\t100\t1\tvim\t\n"
+            "%1\t200\t0\tzsh\t1",
+        )
+        assert sent == []
+
+    def test_enumeration_failure_falls_back_to_window_target(
+        self, monkeypatch
+    ):
+        """tmux error → empty enumeration → preserve the old
+        defensive fallback (send to the window target), matching
+        `_resolve_delivery_pane`'s policy of skipping the guard when
+        pane info is unavailable."""
+        sent = self._run(monkeypatch, "")
+        assert len(sent) == 1
+        assert sent[0][:3] == ("send-keys", "-t", "0:5")
+
+    def test_auto_start_setting_off_sends_nothing(self, monkeypatch):
+        sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t",
+                         auto_start="off")
+        assert sent == []

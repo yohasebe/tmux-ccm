@@ -37,6 +37,11 @@ class TestCmdSend:
         monkeypatch.setattr(
             ccm_core, "build_project_list", lambda fast=False: [project],
         )
+        # _resolve_delivery_pane shells out to ps; with tmux_cmd stubbed
+        # to "" pane enumeration comes back empty either way, so an
+        # empty snapshot preserves the window-target fallback these
+        # tests assert against.
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
         # Non-interactive by default so the confirmation prompt is skipped
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
@@ -209,6 +214,104 @@ class TestCmdSend:
             ccm_send.cmd_send(["#7", "hello"])
         calls = self._tmux_calls(mock_tmux)
         assert any("0:7" in c for c in calls)
+
+    def test_send_prefers_name_match_over_numeric_index(self, monkeypatch):
+        """A legacy digit-only project name ("123") must resolve by
+        NAME, not as window index 123. validate_name now rejects new
+        digit-only names, but projects created before that guard stay
+        reachable — name match wins, `#123` remains the explicit
+        index escape hatch."""
+        project = self._make_project(name="123", win_target="0:7")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+            ccm_send.cmd_send(["123", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "0:7", "-l", "--", "hello") in calls
+
+    # --- same-directory second window (seen_dirs dedup fallout) ---
+
+    def _patch_same_dir_second_window(self, monkeypatch, sibling_state):
+        """Stub resolution for a send to `dup`, a second window
+        (0:9) registered against the same directory as the tracked
+        sibling `main` (0:5). build_project_list drops `dup` via
+        seen_dirs, so only the sibling appears in the project list."""
+        sibling = ccm_core.Project(
+            win_target="0:5", win_idx="5", name="main",
+            directory="/tmp/shared", state=sibling_state,
+        )
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(
+            ccm_core, "find_window",
+            lambda sess, name: "9" if name == "dup" else None,
+        )
+        monkeypatch.setattr(
+            ccm_core, "build_project_list", lambda fast=False: [sibling],
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+
+        def fake_tmux(*args):
+            if args[0] == "show-option":
+                if "@ccm_project" in args:
+                    return "dup"
+                if "@ccm_dir" in args:
+                    return "/tmp/shared"
+            return ""
+        return fake_tmux
+
+    def test_send_same_dir_second_window_accepted(self, monkeypatch):
+        """Regression: a send to the second same-dir window used to
+        die with "not a registered ccm project" because the window is
+        missing from build_project_list (seen_dirs dedup). The send
+        must succeed, borrowing the tracked sibling's state for
+        gating while delivering to the target window itself."""
+        fake_tmux = self._patch_same_dir_second_window(monkeypatch, "IDLE")
+        with patch("ccm_core.tmux_cmd", side_effect=fake_tmux) as mock_tmux:
+            ccm_send.cmd_send(["dup", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        # Delivery targets the SECOND window (0:9), not the sibling.
+        assert ("send-keys", "-t", "0:9", "-l", "--", "hello") in calls
+
+    def test_send_same_dir_second_window_gated_by_sibling_state(
+        self, monkeypatch, capsys
+    ):
+        """The borrowed gating state comes from the tracked sibling:
+        sibling PERMIT → send refused. The refusal must name the
+        window the user addressed ("dup"), not the sibling."""
+        fake_tmux = self._patch_same_dir_second_window(monkeypatch, "PERMIT")
+        with patch("ccm_core.tmux_cmd", side_effect=fake_tmux), \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["dup", "hello"])
+        err = capsys.readouterr().err
+        assert "dup is in PERMIT state" in err
+
+    def test_send_same_dir_second_window_sibling_shell_refused(
+        self, monkeypatch, capsys
+    ):
+        """Order-dependent limit of the seen_dirs dedup, pinned as a
+        regression test: when the FIRST same-dir window (the one the
+        dedup keeps) is a bare shell and the second window hosts the
+        running claude, the borrowed gating state is SHELL, so a
+        plain send to the second window is refused even though Claude
+        is actually running there. The current approximation accepts
+        this — the workaround is `--start`, or swapping which window
+        was opened first."""
+        fake_tmux = self._patch_same_dir_second_window(monkeypatch, "SHELL")
+        with patch("ccm_core.tmux_cmd", side_effect=fake_tmux), \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["dup", "hello"])
+        err = capsys.readouterr().err
+        assert "dup is in SHELL state" in err
+
+    def test_send_unregistered_window_still_rejected(self, monkeypatch):
+        """A window with no ccm tags at all (empty @ccm_project /
+        @ccm_dir) must still die as unregistered — the same-dir
+        fallback is not a blanket bypass."""
+        self._patch_resolution(monkeypatch)
+        with patch("ccm_core.tmux_cmd", return_value=""), \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["6", "hello"])
 
     # --- state gating ---
 
@@ -408,6 +511,7 @@ class TestCmdSend:
             ccm_core, "build_project_list",
             lambda fast=False: [next(states)],
         )
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         monkeypatch.setattr("time.sleep", lambda _s: None)
@@ -575,10 +679,13 @@ class TestDeliveryPaneResolution:
     The fix targets the claude-hosting pane id directly."""
 
     # Two-pane window: %72 is the active zsh, %51 hosts claude
-    # (pane shell pid 12077 with a claude child).
+    # (pane shell pid 12077 with a claude child). A pane whose
+    # foreground process is claude reports `claude` as
+    # pane_current_command — `zsh` there would read as a Ctrl-Z'd
+    # claude (SHELL) to detect_pane_state.
     _PANES_CLAUDE_INACTIVE = (
         "%72\t81413\t1\tzsh\n"
-        "%51\t12077\t0\tzsh"
+        "%51\t12077\t0\tclaude"
     )
     _PS_WITH_CLAUDE = (
         "61814 12077 61814 claude\n"
@@ -680,7 +787,7 @@ class TestDeliveryPaneResolution:
             "61999 81413 61999 claude"
         )
         self._patch_resolution(monkeypatch, project, ps)
-        panes = "%72\t81413\t1\tzsh\n%51\t12077\t0\tzsh"
+        panes = "%72\t81413\t1\tclaude\n%51\t12077\t0\tzsh"
         stub, calls = self._tmux_stub(panes)
         with patch("ccm_core.tmux_cmd", side_effect=stub):
             ccm_send.cmd_send(["blog", "hello"])
@@ -750,6 +857,9 @@ class TestSendTrace:
         monkeypatch.setattr(
             ccm_core, "build_project_list", lambda fast=False: [project],
         )
+        # See TestCmdSend._patch_resolution — _resolve_delivery_pane
+        # must not shell out to the real ps.
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         return project
@@ -866,7 +976,8 @@ class TestSendPeer:
         monkeypatch.setattr(ccm_send, "enumerate_window_panes",
                             lambda win, ps: panes)
         monkeypatch.setattr(ccm_send, "detect_pane_state",
-                            lambda pid, pane, ps, pgid: peer_state)
+                            lambda pid, pane, ps, pgid,
+                            current_command="": peer_state)
 
         calls = []
 
@@ -942,3 +1053,132 @@ class TestSendPeer:
         self._patch_peer(monkeypatch, peer_state="SHELL")
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["--peer", "hi"])
+
+
+class TestSendPreTypeRecheck:
+    """TOCTOU guard: the initial state gate runs on a
+    `build_project_list` snapshot, and the interactive confirmation
+    prompt can block for any length of time. If the target
+    transitions to PERMIT while the operator reads the preview, the
+    stale verdict would type the message into the permission dialog
+    — breaking the "PERMIT never receives keystrokes" safety story.
+    `_recheck_delivery_state` re-detects the delivery pane's raw
+    state immediately before typing and aborts on danger."""
+
+    def _pane(self, pane_id="%51", pid="12077", command="claude",
+              claude=True):
+        from ccm_pane_state import PaneInfo
+        return PaneInfo(pane_id, pid, True, command, False,
+                        int(pid) + 1 if claude else None)
+
+    def _patch(self, monkeypatch, recheck_state, project_state="IDLE",
+               interactive=False, pane_command="claude", pane_claude=True):
+        """Stub resolution so the initial gate sees `project_state`,
+        and the pre-type re-check sees `recheck_state`. Returns the
+        list of tmux_cmd call args."""
+        project = ccm_core.Project(
+            win_target="0:5", win_idx="5", name="blog",
+            directory="/tmp/blog", state=project_state,
+        )
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(
+            ccm_core, "find_window",
+            lambda sess, name: project.win_idx if name == project.name else None,
+        )
+        monkeypatch.setattr(
+            ccm_core, "build_project_list", lambda fast=False: [project],
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: interactive)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: interactive)
+        panes = ([] if recheck_state is None
+                 else [self._pane(command=pane_command, claude=pane_claude)])
+        monkeypatch.setattr(ccm_send, "enumerate_window_panes",
+                            lambda win, ps: panes)
+        monkeypatch.setattr(ccm_send, "detect_pane_state",
+                            lambda *a, **k: recheck_state)
+        calls = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *a: calls.append(a) or "")
+        return calls
+
+    def _literal_sent(self, calls, message="hello"):
+        return any(
+            c[:3] == ("send-keys", "-t", "%51") and "-l" in c
+            and message in c
+            for c in calls
+        )
+
+    def test_recheck_permit_after_confirmation_refused(
+        self, monkeypatch, capsys,
+    ):
+        """The reported bug: gate sees IDLE, the operator confirms
+        ("y") after the target has transitioned to PERMIT. Without
+        the re-check the body would land in the dialog."""
+        calls = self._patch(monkeypatch, "PERMIT", interactive=True)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "hello"])
+        assert not self._literal_sent(calls), \
+            "body typed into a PERMIT dialog after confirmation"
+        assert "PERMIT" in capsys.readouterr().err
+
+    def test_recheck_permit_refused_even_with_force(self, monkeypatch):
+        """--force overrides BUSY, never PERMIT — also on re-check."""
+        calls = self._patch(monkeypatch, "PERMIT")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "--force", "hello"])
+        assert not self._literal_sent(calls)
+
+    def test_recheck_shell_refused(self, monkeypatch):
+        """Claude exited between the gate and the send: the body
+        would be typed into a bare shell (ringi-incident class)."""
+        calls = self._patch(monkeypatch, "SHELL")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "hello"])
+        assert not self._literal_sent(calls)
+
+    def test_recheck_shell_after_start_launch_allowed(self, monkeypatch):
+        """The --start exemption (did_launch): we just launched Claude
+        and the wait loop confirmed IDLE a moment ago, so a raw=SHELL
+        re-check reading is detection lag (MCP loading can hide the
+        `❯` prompt), not a dead session — the send must proceed.
+        Pairs with test_recheck_shell_refused (no launch → refuse)."""
+        calls = self._patch(monkeypatch, "SHELL", project_state="SHELL",
+                            pane_command="zsh", pane_claude=False)
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
+                            lambda *a, **k: "IDLE")
+        ccm_send.cmd_send(["blog", "--start", "hi"])
+        assert self._literal_sent(calls, "hi")
+
+    def test_recheck_busy_refused_without_force(self, monkeypatch):
+        """A target that became BUSY during confirmation gets the
+        same policy as the initial gate: refuse without --force."""
+        calls = self._patch(monkeypatch, "BUSY")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "hello"])
+        assert not self._literal_sent(calls)
+
+    def test_recheck_busy_sends_with_force(self, monkeypatch):
+        calls = self._patch(monkeypatch, "BUSY")
+        ccm_send.cmd_send(["blog", "--force", "hello"])
+        assert self._literal_sent(calls)
+
+    def test_recheck_idle_proceeds(self, monkeypatch):
+        """Sanity: when the re-check agrees with the gate, the send
+        goes through unchanged."""
+        calls = self._patch(monkeypatch, "IDLE")
+        ccm_send.cmd_send(["blog", "hello"])
+        assert self._literal_sent(calls)
+
+    def test_recheck_unresolvable_fails_open(self, monkeypatch):
+        """Pane enumeration failing at re-check time (tmux hiccup)
+        must not break sends that worked before the guard existed —
+        matching the delivery-pane resolution fallback."""
+        calls = self._patch(monkeypatch, None)
+        ccm_send.cmd_send(["blog", "hello"])
+        # Delivery resolution also fell back to the window target.
+        assert any(
+            c[:3] == ("send-keys", "-t", "0:5") and "-l" in c
+            for c in calls
+        )

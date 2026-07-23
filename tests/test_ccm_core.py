@@ -409,6 +409,19 @@ class TestValidateName:
     def test_tabs_and_newlines(self):
         assert ccm_core.validate_name("a\tb\nc") == "a-b-c"
 
+    def test_digit_only_rejected(self):
+        """A digit-only name collides with window-index addressing in
+        `ccm send` / `ccm attach` ("123" parses as index 123), so it
+        is rejected at creation."""
+        assert ccm_core.validate_name("123") == ""
+        assert ccm_core.validate_name("0") == ""
+
+    def test_name_with_digits_allowed(self):
+        """Only digit-ONLY names are ambiguous; names that merely
+        contain digits stay valid."""
+        assert ccm_core.validate_name("proj123") == "proj123"
+        assert ccm_core.validate_name("v2") == "v2"
+
 
 # ─── find_window / project_exists ───
 

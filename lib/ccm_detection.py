@@ -141,7 +141,14 @@ def build_detection_context(win_target, project_dir, prev_state,
     hook_ts = 0
     hook_age = -1
     if project_dir:
-        sig = ccm_signals.read_hook_signal(project_dir, session_id=session_id)
+        # `session_id or ""`: when no session_id was resolved (SHELL
+        # window — no claude pid — or session_info unreadable), the
+        # `@ccm_session_id` cache was already cleared above, so "" is
+        # the authoritative "no session" form. Passing None here would
+        # make `read_hook_signal` fall back to a per-project
+        # `list-windows -a` tmux subprocess on EVERY detection cycle.
+        sig = ccm_signals.read_hook_signal(
+            project_dir, session_id=session_id or "")
         if sig is not None:
             hook_ts, hook_state, _detail = sig
             # SHELL hook signal is ignored: process tree is authoritative
@@ -300,7 +307,12 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
 
     event_log_state = None
     if _event_log_enabled():
-        events = ccm_signals.read_events_tail(project_dir, session_id=ctx.session_id)
+        # `ctx.session_id or ""` — same N+1 guard as the hook-signal
+        # read in build_detection_context: a SHELL window has no
+        # session_id, and None would trigger a per-cycle tmux
+        # `list-windows -a` fallback inside `_events_log_path`.
+        events = ccm_signals.read_events_tail(
+            project_dir, session_id=ctx.session_id or "")
         # pid_present: the legacy raw detection already resolved
         # SHELL when no claude process is present, so raw not in
         # ("SHELL", "DOWN") is a reliable proxy without a second ps scan.

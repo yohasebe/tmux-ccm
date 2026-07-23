@@ -28,10 +28,14 @@ class TestBuildDetailEntriesActive:
     active-window comparison must use the full session:index target.
     """
 
-    def test_only_target_match_is_bold(self):
+    def test_only_target_match_is_bold(self, monkeypatch):
         """Two windows share index '2' but live in different sessions —
         only the one whose full target matches current_win_target should
         be highlighted as active."""
+        # BUSY entries probe the stale-signal suffix, which reads the
+        # hook signal via tmux; stub it to "no signal".
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
+                            lambda d, session_id=None: None)
         projects = [
             make_project("0:2", "2", "ccm-dev", "SHELL"),
             make_project("1:2", "2", "sideproject", "BUSY"),
@@ -55,8 +59,10 @@ class TestBuildDetailEntriesActive:
         )
         assert all("bold" not in e for e in entries)
 
-    def test_mode1_uses_same_compare(self):
+    def test_mode1_uses_same_compare(self, monkeypatch):
         """Mode 1 (with_extras=False) shares the bold rule."""
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
+                            lambda d, session_id=None: None)
         projects = [
             make_project("0:2", "2", "ccm-dev", "SHELL"),
             make_project("1:2", "2", "sideproject", "BUSY"),
@@ -82,7 +88,7 @@ class TestStaleSignalSuffixInStatusBar:
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d: (ts - 480, "BUSY", ""))
+                            lambda d, session_id=None: (ts - 480, "BUSY", ""))
         entries = inject_status.build_detail_entries(
             [make_project("0:2", "2", "ccm-dev", "BUSY")],
             with_extras=False, current_win_target="0:2",
@@ -93,7 +99,7 @@ class TestStaleSignalSuffixInStatusBar:
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d: (ts - 120, "PERMIT", ""))
+                            lambda d, session_id=None: (ts - 120, "PERMIT", ""))
         entries = inject_status.build_detail_entries(
             [make_project("0:2", "2", "ccm-dev", "PERMIT")],
             with_extras=True, current_win_target="0:2",
@@ -106,7 +112,7 @@ class TestStaleSignalSuffixInStatusBar:
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d: (ts - 5, "BUSY", ""))
+                            lambda d, session_id=None: (ts - 5, "BUSY", ""))
         entries = inject_status.build_detail_entries(
             [make_project("0:2", "2", "ccm-dev", "BUSY")],
             with_extras=False, current_win_target="0:2",
@@ -121,7 +127,7 @@ class TestStaleSignalSuffixInStatusBar:
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d: (ts - 600, "BUSY", ""))
+                            lambda d, session_id=None: (ts - 600, "BUSY", ""))
         for state in ("IDLE", "SHELL", "DOWN"):
             entries = inject_status.build_detail_entries(
                 [make_project("0:2", "2", "ccm-dev", state)],
@@ -224,7 +230,7 @@ class TestPaneCountSuffixInStatusBar:
         ts = 9_999_999
         monkeypatch.setattr("time.time", lambda: ts)
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d: (ts - 600, "PERMIT", ""))
+                            lambda d, session_id=None: (ts - 600, "PERMIT", ""))
         p = self._make(2, state="PERMIT")
         entries = inject_status.build_detail_entries(
             [p],
@@ -235,6 +241,71 @@ class TestPaneCountSuffixInStatusBar:
         assert "(10m)" in entries[0]
         assert "#[fg=cyan]2" in entries[0]
         assert entries[0].index("#[fg=cyan]2") < entries[0].index("(10m)")
+
+
+# ─── fast path: no maintenance side effects ───
+
+class TestFastPathSkipsMaintenanceSideEffects:
+    """`inject-status --fast` is the focus-refresh redraw path: it
+    bypasses the flock precisely so it can run CONCURRENTLY with a
+    lock-holding periodic instance. If it also ran the maintenance
+    tasks, both instances could pass the idle check for the same
+    window and double-send the Escape + `/exit` + Enter sequence —
+    the late copy landing in the post-exit shell pane, where the
+    literal `exit` kills the user's shell (the incident shape
+    documented in ccm_runtime.auto_exit_idle). Those tasks also cost
+    several tmux subprocesses per call, contradicting the fast
+    path's ~10 ms redraw budget. So the fast path must skip
+    window-name updates, the notify-transition cache, periodic
+    autosave, and idle auto-exit — and only render the status bar."""
+
+    def _run(self, monkeypatch, tmp_path, force_fast):
+        calls = {"window_names": 0, "autosave": 0, "auto_exit": 0}
+        monkeypatch.setattr(inject_status, "CCM_TMP_DIR", str(tmp_path))
+
+        def fake_tmux_cmd(*args, **kwargs):
+            if args[:2] == ("display-message", "-p"):
+                if "#{client_width}" in args:
+                    return "120"
+                return "0:1"
+            return ""
+
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake_tmux_cmd)
+        monkeypatch.setattr(inject_status, "tmux_batch", lambda *cmds: None)
+        monkeypatch.setattr(
+            inject_status, "build_project_list",
+            lambda fast=False: [make_project("0:1", "1", "proj", "SHELL")])
+        monkeypatch.setattr(inject_status, "detect_external_status_change",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "sanitize_orig_status",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "update_window_names",
+                            lambda p: calls.__setitem__(
+                                "window_names", calls["window_names"] + 1))
+        monkeypatch.setattr(inject_status, "periodic_autosave",
+                            lambda: calls.__setitem__(
+                                "autosave", calls["autosave"] + 1))
+        monkeypatch.setattr(inject_status, "auto_exit_idle",
+                            lambda p: calls.__setitem__(
+                                "auto_exit", calls["auto_exit"] + 1))
+        monkeypatch.setattr(inject_status, "notify", lambda *a, **k: None)
+        monkeypatch.setattr(inject_status, "signal_age_suffix",
+                            lambda d, s, session_id=None: "")
+        inject_status._inject_status_impl(force_fast=force_fast)
+        return calls
+
+    def test_fast_path_skips_all_maintenance(self, monkeypatch, tmp_path):
+        calls = self._run(monkeypatch, tmp_path, force_fast=True)
+        assert calls == {"window_names": 0, "autosave": 0, "auto_exit": 0}
+        assert not (tmp_path / "notify-cache").exists(), (
+            "fast path must not write the notify-transition cache")
+
+    def test_periodic_path_still_runs_maintenance(self, monkeypatch, tmp_path):
+        calls = self._run(monkeypatch, tmp_path, force_fast=False)
+        assert calls == {"window_names": 1, "autosave": 1, "auto_exit": 1}
+        assert (tmp_path / "notify-cache").exists(), (
+            "periodic path must still record states for transition "
+            "notifications")
 
 
 # ─── Mode 2 helpers ───
@@ -342,9 +413,10 @@ class TestMode2StatusLineCeiling:
                             lambda: None)
         monkeypatch.setattr(inject_status, "periodic_autosave", lambda: None)
         monkeypatch.setattr(inject_status, "auto_exit_idle", lambda p: None)
+        monkeypatch.setattr(inject_status, "update_window_names", lambda p: None)
         monkeypatch.setattr(inject_status, "notify", lambda *a, **k: None)
         monkeypatch.setattr(inject_status, "signal_age_suffix",
-                            lambda d, s: "")
+                            lambda d, s, session_id=None: "")
         monkeypatch.setattr(
             inject_status, "read_project_notify_marker", lambda d: 0.0,
             raising=False)
@@ -450,9 +522,10 @@ class TestCJKWidthInLayout:
                             lambda: None)
         monkeypatch.setattr(inject_status, "periodic_autosave", lambda: None)
         monkeypatch.setattr(inject_status, "auto_exit_idle", lambda p: None)
+        monkeypatch.setattr(inject_status, "update_window_names", lambda p: None)
         monkeypatch.setattr(inject_status, "notify", lambda *a, **k: None)
         monkeypatch.setattr(inject_status, "signal_age_suffix",
-                            lambda d, s: "")
+                            lambda d, s, session_id=None: "")
         inject_status._inject_status_impl(force_fast=True)
 
         def lines_used(batches):

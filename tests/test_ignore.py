@@ -147,6 +147,10 @@ class TestPrimaryPidSkip:
         monkeypatch.setattr(ccm_detection, "detect_window_raw",
                             lambda *a, **k: "IDLE")
         monkeypatch.setattr(ccm_core, "find_process_age", lambda *a: 100)
+        # build_detection_context touches tmux for the @ccm_session_id
+        # cache and hook-signal lookup; those reads are irrelevant to
+        # the primary-pid probe order this test pins.
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **k: "")
         try:
             ccm_detection.build_detection_context(
                 "0:1", "/tmp/x", "IDLE", cache, [], "999")

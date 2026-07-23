@@ -116,6 +116,7 @@ class TestInjectStatusSmoke:
 
         # Stub every external call sites reaches.
         with patch("inject_status.tmux_cmd", return_value=""), \
+             patch("inject_status.tmux_batch"), \
              patch("inject_status.build_project_list", return_value=[]), \
              patch("inject_status.update_window_names"), \
              patch("inject_status.periodic_autosave"), \

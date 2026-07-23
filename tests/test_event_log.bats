@@ -314,6 +314,57 @@ _latest_type() {
     [[ "$output" == "notify_idle" ]]
 }
 
+# ─── idle_prompt BUSY-signal age guard ───
+# idle_prompt is delivered 10-60s+ late (anthropics/claude-code#5186),
+# so a BUSY signal written a few seconds ago (PreToolUse of a session
+# that is actively working) must survive. Only a BUSY signal OLDER
+# than CCM_IDLE_PROMPT_GUARD_SEC (default 60) may be cleared — an
+# older one necessarily predates the point where Claude decided the
+# session was idle. The pre-fix guard (`ts >= NOW`) only protected
+# signals from the same second, so a 5-second-old legitimate BUSY
+# signal was deleted and a working session falsely dropped to IDLE
+# (which feeds auto-exit's kill path).
+
+_run_idle_prompt() {
+    printf '%s' "$(_with_session \
+        '{"hook_event_name":"Notification","notification_type":"idle_prompt","cwd":"/x/test-project"}')" \
+        | env "$@" bash "${CCM_ROOT}/hooks/on-notification.sh"
+}
+
+@test "on-notification.sh: idle_prompt keeps a fresh BUSY signal" {
+    # BUSY written ~now (e.g. a PreToolUse from ongoing work that
+    # started after Claude queued the delayed idle_prompt).
+    printf '%s BUSY' "$(date +%s)" > "${HOOK_DIR}/${KEY}"
+    _run_idle_prompt
+    [[ -f "${HOOK_DIR}/${KEY}" ]]
+    run cat "${HOOK_DIR}/${KEY}"
+    [[ "$output" == *"BUSY"* ]]
+}
+
+@test "on-notification.sh: idle_prompt clears a stale BUSY signal" {
+    # BUSY written 120s ago — older than the maximum documented
+    # idle_prompt delay, so it genuinely belongs to the idle period.
+    printf '%s BUSY' "$(( $(date +%s) - 120 ))" > "${HOOK_DIR}/${KEY}"
+    _run_idle_prompt
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-notification.sh: CCM_IDLE_PROMPT_GUARD_SEC=0 restores clear-on-arrival" {
+    # Operators who run a Claude Code build without the idle_prompt
+    # delay can opt out of the guard entirely.
+    printf '%s BUSY' "$(date +%s)" > "${HOOK_DIR}/${KEY}"
+    _run_idle_prompt CCM_IDLE_PROMPT_GUARD_SEC=0
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-notification.sh: idle_prompt clears a corrupt BUSY signal" {
+    # A non-numeric timestamp must fail OPEN (delete) rather than
+    # silently disable the guard forever.
+    printf 'garbage BUSY' > "${HOOK_DIR}/${KEY}"
+    _run_idle_prompt
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
 @test "on-permission-request.sh: emits permit_req event" {
     _run_hook on-permission-request.sh \
         '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","tool_name":"Bash","tool_input":{"command":"ls"}}'

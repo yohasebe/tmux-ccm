@@ -26,6 +26,12 @@ state-based gating policy is the safety story:
     tail so the operator can see exactly what happened and finish
     by hand
 
+The gating snapshot can go stale while the interactive confirmation
+prompt blocks, so the delivery pane's raw state is re-checked via
+`detect_pane_state` immediately before typing (`_recheck_delivery_state`)
+— a target that transitioned to PERMIT / SHELL / BUSY in the meantime
+aborts the send instead of receiving the body.
+
 Multi-line messages (`\\n` in body) are converted to `M-Enter`
 between lines + a final `Enter`, matching Claude Code's "newline
 without submit" key convention so a multi-line prompt arrives as
@@ -44,7 +50,6 @@ targeting keystrokes (and captures) at that pane id instead of the
 window.
 """
 
-import os
 import os
 import sys
 import time
@@ -352,6 +357,40 @@ def _resolve_peer_pane():
     return win_target, peers[0][0], peers[0][1]
 
 
+def _recheck_delivery_state(win_target, pane_target):
+    """Re-detect the delivery pane's raw state immediately before
+    typing (TOCTOU guard).
+
+    The state gate in `cmd_send` runs on a `build_project_list`
+    snapshot, and the interactive confirmation prompt can block for
+    any length of time — the target may transition to PERMIT (or
+    exit to SHELL) while the operator reads the preview. Typing on
+    the stale verdict would inject the message into a permission
+    dialog, breaking the "never type into PERMIT" safety story.
+    Re-running `detect_pane_state` on the delivery pane closes the
+    window with the same detection logic the rest of ccm uses; the
+    cost is one ps snapshot + one list-panes + up to two capture-pane
+    calls, negligible for a user-invoked command.
+
+    Returns the raw state, or None when the pane can no longer be
+    enumerated (tmux hiccup — includes the case where delivery
+    resolution already fell back to the window target). None fails
+    OPEN: refusing on a transient tmux error would break sends that
+    worked before this guard existed."""
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    pane = next(
+        (p for p in enumerate_window_panes(win_target, ps_lines)
+         if p.pane_id == pane_target),
+        None,
+    )
+    if pane is None:
+        return None
+    return detect_pane_state(
+        pane.pane_pid, pane.pane_id, ps_lines, str(os.getpgrp()),
+        current_command=pane.current_command,
+    )
+
+
 _SEND_USAGE = (
     "Usage: ccm send <name|#idx> <message> "
     "[--file path] [--stdin] [--force] [--start] [--no-enter] [-y]\n"
@@ -503,22 +542,62 @@ def cmd_send(args):
 
         if target.startswith("#"):
             idx = target[1:]
-        elif target.isdigit():
-            idx = target
         else:
+            # Name match wins over index interpretation, even for a
+            # digit-only target: validate_name now rejects digit-only
+            # names at creation, but a project named e.g. "123" from
+            # before that guard must stay reachable by name. Explicit
+            # `#123` above remains the way to force index semantics.
             idx = ccm_core.find_window(session, target)
             if idx is None:
-                ccm_core.ccm_die(f"Project not found: {target}")
+                if target.isdigit():
+                    idx = target
+                else:
+                    ccm_core.ccm_die(f"Project not found: {target}")
 
         win_target = f"{session}:{idx}"
 
         # Look up project state from the current ccm scan
         projects = ccm_core.build_project_list(fast=False)
         matched = next((p for p in projects if p.win_target == win_target), None)
+        project_name = matched.name if matched else None
+        if matched is None:
+            # A second window registered against the SAME directory is
+            # dropped from `projects` by build_project_list's seen_dirs
+            # dedup, so the win_target lookup misses it and the send
+            # used to die with "not a registered ccm project" even
+            # though the window is a legitimate ccm project. Fall back
+            # to the same-directory sibling that IS tracked: delivery
+            # still targets this window's own pane (resolved from
+            # win_target below via _resolve_delivery_pane); only the
+            # gating state is borrowed from the sibling — an
+            # approximation, but far better than refusing outright.
+            # The approximation is order-dependent: seen_dirs keeps the
+            # FIRST window per directory, so with two same-dir windows
+            # where window 1 is SHELL and window 2 hosts the running
+            # claude, a send to window 2 borrows state=SHELL and is
+            # refused without --start (pinned by
+            # test_send_same_dir_second_window_sibling_shell_refused).
+            proj_tag = ccm_core.tmux_cmd(
+                "show-option", "-w", "-t", win_target, "-qv", "@ccm_project")
+            dir_tag = ccm_core.tmux_cmd(
+                "show-option", "-w", "-t", win_target, "-qv", "@ccm_dir")
+            if proj_tag and dir_tag:
+                canonical = ccm_core.canonical_dir(dir_tag)
+                matched = next(
+                    (p for p in projects
+                     if p.dir
+                     and ccm_core.canonical_dir(p.dir) == canonical),
+                    None,
+                )
+                if matched is not None:
+                    # Display the target window's own name, not the
+                    # sibling's, so gating messages identify the pane
+                    # the user actually addressed.
+                    project_name = proj_tag
         if matched is None:
             ccm_core.ccm_die(f"Window is not a registered ccm project: {win_target}")
 
-        project_name = matched.name
         state = matched.state
 
         # Resolve the pane that actually receives the keystrokes. The
@@ -681,6 +760,42 @@ def cmd_send(args):
         if ans not in ("y", "yes"):
             ccm_core.ccm_info("Cancelled")
             return
+
+    # TOCTOU guard: re-check the delivery pane's raw state after the
+    # (potentially long-blocking) confirmation prompt, immediately
+    # before any keystrokes. The gate above ran on a
+    # build_project_list snapshot that can go stale while the
+    # operator reads the preview — a target that transitioned to
+    # PERMIT in the meantime must never receive the body (it would
+    # be typed into the permission dialog). A None result (pane no
+    # longer enumerable) fails open, matching the delivery-pane
+    # resolution fallback.
+    rechecked = _recheck_delivery_state(win_target, pane_target)
+    if rechecked == "PERMIT":
+        ccm_core.ccm_die(
+            f"{project_name} transitioned to PERMIT after the initial "
+            "state check — send refused. PERMIT never receives "
+            "keystrokes; resolve the dialog in the target pane, then "
+            "retry."
+        )
+    if rechecked == "SHELL" and not did_launch:
+        # SHELL means no claude under the pane — the body would be
+        # typed into a bare shell (the 2026-07-16 ringi incident
+        # class). The --start path is exempt: it just launched Claude
+        # and the wait loop confirmed IDLE a moment ago, so a raw
+        # SHELL reading there is detection lag, not a dead session.
+        ccm_core.ccm_die(
+            f"{project_name} no longer hosts a running Claude (state "
+            "changed to SHELL after the initial check) — refusing to "
+            "type the message into a bare shell."
+        )
+    if rechecked == "BUSY" and not force:
+        ccm_core.ccm_die(
+            f"{project_name} became BUSY after the initial state "
+            "check. The message would queue in the input buffer and "
+            "mix with Claude's current turn. Use --force if that is "
+            "what you want."
+        )
 
     # Defensively exit any tmux mode on the target pane. Without this,
     # a pane stuck in copy-mode would interpret the message characters

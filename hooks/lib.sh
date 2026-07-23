@@ -417,7 +417,11 @@ _ccm_instant_notify() {
     [[ "$notify_setting" == "off" ]] && return 0
 
     # Check if this state's notifications are enabled
-    local state_lower="${state,,}"  # PERMIT→permit, COMPLETED→completed
+    # bash 3.2 (stock macOS /bin/bash) has no `${var,,}` — use tr so
+    # the hook does not die with "Bad substitution" on stock installs.
+    # PERMIT→permit, COMPLETED→completed
+    local state_lower
+    state_lower=$(printf '%s' "$state" | tr '[:upper:]' '[:lower:]')
     case "$notify_setting" in
         all) ;;
         *"$state_lower"*) ;;

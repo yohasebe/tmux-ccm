@@ -28,10 +28,24 @@ case "$NOTIFY_TYPE" in
     idle_prompt)
         ccm_append_event "$HOOK_DIR" "$KEY" "notify_idle"
         # Delete the signal file to clear the BUSY state.
-        # Only delete if not already BUSY (avoid clearing active work signal
-        # that was just written by a concurrent PreToolUse).
+        #
+        # Claude Code delivers idle_prompt 10-60s+ late
+        # (anthropics/claude-code#5186 — see the COMPLETED-notification
+        # comment below), so the BUSY signal currently on disk may have
+        # been written by a PreToolUse / UserPromptSubmit that fired
+        # AFTER Claude generated this notification. Deleting such a
+        # fresh BUSY signal would drop an actively working session to
+        # IDLE — and a false IDLE feeds auto-exit's kill path. Guard:
+        # skip deletion while the BUSY signal is younger than the
+        # maximum documented idle_prompt delay
+        # (CCM_IDLE_PROMPT_GUARD_SEC, default 60 — consistent with the
+        # delay budget this same hook cites for notifications and with
+        # the grace-period style used by CCM_COMPLETION_GRACE_SEC in
+        # lib.sh). Signals older than that predate any plausible
+        # idle_prompt lag and are cleared as before.
         SIGNAL_FILE="${HOOK_DIR}/${KEY}"
         NOW=$(date +%s)
+        GUARD_SEC="${CCM_IDLE_PROMPT_GUARD_SEC:-60}"
         if [[ -f "$SIGNAL_FILE" ]]; then
             EXISTING=$(cat "$SIGNAL_FILE" 2>/dev/null)
             # Signal format: "<ts> <state>" or "<ts> <state> <detail>".
@@ -44,7 +58,13 @@ case "$NOTIFY_TYPE" in
             EXISTING_REST="${EXISTING#* }"
             EXISTING_STATE="${EXISTING_REST%% *}"
             EXISTING_TS="${EXISTING%% *}"
-            if [[ "$EXISTING_STATE" == "BUSY" && "$EXISTING_TS" -ge "$NOW" ]] 2>/dev/null; then
+            # Validate the stored ts is numeric before doing arithmetic
+            # on it — a corrupt/truncated signal would otherwise
+            # evaluate as 0 in (( )), making the age look huge and
+            # silently disabling the guard (same failure mode the
+            # notify-marker dedup in lib.sh guards against).
+            if [[ "$EXISTING_STATE" == "BUSY" && "$EXISTING_TS" =~ ^[0-9]+$ ]] \
+                && (( NOW - EXISTING_TS < GUARD_SEC )); then
                 exit 0
             fi
         fi

@@ -877,3 +877,56 @@ class TestDetectWindowStateAutoMode:
         # Event-log derive returns BUSY for pretool → auto dispatch
         # commits BUSY (the same behaviour as explicit auto).
         assert state == "BUSY"
+
+
+class TestDetectionSessionIdPassThrough:
+    """N+1 tmux-subprocess guard for the detection orchestrator.
+
+    A SHELL window has no claude pid, so no session_id can be
+    resolved. The hook-signal and event-log readers must then
+    receive the authoritative empty string — NOT None, which would
+    make them fall back to `_session_id_from_tmux` (a full
+    `tmux list-windows -a` subprocess) on EVERY detection cycle.
+    Conversely, a resolved session_id must be forwarded verbatim so
+    the readers key the session's files without any tmux lookup."""
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_signals.read_events_tail")
+    @patch("ccm_signals.read_hook_signal")
+    def test_shell_window_passes_authoritative_empty_session_id(
+            self, mock_hook, mock_events, mock_tmux):
+        mock_hook.return_value = None
+        mock_events.return_value = ()
+        mock_tmux.return_value = ""
+        ps = make_ps_lines((100, 1, 100, "bash"))  # no claude process
+        panes = [("0:1", "100", "%0", "zsh", "1", "48")]
+
+        state = ccm_detection.detect_window_state(
+            "0:1", "/tmp/project", "SHELL", panes, ps, "99999"
+        )
+        assert state == "SHELL"
+        assert mock_hook.call_args.kwargs["session_id"] == ""
+        assert mock_events.call_args.kwargs["session_id"] == ""
+
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_signals.read_events_tail")
+    @patch("ccm_signals.read_hook_signal")
+    @patch("ccm_jsonl.read_session_info")
+    def test_resolved_session_id_forwarded_to_readers(
+            self, mock_info, mock_hook, mock_events, mock_tmux):
+        mock_info.return_value = {
+            "sessionId": "uuid-abc",
+            "kind": "interactive",
+            "cwd": "/tmp/project",
+        }
+        mock_hook.return_value = None
+        mock_events.return_value = ()
+        mock_tmux.return_value = ""
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
+
+        ccm_detection.detect_window_state(
+            "0:1", "/tmp/project", "IDLE", panes, ps, "99999"
+        )
+        assert mock_hook.call_args.kwargs["session_id"] == "uuid-abc"
+        assert mock_events.call_args.kwargs["session_id"] == "uuid-abc"

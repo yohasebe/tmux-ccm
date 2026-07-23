@@ -34,7 +34,6 @@ from ccm_constants import (
     CCM_ROOT,
     CCM_SNAPSHOT_DIR,
     CCM_TMP_DIR,
-    CLAUDE_CMD,
     COMPLETED_AT_TIMEOUT,
     IDLE_EXIT_TIMEOUT,
     PERMISSION_MODE_WARN,
@@ -58,7 +57,7 @@ from ccm_core import (
 )
 from ccm_pane_state import enumerate_window_panes
 import ccm_agentview
-from ccm_window import reset_window_after_attach
+from ccm_window import auto_start_claude, reset_window_after_attach
 from ccm_canaries import (
     disable_all_hooks_warning,
     errors_log_burst_warning,
@@ -890,7 +889,9 @@ class Dashboard:
                         age = now_ts - proj.completed_at
                         if 0 <= age < COMPLETED_AT_TIMEOUT:
                             elapsed_str = format_elapsed(proj.completed_at) or ""
-                    suffix_str = signal_age_suffix(proj.dir, proj.state).strip()
+                    suffix_str = signal_age_suffix(
+                        proj.dir, proj.state,
+                        session_id=proj.cached_session_id or "").strip()
                     pane_marker = f"[{proj.pane_count}]" if proj.pane_count > 1 else ""
                     # Permission-mode badge `{label}`. The everyday
                     # default (`manual`) is suppressed to keep rows
@@ -1270,21 +1271,25 @@ class Dashboard:
             return "quit"
         elif key in (ord("s"), ord("S")):
             self._do_save(stdscr)
+        # The project-scoped action keys (p/n/r/i) share the Enter
+        # key's stale-selection guard above: when a bg row is
+        # selected, self.selected >= n and indexing projects[]
+        # would raise IndexError.
         elif key in (ord("p"), ord("P")):
-            if n > 0:
+            if 0 <= self.selected < n:
                 self._do_preview(stdscr)
         elif key in (ord("a"), ord("A")):
             self._do_add(stdscr)
         elif key in (ord("n"), ord("N")):
-            if n > 0:
+            if 0 <= self.selected < n:
                 self._do_rename(stdscr)
         elif key in (ord("r"), ord("R")):
-            if n > 0:
+            if 0 <= self.selected < n:
                 self._do_remove(stdscr)
         elif key in (ord("g"), ord("G")):
             self._do_register(stdscr)
         elif key in (ord("i"), ord("I")):
-            if n > 0:
+            if 0 <= self.selected < n:
                 self._do_ignore_toggle(stdscr)
         elif key in (ord("x"), ord("X")):
             self._do_exit_all(stdscr)
@@ -1409,9 +1414,12 @@ class Dashboard:
         # prompt instead of the shell). `-X cancel` is a safe no-op
         # when the pane is already in normal input mode.
         tmux_cmd("send-keys", "-t", p.win_target, "-X", "cancel")
-        # Auto-start if SHELL
+        # Auto-start if SHELL. Routed through ccm_window.auto_start_claude
+        # so the launch command goes to a shell-foreground pane only —
+        # a bare `send-keys -t <window>` would type it into the active
+        # pane, which in a split window may be an editor or pager.
         if p.state == "SHELL":
-            tmux_cmd("send-keys", "-t", p.win_target, CLAUDE_CMD, "Enter")
+            auto_start_claude(p.win_target)
         reset_window_after_attach(p.win_target)
         # Cross-session switch
         session = get_session()
@@ -1584,15 +1592,36 @@ class Dashboard:
             return
 
         exited = 0
+        try:
+            ps_lines = ps_snapshot().strip().split("\n")
+        except Exception:
+            ps_lines = []
         for p in targets:
             if p.state == "SHELL":
                 continue
+            # Resolve the claude-hosting pane and target IT, never the
+            # window: `send-keys -t <window>` lands in the window's
+            # ACTIVE pane, so in a split window with a shell focused
+            # the Escape + `/exit` + Enter sequence would reach the
+            # shell and kill the user's pane (the same incident
+            # `auto_exit_idle`'s find_claude_pid resolution guards
+            # against). An ignored pane is never a target — ignore
+            # means ccm keeps its hands off it.
+            panes = [pn for pn in enumerate_window_panes(p.win_target, ps_lines)
+                     if not pn.ignored and pn.claude_pid]
+            if not panes:
+                # No (non-ignored) pane currently hosts claude — the
+                # window may be transitioning. Defensive skip; without
+                # a resolved pane there is no safe target.
+                continue
+            active = next((pn for pn in panes if pn.active), None)
+            claude_pane = (active or panes[0]).pane_id
             # Exit any tmux mode (copy/view) first so /exit reaches the
             # pane's foreground process instead of a copy-mode binding.
-            tmux_cmd("send-keys", "-t", p.win_target, "-X", "cancel")
-            tmux_cmd("send-keys", "-t", p.win_target, "Escape")
+            tmux_cmd("send-keys", "-t", claude_pane, "-X", "cancel")
+            tmux_cmd("send-keys", "-t", claude_pane, "Escape")
             time.sleep(0.05)
-            tmux_cmd("send-keys", "-t", p.win_target, "/exit", "Enter")
+            tmux_cmd("send-keys", "-t", claude_pane, "/exit", "Enter")
             exited += 1
 
         self._show_message(stdscr, f"Exited {exited} session(s)", 1)
@@ -2361,11 +2390,14 @@ class Dashboard:
                     # Defensively exit any stuck tmux copy/view mode on
                     # the target pane before sending keys to it.
                     tmux_cmd("send-keys", "-t", wt, "-X", "cancel")
-                    # Auto-start Claude for ccm SHELL windows
+                    # Auto-start Claude for ccm SHELL windows (routed
+                    # through auto_start_claude so the command reaches
+                    # a shell-foreground pane only, never whatever
+                    # pane happens to be active).
                     with self.lock:
                         for p in self.projects:
                             if p.win_target == wt and p.state == "SHELL":
-                                tmux_cmd("send-keys", "-t", wt, CLAUDE_CMD, "Enter")
+                                auto_start_claude(wt)
                                 break
                     reset_window_after_attach(wt)
                     target_session = wt.split(":")[0]
@@ -2625,6 +2657,32 @@ class Dashboard:
 
 # ─── PID file management ───
 
+def _pid_is_dashboard(pid):
+    """Best-effort identity check: True only when the live process at
+    `pid` looks like a ccm dashboard (its command line mentions
+    `dashboard.py`).
+
+    Exists so `acquire_pidfile` never SIGKILLs an unrelated process:
+    a pidfile left behind by a crashed dashboard holds a stale PID,
+    and the OS may have since recycled that PID for something else.
+    macOS has no /proc, so identity is probed via `ps`. Any failure
+    (ps missing, pid gone, timeout) returns False — the safe
+    direction, since NOT killing merely leaves a stale dashboard
+    running while a wrong kill is unrecoverable.
+
+    Kept as a separate module-level function so tests can stub it
+    (the conftest `block_live_subprocess` guard forbids real `ps`
+    invocations from tests)."""
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception:
+        return False
+    return "dashboard.py" in out
+
+
 def acquire_pidfile():
     pidfile = os.path.join(CCM_TMP_DIR, "dashboard.pid")
     os.makedirs(CCM_TMP_DIR, exist_ok=True)
@@ -2632,7 +2690,12 @@ def acquire_pidfile():
     if os.path.exists(pidfile):
         try:
             old_pid = int(open(pidfile, encoding="utf-8").read().strip())
-            if old_pid != os.getpid():
+            # Verify the stale PID is actually a dashboard before
+            # signalling it. After an unclean exit the pidfile
+            # survives and the PID may have been recycled for an
+            # unrelated process — killing it blind would SIGTERM /
+            # SIGKILL whatever now owns that PID.
+            if old_pid != os.getpid() and _pid_is_dashboard(old_pid):
                 os.kill(old_pid, signal.SIGTERM)
                 time.sleep(0.2)
                 try:

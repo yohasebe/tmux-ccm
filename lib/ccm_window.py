@@ -6,7 +6,9 @@ change). They are deliberately separate from the detection layer:
 detection only *reads* the window, this module *writes* to it.
 
   - `auto_start_claude` — typed `claude --continue ...` into a
-    SHELL pane to launch Claude. Honours `@ccm-auto-start`.
+    shell-foreground pane to launch Claude. Honours
+    `@ccm-auto-start`; refuses to send when no shell pane can be
+    resolved safely (split window with an editor focused).
   - `reset_window_after_attach` — the post-attach reset bundle.
     Clears the `* elapsed` completion marker and acknowledges the
     cluster-SHELL canary. Calls `auto_focus_attention_pane` for
@@ -22,16 +24,61 @@ test mocks working uniformly.
 import os
 
 import ccm_core  # late-bound for tmux_cmd / ps_snapshot
-from ccm_constants import CLAUDE_CMD, SLIVER_HEIGHT_THRESHOLD
-from ccm_pane_state import detect_pane_state
+from ccm_constants import (
+    CLAUDE_CMD,
+    SHELL_FOREGROUND_COMMANDS,
+    SLIVER_HEIGHT_THRESHOLD,
+)
+from ccm_pane_state import detect_pane_state, enumerate_window_panes
+
+
+def _resolve_launch_pane(win_target):
+    """Return the pane target that is safe to type the Claude launch
+    command into, or None when no pane can be resolved safely.
+
+    `send-keys -t <window>` delivers to the window's ACTIVE pane. In a
+    split window that pane may be running an editor or pager, and
+    typing `claude --continue ...` there would inject the command
+    string into vim instead of starting Claude. The policy mirrors
+    `ccm send`'s SHELL-foreground guard (`_resolve_delivery_pane`):
+
+      - the active pane, if its foreground is a shell (the common
+        case);
+      - else the single non-ignored shell-foreground pane;
+      - else None — refuse to send. Not auto-starting beats typing
+        into an unknown foreground.
+
+    When pane enumeration fails entirely (tmux error) the window
+    target is returned, preserving the pre-resolution defensive
+    fallback (`ccm send` skips its guard on the same condition)."""
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    panes = enumerate_window_panes(win_target, ps_lines)
+    if not panes:
+        return win_target
+    live = [p for p in panes if not p.ignored]
+    active = next((p for p in live if p.active), None)
+    if active and active.current_command in SHELL_FOREGROUND_COMMANDS:
+        return active.pane_id
+    shell_panes = [p for p in live
+                   if p.current_command in SHELL_FOREGROUND_COMMANDS]
+    if len(shell_panes) == 1:
+        return shell_panes[0].pane_id
+    return None
 
 
 def auto_start_claude(win_target):
-    """Auto-start Claude Code if `@ccm-auto-start` is on (default)."""
+    """Auto-start Claude Code if `@ccm-auto-start` is on (default).
+
+    The launch command is typed into a shell-foreground pane only
+    (see `_resolve_launch_pane`); when no such pane can be resolved
+    safely, nothing is sent."""
     setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
     if setting != "on":
         return
-    ccm_core.tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
+    pane = _resolve_launch_pane(win_target)
+    if pane is None:
+        return
+    ccm_core.tmux_cmd("send-keys", "-t", pane, CLAUDE_CMD, "Enter")
 
 
 def reset_window_after_attach(win_target):

@@ -299,3 +299,56 @@ class TestSnapshotLoad:
                 ccm_snapshot.cmd_snapshot_load("badproj")
         finally:
             ccm_core.CCM_SNAPSHOT_DIR = orig_dir
+
+
+class TestSnapshotHomeShortening:
+    """Snapshot save shortens a leading $HOME to `~` for portability,
+    but ONLY at the path head. The old `str.replace(home, "~")`
+    rewrote every occurrence: with HOME=/Users/x the directory
+    `/Users/x2/work` was stored as `~2/work`, which expanduser turns
+    into `~2/work` (user `2` lookup fails / literal path) so
+    `cmd_snapshot_load` then skipped it with "Directory not found"."""
+
+    def _set_home(self, tmp_path, monkeypatch):
+        """Point $HOME at a real tmp dir — init_dirs / expanduser
+        paths in the save pipeline touch the filesystem."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        return str(home)
+
+    @patch("ccm_core.tmux_cmd")
+    def test_dir_under_home_shortened(self, mock_tmux, tmp_path,
+                                      monkeypatch):
+        home = self._set_home(tmp_path, monkeypatch)
+        mock_tmux.return_value = f"1\twin1\tproj1\t{home}/work"
+        ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
+        ccm_snapshot.cmd_snapshot_save("home-snap", quiet=True)
+        data = json.loads((tmp_path / "home-snap.json").read_text())
+        assert data["projects"][0]["dir"] == "~/work"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_sibling_of_home_not_corrupted(self, mock_tmux, tmp_path,
+                                           monkeypatch):
+        """`<home>2/work` merely starts with the HOME string — it is
+        not under HOME and must be stored verbatim."""
+        home = self._set_home(tmp_path, monkeypatch)
+        sibling = home + "2"
+        mock_tmux.return_value = f"1\twin1\tproj1\t{sibling}/work"
+        ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
+        ccm_snapshot.cmd_snapshot_save("sibling-snap", quiet=True)
+        data = json.loads((tmp_path / "sibling-snap.json").read_text())
+        assert data["projects"][0]["dir"] == f"{sibling}/work"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_saved_tilde_form_round_trips_through_expanduser(
+            self, mock_tmux, tmp_path, monkeypatch):
+        """The portability contract: a shortened dir expands back to
+        the original absolute path on load."""
+        home = self._set_home(tmp_path, monkeypatch)
+        mock_tmux.return_value = f"1\twin1\tproj1\t{home}/work"
+        ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
+        ccm_snapshot.cmd_snapshot_save("rt-home", quiet=True)
+        data = json.loads((tmp_path / "rt-home.json").read_text())
+        stored = data["projects"][0]["dir"]
+        assert os.path.expanduser(stored) == f"{home}/work"

@@ -210,6 +210,27 @@ def md5_hash(s):
     return hashlib.md5(s.encode()).hexdigest()
 
 
+def shorten_home(path):
+    """Replace a leading `$HOME` path component with `~` for display
+    and snapshot portability.
+
+    Prefix-only: a naive `path.replace(home, "~")` rewrites EVERY
+    occurrence, so with HOME=/Users/x the path `/Users/x2/work` would
+    become `~2/work` — which no longer expands back to a real
+    directory (snapshot load then fails with "Directory not found")
+    and mid-path occurrences render wrongly
+    (`/Users/alice/code/Users/alice-backup` → `~/code~-backup`).
+    Only an exact match or a `home + os.sep` prefix is shortened."""
+    if not path:
+        return path
+    home = os.path.expanduser("~")
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
+
+
 # ─── Silent-exception observability ───
 # `inject_status` and `dashboard._refresh_loop` both wrap their main
 # body in `except Exception: pass` because crashing the tmux status
@@ -308,11 +329,13 @@ class Project:
         "win_target", "win_idx", "name", "dir", "state",
         "branch", "ports", "completed_at", "bg_active", "pane_count",
         "ignored_panes", "permission_mode", "sort_key",
+        "cached_session_id",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
                  branch="", ports="", completed_at=0, bg_active=False,
-                 pane_count=1, permission_mode="", ignored_panes=0):
+                 pane_count=1, permission_mode="", ignored_panes=0,
+                 cached_session_id=None):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -337,15 +360,35 @@ class Project:
         # rendered as a badge by `ccm status` / the dashboard via
         # `permission_mode_label`; never consulted by detection.
         self.permission_mode = permission_mode
+        # `@ccm_session_id` value bulk-fetched by build_project_list's
+        # single `list-windows` query. Carried on the Project so
+        # display-layer signal readers (signal_age_suffix et al.) can
+        # key hook files without a per-project tmux subprocess (N+1
+        # avoidance). Semantics mirror `_parse_window_line`:
+        # non-empty → use, "" → authoritative "no session", None →
+        # not fetched (constructed outside build_project_list).
+        self.cached_session_id = cached_session_id
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
-def read_cache_file(cache_dir, directory):
-    expanded = os.path.expanduser(directory)
+def canonical_dir(path):
+    """Canonical form of a project directory for equality checks
+    (expanduser + realpath, falling back to the raw path on error).
+
+    Single source for the identity `build_project_list`'s same-dir
+    dedup (`seen_dirs`) uses; the same-dir fallback lookups in
+    `ccm_runtime.update_window_names` and `ccm_send.cmd_send` must
+    canonicalize identically or they would never match the dedup
+    key."""
+    expanded = os.path.expanduser(path)
     try:
-        expanded = os.path.realpath(expanded)
+        return os.path.realpath(expanded)
     except OSError:
-        pass
+        return expanded
+
+
+def read_cache_file(cache_dir, directory):
+    expanded = canonical_dir(directory)
     key = md5_hash(expanded)
     path = os.path.join(cache_dir, key)
     try:
@@ -550,10 +593,7 @@ def build_project_list(fast=False):
         if row is None:
             continue
 
-        try:
-            resolved = os.path.realpath(os.path.expanduser(row["proj_dir"]))
-        except OSError:
-            resolved = row["proj_dir"]
+        resolved = canonical_dir(row["proj_dir"])
         if resolved in seen_dirs:
             continue
         seen_dirs.add(resolved)
@@ -599,6 +639,7 @@ def build_project_list(fast=False):
             pane_count=pane_count,
             permission_mode=permission_mode,
             ignored_panes=ignored_panes,
+            cached_session_id=row["cached_session_id"],
         ))
 
     projects.sort(key=lambda p: p.sort_key)
@@ -734,6 +775,14 @@ def validate_name(name):
     name = re.sub(r"['\"`$\\;&|<>()]", '', name)
     # Collapse and strip hyphens
     name = re.sub(r'-+', '-', name).strip('-')
+    # Reject digit-only names: `ccm send 123 ...` would otherwise be
+    # parsed as window INDEX 123 instead of the project named "123",
+    # silently targeting an unrelated window. Name resolution does
+    # prefer an exact name match over index interpretation (so legacy
+    # digit-named projects stay reachable), but banning the ambiguous
+    # form at creation keeps new name/index collisions impossible.
+    if name.isdigit():
+        return ""
     return name
 
 
@@ -917,6 +966,20 @@ def _handle_add(args):
     ccm_commands.cmd_add(args.dir, args.name, create_dir=create_dir)
 
 
+def _handle_stop(args):
+    """`ccm stop` handler — passthrough so `--all` reaches cmd_stop.
+
+    With a plain positional configurer, argparse rejects `--all` as
+    an unknown option (exit 2) before the handler ever runs, which
+    made the documented `ccm stop --all` — and its `_autosave`
+    snapshot — unreachable from the CLI. Raw-argv passthrough (the
+    same mechanism as capture / send / errors) lets cmd_stop see
+    the flag itself."""
+    if len(args.rest) > 1:
+        ccm_die("Usage: ccm stop [--all|<name>]")
+    ccm_commands.cmd_stop(args.rest[0] if args.rest else "")
+
+
 def _passthrough_argparse_config(p):
     """Marker configurer: the subcommand bypasses argparse and
     receives raw `argv[1:]` as `rest`. The handler does its own
@@ -959,8 +1022,9 @@ _SUBCOMMANDS = (
     ("capture",
      _passthrough_argparse_config,
      lambda a: ccm_commands.cmd_capture(a.rest)),
-    ("stop", _add_name_arg,
-     lambda a: ccm_commands.cmd_stop(a.name)),
+    ("stop",
+     _passthrough_argparse_config,
+     _handle_stop),
     ("send",
      _passthrough_argparse_config,
      lambda a: ccm_send.cmd_send(a.rest)),

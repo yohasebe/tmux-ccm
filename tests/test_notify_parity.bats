@@ -249,3 +249,63 @@ ccm_notify.notify('BUSY', 'proj', '')
     _invoke_both COMPLETED proj
     assert_both_fired "ccm ✔ proj"
 }
+
+# ============================================================
+# bash 3.2 compatibility (stock macOS /bin/bash)
+# ============================================================
+
+@test "bash 3.2 compat: _ccm_instant_notify survives stock macOS /bin/bash" {
+    # Hook scripts run via `#!/usr/bin/env bash`. For users without
+    # Homebrew bash that resolves to bash 3.2.57, where bash-4-only
+    # syntax (e.g. `${state,,}`) dies with "Bad substitution" — fatal
+    # under the hook scripts' `set -euo pipefail`, silently killing
+    # the entire notification path. Pin the code path against the
+    # real 3.2 binary.
+    local bash_major
+    bash_major=$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"')
+    [[ "$bash_major" == "3" ]] || skip "/bin/bash is not bash 3.x (got major=$bash_major)"
+
+    mock_set_global_option @ccm-notify all
+    : > "$NOTIFY_LOG"
+
+    # `set -euo pipefail` mirrors the on-*.sh hook preamble; a Bad
+    # substitution there aborts the script, so status must be 0.
+    # PATH is inherited, so the sandboxed tmux / terminal-notifier
+    # stubs are used.
+    run /bin/bash -c '
+        set -euo pipefail
+        source "'"$CCM_ROOT"'/hooks/lib.sh"
+        _ccm_instant_notify "PERMIT" "proj32" "" "/tmp/parity-bash32-$$"
+    '
+    [ "$status" -eq 0 ]
+
+    # The notification itself is dispatched async (`&`); poll briefly.
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        [[ -s "$NOTIFY_LOG" ]] && break
+        sleep 0.05
+    done
+    sleep 0.1
+    [[ "$(_log_count "ccm ⚠ proj32")" -ge 1 ]] || {
+        echo "expected notification under bash 3.2, log:" >&2
+        cat "$NOTIFY_LOG" >&2
+        return 1
+    }
+}
+
+@test "bash 3.2 compat: no bash-4-only syntax in hooks/*.sh" {
+    # Static guard so the next `${var,,}` / `${var^^}` / `declare -A` /
+    # `mapfile` / `;&` slips in nowhere, not just on the notify path.
+    # Comments are stripped first so documentation may mention the
+    # constructs without tripping the guard.
+    local f hit out=""
+    for f in "$CCM_ROOT"/hooks/*.sh; do
+        hit=$(sed 's/#.*$//' "$f" | grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)|declare -A|local -A|mapfile|readarray|;&' || true)
+        [[ -n "$hit" ]] && out+="${f}:"$'\n'"${hit}"$'\n'
+    done
+    [[ -z "$out" ]] || {
+        echo "bash-4-only syntax found in hooks:" >&2
+        echo "$out" >&2
+        return 1
+    }
+}

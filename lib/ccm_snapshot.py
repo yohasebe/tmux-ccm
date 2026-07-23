@@ -69,8 +69,10 @@ def cmd_snapshot_save(name="", quiet=False):
         project, proj_dir = parts[2], parts[3]
         if not project or not proj_dir:
             continue
-        # Replace $HOME with ~ for portability
-        proj_dir = proj_dir.replace(os.path.expanduser("~"), "~")
+        # Replace a leading $HOME with ~ for portability (prefix-only —
+        # a mid-path $HOME occurrence must survive, or the path would
+        # no longer expand back to a real directory on load).
+        proj_dir = ccm_core.shorten_home(proj_dir)
         projects_list.append({
             "name": project,
             "dir": proj_dir,

@@ -140,7 +140,7 @@ C_STATE = {
 SIGNAL_STALE_DISPLAY_THRESHOLD = JSONL_HOOK_GAP_TOLERANCE  # seconds
 
 
-def signal_age_suffix(project_dir, state):
+def signal_age_suffix(project_dir, state, session_id=None):
     """Returns a parenthesised stale-signal age (e.g. " (8m)") when
     the hook signal for this project is old enough to be worth
     surfacing in the UI, or "" otherwise.
@@ -151,6 +151,15 @@ def signal_age_suffix(project_dir, state):
     make. SHELL / IDLE / DOWN either have no associated hook
     signal or the signal is freshness-irrelevant.
 
+    `session_id` semantics match `ccm_signals.read_hook_signal`:
+    callers that already hold the bulk-fetched `@ccm_session_id`
+    (Project.cached_session_id) MUST pass it (`or ""`) — otherwise
+    every call pays a `tmux list-windows -a` subprocess, which in
+    the dashboard's 2-second annotation loop and the inject-status
+    poll is the classic N+1 this module's callers are designed to
+    avoid. `""` is the authoritative "no session" form and skips
+    the tmux fallback entirely.
+
     Best-effort: never raises; returns "" on any error reading the
     signal file."""
     if state not in ("BUSY", "PERMIT"):
@@ -158,7 +167,7 @@ def signal_age_suffix(project_dir, state):
     if not project_dir:
         return ""
     try:
-        sig = ccm_signals.read_hook_signal(project_dir)
+        sig = ccm_signals.read_hook_signal(project_dir, session_id=session_id)
     except Exception:
         return ""
     if sig is None:
@@ -245,7 +254,7 @@ def format_elapsed(ts):
 
 
 def format_dir(directory, prefix_len, cols):
-    d = directory.replace(os.path.expanduser("~"), "~")
+    d = ccm_core.shorten_home(directory)
     avail = cols - prefix_len - 4
     if avail < 10:
         return ""
@@ -298,10 +307,28 @@ def print_status():
         # STATUS column right after the state name. Mutually
         # exclusive — stale only fires for BUSY/PERMIT, bg only
         # for IDLE.
-        suffix = signal_age_suffix(p.dir, p.state)
+        suffix = signal_age_suffix(
+            p.dir, p.state, session_id=p.cached_session_id or "")
         if p.bg_active:
             suffix += " (bg)"
-        status = f"{color}{icon} {p.state}{suffix}{C_RESET}"
+        # Pad the STATUS column by VISIBLE width (pad_to_width), not by
+        # len(): the per-state colour codes differ in length (256-colour
+        # `\033[38;5;209m` is 11 chars vs `\033[1;33m` at 7), so the old
+        # `22 + len(suffix)` format spec put the PROJECT column at a
+        # different offset for BUSY/SHELL vs PERMIT/IDLE/DOWN rows.
+        status_text = f"{icon} {p.state}{suffix}"
+        if display_width(status_text) > 12:
+            # pad_to_width passes overlong content through unchanged,
+            # so a stale-signal row (`⚠ PERMIT (12m)` = 14 cols) would
+            # shove every later column rightward. Drop the age suffix
+            # instead of truncating it mid-number (`(1` reads as a
+            # wrong age); the icon/colour still flags the state, and
+            # only PERMIT can overflow (BUSY + suffix fits exactly).
+            status_text = f"{icon} {p.state}"
+        status_field = (
+            f"{color}{pad_to_width(status_text, 12)}"
+            f"{C_RESET}"
+        )
         # Pane-count marker `[N]` belongs to the PROJECT column.
         # Brackets dim, digit cyan to draw the eye to the count.
         if p.pane_count > 1:
@@ -325,7 +352,7 @@ def print_status():
         pane_marker += ignore_marker
         branch = p.branch or "-"
         ports = p.ports or "-"
-        d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
+        d = ccm_core.shorten_home(p.dir) if p.dir else ""
         # Permission-mode badge. A secondary indicator (dim), except
         # bypassPermissions which means every guardrail is off and
         # gets the same bold yellow as PERMIT. "-" when unknown
@@ -341,10 +368,15 @@ def print_status():
         # columns) instead of the f-string `<N` spec (codepoint
         # count); otherwise a name like `日本語` would be padded by 17
         # spaces under `<20` and overflow the column by 6 columns.
-        status_w = 22 + len(suffix)
-        name_pad_w = max(0, 20 - pane_marker_visible_w - display_width(p.name))
-        name_field = f"{p.name}{pane_marker}{' ' * name_pad_w}"
-        print(f"{status:<{status_w}} {name_field} {mode_field} "
+        # A name wider than the column is truncated (wide chars kept
+        # whole) instead of being clamped to zero padding, which
+        # previously let an overlong name shove every later column
+        # rightward and break the table.
+        name_avail = max(0, 20 - pane_marker_visible_w)
+        name_text = truncate_to_width(p.name, name_avail)
+        name_pad_w = max(0, name_avail - display_width(name_text))
+        name_field = f"{name_text}{pane_marker}{' ' * name_pad_w}"
+        print(f"{status_field} {name_field} {mode_field} "
               f"{pad_to_width(branch, 16)} {pad_to_width(ports, 12)} {d}")
 
 
@@ -360,7 +392,7 @@ def print_ports():
 
     for p in projects:
         ports = p.ports or "-"
-        d = p.dir.replace(os.path.expanduser("~"), "~") if p.dir else ""
+        d = ccm_core.shorten_home(p.dir) if p.dir else ""
         print(f"{pad_to_width(p.name, 20)} {pad_to_width(ports, 16)} {d}")
 
 
@@ -417,11 +449,11 @@ def print_tree():
 
             d = ""
             if wdir:
-                d = f" {wdir.replace(os.path.expanduser('~'), '~')}"
+                d = f" {ccm_core.shorten_home(wdir)}"
             elif not project:
                 pane_path = ccm_core.tmux_cmd("display-message", "-t", win_target, "-p", "#{pane_current_path}")
                 if pane_path:
-                    d = f" {pane_path.replace(os.path.expanduser('~'), '~')}"
+                    d = f" {ccm_core.shorten_home(pane_path)}"
 
             icon_str = f"{color}{icon}{C_RESET} " if icon else ""
             print(f"{w_pre}{icon_str}{name}{extra}{C_DIM}{d}{C_RESET}")
@@ -498,7 +530,7 @@ def print_bg_sessions():
             else:
                 age_str = f"{age // 86400}d"
 
-        d = s.cwd.replace(os.path.expanduser("~"), "~") if s.cwd else ""
+        d = ccm_core.shorten_home(s.cwd) if s.cwd else ""
 
         short_field = pad_to_width(s.short, 10)
         age_field = pad_to_width(age_str, 7)

@@ -175,6 +175,11 @@ class TestCleanupProjectRuntimeFiles:
         """No files to delete (fresh project) must not raise — this
         is the common case when unregistering an idle project."""
         self._setup_tmp(tmp_path, monkeypatch)
+        # No known session_id for the project (same stub shape as the
+        # sibling tests — the real resolver would query live tmux).
+        monkeypatch.setattr(
+            ccm_signals, "_session_id_from_tmux", lambda d: None,
+        )
         # Should not raise
         ccm_signals.cleanup_project_runtime_files("/x/never-ran")
 
@@ -424,3 +429,56 @@ class TestReadLatestPermissionMode:
         assert ccm_signals.read_latest_permission_mode(
             "/x/proj", session_id="") == ""
 
+
+
+class TestSessionIdPassThroughSemantics:
+    """The `session_id` three-state contract on the signal/event
+    readers: non-empty → use directly, ``""`` → authoritative "no
+    session" (NO tmux fallback), ``None`` → fall back to the cached
+    `@ccm_session_id` tmux option.
+
+    The ``""`` case is what keeps per-cycle callers (dashboard
+    annotation loop, inject_status poll, detection orchestrator)
+    from paying a `tmux list-windows -a` subprocess per project per
+    refresh (the N+1 the bulk-fetch design exists to avoid)."""
+
+    def _forbid_tmux_lookup(self, monkeypatch):
+        monkeypatch.setattr(
+            ccm_signals, "_session_id_from_tmux",
+            lambda _d: pytest.fail("tmux lookup must not happen"))
+
+    def test_read_hook_signal_empty_session_id_skips_lookup(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(tmp_path))
+        self._forbid_tmux_lookup(monkeypatch)
+        assert ccm_signals.read_hook_signal("/x/proj", session_id="") is None
+
+    def test_read_events_tail_empty_session_id_skips_lookup(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(tmp_path))
+        self._forbid_tmux_lookup(monkeypatch)
+        assert ccm_signals.read_events_tail("/x/proj", session_id="") == ()
+
+    def test_read_hook_signal_uses_given_session_id(
+            self, tmp_path, monkeypatch):
+        """A caller-resolved session_id reads `$HOOK_DIR/<sid>`
+        directly — no tmux round-trip."""
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        (hook_dir / "sid-abc").write_text("12345 BUSY")
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        self._forbid_tmux_lookup(monkeypatch)
+        assert ccm_signals.read_hook_signal(
+            "/x/proj", session_id="sid-abc") == (12345, "BUSY", "")
+
+    def test_read_events_tail_uses_given_session_id(
+            self, tmp_path, monkeypatch):
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        (hook_dir / "sid-abc.events.jsonl").write_text(
+            '{"ts":100,"type":"prompt"}\n')
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        ccm_signals._events_cache.clear()
+        self._forbid_tmux_lookup(monkeypatch)
+        events = ccm_signals.read_events_tail("/x/proj", session_id="sid-abc")
+        assert [e["type"] for e in events] == ["prompt"]

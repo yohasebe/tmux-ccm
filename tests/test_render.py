@@ -128,10 +128,10 @@ class TestSignalAgeSuffix:
     def _patch_signal(self, monkeypatch, ts_or_none):
         if ts_or_none is None:
             monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                                lambda d: None)
+                                lambda d, session_id=None: None)
         else:
             monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                                lambda d: (ts_or_none, "BUSY", ""))
+                                lambda d, session_id=None: (ts_or_none, "BUSY", ""))
 
     @pytest.mark.parametrize("state", ["IDLE", "SHELL", "DOWN"])
     def test_non_busy_permit_states_return_empty(self, state, monkeypatch):
@@ -168,7 +168,7 @@ class TestSignalAgeSuffix:
 
     def test_read_signal_exception_returns_empty(self, monkeypatch):
         """Best-effort: never propagate I/O errors to the UI."""
-        def raiser(d):
+        def raiser(d, session_id=None):
             raise OSError("boom")
         monkeypatch.setattr(ccm_signals, "read_hook_signal", raiser)
         assert ccm_render.signal_age_suffix("/p", "BUSY") == ""
@@ -332,6 +332,12 @@ class TestPrintStatus:
                             lambda: "")
         monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
                             lambda projects_arg: [])
+        monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",
+                            lambda projects_arg: [])
+        # signal_age_suffix reads the per-project hook signal, which
+        # resolves @ccm_session_id through live tmux; stub "no signal".
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
+                            lambda d, session_id=None: None)
         monkeypatch.setattr(ccm_core, "hooks_configured",
                             lambda: True)
         ccm_render.print_status()
@@ -535,3 +541,228 @@ class TestPrintBgSessions:
             )
 
 
+
+
+class TestSignalAgeSuffixSessionId:
+    """`signal_age_suffix` must forward the caller's session_id to
+    `read_hook_signal`. Display callers (dashboard annotation loop,
+    inject_status poll, `ccm status`) hold the bulk-fetched
+    `@ccm_session_id` on the Project; passing it through avoids a
+    `tmux list-windows -a` subprocess per project per refresh."""
+
+    def test_session_id_forwarded(self, monkeypatch):
+        seen = {}
+
+        def fake_read(d, session_id=None):
+            seen["session_id"] = session_id
+            return None
+
+        monkeypatch.setattr(ccm_signals, "read_hook_signal", fake_read)
+        assert ccm_render.signal_age_suffix(
+            "/p", "BUSY", session_id="sid-1") == ""
+        assert seen["session_id"] == "sid-1"
+
+    def test_authoritative_empty_string_forwarded(self, monkeypatch):
+        """An empty session_id (authoritative "no session") must
+        arrive as "" — not be collapsed to None, which would
+        re-enable the tmux fallback."""
+        seen = {}
+
+        def fake_read(d, session_id=None):
+            seen["session_id"] = session_id
+            return None
+
+        monkeypatch.setattr(ccm_signals, "read_hook_signal", fake_read)
+        ccm_render.signal_age_suffix("/p", "PERMIT", session_id="")
+        assert seen["session_id"] == ""
+
+    def test_default_is_none(self, monkeypatch):
+        """Omitting session_id keeps the legacy fallback semantics."""
+        seen = {}
+
+        def fake_read(d, session_id=None):
+            seen["session_id"] = session_id
+            return None
+
+        monkeypatch.setattr(ccm_signals, "read_hook_signal", fake_read)
+        ccm_render.signal_age_suffix("/p", "BUSY")
+        assert seen["session_id"] is None
+
+
+class TestShortenHome:
+    """`ccm_core.shorten_home` replaces only a LEADING $HOME component.
+    A naive str.replace rewrites every occurrence, corrupting paths
+    like `/Users/x2/work` (HOME=/Users/x → `~2/work`, which no longer
+    expands to a real directory) and mid-path repeats."""
+
+    def test_leading_home_replaced(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/Users/x")
+        assert ccm_core.shorten_home("/Users/x/work") == "~/work"
+
+    def test_home_itself_becomes_tilde(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/Users/x")
+        assert ccm_core.shorten_home("/Users/x") == "~"
+
+    def test_sibling_dir_with_home_prefix_untouched(self, monkeypatch):
+        """`/Users/x2` starts with the HOME string but is not under
+        HOME — must not become `~2`."""
+        monkeypatch.setenv("HOME", "/Users/x")
+        assert ccm_core.shorten_home("/Users/x2/work") == "/Users/x2/work"
+
+    def test_mid_path_home_occurrence_preserved(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/Users/alice")
+        assert ccm_core.shorten_home(
+            "/Users/alice/code/Users/alice-backup"
+        ) == "~/code/Users/alice-backup"
+
+    def test_non_home_path_untouched(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/Users/x")
+        assert ccm_core.shorten_home("/var/tmp/proj") == "/var/tmp/proj"
+
+    def test_empty_and_none_safe(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/Users/x")
+        assert ccm_core.shorten_home("") == ""
+        assert ccm_core.shorten_home(None) is None
+
+    def test_format_dir_uses_prefix_only_replacement(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/Users/alice")
+        assert ccm_render.format_dir(
+            "/Users/alice/code/Users/alice-backup", 0, 200
+        ) == "~/code/Users/alice-backup"
+
+
+class TestPrintStatusColumnAlignment:
+    """`ccm status` pads the STATUS column by VISIBLE width. The
+    per-state colour codes differ in byte length (256-colour
+    `\\033[38;5;209m` = 11 chars vs `\\033[1;33m` = 7), so padding by
+    len() put the PROJECT column at a different offset per state.
+    Overlong project names must also be truncated to the 20-col
+    column instead of shoving every later column rightward."""
+
+    def _run(self, projects, monkeypatch, capsys):
+        monkeypatch.setattr(ccm_core, "build_project_list",
+                            lambda fast=False: projects)
+        monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: "")
+        monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning",
+                            lambda: "")
+        monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
+                            lambda: "")
+        monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
+                            lambda projects_arg: [])
+        monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",
+                            lambda projects_arg: [])
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
+                            lambda d, session_id=None: None)
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+        ccm_render.print_status()
+        return capsys.readouterr().out
+
+    def _project(self, name, state, directory=None, **kw):
+        return ccm_core.Project(
+            win_target=f"0:{name[:8]}", win_idx="1", name=name,
+            directory=directory or f"/tmp/{name}", state=state, **kw)
+
+    def test_project_column_aligned_across_states(self, monkeypatch, capsys):
+        projects = [
+            self._project("alpha", "PERMIT"),
+            self._project("bravo", "BUSY"),
+            self._project("charlie", "IDLE"),
+            self._project("delta", "SHELL"),
+            self._project("echo", "DOWN"),
+        ]
+        out = self._run(projects, monkeypatch, capsys)
+        offsets = {}
+        for line in out.splitlines():
+            plain = _strip_ansi(line)
+            for name in ("alpha", "bravo", "charlie", "delta", "echo"):
+                # Only data rows contain the name right after the
+                # STATUS column; the header/separator never do. The
+                # first occurrence is the PROJECT column (the
+                # DIRECTORY column repeats the name later in the row).
+                if name in plain and "PROJECT" not in plain:
+                    offsets[name] = plain.index(name)
+        assert len(offsets) == 5
+        assert len(set(offsets.values())) == 1, (
+            f"PROJECT column start differs per state: {offsets}")
+
+    def test_status_suffix_keeps_alignment(self, monkeypatch, capsys):
+        """A stale-age suffix (' (8m)') widens the STATUS content but
+        is INSIDE the 12-col pad, so the PROJECT column must not move
+        for suffixes up to the padded width."""
+        projects = [self._project("staleproj", "BUSY")]
+        ts = 9_999_999
+        monkeypatch.setattr("time.time", lambda: ts)
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
+                            lambda d, session_id=None: (ts - 480, "BUSY", ""))
+        monkeypatch.setattr(ccm_core, "build_project_list",
+                            lambda fast=False: projects)
+        for fn in ("hooks_log_warning", "disable_all_hooks_warning",
+                   "managed_hooks_only_warning"):
+            monkeypatch.setattr(ccm_canaries, fn, lambda: "")
+        monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
+                            lambda p: [])
+        monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",
+                            lambda p: [])
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+        ccm_render.print_status()
+        row = next(line for line in capsys.readouterr().out.splitlines()
+                   if "staleproj" in line)
+        plain = _strip_ansi(row)
+        assert "(8m)" in plain
+        assert plain.index("staleproj") == 13
+
+    def test_stale_permit_suffix_dropped_to_keep_alignment(
+            self, monkeypatch, capsys):
+        """A stale-signal suffix can overflow the 12-col STATUS
+        column: `⚠ PERMIT (12m)` is 14 visible cols, and
+        pad_to_width passes overlong content through unchanged, which
+        shoved the PROJECT column (and everything after it) rightward
+        on stale rows. The age suffix is dropped rather than
+        truncated mid-number (`(1` would read as a wrong age), so
+        every row keeps the same column offsets."""
+        projects = [self._project("staleproj", "PERMIT")]
+        ts = 9_999_999
+        monkeypatch.setattr("time.time", lambda: ts)
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
+                            lambda d, session_id=None: (ts - 720, "PERMIT", ""))
+        monkeypatch.setattr(ccm_core, "build_project_list",
+                            lambda fast=False: projects)
+        for fn in ("hooks_log_warning", "disable_all_hooks_warning",
+                   "managed_hooks_only_warning"):
+            monkeypatch.setattr(ccm_canaries, fn, lambda: "")
+        monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
+                            lambda p: [])
+        monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",
+                            lambda p: [])
+        monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+        ccm_render.print_status()
+        row = next(line for line in capsys.readouterr().out.splitlines()
+                   if "staleproj" in line)
+        plain = _strip_ansi(row)
+        assert "(12m)" not in plain
+        assert plain.index("staleproj") == 13
+
+    def test_overlong_name_truncated_to_column(self, monkeypatch, capsys):
+        long_name = "a" * 30
+        projects = [self._project(long_name, "IDLE", directory="/tmp/d")]
+        out = self._run(projects, monkeypatch, capsys)
+        row = next(line for line in out.splitlines() if "aaa" in line)
+        plain = _strip_ansi(row)
+        # Name truncated to the 20-col PROJECT column; MODE column
+        # ("-" for unknown mode) starts at a fixed offset right after.
+        assert "a" * 21 not in plain
+        assert plain.index("a" * 20) == 13
+        assert plain[34] == "-"
+
+    def test_overlong_cjk_name_truncated_by_display_width(
+            self, monkeypatch, capsys):
+        # 12 CJK chars = 24 visible cols → truncate to 20 cols (10 chars).
+        cjk_name = "日本語プロジェクト名ですよ"
+        projects = [self._project(cjk_name, "IDLE", directory="/tmp/d")]
+        out = self._run(projects, monkeypatch, capsys)
+        row = next(line for line in out.splitlines() if "日本" in line)
+        plain = _strip_ansi(row)
+        # 10 CJK chars = 10 codepoints / 20 visible columns.
+        assert plain[13:23] == cjk_name[:10]
+        assert ccm_render.display_width(plain[13:23]) == 20
+        assert plain[24] == "-"
