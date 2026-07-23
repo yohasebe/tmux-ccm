@@ -17,6 +17,14 @@ setup() {
     mkdir -p "${MOCK_DIR}/bin"
     printf '#!/bin/bash\necho "2.1.218 (Claude Code)"\n' > "${MOCK_DIR}/bin/claude"
     chmod +x "${MOCK_DIR}/bin/claude"
+    # Hermetic tmux stub: ccm_write_signal runs `tmux list-windows` etc.
+    # for instant status updates, and under `set -euo pipefail` a missing
+    # tmux binary kills the hook with 127 (2>/dev/null hides the message,
+    # not the exit status). CI runners have no tmux. A no-op stub yields
+    # an empty window list — the "no matching window" path — so the hook
+    # proceeds normally.
+    printf '#!/bin/bash\nexit 0\n' > "${MOCK_DIR}/bin/tmux"
+    chmod +x "${MOCK_DIR}/bin/tmux"
     export PATH="${MOCK_DIR}/bin:${PATH}"
 
     source "${CCM_ROOT}/lib/common.sh"
