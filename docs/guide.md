@@ -418,7 +418,7 @@ ccm capture my-project              # print to terminal
 ccm capture --copy my-project       # copy to clipboard
 ```
 
-Or from the dashboard: press `p` to preview, then `c` to copy.
+Or from the dashboard: press `p` to preview, then `c` to copy. In a split window the dashboard preview (and the live preview panel) shows the pane running Claude, not whichever pane happens to be focused, and never a `CCM_IGNORE`'d sidekick — so you always preview the session ccm is tracking.
 
 ### Git integration
 

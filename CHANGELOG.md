@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- The dashboard preview now shows the tracked Claude pane, not just the focused
+  pane. `capture-pane -t <window>` grabs the window's active pane, so in a split
+  window with Claude in a non-active pane the preview showed a shell, an editor,
+  or a `CCM_IGNORE`'d sidekick instead of the session ccm tracks. The preview
+  target is now resolved like `ccm send`'s delivery pane — the active pane if it
+  hosts a non-ignored Claude, else the single/first non-ignored Claude pane,
+  else the window (unchanged for single-pane projects) — and never a hidden
+  sidekick.
 - The dashboard now holds its row order stable while open. Previously
   `build_project_list` re-sorted by state on every refresh, so a project
   changing state (BUSY→IDLE, a new PERMIT, …) reshuffled the rows — and

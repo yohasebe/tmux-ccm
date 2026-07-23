@@ -49,12 +49,14 @@ from ccm_core import (
     hooks_configured,
     log_caught_exception,
     md5_hash,
+    ps_snapshot,
     raise_on_die,
     read_cache_file,
     save_tmux_conf_setting,
     tmux_cmd,
     touch_popup_session,
 )
+from ccm_pane_state import find_claude_pid
 import ccm_agentview
 from ccm_window import reset_window_after_attach
 from ccm_canaries import (
@@ -359,6 +361,51 @@ class Dashboard:
             curses.init_pair(C_YELLOW, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_SYNCING, curses.COLOR_CYAN, -1)
 
+    def _resolve_preview_pane(self, win_target):
+        """Return the pane to preview for a window: the TRACKED claude
+        pane, not just whichever pane happens to be focused.
+
+        `capture-pane -t <window>` grabs the window's ACTIVE pane, so
+        in a split window with claude in a non-active pane the preview
+        would show the wrong thing — a shell, an editor, or a
+        CCM_IGNORE'd sidekick — instead of the session ccm is tracking.
+        Resolve like `ccm send`'s delivery pane, but never fail (this
+        is a read-only preview):
+          - the active pane if it hosts a non-ignored claude (unchanged
+            in the common single-pane / claude-focused case);
+          - else the single (or first) non-ignored claude pane;
+          - else the window target (active pane) as a fallback.
+        CCM_IGNORE'd panes are always excluded — the window's tracked
+        state is the primary session, so the preview shows that, never
+        a hidden sidekick."""
+        raw = tmux_cmd(
+            "list-panes", "-t", win_target, "-F",
+            "#{pane_id}\t#{pane_pid}\t#{pane_active}\t#{@ccm_ignore}")
+        if not raw or not raw.strip():
+            return win_target
+        try:
+            ps_lines = ps_snapshot().strip().split("\n")
+        except Exception:
+            return win_target
+        active_claude = None
+        claude_panes = []
+        for line in raw.split("\n"):
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            pane_id, pane_pid, pane_active = parts[0], parts[1], parts[2]
+            if len(parts) >= 4 and parts[3] and parts[3] != "0":
+                continue  # CCM_IGNORE'd — never previewed
+            if find_claude_pid(pane_pid, ps_lines):
+                claude_panes.append(pane_id)
+                if pane_active == "1":
+                    active_claude = pane_id
+        if active_claude:
+            return active_claude
+        if claude_panes:
+            return claude_panes[0]
+        return win_target
+
     def _update_preview(self):
         """Fetch preview content for the selected project."""
         with self.lock:
@@ -371,11 +418,14 @@ class Dashboard:
         if p.win_target == self._last_preview_target and self._preview_lines:
             return  # Already cached for this target
         self._last_preview_target = p.win_target
+        # Preview the tracked claude pane, not just the focused pane
+        # (see _resolve_preview_pane).
+        pane = self._resolve_preview_pane(p.win_target)
         # Capture with -e for ANSI escape sequences (color support)
         # Try normal screen first, then alternate screen (CLAUDE_CODE_NO_FLICKER=1)
-        raw = tmux_cmd("capture-pane", "-e", "-t", p.win_target, "-p", "-S", "-50")
+        raw = tmux_cmd("capture-pane", "-e", "-t", pane, "-p", "-S", "-50")
         if not raw or not raw.strip():
-            raw = tmux_cmd("capture-pane", "-e", "-a", "-t", p.win_target, "-p", "-S", "-50")
+            raw = tmux_cmd("capture-pane", "-e", "-a", "-t", pane, "-p", "-S", "-50")
         if raw:
             raw = self._strip_osc8_hyperlinks(raw)
         self.preview_cache = raw if raw else "(no content)"
@@ -1409,9 +1459,10 @@ class Dashboard:
 
     def _do_preview(self, stdscr):
         p = self.projects[self.selected]
-        captured = tmux_cmd("capture-pane", "-t", p.win_target, "-p", "-S", "-30")
+        pane = self._resolve_preview_pane(p.win_target)
+        captured = tmux_cmd("capture-pane", "-t", pane, "-p", "-S", "-30")
         if not captured or not captured.strip():
-            captured = tmux_cmd("capture-pane", "-a", "-t", p.win_target, "-p", "-S", "-30")
+            captured = tmux_cmd("capture-pane", "-a", "-t", pane, "-p", "-S", "-30")
         if not captured:
             return
         stdscr.erase()
