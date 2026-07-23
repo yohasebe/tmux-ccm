@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is kept in the matrix on purpose: tests/test_notify_parity.bats
+        # (and other bash 3.2 compat tests) only run when /bin/bash is 3.2.x,
+        # which is true on macOS runners but not on Linux. The repo is public,
+        # so macOS runner minutes are free.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # hypothesis is required: the PBT tests use
+      # pytest.importorskip("hypothesis") and would silently skip otherwise.
+      - name: Install Python test dependencies
+        run: python3 -m pip install pytest hypothesis
+
+      # bats tests use a REAL jq binary (tests/test_event_log.bats,
+      # tests/test_hooks.bats) — only tmux is mocked
+      # (tests/helpers/mock_tmux.bash), so tmux itself is not needed on CI.
+      - name: Install bats and jq (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bats jq
+
+      - name: Install bats and jq (macOS)
+        if: runner.os == 'macOS'
+        run: brew install bats-core jq
+
+      - name: Run pytest
+        run: python3 -m pytest tests/ -q
+
+      - name: Run bats
+        run: bats tests/
