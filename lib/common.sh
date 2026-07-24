@@ -544,16 +544,6 @@ Use the following commands to discover, inspect, and coordinate other projects:
   messages that start with `-`). Confirmation is auto-skipped when
   stdin or stdout is not a TTY, so `echo "..." | ccm send <name> --stdin`
   works from shell pipelines and MCP server hooks.
-
-- `ccm send --peer <message>` — send to the OTHER Claude pane in your
-  own window (no project name). For the main + sidekick layout: a
-  second Claude Code session running in a split pane of the same
-  window. When the user says "tell the peer …", "ask the peer …", use
-  this. It targets the single other claude-hosting pane (refuses if the
-  sibling is a plain shell, or if 3+ claude panes are ambiguous). Same
-  state policy as `ccm send` (PERMIT always refused, BUSY behind
-  `--force`). In a normal single-pane project it simply fails safe with
-  "no other claude pane".
 <!-- ccm:end -->
 SECTION
 }

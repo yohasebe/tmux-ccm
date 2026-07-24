@@ -308,55 +308,6 @@ def _resolve_delivery_pane(win_target):
     )
 
 
-def _resolve_peer_pane():
-    """Resolve the peer for `ccm send --peer`: the single OTHER
-    claude-hosting pane in the caller's own window. Returns
-    `(win_target, peer_pane_id, peer_pane_pid)`. Dies with guidance on
-    not-in-tmux / no-peer / ambiguity.
-
-    Unlike `_resolve_delivery_pane`, CCM_IGNORE'd panes ARE eligible —
-    `--peer` is an explicit target, so a hidden sidekick (the very
-    thing this feature exists to reach, e.g. a second Claude session
-    launched with `CCM_IGNORE=1`) is a valid peer even though continuous
-    tracking skips it. The peer's send-time state is checked on demand
-    by the caller via `detect_pane_state`, so gating still works
-    without ccm tracking the pane."""
-    my_pane = os.environ.get("TMUX_PANE", "").strip()
-    if not my_pane:
-        ccm_core.ccm_die(
-            "ccm send --peer must run inside a tmux pane (no $TMUX_PANE)."
-        )
-    win_target = ccm_core.tmux_cmd(
-        "display-message", "-p", "-t", my_pane,
-        "#{session_name}:#{window_index}",
-    )
-    if not win_target:
-        ccm_core.ccm_die("ccm send --peer: could not resolve the current window.")
-    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
-    # Note: ignored panes ARE eligible peers (that's the whole point —
-    # a hidden sidekick is a valid explicit target), so this does NOT
-    # filter on `p.ignored`.
-    peers = [(p.pane_id, p.pane_pid)
-             for p in enumerate_window_panes(win_target, ps_lines)
-             if p.pane_id != my_pane and p.claude_pid]
-    if not peers:
-        ccm_core.ccm_die(
-            f"ccm send --peer: no other claude pane in {win_target}.\n"
-            "  --peer targets a second Claude Code session in a split pane "
-            "of this window. Start "
-            "one, then retry."
-        )
-    if len(peers) > 1:
-        ids = ", ".join(p[0] for p in peers)
-        ccm_core.ccm_die(
-            f"ccm send --peer: {len(peers)} other claude panes ({ids}) — "
-            "ambiguous. `--peer` targets the single other claude pane; "
-            "with 3+ panes you need explicit pane addressing (not yet "
-            "supported)."
-        )
-    return win_target, peers[0][0], peers[0][1]
-
-
 def _recheck_delivery_state(win_target, pane_target):
     """Re-detect the delivery pane's raw state immediately before
     typing (TOCTOU guard).
@@ -393,8 +344,7 @@ def _recheck_delivery_state(win_target, pane_target):
 
 _SEND_USAGE = (
     "Usage: ccm send <name|#idx> <message> "
-    "[--file path] [--stdin] [--force] [--start] [--no-enter] [-y]\n"
-    "       ccm send --peer <message> [--force] [--no-enter] [-y]"
+    "[--file path] [--stdin] [--force] [--start] [--no-enter] [-y]"
 )
 
 
@@ -410,8 +360,6 @@ def cmd_send(args):
       ccm send <name> --start <msg>        Auto-launch Claude if SHELL
       ccm send -y <name> <msg>             Skip confirmation prompt
       ccm send <name> -- "--literal"       `--` ends flag parsing
-      ccm send --peer <msg>                Send to the other claude pane
-                                           in THIS window (2-pane sidekick)
     """
     if any(a in ("-h", "--help") for a in args):
         print(_SEND_USAGE)
@@ -424,7 +372,6 @@ def cmd_send(args):
     force = False
     auto_start = False
     skip_confirm = False
-    peer = False
 
     stop_flags = False
     i = 0
@@ -448,8 +395,6 @@ def cmd_send(args):
                 force = True
             elif arg == "--start":
                 auto_start = True
-            elif arg == "--peer":
-                peer = True
             elif arg in ("-y", "--yes"):
                 skip_confirm = True
             else:
@@ -463,19 +408,7 @@ def cmd_send(args):
                 positional_parts.append(arg)
         i += 1
 
-    if peer:
-        # `--peer` takes no <name> target — every positional is message.
-        # Handle either arg order (`--peer "msg"` captured "msg" as the
-        # target; fold it back).
-        if target is not None:
-            positional_parts.insert(0, target)
-            target = None
-        if auto_start:
-            ccm_core.ccm_die(
-                "--peer and --start are incompatible (the peer is a session "
-                "already running in a sibling pane)."
-            )
-    elif not target:
+    if not target:
         ccm_core.ccm_die(_SEND_USAGE)
 
     # Resolve message source (exactly one of the three)
@@ -511,100 +444,78 @@ def cmd_send(args):
             "Empty message (use --no-enter to send only Enter suppression)"
         )
 
-    if peer:
-        # Intra-window peer send: target the single other claude pane in
-        # the caller's own window, and gate on that pane's OWN state
-        # (checked on demand — the peer may be CCM_IGNORE'd and thus not
-        # continuously tracked). No --start path (a peer is by
-        # definition already running).
-        win_target, pane_target, peer_pid = _resolve_peer_pane()
-        active_cmd = None
-        proj = ccm_core.tmux_cmd(
-            "show-option", "-w", "-t", win_target, "-qv", "@ccm_project"
-        ) or ""
-        project_name = f"{proj} (peer)" if proj else "peer"
-        ps_lines = ccm_core.ps_snapshot().strip().split("\n")
-        state = detect_pane_state(
-            peer_pid, pane_target, ps_lines, str(os.getpgrp())
+    # Resolve target window
+    session = ccm_core.get_session()
+    if not session:
+        ccm_core.ccm_die(
+            "Not inside a tmux session — start one with `tmux new-session` first"
         )
-        if state == "SHELL":
-            ccm_core.ccm_die(
-                f"{project_name}: the peer pane is not at a Claude prompt "
-                "(state SHELL) — nothing to send to."
-            )
+
+    if target.startswith("#"):
+        idx = target[1:]
     else:
-        # Resolve target window
-        session = ccm_core.get_session()
-        if not session:
-            ccm_core.ccm_die(
-                "Not inside a tmux session — start one with `tmux new-session` first"
+        # Name match wins over index interpretation, even for a
+        # digit-only target: validate_name now rejects digit-only
+        # names at creation, but a project named e.g. "123" from
+        # before that guard must stay reachable by name. Explicit
+        # `#123` above remains the way to force index semantics.
+        idx = ccm_core.find_window(session, target)
+        if idx is None:
+            if target.isdigit():
+                idx = target
+            else:
+                ccm_core.ccm_die(f"Project not found: {target}")
+
+    win_target = f"{session}:{idx}"
+
+    # Look up project state from the current ccm scan
+    projects = ccm_core.build_project_list(fast=False)
+    matched = next((p for p in projects if p.win_target == win_target), None)
+    project_name = matched.name if matched else None
+    if matched is None:
+        # A second window registered against the SAME directory is
+        # dropped from `projects` by build_project_list's seen_dirs
+        # dedup, so the win_target lookup misses it and the send
+        # used to die with "not a registered ccm project" even
+        # though the window is a legitimate ccm project. Fall back
+        # to the same-directory sibling that IS tracked: delivery
+        # still targets this window's own pane (resolved from
+        # win_target below via _resolve_delivery_pane); only the
+        # gating state is borrowed from the sibling — an
+        # approximation, but far better than refusing outright.
+        # The approximation is order-dependent: seen_dirs keeps the
+        # FIRST window per directory, so with two same-dir windows
+        # where window 1 is SHELL and window 2 hosts the running
+        # claude, a send to window 2 borrows state=SHELL and is
+        # refused without --start (pinned by
+        # test_send_same_dir_second_window_sibling_shell_refused).
+        proj_tag = ccm_core.tmux_cmd(
+            "show-option", "-w", "-t", win_target, "-qv", "@ccm_project")
+        dir_tag = ccm_core.tmux_cmd(
+            "show-option", "-w", "-t", win_target, "-qv", "@ccm_dir")
+        if proj_tag and dir_tag:
+            canonical = ccm_core.canonical_dir(dir_tag)
+            matched = next(
+                (p for p in projects
+                 if p.dir
+                 and ccm_core.canonical_dir(p.dir) == canonical),
+                None,
             )
+            if matched is not None:
+                # Display the target window's own name, not the
+                # sibling's, so gating messages identify the pane
+                # the user actually addressed.
+                project_name = proj_tag
+    if matched is None:
+        ccm_core.ccm_die(f"Window is not a registered ccm project: {win_target}")
 
-        if target.startswith("#"):
-            idx = target[1:]
-        else:
-            # Name match wins over index interpretation, even for a
-            # digit-only target: validate_name now rejects digit-only
-            # names at creation, but a project named e.g. "123" from
-            # before that guard must stay reachable by name. Explicit
-            # `#123` above remains the way to force index semantics.
-            idx = ccm_core.find_window(session, target)
-            if idx is None:
-                if target.isdigit():
-                    idx = target
-                else:
-                    ccm_core.ccm_die(f"Project not found: {target}")
+    state = matched.state
 
-        win_target = f"{session}:{idx}"
-
-        # Look up project state from the current ccm scan
-        projects = ccm_core.build_project_list(fast=False)
-        matched = next((p for p in projects if p.win_target == win_target), None)
-        project_name = matched.name if matched else None
-        if matched is None:
-            # A second window registered against the SAME directory is
-            # dropped from `projects` by build_project_list's seen_dirs
-            # dedup, so the win_target lookup misses it and the send
-            # used to die with "not a registered ccm project" even
-            # though the window is a legitimate ccm project. Fall back
-            # to the same-directory sibling that IS tracked: delivery
-            # still targets this window's own pane (resolved from
-            # win_target below via _resolve_delivery_pane); only the
-            # gating state is borrowed from the sibling — an
-            # approximation, but far better than refusing outright.
-            # The approximation is order-dependent: seen_dirs keeps the
-            # FIRST window per directory, so with two same-dir windows
-            # where window 1 is SHELL and window 2 hosts the running
-            # claude, a send to window 2 borrows state=SHELL and is
-            # refused without --start (pinned by
-            # test_send_same_dir_second_window_sibling_shell_refused).
-            proj_tag = ccm_core.tmux_cmd(
-                "show-option", "-w", "-t", win_target, "-qv", "@ccm_project")
-            dir_tag = ccm_core.tmux_cmd(
-                "show-option", "-w", "-t", win_target, "-qv", "@ccm_dir")
-            if proj_tag and dir_tag:
-                canonical = ccm_core.canonical_dir(dir_tag)
-                matched = next(
-                    (p for p in projects
-                     if p.dir
-                     and ccm_core.canonical_dir(p.dir) == canonical),
-                    None,
-                )
-                if matched is not None:
-                    # Display the target window's own name, not the
-                    # sibling's, so gating messages identify the pane
-                    # the user actually addressed.
-                    project_name = proj_tag
-        if matched is None:
-            ccm_core.ccm_die(f"Window is not a registered ccm project: {win_target}")
-
-        state = matched.state
-
-        # Resolve the pane that actually receives the keystrokes. The
-        # gating state above is a window aggregate; delivery must go to
-        # the claude-hosting pane (or, for SHELL windows, the active
-        # pane where --start will launch). See _resolve_delivery_pane.
-        pane_target, active_cmd = _resolve_delivery_pane(win_target)
+    # Resolve the pane that actually receives the keystrokes. The
+    # gating state above is a window aggregate; delivery must go to
+    # the claude-hosting pane (or, for SHELL windows, the active
+    # pane where --start will launch). See _resolve_delivery_pane.
+    pane_target, active_cmd = _resolve_delivery_pane(win_target)
 
     # State-based gating
     if state == "PERMIT":

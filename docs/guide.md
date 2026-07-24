@@ -219,7 +219,6 @@ ccm send blog --no-enter "TODO: "
 | `--no-enter` | Send the text without the final Enter (useful for prefilling a prompt) |
 | `--force` | Allow sending to a BUSY target (queues into Claude's input buffer) |
 | `--start` | Auto-launch Claude if the target is in SHELL state |
-| `--peer` | Send to the other Claude pane in **this** window instead of naming a project (no `<name>` needed) — for the main + sidekick layout; see "Running a second model as a sidekick" |
 | `-y`, `--yes` | Skip the interactive confirmation prompt |
 | `--` | End of flag parsing (for messages that start with `-`) |
 
@@ -535,9 +534,9 @@ This means ccm's dashboard and status bar give you visibility into Agent Teams a
 5. ccm's dashboard shows the aggregated state of all teammates
 6. Switch to another project with `prefix + Tab` while the team works
 
-## Two-pane peer messaging (CCM_IGNORE)
+## Running a second model as a sidekick (CCM_IGNORE)
 
-You can run a second Claude Code session in a split pane of the same window — a sidekick to consult next to your main session — and have the two panes message each other. By default ccm would aggregate both panes into one window state and couldn't tell which session `ccm send` should reach, so `CCM_IGNORE` makes the sidekick invisible to ccm while the main session stays cleanly tracked:
+You can run a second Claude Code session in a split pane of the same window — a sidekick to consult next to your main session. By default ccm would aggregate both panes into one window state and couldn't tell which session `ccm send` should reach, so `CCM_IGNORE` makes the sidekick invisible to ccm while the main session stays cleanly tracked:
 
 ```bash
 # main pane: your primary session, tracked by ccm as usual
@@ -559,18 +558,6 @@ ccm unignore <project>  # restore a project
 ```
 
 or press `i` on a project in the dashboard.
-
-**Send messages between the two panes** with `ccm send --peer`. From either pane, `ccm send --peer "..."` delivers to the *other* Claude pane in the same window — so you (or the agents themselves) can relay between the main session and the sidekick without naming a project:
-
-```bash
-# from the main pane → the sidekick
-ccm send --peer "review the diff I just described and flag any risks"
-
-# from the sidekick → the main pane
-ccm send --peer "done — the risk is the retry loop in fetch()"
-```
-
-It targets the single other claude-hosting pane (refuses if the sibling is a plain shell, or if 3+ claude panes make it ambiguous), and — because a `CCM_IGNORE`'d sidekick isn't continuously tracked — checks that pane's state on demand, so it still won't type into a permission dialog. This makes the "conversation" channel work while the two sessions stay independent (code is shared via the filesystem/git as usual).
 
 **Make the ignore visible on the pane itself** (optional): ccm sets a `⊘ ccm-ignored` pane title, which tmux shows only if you enable pane borders. Opt in with `tmux set -g @ccm-ignore-pane-border on` — ccm then turns on `pane-border-status` when a session is ignored (a global tmux change, so it happens only with this explicit opt-in). Without it, the dashboard `⊘` remains the cue.
 

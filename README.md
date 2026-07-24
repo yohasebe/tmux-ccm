@@ -37,7 +37,6 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - **Port Detection** — Listening ports per project
 - **Snapshots** — Save and restore your project layout
 - **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe, BUSY-queueable)
-- **Two-Pane Peer Messaging** — run a second Claude Code session in a split pane, hide it from ccm's tracking with `CCM_IGNORE`, and relay between the two panes with `ccm send --peer` — see the [guide](docs/guide.md#two-pane-peer-messaging-ccm_ignore)
 - **Permission-Mode Visibility** — each project's Claude Code permission mode (manual / accept / plan / auto / bypass) shown in `ccm status` and the dashboard, so "this project never asks for permission" is never a mystery
 - **Auto-start** — Claude Code auto-launches when you attach to a project where it's not yet running
 - **Status Line** — Inject active project status into tmux status bar
@@ -297,7 +296,7 @@ Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named
 | `n` | Rename selected project |
 | `g` | Register existing window |
 | `r` | Remove — choose [u]nregister (keep window) or [d]elete |
-| `i` | Toggle ignore — hide/restore the project (see [Running a second model](docs/guide.md#two-pane-peer-messaging-ccm_ignore)) |
+| `i` | Toggle ignore — hide/restore the project (see [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore)) |
 | `x` | Exit all idle Claude Code sessions |
 | `/` | Search projects |
 | `t` | Switch to tree view |
@@ -327,7 +326,6 @@ ccm snapshot save|load|list|delete  Manage snapshots
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
-ccm send --peer <msg>             Send to the other Claude pane in this window (sidekick)
                                   flags: --file --stdin --no-enter --force --start -y --
 ccm bg list                       List external Claude Code agent-view sessions (read-only)
 ccm init                          Interactive setup wizard (hooks, restore, status bar)

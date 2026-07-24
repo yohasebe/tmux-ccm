@@ -37,7 +37,6 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 - **ポート検出** — プロジェクトごとのリスニングポートを表示
 - **スナップショット** — プロジェクトレイアウトの保存と復元
 - **プロジェクト間メッセージング** — `ccm send <project> <message>` で他プロジェクトの Claude にプロンプト送信、状態に応じた安全な制御 (PERMIT は拒否、BUSY は `--force` でキュー投入)
-- **2ペイン間のピア通信** — 2つ目の Claude Code セッションを分割ペインで走らせ、`CCM_IGNORE` で ccm の追跡から隠しつつ、`ccm send --peer` でペイン間を相互に中継 — [ガイド](docs/guide.ja.md#2ペイン間のピア通信ccm_ignore)参照
 - **Permission mode の可視化** — 各プロジェクトの Claude Code permission mode (manual / accept / plan / auto / bypass) を `ccm status` とダッシュボードに表示。「このプロジェクトは許可を求めてこない」理由が一目で分かる
 - **自動起動** — Claude Code が起動していないプロジェクトに attach すると自動起動
 - **ステータスライン** — アクティブプロジェクトの状態を tmux ステータスバーに表示
@@ -297,7 +296,7 @@ set -g @ccm-status-fg-dim     "#5a5a5a"   # 区切り記号やヒント表示
 | `n` | 選択プロジェクトの名前変更 |
 | `g` | 既存ウィンドウを登録 |
 | `r` | 削除 — [u]nregister（ウィンドウ残す）か [d]elete を選択 |
-| `i` | 無視トグル — プロジェクトを隠す/戻す（[別モデルをサイドキックとして使う](docs/guide.ja.md#2ペイン間のピア通信ccm_ignore)参照） |
+| `i` | 無視トグル — プロジェクトを隠す/戻す（[別モデルをサイドキックとして使う](docs/guide.ja.md#別モデルをサイドキックとして使うccm_ignore)参照） |
 | `x` | アイドル状態のClaude Codeを一括終了 |
 | `/` | プロジェクト名で検索 |
 | `t` | ツリービューに切替 |
@@ -327,7 +326,6 @@ ccm snapshot save|load|list|delete  スナップショット管理
 ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
 ccm send <name> <msg> [flags]     他プロジェクトのClaude Codeセッションにプロンプト送信
-ccm send --peer <msg>             同じウィンドウのもう一方のClaudeペインに送信(サイドキック)
                                   flags: --file --stdin --no-enter --force --start -y --
 ccm bg list                       外部の Claude Code agent-view セッション一覧（読み取り専用）
 ccm init                          対話型セットアップウィザード（フック・復元・ステータスバー）

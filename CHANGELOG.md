@@ -45,15 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   current state.
 
 ### Added
-- `ccm send --peer <message>` — send to the other Claude pane in your own
-  window, without naming a project. Built for the main + sidekick layout
-  (a second Claude Code session in a split pane of the same window): from
-  either pane, `ccm send --peer "..."` reaches the other one, so the two
-  agents can converse. It resolves the single other claude-hosting pane in
-  the current window (refuses if the sibling is a shell, or if 3+ claude
-  panes make it ambiguous), and gates on that pane's own state checked on
-  demand — so it reaches a `CCM_IGNORE`'d sidekick (which continuous tracking
-  skips) while still refusing to type into a PERMIT dialog.
 - `CCM_IGNORE` — hide a Claude Code session from ccm. Launch with
   `CCM_IGNORE=1 claude`, or toggle at runtime with `ccm ignore [project]` /
   `ccm unignore [project]` (dashboard `i` key). An ignored pane is dropped

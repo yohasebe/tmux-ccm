@@ -610,7 +610,7 @@ class TestDetectWindowRaw:
 
 class TestEnumerateWindowPanes:
     """`enumerate_window_panes` is the shared enumeration behind every
-    per-window claude-pane resolver (ccm send delivery / --peer, the
+    per-window claude-pane resolver (ccm send delivery, the
     dashboard preview, auto-exit). It parses one `list-panes` query +
     find_claude_pid into structured PaneInfo records."""
 

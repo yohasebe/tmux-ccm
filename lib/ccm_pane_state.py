@@ -78,7 +78,7 @@ def enumerate_window_panes(win_target, ps_lines):
     `@ccm_ignore` parse, and the per-pane claude resolution.
 
     Several callers need "which pane in this window hosts claude":
-    `ccm send`'s delivery pane and `--peer` (ccm_send), the dashboard
+    `ccm send`'s delivery pane (ccm_send), the dashboard
     preview (dashboard), and idle auto-exit (ccm_runtime). They differ
     only in POLICY — whether ignored panes are eligible, whether the
     active pane wins, whether ambiguity refuses or picks the first —
