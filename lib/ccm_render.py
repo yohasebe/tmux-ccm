@@ -270,6 +270,23 @@ def format_dir(directory, prefix_len, cols):
     return ""
 
 
+def external_agent_label(project):
+    """Compact label for a project's external-agent CLI panes
+    ("" when none). Names are the pane foreground commands
+    de-duplicated in first-seen order; a name hosted by several
+    panes gets a `×N` count suffix. Shared by `ccm status`, the
+    dashboard, and the status bar so the badge text is identical
+    on every surface."""
+    names = getattr(project, "external_agents", ()) or ()
+    if not names:
+        return ""
+    parts = []
+    for name in dict.fromkeys(names):
+        count = names.count(name)
+        parts.append(name if count == 1 else f"{name}×{count}")
+    return ",".join(parts)
+
+
 # ─── CLI commands ───
 
 def print_status():
@@ -297,8 +314,27 @@ def print_status():
         print(f"\033[33m⚠ {silence_msg}\033[0m")
     print()
 
-    print(f"{C_BOLD}{'STATUS':<12} {'PROJECT':<20} {'MODE':<8} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
-    print(f"{'------':<12} {'-------':<20} {'----':<8} {'------':<16} {'-----':<12} {'---------'}")
+    # External-agent note for SHELL rows: the window has no claude
+    # but hosts an external agent CLI pane. STATUS stays SHELL (its
+    # meaning — "no claude here" — must not be faked) and a dim
+    # `(name)` note says what IS running. The note widens the
+    # STATUS column for the whole table only when at least one row
+    # carries it, so columns stay aligned without perturbing the
+    # layout of badge-free setups (byte-identical to before).
+    shell_notes = {}
+    for p in projects:
+        if p.state == "SHELL":
+            label = external_agent_label(p)
+            if label:
+                shell_notes[p.win_target] = label
+    note_w = max(
+        (display_width(f"({label})") for label in shell_notes.values()),
+        default=0,
+    )
+    status_w = 12 + (note_w + 1 if note_w else 0)
+
+    print(f"{C_BOLD}{'STATUS':<{status_w}} {'PROJECT':<20} {'MODE':<8} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
+    print(f"{'------':<{status_w}} {'-------':<20} {'----':<8} {'------':<16} {'-----':<12} {'---------'}")
 
     for p in projects:
         color = C_STATE.get(p.state, C_DIM)
@@ -311,22 +347,32 @@ def print_status():
             p.dir, p.state, session_id=p.cached_session_id or "")
         if p.bg_active:
             suffix += " (bg)"
+        # SHELL-row external-agent note (see the header block above).
+        # Lives in the STATUS cell so `■ SHELL (kimi)` reads as one
+        # statement: no claude, but this is here.
+        note = shell_notes.get(p.win_target, "")
         # Pad the STATUS column by VISIBLE width (pad_to_width), not by
         # len(): the per-state colour codes differ in length (256-colour
         # `\033[38;5;209m` is 11 chars vs `\033[1;33m` at 7), so the old
         # `22 + len(suffix)` format spec put the PROJECT column at a
         # different offset for BUSY/SHELL vs PERMIT/IDLE/DOWN rows.
         status_text = f"{icon} {p.state}{suffix}"
-        if display_width(status_text) > 12:
+        if note:
+            status_text += f" ({note})"
+        if display_width(status_text) > status_w:
             # pad_to_width passes overlong content through unchanged,
             # so a stale-signal row (`⚠ PERMIT (12m)` = 14 cols) would
             # shove every later column rightward. Drop the age suffix
             # instead of truncating it mid-number (`(1` reads as a
             # wrong age); the icon/colour still flags the state, and
             # only PERMIT can overflow (BUSY + suffix fits exactly).
+            # The SHELL note is never dropped: status_w was widened
+            # to fit it, and note-less states are 8 cols at most.
             status_text = f"{icon} {p.state}"
+            if note:
+                status_text += f" ({note})"
         status_field = (
-            f"{color}{pad_to_width(status_text, 12)}"
+            f"{color}{pad_to_width(status_text, status_w)}"
             f"{C_RESET}"
         )
         # Pane-count marker `[N]` belongs to the PROJECT column.
@@ -350,6 +396,14 @@ def print_status():
         else:
             ignore_marker = ""
         pane_marker += ignore_marker
+        # External-agent presence badge `⚙<name>`: a pane running an
+        # external agent CLI exists in this window. Dim like `⊘` —
+        # presence only, not a state.
+        ext_label = external_agent_label(p)
+        if ext_label:
+            badge = f"⚙{ext_label}"
+            pane_marker += f" {C_DIM}{badge}{C_RESET}"
+            pane_marker_visible_w += 1 + display_width(badge)
         branch = p.branch or "-"
         ports = p.ports or "-"
         d = ccm_core.shorten_home(p.dir) if p.dir else ""

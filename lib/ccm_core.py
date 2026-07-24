@@ -50,6 +50,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     CLAUDE_CMD,
     CLAUDE_PROCESS_NAME,
     COMPLETED_AT_TIMEOUT,
+    EXTERNAL_AGENT_COMMANDS,
     HOOK_FRESH_THRESHOLD,
     HOOK_SCRIPTS,
     IDLE_EXIT_TIMEOUT,
@@ -329,13 +330,13 @@ class Project:
         "win_target", "win_idx", "name", "dir", "state",
         "branch", "ports", "completed_at", "bg_active", "pane_count",
         "ignored_panes", "permission_mode", "sort_key",
-        "cached_session_id",
+        "cached_session_id", "external_agents",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
                  branch="", ports="", completed_at=0, bg_active=False,
                  pane_count=1, permission_mode="", ignored_panes=0,
-                 cached_session_id=None):
+                 cached_session_id=None, external_agents=()):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -368,6 +369,14 @@ class Project:
         # non-empty → use, "" → authoritative "no session", None →
         # not fetched (constructed outside build_project_list).
         self.cached_session_id = cached_session_id
+        # Tuple of foreground command names (one per pane) matching
+        # EXTERNAL_AGENT_COMMANDS — external agent CLI sessions
+        # running in this window's panes. Display-only presence
+        # signal (dim `⚙<name>` badge / `(name)` note on SHELL
+        # rows); detection never reads it. Populated from the bulk
+        # panes_cache (zero extra subprocesses); () on the fast
+        # path, mirroring pane_count=1 / ignored_panes=0 there.
+        self.external_agents = external_agents
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
@@ -561,6 +570,23 @@ def _resolve_ignored_panes(panes_cache, win_target, ps_lines):
     return count
 
 
+def _resolve_external_agent_panes(panes_cache, win_target):
+    """Foreground command names of this window's panes that match
+    EXTERNAL_AGENT_COMMANDS — one tuple entry per matching pane.
+
+    Pure read of the bulk panes_cache (field index 3,
+    `pane_current_command`): zero extra tmux subprocesses. Unlike
+    `_resolve_ignored_panes` there is no live-process check and no
+    self-heal — `pane_current_command` is tmux's own live value, so
+    a stale entry is impossible. Display-only: the result feeds the
+    `⚙<name>` presence badge and the `(name)` note on SHELL rows;
+    detection and the state machine never see it."""
+    return tuple(
+        pc[3] for pc in panes_cache
+        if pc[0] == win_target and pc[3] in EXTERNAL_AGENT_COMMANDS
+    )
+
+
 def build_project_list(fast=False):
     """Build the active project list from tmux state.
 
@@ -612,6 +638,8 @@ def build_project_list(fast=False):
         pane_count = 1 if fast else _count_panes(panes_cache, row["win_target"])
         ignored_panes = (0 if fast else _resolve_ignored_panes(
             panes_cache, row["win_target"], ps_lines))
+        external_agents = (() if fast else _resolve_external_agent_panes(
+            panes_cache, row["win_target"]))
 
         # Permission-mode badge (slow path, live sessions only). The
         # events tail was just read by detection for this same cycle,
@@ -640,6 +668,7 @@ def build_project_list(fast=False):
             permission_mode=permission_mode,
             ignored_panes=ignored_panes,
             cached_session_id=row["cached_session_id"],
+            external_agents=external_agents,
         ))
 
     projects.sort(key=lambda p: p.sort_key)

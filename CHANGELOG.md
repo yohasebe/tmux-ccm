@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   current state.
 
 ### Added
+- Presence badge for external agent CLIs. A window with a pane running an
+  external agent CLI (a small allowlist of known commands, matched on
+  `pane_current_command` from the existing bulk panes cache — zero extra
+  tmux subprocesses) now shows a dim `⚙<name>` badge next to the `[N]`/`⊘`
+  annotations in the dashboard, `ccm status`, and the mode-2 status lines.
+  A window hosting only an external agent (no Claude) keeps its honest
+  `SHELL` state and gets a dim `(name)` note instead. Display-only: no
+  state detection, hooks, or send integration for those panes.
 - `CCM_IGNORE` — hide a Claude Code session from ccm. Launch with
   `CCM_IGNORE=1 claude`, or toggle at runtime with `ccm ignore [project]` /
   `ccm unignore [project]` (dashboard `i` key). An ignored pane is dropped

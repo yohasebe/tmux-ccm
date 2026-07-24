@@ -77,6 +77,7 @@ from ccm_commands import (
 from ccm_snapshot import cmd_snapshot_load, cmd_snapshot_save
 from ccm_render import (
     display_width,
+    external_agent_label,
     format_dir,
     format_elapsed,
     signal_age_suffix,
@@ -840,6 +841,23 @@ class Dashboard:
                 max_idx_w = max((len(p.win_idx) for p in projects), default=1) + 1  # "#N"
                 max_state_w = 8  # "● PERMIT" = 8
 
+                # External-agent note for SHELL rows: the window has
+                # no claude but hosts an external agent CLI pane.
+                # STATUS stays SHELL (its meaning — "no claude here"
+                # — must not be faked) and a dim `(name)` note is
+                # appended after the state text. The state column
+                # widens to fit the longest note, shifting COL_NAME
+                # right only when a note is actually present.
+                shell_ext_notes = {}
+                for p in projects:
+                    if p.state == "SHELL":
+                        lbl = external_agent_label(p)
+                        if lbl:
+                            shell_ext_notes[p.win_target] = f"({lbl})"
+                if shell_ext_notes:
+                    max_state_w += 1 + max(
+                        display_width(n) for n in shell_ext_notes.values())
+
                 # Fixed column positions for idx / state / name
                 # only. Each row's annotation cluster ([N] /
                 # `* elapsed` / stale|bg / branch) starts
@@ -908,6 +926,11 @@ class Dashboard:
                     # present but untracked. Dim, quiet aside.
                     ignore_marker = "⊘" if getattr(
                         proj, "ignored_panes", 0) else ""
+                    # External-agent presence badge `⚙<name>`: a pane
+                    # running an external agent CLI exists in this
+                    # window. Dim like `⊘` — presence, not a state.
+                    ext_label = external_agent_label(proj)
+                    ext_badge = f"⚙{ext_label}" if ext_label else ""
                     # All width calculations go through `display_width`
                     # (terminal columns), not `len` (codepoints). Names
                     # and branches can contain CJK / emoji; mixing the
@@ -917,6 +940,8 @@ class Dashboard:
                         pieces.append(display_width(pane_marker))
                     if ignore_marker:
                         pieces.append(display_width(ignore_marker))
+                    if ext_badge:
+                        pieces.append(display_width(ext_badge))
                     if mode_badge:
                         pieces.append(display_width(mode_badge))
                     if suffix_str:
@@ -932,6 +957,7 @@ class Dashboard:
                     annotations.append({
                         "pane_marker": pane_marker,
                         "ignore_marker": ignore_marker,
+                        "ext_badge": ext_badge,
                         "mode_badge": mode_badge,
                         "elapsed": elapsed_str,
                         "suffix": suffix_str,
@@ -970,6 +996,13 @@ class Dashboard:
                     state_cp = curses.color_pair(STATE_COLOR_PAIR.get(p.state, C_SHELL))
                     icon = STATE_ICONS.get(p.state, "?")
                     self._addstr(stdscr, y, COL_STATE, f"{icon} {p.state:<6}", state_cp)
+                    # SHELL-row external-agent note `(name)`: dim,
+                    # right after the 8-col state cell (see the
+                    # max_state_w widening above).
+                    ext_note = shell_ext_notes.get(p.win_target, "")
+                    if ext_note:
+                        self._addstr(stdscr, y, COL_STATE + 8, f" {ext_note}",
+                                     curses.color_pair(C_DIM))
 
                     # Project name
                     self._addstr(stdscr, y, COL_NAME, p.name, curses.A_BOLD)
@@ -999,6 +1032,13 @@ class Dashboard:
                         self._addstr(stdscr, y, col, ann["ignore_marker"],
                                      curses.color_pair(C_DIM))
                         col += display_width(ann["ignore_marker"]) + 1
+
+                    # External-agent badge ⚙<name>: a pane running an
+                    # external agent CLI exists. Dim — presence only.
+                    if ann.get("ext_badge"):
+                        self._addstr(stdscr, y, col, ann["ext_badge"],
+                                     curses.color_pair(C_DIM))
+                        col += display_width(ann["ext_badge"]) + 1
 
                     # Permission-mode badge {label}: dim as secondary
                     # info, except bypassPermissions which gets bold

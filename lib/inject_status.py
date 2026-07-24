@@ -23,7 +23,7 @@ from ccm_core import (
     tmux_cmd,
 )
 from ccm_notify import notify
-from ccm_render import display_width, signal_age_suffix
+from ccm_render import display_width, external_agent_label, signal_age_suffix
 from ccm_runtime import (
     auto_exit_idle,
     periodic_autosave,
@@ -191,6 +191,17 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # draws the eye. ASCII-only to avoid font/terminal width
         # ambiguity that would offset later columns.
         pane_n = str(p.pane_count) if p.pane_count > 1 else ""
+        # External-agent presence badge `⚙<name>` (mode 2 only — mode
+        # 1 is the minimal no-extras format). Dim; presence only, not
+        # a state. The label is the shared one from ccm_render so the
+        # badge text matches `ccm status` / the dashboard exactly.
+        ext_label = external_agent_label(p)
+        # SHELL-row external-agent note (mode 2 only): STATUS stays
+        # SHELL — it means "no claude here" — and `(name)` after the
+        # icon says what IS running. Uses the shared post slot; stale
+        # (BUSY/PERMIT) and bg (IDLE) can never co-fire with SHELL.
+        if with_extras and not post and p.state == "SHELL" and ext_label:
+            post = f"({ext_label})"
 
         def _render_pane_marker(name_color):
             """`[N]` with brackets dim and N cyan, returning to
@@ -218,6 +229,12 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
             entry += _render_pane_marker(
                 "#ffffff,bold" if is_current else "#9E9E9E"
             )
+            # Presence badge next to [N], same dim treatment.
+            if ext_label:
+                entry += (
+                    f" #[fg=#666666]⚙{ext_label}"
+                    f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
+                )
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
             if post:
                 entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"

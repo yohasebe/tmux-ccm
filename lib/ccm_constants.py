@@ -445,6 +445,18 @@ PARKED_FOREGROUND_COMMANDS = frozenset({
     "less", "more", "man", "bat",
 })
 
+# Foreground commands (`tmux #{pane_current_command}`) of external
+# agent CLIs — non-claude agent sessions a user runs in a sidekick
+# pane of a registered window. Display-only presence signal: panes
+# matching this set surface a dim `⚙<name>` badge (dashboard /
+# `ccm status` / status bar mode 2) so the session is visible
+# without ccm tracking its state. Deliberately an allowlist rather
+# than "any non-shell foreground": parked editors / pagers (vim,
+# less, …) would be pure noise. Detection, the state machine, and
+# hooks never read this — a matching pane still aggregates as
+# SHELL (no claude), which is honest: SHELL means "no claude".
+EXTERNAL_AGENT_COMMANDS = frozenset({"kimi", "kimi-code"})
+
 CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
 
 
