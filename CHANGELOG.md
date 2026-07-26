@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Guide section on relaying with a second agent CLI, and the conventions that
+  make it work written into the `setup-claude-md` template. Running another
+  agent CLI in a split pane already worked — presence badge, `ccm capture`
+  across panes, `ccm send` inbound — but nothing said how the two sides should
+  hand work back to each other, so a human ended up copying text between panes.
+  The convention is to report rather than poll: neither side can observe the
+  other's progress, so whoever finishes a request sends the result back itself
+  and it arrives as the other's next turn. Vendor-neutral, and it needs no
+  tracking of the other agent — which is why it works for any CLI that can run
+  a shell command.
+
 ## [0.7.1] - 2026-07-27
 
 ### Fixed

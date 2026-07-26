@@ -425,7 +425,7 @@ Or from the dashboard: press `p` to preview, then `c` to copy. In a split window
 === ccm capture: my-project ===
 --- pane %1 [claude] (active) ---
 ...
---- pane %7 [kimi] ---
+--- pane %7 [other-agent] ---
 ...
 === end ===
 ```
@@ -584,6 +584,24 @@ or press `i` on a project in the dashboard.
 **Make the ignore visible on the pane itself** (optional): ccm sets a `⊘ ccm-ignored` pane title, which tmux shows only if you enable pane borders. Opt in with `tmux set -g @ccm-ignore-pane-border on` — ccm then turns on `pane-border-status` when a session is ignored (a global tmux change, so it happens only with this explicit opt-in). Without it, the dashboard `⊘` remains the cue.
 
 **Caveat — same directory.** Running two Claude Code sessions in the same working directory hits an upstream bug (anthropics/claude-code#48112) where one session's background-task notifications can leak into the other's session log. `CCM_IGNORE` stops ccm from *tracking* the sidekick, but it cannot stop that leak from polluting your main session's log if the sidekick runs background tasks concurrently. Keep the sidekick for interactive consultation (avoid concurrent `run_in_background` work and simultaneous edits to the same files), or give each model its own directory via a git worktree if you need two co-equal agents.
+
+## Relaying with a second agent CLI
+
+You can run an agent CLI other than Claude Code in a split pane of a project window and let the two agents exchange messages without a human relaying text. ccm stays Claude-centric: it only shows a dim `⚙<name>` presence badge when a known external agent CLI runs in a pane (display only — it does not track that agent's state), and `ccm capture` shows every pane so either side can read the other.
+
+The conventions that make the relay work:
+
+- **Other agent → Claude**: the other agent runs `ccm send <project> "<message>"`. State gating applies (never into PERMIT), and the message lands as Claude's next turn — no one needs to watch.
+- **Claude → other agent**: check the peer is ready with `ccm capture <project>` first (ccm cannot state-gate a non-Claude pane), then send the body and the submit key separately:
+  ```bash
+  tmux send-keys -t <pane> -l -- "<message>"   # -l: literal, do not resolve as key names
+  tmux send-keys -t <pane> Enter
+  ```
+  The `-l` matters: without it tmux resolves arguments as key *names*, so a message containing a word like `Space` or `Enter` silently turns into that keystroke. (ccm's own delivery uses `-l --` for the same reason.) Newline keys differ between CLIs — Claude uses `M-Enter`, many others accept `C-j` — so for multi-line bodies send each line literally with the peer's newline key between them.
+- **Report, don't poll**: neither side can observe the other's progress. When you finish a request, report back with `ccm send` — the reply arrives as a new turn on its own.
+- **Long results**: write them to a file and send a one-line pointer; this also sidesteps the differing newline keys.
+
+`ccm setup-claude-md` writes these conventions into `~/.claude/CLAUDE.md` so every Claude session knows them; putting the equivalent in the other CLI's own instructions file completes the loop.
 
 ## Using with agent view (background sessions)
 

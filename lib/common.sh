@@ -549,6 +549,16 @@ Use the following commands to discover, inspect, and coordinate other projects:
       call. Ask the user to respond to the dialog in the target pane
       first, then retry the send.
 
+  **Handing work back.** You cannot observe another agent's progress,
+  and it cannot observe yours, so nobody should poll or wait. Announce
+  instead: when you finish something another session asked you for,
+  `ccm send` the result back yourself. When you ask *them* for
+  something, say how to return the answer ("reply with `ccm send
+  <project> …` when done") — otherwise the user ends up relaying it by
+  hand, which means the relay is not actually working. For long
+  results, write a file and send a one-line pointer to it rather than
+  pasting the body.
+
   Other flags: `--no-enter` (type without submitting), `-y` / `--yes`
   (skip the interactive confirmation), `--` (end of flag parsing, for
   messages that start with `-`). Confirmation is auto-skipped when
