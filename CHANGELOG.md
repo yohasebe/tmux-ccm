@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-27
+
 ### Fixed
 - Uninstall instructions now detach ccm from Claude Code first. They cleaned up
   tmux state but never mentioned `ccm remove-hooks` or `ccm remove-claude-md`,
@@ -42,7 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   hidden-pane and `⚙<name>` external-agent markers, alongside a Features entry
   for sidekick support. All shipped in 0.7.0 but reachable only from the guide.
 
-### Added (internal)
 - Docs-consistency tests (`tests/test_docs_consistency.py`): the README CLI
   table is checked against the dispatcher's own command list in both
   directions, the status-icon table against `STATE_ICONS`, both editions
