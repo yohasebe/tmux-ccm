@@ -508,7 +508,17 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
 
 ## アンインストール
 
-1. `~/.tmux.conf` から削除：
+> [!IMPORTANT]
+> 手順1を**最初に**、ccm がまだインストールされている状態で実行してください。ccm が Claude Code 側の設定に加えた変更を元に戻す操作であり、プラグインディレクトリを削除した後では、元に戻すためのコマンド自体が失われます。
+
+1. Claude Code から ccm を切り離す：
+   ```bash
+   ccm remove-hooks        # ~/.claude/settings.json から ccm のフックを削除
+   ccm remove-claude-md    # ~/.claude/CLAUDE.md から ccm セクションを削除
+   ```
+   フックはプラグインディレクトリへの絶対パスで登録されるため、残したままにすると Claude Code が存在しないスクリプトを毎イベント実行しようとし続けます。`CLAUDE.md` のセクションも、削除済みのコマンドを使うよう各セッションに指示し続けることになります。
+
+2. `~/.tmux.conf` から削除：
    ```tmux
    # この行を削除:
    set -g @plugin 'yohasebe/tmux-ccm'
@@ -516,7 +526,7 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
    # source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
    ```
 
-2. tmux状態をクリーンアップ：
+3. tmux状態をクリーンアップ：
    ```bash
    # ccmオプションを削除
    tmux set -g -u @ccm-orig-status-right 2>/dev/null
@@ -532,7 +542,7 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
    rm -rf ~/.local/share/ccm
    ```
 
-3. tmuxをリロード: `tmux source-file ~/.tmux.conf`
+4. tmuxをリロード: `tmux source-file ~/.tmux.conf`
 
 ## ドキュメント
 

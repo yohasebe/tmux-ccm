@@ -172,3 +172,88 @@ class TestClaudeMdTemplate:
             f"{name}: the setup-claude-md section must disclose that the "
             "template teaches `ccm send`, which writes to other sessions"
         )
+
+
+def _mentions_flag(text, flag):
+    """Whether `text` documents `flag` as a standalone token.
+
+    Substring matching is useless here: `--` occurs inside `--file`,
+    `--stdin` and every other long flag, so a naive `in` check reports
+    the bare `--` as documented no matter what the text says. That is
+    a test passing for the wrong reason — worse than no test, since it
+    certifies the one flag most likely to be forgotten."""
+    return re.search(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", text) is not None
+
+
+def _send_flags():
+    """Flags `cmd_send`'s argument loop actually accepts, read from
+    its comparisons. Mechanical extraction keeps the list honest: a
+    flag added to the parser and forgotten in the docs shows up here
+    without anyone maintaining a second list."""
+    body = (REPO / "lib" / "ccm_send.py").read_text()
+    body = body.split("def cmd_send(")[1].split("\n    # State-based gating")[0]
+    flags = set()
+    for m in re.finditer(r'arg (?:==|in) \(?((?:"[^"]+"(?:,\s*)?)+)\)?', body):
+        flags |= set(re.findall(r'"([^"]+)"', m.group(1)))
+    return {f for f in flags if f.startswith("-")}
+
+
+class TestSendFlags:
+    """`ccm send`'s flags are the part of the CLI a user is most
+    likely to need mid-task and least likely to find by guessing.
+    The 2026-07-27 audit found `--` — the only way to send a message
+    beginning with a dash — documented in the guide but missing from
+    both help outputs, which is precisely where someone whose message
+    was just eaten as flags will look."""
+
+    def test_extraction_sanity(self):
+        flags = _send_flags()
+        assert {"--file", "--stdin", "--force", "--start"} <= flags, flags
+
+    def test_every_flag_appears_in_a_help_output(self):
+        """`ccm send --help` and `ccm help` are the two surfaces
+        reachable without leaving the terminal."""
+        import ccm_send
+        helps = ccm_send._SEND_USAGE + "\n" + (REPO / "ccm").read_text()
+        missing = sorted(f for f in _send_flags()
+                         if not _mentions_flag(helps, f))
+        assert not missing, f"flags absent from CLI help: {missing}"
+
+    @pytest.mark.parametrize("guide", ["docs/guide.md", "docs/guide.ja.md"])
+    def test_every_flag_is_documented_in_the_guide(self, guide):
+        body = (REPO / guide).read_text()
+        missing = sorted(f for f in _send_flags()
+                         if not _mentions_flag(body, f))
+        assert not missing, f"{guide} does not document: {missing}"
+
+
+class TestUninstall:
+    """Uninstall instructions are audited least and break loudest.
+    ccm registers hooks into `~/.claude/settings.json` using absolute
+    paths inside the plugin directory, so an uninstall that skips
+    `ccm remove-hooks` leaves Claude Code invoking scripts that no
+    longer exist on every event — ccm breaking a *different* tool on
+    its way out. The `CLAUDE.md` section is the same shape of
+    leftover. Both must be undone while ccm is still installed, since
+    the commands that undo them ship with it."""
+
+    @pytest.mark.parametrize("name", list(READMES))
+    def test_uninstall_detaches_from_claude_code(self, name):
+        body = (REPO / name).read_text()
+        heading = "## Uninstall" if name.endswith("ja.md") is False else "## アンインストール"
+        assert heading in body, f"{name}: uninstall heading not found"
+        section = body.split(heading)[1].split("\n## ")[0]
+        for cmd in ("ccm remove-hooks", "ccm remove-claude-md"):
+            assert cmd in section, f"{name}: uninstall omits `{cmd}`"
+
+    @pytest.mark.parametrize("name", list(READMES))
+    def test_detach_comes_before_removing_the_plugin(self, name):
+        """Ordering is the whole point: once the plugin directory is
+        gone, so are the commands."""
+        body = (REPO / name).read_text()
+        heading = "## Uninstall" if name.endswith("ja.md") is False else "## アンインストール"
+        section = body.split(heading)[1].split("\n## ")[0]
+        assert section.index("ccm remove-hooks") < section.index("@plugin"), (
+            f"{name}: detaching from Claude Code must precede removing the "
+            "plugin from ~/.tmux.conf"
+        )

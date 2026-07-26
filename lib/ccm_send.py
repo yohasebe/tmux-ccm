@@ -344,7 +344,12 @@ def _recheck_delivery_state(win_target, pane_target):
 
 _SEND_USAGE = (
     "Usage: ccm send <name|#idx> <message> "
-    "[--file path] [--stdin] [--force] [--start] [--no-enter] [-y]"
+    "[--file path] [--stdin|-] [--force] [--start] [--no-enter] [-y|--yes]\n"
+    # `--` is the only way to send a message that starts with a dash,
+    # and a user who needs it is by definition looking at a message
+    # ccm just tried to parse as flags — so it belongs in the usage
+    # line they are about to be shown, not only in the guide.
+    "       ccm send <name> -- <message starting with a dash>"
 )
 
 

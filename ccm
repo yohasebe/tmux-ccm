@@ -59,8 +59,9 @@ Usage:
   ccm stop [--all|name]             Stop project window(s)
   ccm bg list                       List external Claude Code agent-view sessions (read-only)
   ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
-                                    flags: --file <path> | --stdin | --no-enter
-                                           --force (BUSY) | --start (SHELL) | -y
+                                    flags: --file <path> | --stdin | - | --no-enter
+                                           --force (BUSY) | --start (SHELL) | -y/--yes
+                                           -- (end flags; for a msg starting with -)
   ccm menu                          Interactive menu (for keybinding)
   ccm init                          Interactive setup wizard
   ccm setup-hooks                   Install Claude Code hooks for improved state detection

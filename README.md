@@ -508,7 +508,17 @@ tmux switch-client -t oss      # Standard tmux session switching
 
 ## Uninstall
 
-1. Remove from `~/.tmux.conf`:
+> [!IMPORTANT]
+> Do step 1 **first**, while ccm is still installed. It undoes changes ccm made to Claude Code's own configuration, and once the plugin directory is gone the commands that undo them are gone too.
+
+1. Detach ccm from Claude Code:
+   ```bash
+   ccm remove-hooks        # remove ccm's hooks from ~/.claude/settings.json
+   ccm remove-claude-md    # remove the ccm section from ~/.claude/CLAUDE.md
+   ```
+   The hooks are registered with absolute paths into the plugin directory, so leaving them behind means Claude Code keeps trying to run scripts that no longer exist on every event. The `CLAUDE.md` section would likewise keep instructing sessions to use commands you have removed.
+
+2. Remove from `~/.tmux.conf`:
    ```tmux
    # Delete this line:
    set -g @plugin 'yohasebe/tmux-ccm'
@@ -516,7 +526,7 @@ tmux switch-client -t oss      # Standard tmux session switching
    # source-file ~/.tmux/plugins/tmux-ccm/ccm.tmux.conf
    ```
 
-2. Clean up tmux state:
+3. Clean up tmux state:
    ```bash
    # Remove ccm options
    tmux set -g -u @ccm-orig-status-right 2>/dev/null
@@ -532,7 +542,7 @@ tmux switch-client -t oss      # Standard tmux session switching
    rm -rf ~/.local/share/ccm
    ```
 
-3. Reload tmux: `tmux source-file ~/.tmux.conf`
+4. Reload tmux: `tmux source-file ~/.tmux.conf`
 
 ## Documentation
 

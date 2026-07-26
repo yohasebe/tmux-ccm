@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Uninstall instructions now detach ccm from Claude Code first. They cleaned up
+  tmux state but never mentioned `ccm remove-hooks` or `ccm remove-claude-md`,
+  so following them left seven hooks registered in `~/.claude/settings.json`
+  pointing at absolute paths inside the deleted plugin directory — Claude Code
+  would keep trying to run scripts that no longer exist, on every event, plus a
+  `CLAUDE.md` section still instructing sessions to use removed commands. That
+  is ccm breaking a different tool on its way out. The step is now first and
+  marked as such, because the commands that undo those changes ship with the
+  plugin being removed.
+- `ccm send`'s help outputs document `--` and `--yes`. `--` is the only way to
+  send a message beginning with a dash, and someone who needs it is by
+  definition staring at a message ccm just parsed as flags — the guide had it,
+  both help outputs did not.
+
+### Added (internal)
+- Docs-consistency coverage extended to `ccm send`'s flags (extracted from the
+  parser, so a new flag cannot be added without documenting it) and to the
+  uninstall section (both detach commands present, and ordered before plugin
+  removal). Flag matching is token-bounded: a substring check reports the bare
+  `--` as documented because it occurs inside `--file` and every other long
+  flag, which would certify precisely the flag most likely to be missing.
 - README no longer understates what `ccm setup-claude-md` writes into your
   global Claude Code instructions. It embedded a copy of the template that had
   drifted to a third of its length and had lost `ccm send` entirely, so a
