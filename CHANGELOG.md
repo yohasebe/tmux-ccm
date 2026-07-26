@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- README no longer understates what `ccm setup-claude-md` writes into your
+  global Claude Code instructions. It embedded a copy of the template that had
+  drifted to a third of its length and had lost `ccm send` entirely, so a
+  reader would conclude only read-only discovery commands were added — when the
+  section in fact teaches a command that types prompts into other sessions. The
+  copy is gone (it was the source of the drift); the section now describes both
+  halves in prose, names the PERMIT policy that makes sending safe, and notes
+  that `ccm setup-claude-md` prints the full text for confirmation before
+  writing.
+- README documents `ccm search`, and the status-icon table documents the `⊘`
+  hidden-pane and `⚙<name>` external-agent markers, alongside a Features entry
+  for sidekick support. All shipped in 0.7.0 but reachable only from the guide.
+
+### Added (internal)
+- Docs-consistency tests (`tests/test_docs_consistency.py`): the README CLI
+  table is checked against the dispatcher's own command list in both
+  directions, the status-icon table against `STATE_ICONS`, both editions
+  against each other, and the setup-claude-md section for the disclosure and
+  no-embedded-copy properties above. The 2026-07-27 audit found three drifts
+  at once, each invisible until someone read both sides line by line; these
+  turn that class of review into a test run.
 - `ccm send <this project>` no longer reports a misleading `BUSY`. Delivery
   resolves to the pane hosting Claude, so a Claude session addressing its own
   project resolves to the pane it is running in — and the state gate then

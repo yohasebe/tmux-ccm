@@ -38,6 +38,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - **Snapshots** — Save and restore your project layout
 - **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe, BUSY-queueable)
 - **Permission-Mode Visibility** — each project's Claude Code permission mode (manual / accept / plan / auto / bypass) shown in `ccm status` and the dashboard, so "this project never asks for permission" is never a mystery
+- **Sidekick Support** — run a second agent CLI in a split pane: `CCM_IGNORE` (`⊘`) keeps a session out of ccm's tracking, and a presence badge (`⚙`) shows a non-Claude agent is there. See [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore)
 - **Auto-start** — Claude Code auto-launches when you attach to a project where it's not yet running
 - **Status Line** — Inject active project status into tmux status bar
 - **Multi-byte text** — CJK characters and emoji in project names align correctly across dashboard, status bar, and CLI tables
@@ -320,7 +321,8 @@ ccm status                        Show projects with status, permission mode, br
 ccm tree                          Show session/window/pane hierarchy
 ccm ports                         Show listening ports per project
 ccm capture [--copy] <name|#id>   Capture pane content (--copy: clipboard)
-ccm dashboard                     Open interactive dashboard popup
+ccm dashboard [--search]          Open interactive dashboard popup
+ccm search                        Open the dashboard in live-filter search mode
 ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
 ccm start <snapshot>              Restore from snapshot
@@ -356,6 +358,8 @@ ccm clear-notifications           Remove ccm notifications from macOS Notificati
 | ● | IDLE | Waiting for input |
 | `* <elapsed>` | IDLE (recently completed) | Transient marker (asterisk green, time dim) shown for 30 s after BUSY/PERMIT → IDLE |
 | `[N]` | (any state, multi-pane window) | Pane count marker (brackets dim, digit cyan) when a window has more than one pane |
+| `⊘` | (any state) | Hidden-pane marker (dim): the window has a pane excluded from ccm via `CCM_IGNORE` |
+| `⚙<name>` | (any state) | Presence marker (dim): a pane in the window is running an external agent CLI. ccm shows that it is there but does not track its state |
 | ■ | SHELL | Shell active, Claude not running |
 | ○ | DOWN | Window not available |
 
@@ -461,29 +465,20 @@ ccm automatically sets `CLAUDE_CODE_NO_FLICKER=1` to reduce UI flicker when runn
 
 ### Make Claude Code Aware of Other Projects
 
-By default, each Claude Code session is isolated and unaware of your other projects. You can change this by adding ccm commands to your global Claude Code instructions (`~/.claude/CLAUDE.md`):
-
-```markdown
-## Multi-Project Environment
-
-This user manages multiple projects with ccm (Claude Code Manager for tmux).
-Use the following commands to discover and inspect other projects:
-
-- `ccm list` — List all managed projects (names and directories)
-- `ccm status` — Show all project states (branch, port, Claude status)
-- `ccm capture <name>` — Capture visible terminal output from another project
-```
-
-This lets every Claude Code session discover sibling projects and inspect their state — for example, checking how a library is used in another project, or reading another project's `CLAUDE.md`.
-
-`ccm capture` covers split windows too: it captures every pane, labelled with what is running in it. Pointing it at the session's *own* project is how a Claude session reads the pane beside it — handy when you keep a second agent CLI in a split pane of the same window.
-
-To set this up automatically:
+By default, each Claude Code session is isolated and unaware of your other projects. `ccm setup-claude-md` changes that by adding a ccm section to your global Claude Code instructions (`~/.claude/CLAUDE.md`):
 
 ```bash
 ccm setup-claude-md     # add ccm section to ~/.claude/CLAUDE.md
 ccm remove-claude-md    # remove it
 ```
+
+That section teaches every Claude Code session two things.
+
+**Discovering and inspecting sibling projects** — `ccm list`, `ccm status`, and `ccm capture`. A session can then check how a library is used in another project, or read another project's `CLAUDE.md`. `ccm capture` covers split windows too: it captures every pane, labelled with what is running in it, so pointing it at the session's *own* project is how a Claude session reads the pane beside it.
+
+**Sending prompts with `ccm send`** — worth knowing before you run the command, because this one *writes*: it types a prompt into another project's Claude session. The instructions include the state policy that keeps it safe, above all that a session showing a permission dialog is never typed into, even with `--force`.
+
+`ccm setup-claude-md` prints the full text and asks for confirmation before writing anything, so you can read exactly what will be added.
 
 ### Organize Projects by Category with tmux Sessions
 
