@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-26
+
 ### Fixed
 - `ccm capture` now captures every pane of a split window instead of only the
   focused one. `capture-pane -t <window>` delivers the window's ACTIVE pane, so
@@ -37,55 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `set -euo pipefail`; replaced with a `tr`-based lowercase that bash 3.2
   accepts.
 
-### Changed
-- The dashboard preview now shows the tracked Claude pane, not just the focused
-  pane. `capture-pane -t <window>` grabs the window's active pane, so in a split
-  window with Claude in a non-active pane the preview showed a shell, an editor,
-  or a `CCM_IGNORE`'d sidekick instead of the session ccm tracks. The preview
-  target is now resolved like `ccm send`'s delivery pane — the active pane if it
-  hosts a non-ignored Claude, else the single/first non-ignored Claude pane,
-  else the window (unchanged for single-pane projects) — and never a hidden
-  sidekick.
-- The dashboard now holds its row order stable while open. Previously
-  `build_project_list` re-sorted by state on every refresh, so a project
-  changing state (BUSY→IDLE, a new PERMIT, …) reshuffled the rows — and
-  because the selection is a positional index, the highlight could jump to a
-  *different* project mid-interaction. The order is now frozen at open
-  (state-sorted, as before), later refreshes follow it, projects opened while
-  the dashboard is up append at the end, and the selection is pinned to its
-  project by identity so it never lands on the wrong one. A state change still
-  updates a row's icon/color in place; it just no longer moves the row. Each
-  popup open is a fresh process, so reopening re-decides the order from
-  current state.
-
-### Added
-- Presence badge for external agent CLIs. A window with a pane running an
-  external agent CLI (a small allowlist of known commands, matched on
-  `pane_current_command` from the existing bulk panes cache — zero extra
-  tmux subprocesses) now shows a dim `⚙<name>` badge next to the `[N]`/`⊘`
-  annotations in the dashboard, `ccm status`, and the mode-2 status lines.
-  A window hosting only an external agent (no Claude) keeps its honest
-  `SHELL` state and gets a dim `(name)` note instead. Display-only: no
-  state detection, hooks, or send integration for those panes.
-- `CCM_IGNORE` — hide a Claude Code session from ccm. Launch with
-  `CCM_IGNORE=1 claude`, or toggle at runtime with `ccm ignore [project]` /
-  `ccm unignore [project]` (dashboard `i` key). An ignored pane is dropped
-  from window state aggregation, session tracking, `ccm send` delivery, and
-  idle auto-exit, and its hooks fire no signals, events, or desktop
-  notifications. The intended use is running a second Claude Code session as
-  a manual sidekick in a split pane of the same window (a main pane plus a
-  second session launched with `CCM_IGNORE=1` alongside) without the sidekick
-  confusing ccm's tracking of the primary session. A dim `⊘` marks the row in the
-  dashboard and `ccm status`; opt into a per-pane label with
-  `tmux set -g @ccm-ignore-pane-border on`. (Because a process's environment
-  can't be read from outside on macOS, the ignored session marks its own
-  pane via its hooks — `$TMUX_PANE` pane option for detection plus a
-  per-session marker file for hook suppression.) Note: ignore stops ccm from
-  tracking the sidekick, but cannot immunize the primary session's JSONL from
-  the upstream same-cwd task-notification leak (anthropics/claude-code#48112)
-  if the sidekick runs background tasks concurrently.
-
-### Fixed
 - `ccm send` re-checks the delivery pane's raw state (`detect_pane_state`)
   immediately before typing. The state gate runs on a `build_project_list`
   snapshot, and the interactive confirmation prompt can block for any length
@@ -160,6 +113,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   active session. Deletion is now skipped when the BUSY signal is younger
   than `CCM_IDLE_PROMPT_GUARD_SEC` (default 60; `0` restores the old
   behaviour).
+
+### Changed
+- The dashboard preview now shows the tracked Claude pane, not just the focused
+  pane. `capture-pane -t <window>` grabs the window's active pane, so in a split
+  window with Claude in a non-active pane the preview showed a shell, an editor,
+  or a `CCM_IGNORE`'d sidekick instead of the session ccm tracks. The preview
+  target is now resolved like `ccm send`'s delivery pane — the active pane if it
+  hosts a non-ignored Claude, else the single/first non-ignored Claude pane,
+  else the window (unchanged for single-pane projects) — and never a hidden
+  sidekick.
+- The dashboard now holds its row order stable while open. Previously
+  `build_project_list` re-sorted by state on every refresh, so a project
+  changing state (BUSY→IDLE, a new PERMIT, …) reshuffled the rows — and
+  because the selection is a positional index, the highlight could jump to a
+  *different* project mid-interaction. The order is now frozen at open
+  (state-sorted, as before), later refreshes follow it, projects opened while
+  the dashboard is up append at the end, and the selection is pinned to its
+  project by identity so it never lands on the wrong one. A state change still
+  updates a row's icon/color in place; it just no longer moves the row. Each
+  popup open is a fresh process, so reopening re-decides the order from
+  current state.
+
+### Added
+- Presence badge for external agent CLIs. A window with a pane running an
+  external agent CLI (a small allowlist of known commands, matched on
+  `pane_current_command` from the existing bulk panes cache — zero extra
+  tmux subprocesses) now shows a dim `⚙<name>` badge next to the `[N]`/`⊘`
+  annotations in the dashboard, `ccm status`, and the mode-2 status lines.
+  A window hosting only an external agent (no Claude) keeps its honest
+  `SHELL` state and gets a dim `(name)` note instead. Display-only: no
+  state detection, hooks, or send integration for those panes.
+- `CCM_IGNORE` — hide a Claude Code session from ccm. Launch with
+  `CCM_IGNORE=1 claude`, or toggle at runtime with `ccm ignore [project]` /
+  `ccm unignore [project]` (dashboard `i` key). An ignored pane is dropped
+  from window state aggregation, session tracking, `ccm send` delivery, and
+  idle auto-exit, and its hooks fire no signals, events, or desktop
+  notifications. The intended use is running a second Claude Code session as
+  a manual sidekick in a split pane of the same window (a main pane plus a
+  second session launched with `CCM_IGNORE=1` alongside) without the sidekick
+  confusing ccm's tracking of the primary session. A dim `⊘` marks the row in the
+  dashboard and `ccm status`; opt into a per-pane label with
+  `tmux set -g @ccm-ignore-pane-border on`. (Because a process's environment
+  can't be read from outside on macOS, the ignored session marks its own
+  pane via its hooks — `$TMUX_PANE` pane option for detection plus a
+  per-session marker file for hook suppression.) Note: ignore stops ccm from
+  tracking the sidekick, but cannot immunize the primary session's JSONL from
+  the upstream same-cwd task-notification leak (anthropics/claude-code#48112)
+  if the sidekick runs background tasks concurrently.
 
 ### Added (internal)
 - Test-suite isolation guard: an autouse `block_live_subprocess` fixture in
