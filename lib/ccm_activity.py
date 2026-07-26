@@ -31,6 +31,7 @@ real terminator at the end of the tail.
 from ccm_constants import (
     BUSY_HOOK_JSONL_WINDOW,
     JSONL_HOOK_GAP_TOLERANCE,
+    PERMIT_MAX_TIMEOUT,
     TERMINAL_STOP_REASONS,
 )
 
@@ -324,18 +325,41 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
     # subagent held a stuck BUSY, raw=IDLE throughout). Defer to legacy,
     # which reads raw=IDLE → IDLE.
     #
-    # PERMIT is deliberately EXCLUDED: permit-latest + raw=IDLE + stale
-    # JSONL is genuinely ambiguous — it is also the signature of an
-    # interactive choice menu whose `❯` selector matches the input
-    # prompt (2026-05-08 case), which stays awaiting the user's
-    # selection indefinitely and must remain PERMIT. Unlike BUSY, there
-    # is no spinner to disambiguate, so we keep the existing "surface
-    # PERMIT" behavior there. The window bound also keeps every
-    # long-tool case intact — those carry FRESH JSONL (tool_use within
-    # minutes), well inside the window, so they never reach this guard.
-    if (candidate == "BUSY" and raw == "IDLE"
+    # PERMIT gets the same treatment, bounded by PERMIT_MAX_TIMEOUT.
+    # This used to be excluded on the grounds that permit-latest +
+    # raw=IDLE + stale JSONL was indistinguishable from an interactive
+    # choice menu whose `❯` selector matched the input prompt (the
+    # 2026-05-08 case), so an aging PERMIT risked a false IDLE on a
+    # menu still awaiting a selection. **That premise no longer holds,
+    # measured 2026-07-26**: a live choice menu renders the footer
+    # `Enter to select · ↑/↓ to navigate · n to add notes · Esc to
+    # cancel`, which `PATTERN_PERMIT_FOOTER` matches through its
+    # structural `Enter to \S… · …Esc to \w+` branch (the literal-verb
+    # pattern was pivoted to that shape after the 2026-05-29 `/model`
+    # rename), so a displayed menu yields raw=PERMIT and never reaches
+    # this guard — the `raw == "PERMIT"` override below re-commits it.
+    # Verified against real captures of both states: menu on screen →
+    # footer match, empty composer → no match.
+    #
+    # What the guard releases is therefore only the case that used to
+    # stick forever: a permission that WAS resolved (typically Esc'd,
+    # which fires no Stop hook and writes no further assistant record,
+    # so a permit-class event stays "latest" indefinitely) leaving an
+    # idle screen. 2026-07-26 macos-config incident: `⚠ PERMIT` shown
+    # for 15+ minutes on a pane sitting at an empty `❯` prompt. Aging
+    # also makes the long-documented "PERMIT auto-clears after 10 min
+    # as a safety net" true for the first time — `PERMIT_MAX_TIMEOUT`
+    # had become a dead constant (defined, imported, referenced only
+    # by tests) when detection moved to the event-log path, so the
+    # promise in docs/guide had no implementation behind it.
+    #
+    # Long-tool cases stay intact for both candidates: they carry
+    # FRESH JSONL (tool_use within minutes), well inside the window.
+    stale_window = (BUSY_HOOK_JSONL_WINDOW if candidate == "BUSY"
+                    else PERMIT_MAX_TIMEOUT)
+    if (candidate in ("BUSY", "PERMIT") and raw == "IDLE"
             and jsonl_age is not None
-            and jsonl_age > BUSY_HOOK_JSONL_WINDOW):
+            and jsonl_age > stale_window):
         return None
 
     # Capture-pane authority. raw=PERMIT (modal physically rendered)

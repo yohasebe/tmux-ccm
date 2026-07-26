@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- A resolved permission no longer holds `⚠ PERMIT` forever. Nothing upstream
+  reports that a permission was answered — approving fires no hook at all
+  (anthropics/claude-code#79651) and dismissing with Esc fires no `Stop`
+  either — so a permit event stayed the newest event indefinitely and ccm kept
+  claiming the project needed attention. Observed for 15+ minutes on a pane
+  sitting at an empty `❯` prompt. Detection now releases a permit whose modal
+  is **not** on screen once the session log has been frozen past
+  `CCM_PERMIT_MAX_TIMEOUT` (default 10 min), falling back to IDLE.
+
+  This case was previously left alone because a stale permit with an idle
+  screen looked identical to an interactive choice menu still awaiting a
+  selection, and aging it risked the opposite error — a menu reading as IDLE.
+  Measuring a live menu retired that concern: it renders the footer
+  `Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel`, which
+  the permit-footer pattern already matches, so a displayed menu is detected
+  from the pane and is never released however long it waits. Both halves of
+  that measurement are now regression tests, so a future upstream reword fails
+  the suite instead of silently turning a waiting menu into a false IDLE.
+
+  `CCM_PERMIT_MAX_TIMEOUT` had been a dead constant since detection moved to
+  the event-log path — defined, imported, and referenced only by tests, with
+  nothing behind the documented "PERMIT auto-clears after 10 min" promise. It
+  is wired up again here, as a knob separate from the BUSY window, and the
+  guide now describes what actually happens.
+
 ## [0.7.0] - 2026-07-26
 
 ### Fixed

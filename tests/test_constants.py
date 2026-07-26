@@ -120,6 +120,46 @@ class TestClassifyPermitModal:
         cat, _ = ccm_constants.classify_permit_modal(text)
         assert cat == "confirmation-modal"
 
+    def test_ask_user_question_menu_footer_measured_2026_07_26(self):
+        """Verbatim footer of a live `AskUserQuestion` choice menu,
+        captured from a real pane on 2026-07-26 (v2.1.220).
+
+        This one is load-bearing beyond classification: the PERMIT
+        staleness guard in `ccm_activity.map_activity_to_state`
+        releases a stale permit only when `raw == "IDLE"`, and its
+        safety argument is that a menu still awaiting a selection
+        shows this footer and therefore arrives as raw=PERMIT. If
+        upstream rewords it past `PATTERN_PERMIT_FOOTER`, a menu left
+        open longer than `PERMIT_MAX_TIMEOUT` would silently read as
+        IDLE — the exact false-IDLE this test exists to catch. Note
+        the verb is `select`, not `confirm`: the pattern must stay on
+        its structural `Enter to \\S… · …Esc to \\w+` branch."""
+        footer = ("Enter to select · ↑/↓ to navigate · n to add notes "
+                  "· Esc to cancel")
+        assert ccm_constants.PATTERN_PERMIT_FOOTER.search(footer)
+        # As it appears in a captured pane: options above, footer last.
+        text = (
+            "  Which approach?\n"
+            "❯ 1. First option\n"
+            "  2. Second option\n"
+            "  Chat about this\n"
+            + footer
+        )
+        assert ccm_constants.PATTERN_PERMIT_FOOTER.search(text)
+
+    def test_idle_composer_is_not_a_permit_footer(self):
+        """The other half of the measurement: the same pane with no
+        modal (empty `❯` composer + status line) must NOT match, or
+        every idle session would read as PERMIT. Captured alongside
+        the menu above."""
+        text = (
+            "  ⎿  Tip: Use Plan Mode to prepare for a complex request.\n"
+            "❯ \n"
+            "  ~/code/ccm  main  Opus 5  ctx ████░░░░░░ 42%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
+        )
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.search(text)
+
     def test_footerless_webfetch_permission_is_permission_request(self):
         """Footer-less WebFetch / web-content permission dialog
         (observed 2026-06-26, raised by a background subagent). It

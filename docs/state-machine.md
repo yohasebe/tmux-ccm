@@ -75,7 +75,12 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
    - if `raw=="PERMIT"` (modal physically on screen) → `PERMIT` (capture-pane authoritative)
    - else if JSONL terminal stop_reason is fresher than the event → `IDLE` (silent permission resolution / Esc dismiss)
    - else if JSONL `stop_reason=tool_use` is fresher than the event AND within `BUSY_HOOK_JSONL_WINDOW` → `BUSY` (auto-approved permit, tool actively running)
+   - else if `raw=="IDLE"` AND jsonl_age exceeds `PERMIT_MAX_TIMEOUT` (10 min) → `None` (stale-permit release — defer to legacy, which resolves to IDLE via `default`)
    - else → `PERMIT`
+
+   **Stale-permit release (added 2026-07-26).** A permit-class event can stay "latest" forever, because resolving a permission fires no hook at all (upstream gap, [#79651](https://github.com/anthropics/claude-code/issues/79651)) and an Esc-dismissed one fires no `Stop` either. Before this rule, a resolved permission left `⚠ PERMIT` on screen indefinitely (2026-07-26 macos-config: 15+ minutes on a pane sitting at an empty `❯` prompt).
+
+   The rule was previously rejected on the grounds that permit-latest + `raw="IDLE"` + stale JSONL was indistinguishable from an interactive choice menu still awaiting a selection, so aging it risked a false IDLE. **Measurement retired that premise**: a live `AskUserQuestion` menu renders the footer `Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel`, which `PATTERN_PERMIT_FOOTER` matches through its structural `Enter to \S… · …Esc to \w+` branch, so a displayed menu resolves to `raw="PERMIT"` and is caught by the first bullet regardless of age. The `raw=="IDLE"` gate therefore selects exactly the resolved-but-unreported case. Both halves are pinned by `test_ask_user_question_menu_footer_measured_2026_07_26` and `test_idle_composer_is_not_a_permit_footer`; if upstream rewords that footer past the pattern, those tests fail *before* a menu can read as IDLE.
 5. Latest event is start-class (`prompt` / `pretool` / `posttool` / `subagent` / `compact`):
    - **Phantom-subagent shortcut** (`latest.type == "subagent"` AND `raw≠"PERMIT"`): Claude Code's upstream fires occasional spurious `subagent` events in idle periods; legitimate subagent invocations always come mid-conversation. Walk back through stacked phantom subagents to find the underlying rest marker, then resolve as if the phantom did not exist:
      - immediately-preceding non-subagent event is `notify_idle` → `IDLE` (Claude self-reported idle; the phantom does not invalidate that, even when raw briefly disagrees because `❯` is off-screen)
@@ -177,7 +182,8 @@ Tunable thresholds with empirically-chosen defaults:
 |---|---|---|
 | `HOOK_FRESH_THRESHOLD` | 2 s | legacy `hook_fresh_busy` rule's "hook just fired" gate |
 | `JSONL_HOOK_GAP_TOLERANCE` | 60 s | recap-phantom guard + Esc-release / silent-completion freshness window in derive |
-| `BUSY_HOOK_JSONL_WINDOW` | 600 s | combined-stale fallback in derive (event AND jsonl both stale → defer to legacy) |
+| `BUSY_HOOK_JSONL_WINDOW` | 600 s | combined-stale fallback in derive (event AND jsonl both stale → defer to legacy); also the stale-BUSY release when `raw="IDLE"` |
+| `PERMIT_MAX_TIMEOUT` | 600 s | stale-permit release in derive (permit-latest + `raw="IDLE"` + frozen JSONL → defer to legacy). Separate knob from the BUSY window so the PERMIT axis can be tuned alone (`CCM_PERMIT_MAX_TIMEOUT`) |
 | `STARTUP_GRACE_SEC` | 60 s | startup transient pid-age window (legacy `startup_transient_raw_busy`) |
 | `SLIVER_HEIGHT_THRESHOLD` | 4 rows | minimum pane height to participate in window aggregation |
 

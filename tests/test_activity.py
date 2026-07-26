@@ -429,16 +429,64 @@ class TestMapActivityToState:
             ACTIVITY_IN_PROGRESS, raw="BUSY",
             jsonl_stop_reason="tool_use", jsonl_age=99999) == "BUSY"
 
-    def test_stale_permit_with_idle_screen_stays_permit(self):
-        """PERMIT is deliberately EXCLUDED from the stale-BUSY guard:
-        permit-latest + raw=IDLE + stale JSONL is also the signature
-        of an interactive choice menu whose `❯` selector matches the
-        input prompt (2026-05-08 case), which stays awaiting the
-        user's selection indefinitely. It must remain PERMIT."""
+    def test_stale_permit_with_idle_screen_releases_to_legacy(self):
+        """permit-latest + raw=IDLE + JSONL frozen past
+        PERMIT_MAX_TIMEOUT defers to legacy (→ IDLE) instead of
+        holding PERMIT forever.
+
+        This inverts the pre-2026-07-26 behaviour. PERMIT used to be
+        excluded from the staleness guard because an idle screen was
+        thought indistinguishable from an interactive choice menu
+        awaiting a selection. Measurement killed that premise: a live
+        menu renders a footer `PATTERN_PERMIT_FOOTER` matches, so it
+        arrives here as raw=PERMIT (covered by
+        `test_stale_permit_with_modal_on_screen_stays_permit`), never
+        raw=IDLE. What raw=IDLE actually means is a permission that
+        was already resolved — typically Esc'd, which fires no Stop
+        hook, so a permit event stays "latest" indefinitely
+        (2026-07-26 macos-config incident: `⚠ PERMIT` for 15+ minutes
+        on an empty `❯` prompt)."""
         from ccm_activity import ACTIVITY_AWAITING_PERMIT
         assert self._map(
             ACTIVITY_AWAITING_PERMIT, raw="IDLE",
+            jsonl_stop_reason="tool_use", jsonl_age=99999) is None
+
+    def test_stale_permit_with_modal_on_screen_stays_permit(self):
+        """The safety property of the release above: while the modal
+        is physically on screen (raw=PERMIT — a live choice menu
+        included), age is irrelevant and PERMIT is held. A menu the
+        user leaves open for hours must never read as IDLE."""
+        from ccm_activity import ACTIVITY_AWAITING_PERMIT
+        assert self._map(
+            ACTIVITY_AWAITING_PERMIT, raw="PERMIT",
             jsonl_stop_reason="tool_use", jsonl_age=99999) == "PERMIT"
+
+    def test_fresh_permit_with_idle_screen_stays_permit(self):
+        """Inside the window the permit is still trusted, so the
+        ordinary "you must answer this" case is unaffected — only a
+        permit stale past `PERMIT_MAX_TIMEOUT` is released."""
+        from ccm_activity import ACTIVITY_AWAITING_PERMIT
+        assert self._map(
+            ACTIVITY_AWAITING_PERMIT, raw="IDLE",
+            jsonl_stop_reason="tool_use", jsonl_age=30) == "PERMIT"
+
+    def test_permit_and_busy_windows_are_independently_tunable(self):
+        """The two candidates read different constants
+        (`PERMIT_MAX_TIMEOUT` vs `BUSY_HOOK_JSONL_WINDOW`), so the
+        PERMIT axis can be tuned without touching the BUSY axis.
+        Both default to 600 s; this pins that they are *separate*
+        knobs rather than one shared threshold."""
+        import ccm_activity
+        from ccm_activity import ACTIVITY_AWAITING_PERMIT, ACTIVITY_IN_PROGRESS
+        with patch.object(ccm_activity, "PERMIT_MAX_TIMEOUT", 10), \
+                patch.object(ccm_activity, "BUSY_HOOK_JSONL_WINDOW", 10_000):
+            # 50 s: past the permit window, well inside the BUSY one.
+            assert self._map(
+                ACTIVITY_AWAITING_PERMIT, raw="IDLE",
+                jsonl_stop_reason="tool_use", jsonl_age=50) is None
+            assert self._map(
+                ACTIVITY_IN_PROGRESS, raw="IDLE",
+                jsonl_stop_reason="tool_use", jsonl_age=50) == "BUSY"
 
     def test_awaiting_permit_with_modal_on_screen_returns_permit(self):
         from ccm_activity import ACTIVITY_AWAITING_PERMIT
@@ -458,9 +506,13 @@ class TestMapActivityToState:
             ACTIVITY_AWAITING_PERMIT, raw="BUSY",
             jsonl_stop_reason="tool_use", jsonl_age=5,
         ) == "PERMIT"
+        # raw=IDLE + a *fresh* JSONL likewise maps straight to PERMIT.
+        # (The stale variant is the one released by the
+        # PERMIT_MAX_TIMEOUT guard — see
+        # `test_stale_permit_with_idle_screen_releases_to_legacy`.)
         assert self._map(
             ACTIVITY_AWAITING_PERMIT, raw="IDLE",
-            jsonl_stop_reason="tool_use", jsonl_age=99999,
+            jsonl_stop_reason="tool_use", jsonl_age=5,
         ) == "PERMIT"
 
     def test_unknown_returns_none(self):
@@ -1257,16 +1309,23 @@ class TestDeriveStateFromEvents:
     def test_permit_event_interactive_menu_case_returns_permit_immediately(self):
         """User-reported scenario (2026-05-08): Claude rendered an
         interactive choice menu as a permit-class hook. Latest
-        event is notify_permit, raw=IDLE because the menu's `❯`
-        selector matches PATTERN_INPUT_PROMPT, JSONL last
-        `tool_use` is from BEFORE the menu was rendered. Earlier
-        versions held false BUSY for the entire
-        `BUSY_HOOK_JSONL_WINDOW` (10 min) until the JSONL aged out
-        of the window. The fix surfaces PERMIT immediately so the
-        dashboard correctly says "this project needs your
-        attention". Tested at multiple post-event ages (2 s, 2 min,
-        10 min) to confirm the verdict does not depend on timing —
-        the discriminator is now the JSONL/event ordering."""
+        event is notify_permit, JSONL last `tool_use` is from BEFORE
+        the menu was rendered. Earlier versions held false BUSY for
+        the entire `BUSY_HOOK_JSONL_WINDOW` (10 min) until the JSONL
+        aged out of the window. The fix surfaces PERMIT immediately
+        so the dashboard correctly says "this project needs your
+        attention".
+
+        `raw` reflects what the pane actually shows. A menu ON SCREEN
+        matches `PATTERN_PERMIT_FOOTER` (measured 2026-07-26:
+        `Enter to select · ↑/↓ to navigate · n to add notes · Esc to
+        cancel`), so it arrives as raw=PERMIT and is held at any age
+        — that is the case a real waiting menu produces, and it is
+        asserted last here. raw=IDLE with a permit-class latest event
+        means the modal is NOT on screen (already resolved, typically
+        Esc'd), so it is trusted only inside `PERMIT_MAX_TIMEOUT`;
+        past that it releases to legacy → IDLE
+        (`test_stale_permit_with_idle_screen_releases_to_legacy`)."""
         # 2 seconds after permit
         assert ccm_activity.derive_state_from_events(
             events=({"ts": 1000, "type": "notify_permit"},),
@@ -1283,14 +1342,26 @@ class TestDeriveStateFromEvents:
             jsonl_age=158, now=1120,           # event_age=120, jsonl_age=158
             raw="IDLE",
         ) == "PERMIT"
-        # 10 minutes after permit
+        # 10 minutes after permit, modal ON SCREEN (raw=PERMIT) — the
+        # shape a menu the user has left open actually produces. Held
+        # as PERMIT no matter how old, because the footer proves the
+        # selection is still pending.
         assert ccm_activity.derive_state_from_events(
             events=({"ts": 1000, "type": "notify_permit"},),
             jsonl_stop_reason="tool_use",
             pid_present=True, claude_pid_age=2000,
             jsonl_age=638, now=1600,           # event_age=600, jsonl_age=638
-            raw="IDLE",
+            raw="PERMIT",
         ) == "PERMIT"
+        # Same age, but nothing on screen (raw=IDLE) → the permit was
+        # resolved and the event log is stale; defer to legacy.
+        assert ccm_activity.derive_state_from_events(
+            events=({"ts": 1000, "type": "notify_permit"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=2000,
+            jsonl_age=638, now=1600,
+            raw="IDLE",
+        ) is None
 
     def test_permit_event_post_dismiss_with_terminal_jsonl_returns_idle(self):
         """Esc-cancel resolved: the user dismissed the modal AND
