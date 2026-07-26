@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `ccm capture` now captures every pane of a split window instead of only the
+  focused one. `capture-pane -t <window>` delivers the window's ACTIVE pane, so
+  a two-pane project silently returned half its content — from inside the window
+  that was the caller's own pane, and from outside it was whichever pane happened
+  to hold focus, making the result non-deterministic. (Same window-vs-pane flaw
+  the dashboard preview had before it resolved the tracked Claude pane.) Each
+  pane is now printed under a `--- pane %id [role] ---` header, where the role is
+  resolved from the process tree (a Claude pane reports a versioned launcher as
+  its foreground command, which reads as noise). Single-pane windows print
+  exactly as before, with no headers and no extra `ps` snapshot. `CCM_IGNORE`'d
+  panes are included and marked `(ignored)`: hiding a pane means ccm does not
+  track or type into it, not that it vanishes from a read the user explicitly
+  asked for. A side effect worth knowing: pointing `ccm capture` at a session's
+  own project is how a Claude session reads the pane beside it.
 - `inject-status --fast` no longer runs the periodic maintenance tasks
   (window-name updates, notify-transition cache writes, autosave, and idle
   auto-exit). The fast path bypasses the flock by design so a focus refresh

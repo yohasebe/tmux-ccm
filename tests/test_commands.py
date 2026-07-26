@@ -1044,6 +1044,130 @@ class TestCmdCapture:
         assert "No clipboard tool" in capsys.readouterr().err
 
 
+class TestCmdCaptureSplitWindow:
+    """`capture-pane -t <window>` delivers only the window's ACTIVE
+    pane, so a split window used to return one pane and silently drop
+    the rest — from inside the window that is the caller's own pane,
+    and from outside it is whichever pane held focus. (The same
+    window-vs-pane flaw the dashboard preview had before
+    `_resolve_preview_pane`.) capture now enumerates the panes and
+    labels each section, so a split window is fully visible and the
+    result no longer depends on focus."""
+
+    def _stub(self, monkeypatch, panes, bodies, ignore_map=None):
+        """Stub a window whose `list-panes` yields `panes`
+        (pane_id, pane_pid, active, current_command) and whose
+        per-pane capture returns `bodies[pane_id]`."""
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
+        monkeypatch.setattr(ccm_core, "find_window", lambda s, n: "2")
+        monkeypatch.setattr(ccm_core, "list_windows_raw", lambda s: [])
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        ignore_map = ignore_map or {}
+
+        def fake_tmux(*a, **kw):
+            if a[0] == "list-panes":
+                if "#{pane_id}" == a[-1]:          # cheap count probe
+                    return "\n".join(p[0] for p in panes)
+                return "\n".join(                   # full enumeration
+                    f"{pid}\t{ppid}\t{1 if act else 0}\t{cmd}\t"
+                    f"{ignore_map.get(pid, '')}"
+                    for pid, ppid, act, cmd in panes)
+            if a[0] == "capture-pane":
+                return bodies.get(a[2], "")
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+
+    def test_all_panes_captured_with_labels(self, monkeypatch, capsys):
+        """The regression: a 2-pane window must show BOTH panes."""
+        self._stub(
+            monkeypatch,
+            panes=[("%1", "100", True, "zsh"), ("%94", "200", False, "kimi")],
+            bodies={"%1": "claude side", "%94": "kimi side"},
+        )
+        ccm_commands.cmd_capture(["proj"])
+        out = capsys.readouterr().out
+        assert "claude side" in out and "kimi side" in out, \
+            "a split window must not silently drop a pane"
+        assert "--- pane %1 [zsh] (active) ---" in out
+        assert "--- pane %94 [kimi] ---" in out
+
+    def test_claude_pane_labelled_by_role_not_command(self, monkeypatch,
+                                                     capsys):
+        """A claude pane reports a versioned launcher as its
+        foreground command (e.g. `2_1_220`), which reads as noise —
+        the process-tree resolution must label it `claude`."""
+        monkeypatch.setattr(
+            "ccm_pane_state.find_claude_pid",
+            lambda pid, ps: "999" if pid == "100" else None)
+        self._stub(
+            monkeypatch,
+            panes=[("%1", "100", True, "2_1_220"),
+                   ("%94", "200", False, "kimi")],
+            bodies={"%1": "a", "%94": "b"},
+        )
+        ccm_commands.cmd_capture(["proj"])
+        out = capsys.readouterr().out
+        assert "[claude]" in out and "2_1_220" not in out
+
+    def test_ignored_pane_is_captured_and_marked(self, monkeypatch, capsys):
+        """`CCM_IGNORE` means "ccm does not track or write to this
+        pane", not "hide it from a read the user explicitly asked
+        for" — the sidekick is often the very thing being inspected.
+        It is captured, and marked so the output still says which
+        pane ccm keeps its hands off."""
+        self._stub(
+            monkeypatch,
+            panes=[("%1", "100", True, "zsh"), ("%94", "200", False, "kimi")],
+            bodies={"%1": "a", "%94": "sidekick body"},
+            ignore_map={"%94": "1"},
+        )
+        ccm_commands.cmd_capture(["proj"])
+        out = capsys.readouterr().out
+        assert "sidekick body" in out
+        assert "(ignored)" in out
+
+    def test_single_pane_output_unchanged(self, monkeypatch, capsys):
+        """Backward compatibility: one pane → no section headers,
+        and no `ps` snapshot is taken (the label walk is only needed
+        once there are labels to print)."""
+        def boom():
+            raise AssertionError("single-pane capture must not run ps")
+        self._stub(
+            monkeypatch,
+            panes=[("%1", "100", True, "zsh")],
+            # The single-pane path captures the WINDOW target, the
+            # same call the pre-fix code made.
+            bodies={"main:2": "solo"},
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot", boom)
+        ccm_commands.cmd_capture(["proj"])
+        out = capsys.readouterr().out
+        assert "solo" in out
+        assert "--- pane" not in out
+
+    def test_enumeration_failure_falls_back_to_window(self, monkeypatch,
+                                                     capsys):
+        """tmux hiccup → empty enumeration → old window-target
+        capture rather than an empty result."""
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
+        monkeypatch.setattr(ccm_core, "find_window", lambda s, n: "2")
+        monkeypatch.setattr(ccm_core, "list_windows_raw", lambda s: [])
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+
+        def fake_tmux(*a, **kw):
+            if a[0] == "list-panes":
+                # count probe sees two panes, enumeration then fails
+                return "%1\n%94" if a[-1] == "#{pane_id}" else ""
+            if a[0] == "capture-pane":
+                return "fallback body" if a[2] == "main:2" else ""
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        ccm_commands.cmd_capture(["proj"])
+        assert "fallback body" in capsys.readouterr().out
+
+
 # ─── cmd_debug_trace ───
 
 class _StopTrace(Exception):

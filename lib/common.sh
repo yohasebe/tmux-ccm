@@ -522,7 +522,11 @@ Use the following commands to discover, inspect, and coordinate other projects:
 
 - `ccm list` — List all managed projects (names and directories)
 - `ccm status` — Show all project states (branch, port, Claude state)
-- `ccm capture <name>` — Capture visible terminal output from another project
+- `ccm capture <name>` — Capture visible terminal output from another project.
+  Split windows are captured pane by pane, each labelled with what runs in
+  it. Passing THIS project's own name is how you read the pane beside you:
+  when the user keeps a second agent CLI in a split pane of this window,
+  that is how you see what it is doing.
 - `ccm send <name> <message>` — Send a prompt to another project's Claude
   Code session. Accepts a positional message, `--file <path>`, `--stdin`,
   or `-` as a stdin alias. Multi-line messages are converted to `M-Enter`

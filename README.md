@@ -476,6 +476,8 @@ Use the following commands to discover and inspect other projects:
 
 This lets every Claude Code session discover sibling projects and inspect their state — for example, checking how a library is used in another project, or reading another project's `CLAUDE.md`.
 
+`ccm capture` covers split windows too: it captures every pane, labelled with what is running in it. Pointing it at the session's *own* project is how a Claude session reads the pane beside it — handy when you keep a second agent CLI in a split pane of the same window.
+
 To set this up automatically:
 
 ```bash

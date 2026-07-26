@@ -41,7 +41,7 @@ import ccm_render
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
-from ccm_constants import CCM_VERSION, CLAUDE_CMD
+from ccm_constants import CCM_VERSION, CLAUDE_CMD, EXTERNAL_AGENT_COMMANDS
 from ccm_core import _C_BOLD, _C_RESET
 
 
@@ -469,6 +469,78 @@ def cmd_attach(target):
     ccm_core.tmux_cmd("select-window", "-t", f"{session}:{idx}")
 
 
+def _capture_pane_label(pane):
+    """Human-readable role for a captured pane's section header.
+
+    `pane_current_command` alone is not enough: a claude pane
+    reports the versioned launcher name (e.g. `2_1_220`), which
+    reads as noise. Resolve the role instead — claude first (via the
+    process-tree walk `enumerate_window_panes` already did), then a
+    known external agent CLI, then the raw foreground command."""
+    if pane.claude_pid:
+        role = "claude"
+    elif pane.current_command in EXTERNAL_AGENT_COMMANDS:
+        role = pane.current_command
+    else:
+        role = pane.current_command or "?"
+    marks = []
+    if pane.active:
+        marks.append("active")
+    if pane.ignored:
+        # Ignored panes ARE captured: `CCM_IGNORE` means "ccm does not
+        # track or write to this pane", not "hide it from an explicit
+        # read the user asked for" — the sidekick is often exactly
+        # what the operator wants to inspect. Marked so the output
+        # still says which pane ccm keeps its hands off.
+        marks.append("ignored")
+    suffix = f" ({', '.join(marks)})" if marks else ""
+    return f"{pane.pane_id} [{role}]{suffix}"
+
+
+def _capture_window_text(session, idx):
+    """Visible text of a window, pane by pane.
+
+    `capture-pane -t <window>` delivers only the window's ACTIVE
+    pane, so on a split window this silently returned one pane and
+    dropped the rest — from inside the window that is usually the
+    caller's own pane, and from outside it is whichever pane happened
+    to hold focus. (Same window-vs-pane flaw the dashboard preview
+    had before `_resolve_preview_pane`.) Enumerate the panes and
+    capture each, labelled, so a split window is fully visible and
+    the result does not depend on focus.
+
+    Single-pane windows keep the previous output byte-for-byte (no
+    headers). Enumeration failure falls back to the window target,
+    preserving the old behaviour rather than returning nothing.
+
+    The pane count is probed with a bare `list-panes` before the full
+    enumeration so the common single-pane case never pays for a `ps`
+    snapshot (`enumerate_window_panes` walks the process tree to
+    resolve claude, which is only needed once there are labels to
+    print)."""
+    import ccm_pane_state
+
+    win_target = f"{session}:{idx}"
+    listed = ccm_core.tmux_cmd("list-panes", "-t", win_target, "-F", "#{pane_id}")
+    pane_ids = [p for p in (listed or "").split("\n") if p.strip()]
+    if len(pane_ids) <= 1:
+        return ccm_core.tmux_cmd(
+            "capture-pane", "-t", win_target, "-p", "-S", "-50") or ""
+
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    panes = ccm_pane_state.enumerate_window_panes(win_target, ps_lines)
+    if not panes:
+        return ccm_core.tmux_cmd(
+            "capture-pane", "-t", win_target, "-p", "-S", "-50") or ""
+
+    sections = []
+    for pane in panes:
+        body = ccm_core.tmux_cmd(
+            "capture-pane", "-t", pane.pane_id, "-p", "-S", "-50") or ""
+        sections.append(f"--- pane {_capture_pane_label(pane)} ---\n{body}")
+    return "\n".join(sections)
+
+
 def cmd_capture(args):
     """Capture visible content of a project window."""
     if any(a in ("-h", "--help") for a in args):
@@ -512,7 +584,7 @@ def cmd_capture(args):
         if idx is None:
             ccm_core.ccm_die(f"Project not found: {target}")
 
-    output = ccm_core.tmux_cmd("capture-pane", "-t", f"{session}:{idx}", "-p", "-S", "-50")
+    output = _capture_window_text(session, idx)
 
     if copy_mode:
         if ccm_core.clipboard_copy(output):

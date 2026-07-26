@@ -419,6 +419,21 @@ ccm capture --copy my-project       # copy to clipboard
 
 Or from the dashboard: press `p` to preview, then `c` to copy. In a split window the dashboard preview (and the live preview panel) shows the pane running Claude, not whichever pane happens to be focused, and never a `CCM_IGNORE`'d sidekick — so you always preview the session ccm is tracking.
 
+**Split windows are captured pane by pane.** `ccm capture` labels each pane with its id and what is running in it, so nothing is hidden behind whichever pane happens to be focused:
+
+```
+=== ccm capture: my-project ===
+--- pane %1 [claude] (active) ---
+...
+--- pane %7 [kimi] ---
+...
+=== end ===
+```
+
+Single-pane windows print exactly as before, with no headers. Panes hidden with `CCM_IGNORE` **are** included and marked `(ignored)` — hiding a pane means ccm does not track or type into it, not that it disappears from a capture you explicitly asked for.
+
+This also makes the sidekick pane readable from Claude itself: running `ccm capture <this project>` from one pane shows what the other agent in the same window is doing, which is useful when you run a second agent CLI alongside Claude.
+
 ### Git integration
 
 ccm shows the git branch and dirty status for each project:
