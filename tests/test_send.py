@@ -952,6 +952,84 @@ class TestSendTrace:
         assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
 
 
+class TestSendSelfDeliveryGuard:
+    """`ccm send` resolves delivery to the Claude-hosting pane, so a
+    Claude session addressing its OWN project resolves to the pane it
+    is running in. Two things go wrong there: the body would be typed
+    into the caller's own composer, and the state gate would consult a
+    state the caller itself is producing — a session is BUSY *because*
+    it is running the command, so the gate reports BUSY and appears to
+    blame the target. That self-reference was reported (2026-07-26) as
+    "sending to the other agent says BUSY when it isn't". The guard
+    refuses with an explanation instead of a state verdict."""
+
+    def _patch(self, monkeypatch, delivery_pane, caller_pane):
+        project = ccm_core.Project(
+            win_target="0:5", win_idx="5", name="blog",
+            directory="/tmp/blog", state="BUSY",
+        )
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "find_window",
+                            lambda s, n: "5" if n == "blog" else None)
+        monkeypatch.setattr(ccm_core, "build_project_list",
+                            lambda fast=False: [project])
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
+                            lambda w: (delivery_pane, "claude"))
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        if caller_pane is None:
+            monkeypatch.delenv("TMUX_PANE", raising=False)
+        else:
+            monkeypatch.setenv("TMUX_PANE", caller_pane)
+        calls = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *a: calls.append(a) or "")
+        return calls
+
+    def test_sending_to_own_pane_is_refused(self, monkeypatch, capsys):
+        calls = self._patch(monkeypatch, delivery_pane="%1", caller_pane="%1")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "hello"])
+        err = capsys.readouterr().err
+        assert "IS this pane" in err
+        assert not any("-l" in c for c in calls), \
+            "the body must never be typed into the caller's own composer"
+
+    def test_refusal_explains_the_busy_self_reference(self, monkeypatch,
+                                                     capsys):
+        """The point of the message: a caller that sees BUSY here is
+        seeing itself, not the target. Saying so is the whole value —
+        otherwise the state verdict misdirects."""
+        self._patch(monkeypatch, delivery_pane="%1", caller_pane="%1")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "hello"])
+        err = capsys.readouterr().err
+        assert "your own" in err and "BUSY" in err
+        # And it points at the route that does work for a second agent.
+        assert "ccm capture blog" in err
+
+    def test_different_pane_in_same_window_still_sends(self, monkeypatch):
+        """Only the caller's OWN pane is refused. A sidekick pane
+        invoking `ccm send` for the Claude beside it is the supported
+        path and must keep working."""
+        calls = self._patch(monkeypatch, delivery_pane="%1",
+                            caller_pane="%41")
+        ccm_send.cmd_send(["blog", "--force", "hello"])
+        assert any(c[:3] == ("send-keys", "-t", "%1") and "-l" in c
+                   for c in calls)
+
+    def test_guard_inactive_outside_tmux(self, monkeypatch):
+        """No `$TMUX_PANE` (invoked outside tmux, e.g. from a script
+        or MCP hook) → the guard cannot identify a caller and must not
+        block anything."""
+        calls = self._patch(monkeypatch, delivery_pane="%1",
+                            caller_pane=None)
+        ccm_send.cmd_send(["blog", "--force", "hello"])
+        assert any(c[:3] == ("send-keys", "-t", "%1") and "-l" in c
+                   for c in calls)
+
+
 class TestSendPreTypeRecheck:
     """TOCTOU guard: the initial state gate runs on a
     `build_project_list` snapshot, and the interactive confirmation

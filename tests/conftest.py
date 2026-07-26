@@ -113,6 +113,16 @@ def block_live_subprocess(request, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", guarded_run)
     monkeypatch.setattr(subprocess, "Popen", GuardedPopen)
+
+    # tmux exports `$TMUX_PANE` into every process started inside a
+    # pane, so a developer running pytest from a ccm-managed window
+    # leaks their real pane id into the code under test — `ccm send`'s
+    # self-delivery guard compares against it. Unset it so behaviour
+    # cannot depend on which pane the suite was launched from (it is
+    # absent on CI, so leaving it would be exactly the local-green /
+    # CI-red asymmetry this fixture exists to prevent). Tests that
+    # exercise pane identity set it explicitly.
+    monkeypatch.delenv("TMUX_PANE", raising=False)
     yield
 
 

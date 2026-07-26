@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `ccm send <this project>` no longer reports a misleading `BUSY`. Delivery
+  resolves to the pane hosting Claude, so a Claude session addressing its own
+  project resolves to the pane it is running in — and the state gate then
+  consults a state the caller itself is producing (a session is BUSY precisely
+  because it is running the command). Reported as "sending to the other agent
+  in my window says BUSY when it isn't": the verdict was real, but it described
+  the sender, not the target. Self-delivery is now refused with an explanation,
+  including a pointer to `ccm capture`, which is the route that actually reads
+  another pane. A sidekick pane sending to the Claude beside it — the supported
+  direction — is unaffected.
+
+  Documented alongside it: a project's state describes its **Claude** pane, so
+  it must not be used to judge whether a second agent sharing the window is
+  free. That agent has no Claude in its pane and contributes nothing to the
+  state; only its captured content says what it is doing.
 - A resolved permission no longer holds `⚠ PERMIT` forever. Nothing upstream
   reports that a permission was answered — approving fires no hook at all
   (anthropics/claude-code#79651) and dismissing with Esc fires no `Stop`

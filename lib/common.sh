@@ -527,6 +527,12 @@ Use the following commands to discover, inspect, and coordinate other projects:
   it. Passing THIS project's own name is how you read the pane beside you:
   when the user keeps a second agent CLI in a split pane of this window,
   that is how you see what it is doing.
+
+  A project's STATE (from `ccm status`) describes its **Claude** pane, not
+  any second agent sharing the window. So do not use it to judge whether
+  that other agent is free — while you are the one asking, the state you
+  read is your own, and a session running a command is BUSY by definition.
+  Judge a sidekick pane only from its captured content.
 - `ccm send <name> <message>` — Send a prompt to another project's Claude
   Code session. Accepts a positional message, `--file <path>`, `--stdin`,
   or `-` as a stdin alias. Multi-line messages are converted to `M-Enter`

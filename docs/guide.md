@@ -434,6 +434,13 @@ Single-pane windows print exactly as before, with no headers. Panes hidden with 
 
 This also makes the sidekick pane readable from Claude itself: running `ccm capture <this project>` from one pane shows what the other agent in the same window is doing, which is useful when you run a second agent CLI alongside Claude.
 
+> [!IMPORTANT]
+> A project's **state** describes its Claude pane — not a second agent sharing the window. ccm tracks Claude sessions; a pane running some other agent CLI has no Claude in it and contributes nothing to the state.
+>
+> So a Claude session must not read its own project's state to decide whether the agent beside it is free. While it is the one asking, the state it reads is its own, and a session running a command is BUSY by definition — which looks like "the other agent is busy" when nothing of the sort is true. Judge a sidekick pane only from its captured content.
+>
+> For the same reason `ccm send <this project>` refuses outright: delivery resolves to the Claude pane, which is the caller itself.
+
 ### Git integration
 
 ccm shows the git branch and dirty status for each project:

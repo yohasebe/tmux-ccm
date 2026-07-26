@@ -517,6 +517,34 @@ def cmd_send(args):
     # pane where --start will launch). See _resolve_delivery_pane.
     pane_target, active_cmd = _resolve_delivery_pane(win_target)
 
+    # Self-delivery guard. `ccm send` resolves delivery to the pane
+    # hosting Claude, so a Claude session addressing its OWN project
+    # resolves to the pane it is running in. Typing the body there
+    # would inject it into the caller's own composer, and the state
+    # gate below would consult a state the caller itself is producing
+    # — a session is BUSY precisely because it is running this
+    # command, so the gate reports BUSY and blames the target. That
+    # self-reference reads as a spurious "the other agent is busy",
+    # which is how it was reported (2026-07-26). Refuse explicitly
+    # instead: the honest answer is not a state verdict at all.
+    #
+    # `$TMUX_PANE` is set by tmux for any process started inside a
+    # pane, so it identifies the caller without a lookup. Absent
+    # (invoked outside tmux) the guard simply does not apply.
+    caller_pane = os.environ.get("TMUX_PANE", "")
+    if caller_pane and caller_pane == pane_target:
+        ccm_core.ccm_die(
+            f"{project_name}'s Claude pane IS this pane ({pane_target}) — "
+            "refusing to send a message to yourself.\n"
+            "  Note: the state ccm would gate on here is your own, so a "
+            "session checking it always sees itself BUSY.\n"
+            "  To reach a second agent running in another pane of this "
+            "window, `ccm send` is not the route — it only delivers to "
+            "Claude panes. Read that pane with "
+            f"`ccm capture {project_name}`, which prints every pane "
+            "separately."
+        )
+
     # State-based gating
     if state == "PERMIT":
         # Give the caller (human or another Claude) enough information
