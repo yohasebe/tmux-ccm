@@ -38,7 +38,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - **Snapshots** — Save and restore your project layout
 - **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe, BUSY-queueable)
 - **Permission-Mode Visibility** — each project's Claude Code permission mode (manual / accept / plan / auto / bypass) shown in `ccm status` and the dashboard, so "this project never asks for permission" is never a mystery
-- **Sidekick Support** — run a second agent CLI in a split pane: `CCM_IGNORE` (`⊘`) keeps a session out of ccm's tracking, and a presence badge (`⚙`) shows a non-Claude agent is there. See [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore)
+- **Sidekick Support** — run a second agent CLI in a split pane: `CCM_IGNORE` (`⊘`) keeps a session out of ccm's tracking, and a presence badge (`⚙`) shows a non-Claude agent is there. The two agents can also hand work back and forth without a human relaying text. See [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore) and [Relaying with a second agent CLI](docs/guide.md#relaying-with-a-second-agent-cli)
 - **Auto-start** — Claude Code auto-launches when you attach to a project where it's not yet running
 - **Status Line** — Inject active project status into tmux status bar
 - **Multi-byte text** — CJK characters and emoji in project names align correctly across dashboard, status bar, and CLI tables

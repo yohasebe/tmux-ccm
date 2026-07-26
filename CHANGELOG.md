@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- README's sidekick entry now mentions that the two agents can hand work back
+  and forth without a human relaying text, and links to the guide section
+  below — the capability was documented but not discoverable from the feature
+  list.
 - Guide section on relaying with a second agent CLI, and the conventions that
   make it work written into the `setup-claude-md` template. Running another
   agent CLI in a split pane already worked — presence badge, `ccm capture`
