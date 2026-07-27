@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- The status bar no longer runs a full detection pass every second. tmux fires
+  `#(ccm inject-status)` once per `status-interval`, and a full pass costs
+  ~174 ms across ~24 processes (python3, 21 tmux clients, the wrapper) — so on
+  a config with a seconds clock, ccm was holding roughly a fifth of a core
+  continuously and hammering the kernel's process-info path. On one machine
+  that ran for 15 days until a kernel zone (`data.kalloc.1024`) exhausted at
+  20 GB and panicked; bisecting by `status-interval` attributed about half the
+  allocation rate to ccm.
+
+  The periodic pass is now rate-limited to `CCM_RECONCILE_INTERVAL` (20 s) and
+  the seconds in between cost a shell fork: ~10 ms, 2 processes. Nothing about
+  responsiveness changes, because state transitions were never carried by the
+  poll — the hooks already push an immediate refresh, and `--fast` is never
+  rate-limited. What the poll paces is only what fires no hook: a git branch
+  switch, a new listening port, a stale-BUSY release crossing its window. The
+  interval is set below `CCM_BUSY_STALE_RELEASE_SEC` for that last reason.
+
+  Measured on the affected machine: allocation rate fell from 16–20/s to
+  1.5/s, which is at or below the rate previously attributed to everything
+  else on the system.
+
+### Added (internal)
+- `tests/test_reconcile_gate.bats`: the gate's decisions, and two properties
+  that are easy to lose silently — that it spawns nothing on the skip path
+  (checked by shadowing `date`/`tmux`/`stat` as functions that fail the test
+  if reached), and that it runs before `ccm_init_dirs`, whose mkdir and two
+  find sweeps would otherwise keep three processes per second.
+
 ### Added
 - README's sidekick entry now mentions that the two agents can hand work back
   and forth without a human relaying text, and links to the guide section

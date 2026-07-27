@@ -28,6 +28,18 @@ esac
 # Source common library (init, hooks, deps, output helpers)
 source "${CCM_ROOT}/lib/common.sh"
 
+# Rate-limit the periodic status poll before doing ANY setup work.
+# tmux fires `#(ccm inject-status)` once per status-interval — every
+# second on a config with a seconds clock — and on the seconds this
+# skips, the whole invocation must cost nothing beyond the shell
+# itself. That means jumping the queue ahead of `ccm_init_dirs`,
+# whose mkdir and two find sweeps are three more processes per
+# second for housekeeping that does not need to run at 1 Hz.
+# `--fast` is the hook-driven push and is never rate-limited.
+if [[ "${1:-}" == "inject-status" && "$*" != *--fast* ]]     && ! _ccm_should_reconcile; then
+    exit 0
+fi
+
 # Initialize runtime directories
 ccm_init_dirs
 
@@ -138,6 +150,9 @@ case "${1:-help}" in
         ;;
     inject-status)
         # Forward flags (e.g. --fast for the focus-refresh path).
+        # Rate limiting for the periodic form happens before
+        # `ccm_init_dirs` above — by the time dispatch runs, this
+        # invocation has already earned its full pass.
         python3 "$CCM_ROOT/lib/inject_status.py" "$@" || true
         ;;
     reset-window)
