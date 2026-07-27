@@ -31,7 +31,7 @@ import re
 
 # Version string. Keep in sync with the `CCM_VERSION` constant in
 # the bash `ccm` wrapper and with CHANGELOG.md's top entry.
-CCM_VERSION = "0.7.1"
+CCM_VERSION = "0.8.0"
 
 
 # ─── Runtime paths ───

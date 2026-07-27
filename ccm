@@ -17,7 +17,7 @@ CCM_ROOT="$(_ccm_resolve "$0")"
 
 # Version of this ccm release. Keep in sync with CHANGELOG.md's
 # top entry. Surfaced via `ccm --version` and `ccm version`.
-CCM_VERSION="0.7.1"
+CCM_VERSION="0.8.0"
 
 # Background commands must not fail on errors
 case "${1:-}" in
