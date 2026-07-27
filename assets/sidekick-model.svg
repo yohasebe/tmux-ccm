@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 396"
+     font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
+     role="img" aria-labelledby="title desc">
+  <title id="title">ccm and a second agent CLI in one window</title>
+  <desc id="desc">Inside one ccm window: the Claude Code pane is tracked, and its state badge also appears on the window. A split pane running another agent CLI is not tracked — ccm shows only a presence badge for it. Between the two panes, two arrows show the relay: the other agent reports to claude with ccm send, and claude types into its pane with tmux send-keys after checking it with ccm capture.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 11 9" markerWidth="11" markerHeight="9"
+            refX="11" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L11,4.5 L0,9 z" class="marker-fill"/>
+    </marker>
+
+    <symbol id="badge-busy" overflow="visible">
+      <circle cx="0" cy="0" r="8" class="badge-busy-fill"/>
+      <circle cx="0" cy="0" r="8" class="badge-busy-stroke"/>
+      <circle cx="0" cy="0" r="2.2" class="badge-busy-inner"/>
+    </symbol>
+    <!-- Presence badge drawn as geometry rather than the ⚙ character, for
+         the same reason mental-model draws its state badges: a glyph's
+         weight and baseline vary by platform font, and this one has to sit
+         beside a drawn badge without looking like a different family. -->
+    <symbol id="badge-presence" overflow="visible">
+      <circle cx="0" cy="0" r="4.4" class="badge-presence-stroke"/>
+      <g class="badge-presence-stroke" stroke-linecap="round">
+        <path d="M0,-8.2 V-6.4"/><path d="M0,6.4 V8.2"/>
+        <path d="M-8.2,0 H-6.4"/><path d="M6.4,0 H8.2"/>
+        <path d="M-5.8,-5.8 L-4.5,-4.5"/><path d="M4.5,4.5 L5.8,5.8"/>
+        <path d="M5.8,-5.8 L4.5,-4.5"/><path d="M-4.5,4.5 L-5.8,5.8"/>
+      </g>
+    </symbol>
+  </defs>
+
+  <style>
+    /*
+      Sister diagram to assets/mental-model.svg. The palette, the arrow
+      family and the BUSY badge are borrowed verbatim so a reader arriving
+      from that figure needs no second legend. Two idioms are new, and both
+      carry meaning: a dashed outline for the pane ccm does not track, and
+      a gear for the presence badge.
+
+      On green: mental-model reserves emerald (#059669) for the word `tmux`.
+      It is used that way here too — and deliberately NOT as an edge colour.
+      Colouring one relay arrow green would give the same hue two different
+      jobs across a pair of figures meant to read as one. The two arrows
+      share the standard edge grey and are told apart by adjacent labels,
+      which is what makes the pair legible at a glance.
+    */
+    .window-box   { fill: #ede9fe; stroke: #7c3aed; stroke-width: 1.75; }  /* violet */
+    .window-text  { fill: #4c1d95; font-size: 14px; }
+    .pane-box     { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.75; }  /* blue */
+    .pane-text    { fill: #1e3a8a; font-size: 14px; }
+    .sidekick-box  { fill: #f1f5f9; stroke: #64748b; stroke-width: 1.75;
+                     stroke-dasharray: 5 4; }
+    .sidekick-text { fill: #334155; font-size: 14px; }
+    .aside-box    { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.25;
+                    stroke-dasharray: 4 3; }
+    .aside-key    { fill: #64748b; font-size: 12px; font-weight: 700; }
+    .aside-text   { fill: #475569; font-size: 13px; }
+    .edge         { stroke: #94a3b8; stroke-width: 1.5; fill: none; }
+    .marker-fill  { fill: #94a3b8; }
+    .term         { font-weight: 700; }
+    .lbl          { fill: #475569; font-size: 13px; }
+    .lbl-key      { fill: #475569; font-size: 13px; font-weight: 700; }
+    .dim          { fill: #64748b; font-size: 12px; }
+    .accent-tmux  { fill: #059669; font-weight: 700; }                     /* emerald — tmux */
+    .accent-ccm   { fill: #7c3aed; font-weight: 700; }                     /* violet — ccm's own verbs */
+    /* Same dark-mode lift as mental-model, and for the same reason: the
+       medium grey reads on a white page but sinks into GitHub's dark
+       theme. Edges and their markers must be lifted together — the
+       relationships are the entire content of this figure. */
+    @media (prefers-color-scheme: dark) {
+      .edge        { stroke: #cbd5e1; }
+      .marker-fill { fill: #cbd5e1; }
+      .lbl, .lbl-key, .dim { fill: #cbd5e1; }
+      .aside-box  { fill: none; stroke: #64748b; }
+      .aside-key, .aside-text { fill: #cbd5e1; }
+      .badge-presence-stroke { stroke: #cbd5e1; }
+      .sidekick-text { fill: #e2e8f0; }
+    }
+    .ccm-mini-bg   { fill: #ffffff; }
+    .ccm-c1-dot    { fill: #E8967D; }
+    .ccm-c2-dot    { fill: #E5A84B; }
+    .ccm-m-dot     { fill: #5BB98B; }
+    .ccm-mini-letter { fill: #ffffff; font-weight: 700; font-size: 15px; }
+    .badge-busy-fill     { fill: #fb923c; }
+    .badge-busy-stroke   { stroke: #9a3412; stroke-width: 1.5; fill: none; }
+    .badge-busy-inner    { fill: #ffffff; }
+    .badge-presence-stroke { stroke: #64748b; stroke-width: 2; fill: none; }
+  </style>
+
+  <!-- ── the window ─────────────────────────────────────────────────── -->
+  <rect class="window-box" x="40" y="60" width="360" height="286" rx="8"/>
+  <text class="window-text" x="220" y="92" text-anchor="middle" dominant-baseline="central"><tspan class="term">window</tspan> = project = folder</text>
+  <!-- Matching badges are the aggregation statement: the window reports
+       what the claude pane reports, and nothing from the pane below. -->
+  <use href="#badge-busy" x="368" y="92"/>
+
+  <!-- ── tracked pane ───────────────────────────────────────────────── -->
+  <rect class="pane-box" x="70" y="120" width="300" height="56" rx="6"/>
+  <text class="pane-text" x="94" y="148" dominant-baseline="central"><tspan class="term">pane</tspan>: Claude Code</text>
+  <use href="#badge-busy" x="344" y="148"/>
+
+  <!-- ── the relay ──────────────────────────────────────────────────── -->
+  <!-- Two lanes of equal length, each label beside its own arrow and
+       vertically centred on it. The pairing has to survive a glance:
+       label and line at the same height, on the side the arrow points
+       away from, so neither reading order nor colour is load-bearing. -->
+  <path class="edge" d="M170,262 V184" marker-end="url(#arrow)"/>
+  <text class="lbl" x="158" y="216" text-anchor="end" dominant-baseline="central"><tspan class="accent-ccm">ccm send</tspan></text>
+  <text class="dim" x="158" y="234" text-anchor="end" dominant-baseline="central">state-gated</text>
+
+  <path class="edge" d="M230,184 V262" marker-end="url(#arrow)"/>
+  <text class="lbl" x="242" y="216" dominant-baseline="central"><tspan class="accent-tmux">tmux</tspan> send-keys</text>
+  <text class="dim" x="242" y="234" dominant-baseline="central">after <tspan class="accent-ccm">ccm capture</tspan></text>
+
+  <!-- ── untracked pane ─────────────────────────────────────────────── -->
+  <rect class="sidekick-box" x="70" y="270" width="300" height="56" rx="6"/>
+  <text class="sidekick-text" x="94" y="298" dominant-baseline="central"><tspan class="term">pane</tspan>: another agent CLI</text>
+  <use href="#badge-presence" x="344" y="298"/>
+
+  <!-- ── what ccm reads from each pane ──────────────────────────────── -->
+  <!-- The annotations hang off the boxes on leaders, the way mental-model
+       hangs panes off a window. A legend block floating in white space
+       would leave the reader to guess which line describes which pane —
+       which is exactly the ambiguity this figure is about. -->
+  <path class="edge" d="M370,148 H452" marker-end="url(#arrow)"/>
+  <text class="lbl-key" x="466" y="140" dominant-baseline="central">tracked</text>
+  <text class="lbl" x="466" y="160" dominant-baseline="central">its state becomes the window’s</text>
+
+  <!-- Named for what the role is, not for what ccm supports. "sidekick"
+       says the second CLI is subordinate to the tracked one, which a
+       list of products alone would not — an earlier draft read as though
+       any of them could be the harness ccm manages. -->
+  <rect class="aside-box" x="466" y="190" width="292" height="78" rx="8"/>
+  <text class="aside-key" x="482" y="212" dominant-baseline="central">sidekick</text>
+  <text class="aside-text" x="482" y="233" dominant-baseline="central">a second agent CLI in a split pane</text>
+  <text class="aside-text" x="482" y="253" dominant-baseline="central">Codex CLI · Gemini CLI · Kimi Code</text>
+
+  <path class="edge" d="M370,298 H452" marker-end="url(#arrow)"/>
+  <text class="lbl-key" x="466" y="290" dominant-baseline="central">presence only</text>
+  <text class="lbl" x="466" y="310" dominant-baseline="central">ccm shows it is there, reads no state</text>
+
+  <!-- ── ccm mark heading the column of what it reads ──────────────── -->
+  <rect class="ccm-mini-bg" x="462" y="76" width="80" height="32" rx="16"/>
+  <circle class="ccm-c1-dot" cx="478" cy="92" r="12"/>
+  <circle class="ccm-c2-dot" cx="502" cy="92" r="12"/>
+  <circle class="ccm-m-dot"  cx="526" cy="92" r="12"/>
+  <text class="ccm-mini-letter" x="478" y="92" text-anchor="middle" dominant-baseline="central">c</text>
+  <text class="ccm-mini-letter" x="502" y="92" text-anchor="middle" dominant-baseline="central">c</text>
+  <text class="ccm-mini-letter" x="526" y="92" text-anchor="middle" dominant-baseline="central">m</text>
+  <text class="lbl" x="548" y="92" dominant-baseline="central">reads each pane as:</text>
+
+</svg>

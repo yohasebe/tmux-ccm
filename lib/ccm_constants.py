@@ -471,7 +471,28 @@ PARKED_FOREGROUND_COMMANDS = frozenset({
 # less, …) would be pure noise. Detection, the state machine, and
 # hooks never read this — a matching pane still aggregates as
 # SHELL (no claude), which is honest: SHELL means "no claude".
-EXTERNAL_AGENT_COMMANDS = frozenset({"kimi", "kimi-code"})
+#
+# `claude` must never appear here. This set marks panes ccm shows but
+# does NOT track; the Claude pane is the one it does track, and listing
+# it would have a single pane claim both at once — the exact asymmetry
+# assets/sidekick-model.svg exists to draw.
+EXTERNAL_AGENT_COMMANDS = frozenset({
+    # Measured: this is what tmux reports for a running Kimi Code pane.
+    "kimi", "kimi-code",
+    # Assumed from each CLI's binary name — not verified against a running
+    # pane, because none of them are installed here. The asymmetry makes
+    # guessing safe: a name that never appears simply never matches, while
+    # a correct guess starts working the day the user installs the tool.
+    # If one of these turns out to report something else, the fix is to add
+    # the real name, not to remove the guess.
+    # Codex installed through npm may run behind a node shim, in which
+    # case tmux reports `node` and no badge appears; a brew/installer
+    # build reports `codex`. `node` is far too broad to allowlist, so
+    # this is a debugging note rather than something to fix here.
+    "codex",    # OpenAI Codex CLI
+    "gemini",   # Google Gemini CLI
+    "grok",     # xAI Grok CLI
+})
 
 CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
 

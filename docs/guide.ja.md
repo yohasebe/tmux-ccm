@@ -588,6 +588,8 @@ ccm unignore <project>  # プロジェクトを戻す
 
 ## 他のエージェント CLI との往復リレー
 
+![ccm から見たサイドキック付きウィンドウ: Claude Code ペインは追跡され、その状態がウィンドウの状態になる。split ペインで動く2つ目のエージェント CLI には presence バッジのみが付く。両者は直接メッセージを往復させる — サイドキックは ccm send で結果を返し、Claude は ccm capture でペインを確認してから tmux send-keys で送る。](../assets/sidekick-model.svg)
+
 Claude Code 以外のエージェント CLI を、プロジェクトウィンドウの split ペインで動かし、人間がテキストを仲介することなく 2 つのエージェント間でメッセージを往復させられます。ccm は Claude 中心のままです: 既知の外部エージェント CLI がペインで動いていれば dim の `⚙<name>` presence バッジを表示するだけで、その状態は追跡しません。`ccm capture` は全ペインを表示するので、どちら側からも相手の表示内容を読めます。
 
 機能する規約は次のとおりです:

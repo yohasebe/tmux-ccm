@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- A diagram for the sidekick arrangement (`assets/sidekick-model.svg`), embedded
+  in the guide's relay section: which pane ccm tracks, which one it only shows a
+  badge for, and how the two exchange messages. Sister figure to the mental
+  model — same palette, badges and edge idiom, so the pair reads as one system.
+- The external-agent allowlist now covers Codex, Gemini and Grok alongside Kimi,
+  so those panes get a presence badge too. Only the Kimi names are measured
+  against a running pane; the rest are the CLIs' binary names, which is safe in
+  a way worth stating: a name that never appears simply never matches, while a
+  correct guess starts working the day the tool is installed.
+
+### Changed
+- Product names are capitalised consistently (`Claude Code`, not `claude code`)
+  across the diagrams, README and guide. The figures had drifted to lowercase
+  while the prose used the proper name 84 times to 4; commands and tool names
+  (`ccm`, `tmux`) stay lowercase, which is their own convention.
+
 ## [0.8.0] - 2026-07-27
 
 ### Fixed

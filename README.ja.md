@@ -20,9 +20,9 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 
 ## ccm のメンタルモデル
 
-1 つの **プロジェクト** = 1 つの **フォルダ** = 1 つの **tmux ウィンドウ**。ウィンドウは任意の数のペインを持ちます (claude code、シェル、開発サーバー、Agent Teams のチームメイト等)。各 claude code ペインの状態 (PERMIT / BUSY / IDLE) はウィンドウへ集約され、ccm ダッシュボード (`prefix + Tab`) でウィンドウ間を切り替えられます。
+1 つの **プロジェクト** = 1 つの **フォルダ** = 1 つの **tmux ウィンドウ**。ウィンドウは任意の数のペインを持ちます (Claude Code、シェル、開発サーバー、Agent Teams のチームメイト等)。各 Claude Code ペインの状態 (PERMIT / BUSY / IDLE) はウィンドウへ集約され、ccm ダッシュボード (`prefix + Tab`) でウィンドウ間を切り替えられます。
 
-![ccm メンタルモデル: tmux session が複数のウィンドウを持ち (各ウィンドウ = 1 プロジェクト = 1 フォルダ)、各ウィンドウに claude code とその他のペインが入り、claude code の状態はウィンドウに集約され、ccm が prefix + Tab でウィンドウ間を切り替える](assets/mental-model.svg)
+![ccm メンタルモデル: tmux session が複数のウィンドウを持ち (各ウィンドウ = 1 プロジェクト = 1 フォルダ)、各ウィンドウに Claude Code とその他のペインが入り、Claude Code の状態はウィンドウに集約され、ccm が prefix + Tab でウィンドウ間を切り替える](assets/mental-model.svg)
 
 **ダッシュボード** (`prefix + Tab`) — 画面下部のモード 2 ステータスバーも同時に映っています:
 

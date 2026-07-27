@@ -17,6 +17,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import ccm_canaries
+import ccm_constants
 import ccm_core
 import ccm_render
 import ccm_signals
@@ -266,3 +267,39 @@ class TestDashboardExternalAgent:
         texts = self._render_texts(monkeypatch, projects)
         assert not any("⚙" in t for t in texts)
         assert not any("(kimi)" in t for t in texts)
+
+
+class TestAllowlistMembership:
+    """The allowlist decides which panes get a presence badge. Its two
+    halves have different epistemic status — one name was measured
+    against a running pane, the rest are the CLIs' binary names — and
+    one name must never appear at all."""
+
+    def test_claude_is_never_an_external_agent(self):
+        """The badge marks a pane ccm shows but does not track. Claude
+        is the pane it *does* track, so listing it would have one pane
+        claim tracked and untracked at once — the asymmetry the sidekick
+        diagram exists to draw. Easy to add by reflex when someone
+        extends the list by vendor rather than by binary name."""
+        for name in ("claude", "claude-code", "Claude Code"):
+            assert name not in ccm_constants.EXTERNAL_AGENT_COMMANDS
+
+    def test_entries_are_process_names_not_vendors(self):
+        """The set is matched against `pane_current_command`, so it has
+        to hold what tmux reports — a binary name. Vendor names
+        (`openai`, `anthropic`, `google`) would silently never match,
+        leaving a badge that looks configured but never appears."""
+        for name in ("openai", "anthropic", "google", "xai", "moonshot"):
+            assert name not in ccm_constants.EXTERNAL_AGENT_COMMANDS
+        assert all(n == n.lower() and " " not in n
+                   for n in ccm_constants.EXTERNAL_AGENT_COMMANDS)
+
+    def test_diagram_examples_are_covered(self):
+        """assets/sidekick-model.svg names Codex CLI, Gemini CLI and
+        Kimi Code as sidekicks. A reader running one of those expects
+        the badge the figure shows, so the figure and the allowlist have
+        to move together."""
+        for name in ("codex", "gemini", "kimi"):
+            assert name in ccm_constants.EXTERNAL_AGENT_COMMANDS, (
+                f"{name} is named in the sidekick diagram but would get "
+                "no presence badge")

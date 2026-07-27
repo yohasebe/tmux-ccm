@@ -20,9 +20,9 @@ ccm's value scales with parallelism: useful with 2–3 projects, daily infrastru
 
 ## How ccm models your work
 
-One **project** = one **folder** = one **tmux window**. A window holds any number of panes (claude code, a shell, a dev server, an Agent Teams teammate, …). The state of each claude code pane (PERMIT / BUSY / IDLE) aggregates up to its window, and ccm dashboard (`prefix + Tab`) switches between windows.
+One **project** = one **folder** = one **tmux window**. A window holds any number of panes (Claude Code, a shell, a dev server, an Agent Teams teammate, …). The state of each Claude Code pane (PERMIT / BUSY / IDLE) aggregates up to its window, and ccm dashboard (`prefix + Tab`) switches between windows.
 
-![ccm mental model: a tmux session contains windows (each window = one project = one folder), every window holds claude code plus other panes, claude code state aggregates back to the window, and ccm switches between windows with prefix + Tab](assets/mental-model.svg)
+![ccm mental model: a tmux session contains windows (each window = one project = one folder), every window holds Claude Code plus other panes, Claude Code state aggregates back to the window, and ccm switches between windows with prefix + Tab](assets/mental-model.svg)
 
 **Dashboard** (`prefix + Tab`) with the mode-2 status bar visible at the bottom:
 

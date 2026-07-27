@@ -3,7 +3,7 @@
      font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
      role="img" aria-labelledby="title desc">
   <title id="title">ccm mental model</title>
-  <desc id="desc">A tmux session contains multiple windows. Each window equals one project equals one folder, and holds any number of panes — claude code, a shell, a dev server, or another long-running process. The state of each claude code pane (PERMIT, BUSY, IDLE) propagates up to the window it lives in. ccm dashboard lets you switch between windows with prefix + Tab.</desc>
+  <desc id="desc">A tmux session contains multiple windows. Each window equals one project equals one folder, and holds any number of panes — Claude Code, a shell, a dev server, or another long-running process. The state of each Claude Code pane (PERMIT, BUSY, IDLE) propagates up to the window it lives in. ccm dashboard lets you switch between windows with prefix + Tab.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 11 9" markerWidth="11" markerHeight="9"
             refX="11" refY="4.5" orient="auto" markerUnits="userSpaceOnUse">
@@ -12,7 +12,7 @@
     <!-- bi-directional marker reuses the same geometry & color as the forward
          `arrow` marker so the ccm switch arrows visually belong to the same
          arrow family as the session→window and window→pane arrows. Reused
-         for ←-pointing start markers on claude code edges (orient
+         for ←-pointing start markers on Claude Code edges (orient
          "auto-start-reverse" flips it backwards when used as marker-start). -->
     <marker id="bi-arrow" viewBox="0 0 11 9" markerWidth="11" markerHeight="9"
             refX="11" refY="4.5" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
@@ -46,7 +46,7 @@
       the family — previously slate read as a neutral gray and floated
       against the colored session/window.
 
-      `claude code` is highlighted in teal — it shares the cool family
+      `Claude Code` is highlighted in teal — it shares the cool family
       so the chart stays unified, but the green-cyan shift makes it pop
       out from the surrounding indigo/violet/blue without breaking
       harmony (an orange or pink would have felt like an interruption).
@@ -71,7 +71,7 @@
       .marker-fill { fill: #cbd5e1; }
     }
     .accent-tmux   { fill: #059669; font-weight: 700; }                    /* emerald — tmux brand */
-    .accent-claude { fill: #d97706; font-weight: 700; }                    /* amber — claude code */
+    .accent-claude { fill: #d97706; font-weight: 700; }                    /* amber — Claude Code */
     .term          { font-weight: 700; }
     .ccm-arrow     { stroke: #94a3b8; stroke-width: 1.5; fill: none; }    /* match `.edge` style */
     /* Mini ccm logo overlay (matches assets/logo-light.svg style):
@@ -114,21 +114,21 @@
   <!-- panes (all x=620, width=180) -->
   <!-- W1 -->
   <rect class="pane-box" x="620" y="30"  width="180" height="50" rx="6"/>
-  <text class="pane-text" x="697" y="55"  text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">claude code</tspan></text>
+  <text class="pane-text" x="697" y="55"  text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">Claude Code</tspan></text>
 
   <rect class="pane-box" x="620" y="100" width="180" height="50" rx="6"/>
   <text class="pane-text" x="710" y="125" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: shell</text>
 
   <!-- W2 -->
   <rect class="pane-box" x="620" y="210" width="180" height="50" rx="6"/>
-  <text class="pane-text" x="697" y="235" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">claude code</tspan></text>
+  <text class="pane-text" x="697" y="235" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">Claude Code</tspan></text>
 
   <rect class="pane-box" x="620" y="280" width="180" height="50" rx="6"/>
   <text class="pane-text" x="710" y="305" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: dev server</text>
 
   <!-- W3 -->
   <rect class="pane-box" x="620" y="390" width="180" height="50" rx="6"/>
-  <text class="pane-text" x="697" y="415" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">claude code</tspan></text>
+  <text class="pane-text" x="697" y="415" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: <tspan class="accent-claude">Claude Code</tspan></text>
 
   <rect class="pane-box" x="620" y="460" width="180" height="50" rx="6"/>
   <text class="pane-text" x="710" y="485" text-anchor="middle" dominant-baseline="central"><tspan class="term">pane</tspan>: any process</text>
@@ -154,7 +154,7 @@
   <polyline class="edge" points="530,450 575,450 575,415 620,415" marker-start="url(#bi-arrow)" marker-end="url(#arrow)"/>
   <polyline class="edge" points="530,450 575,450 575,485 620,485" marker-end="url(#arrow)"/>
 
-  <!-- State badges on windows + matching claude code panes (aggregation visible
+  <!-- State badges on windows + matching Claude Code panes (aggregation visible
        through colour/shape matching: PERMIT ▲ yellow, BUSY ◉ orange, IDLE ● blue). -->
   <use href="#badge-permit" x="500" y="90"/>
   <use href="#badge-busy"   x="500" y="270"/>

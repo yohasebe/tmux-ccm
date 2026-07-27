@@ -587,6 +587,8 @@ or press `i` on a project in the dashboard.
 
 ## Relaying with a second agent CLI
 
+![How ccm sees a window with a sidekick: the Claude Code pane is tracked and its state becomes the window's, while a second agent CLI in a split pane gets only a presence badge. The two exchange messages directly — the sidekick reports back with ccm send, and Claude types into its pane with tmux send-keys after checking it with ccm capture.](../assets/sidekick-model.svg)
+
 You can run an agent CLI other than Claude Code in a split pane of a project window and let the two agents exchange messages without a human relaying text. ccm stays Claude-centric: it only shows a dim `⚙<name>` presence badge when a known external agent CLI runs in a pane (display only — it does not track that agent's state), and `ccm capture` shows every pane so either side can read the other.
 
 The conventions that make the relay work:
