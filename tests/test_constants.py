@@ -438,3 +438,38 @@ class TestAgentsTUIDetection:
             "documentation says `? for shortcuts` shows the help."
         )
         assert not self._detect(text)
+
+
+class TestStaleReleaseWindows:
+    """The BUSY and PERMIT stale-release windows were split apart so
+    they could be tuned independently (2026-07-27). The behaviour
+    tests around them are written boundary-relative — `W ± 1` — which
+    correctly exercises the mechanism but adapts to whatever the
+    constant says, so none of them would notice the BUSY window being
+    put back to 600 s and the Esc-interrupt false BUSY returning.
+    These pin the relationships the split exists to express."""
+
+    def test_busy_release_is_shorter_than_the_shared_window(self):
+        """The whole point of the split: an Esc-interrupted turn must
+        escape a false BUSY well before the 10-minute window that
+        still governs the promotion and combined-stale paths."""
+        assert (ccm_constants.BUSY_STALE_RELEASE_SEC
+                < ccm_constants.BUSY_HOOK_JSONL_WINDOW)
+
+    def test_busy_release_is_far_below_the_auto_exit_timeout(self):
+        """The release window is only flicker prevention; the real
+        safety net against acting on a wrong IDLE is auto-exit's
+        requirement of sustained IDLE. Keeping a wide margin between
+        them is what makes a short release window defensible — worst
+        case, a silent tool with broken spinner detection still needs
+        `BUSY_STALE_RELEASE_SEC + IDLE_EXIT_TIMEOUT` of silence before
+        anything is killed."""
+        assert (ccm_constants.BUSY_STALE_RELEASE_SEC * 5
+                <= ccm_constants.IDLE_EXIT_TIMEOUT)
+
+    def test_permit_window_is_unchanged_by_the_split(self):
+        """PERMIT keeps the 10-minute window: a modal on screen is
+        re-committed by the raw override regardless of age, so the
+        window only governs the already-resolved case, where being
+        slow is harmless."""
+        assert ccm_constants.PERMIT_MAX_TIMEOUT == 600

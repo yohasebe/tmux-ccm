@@ -81,6 +81,22 @@ HOOK_FRESH_THRESHOLD = 2
 # that a missed Stop does not strand the project in BUSY indefinitely.
 BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))
+# Stale-BUSY release window, split from BUSY_HOOK_JSONL_WINDOW's 600 s.
+# This is a FLICKER-PREVENTION window, not an estimate of the longest
+# silent tool: the real safety net against reporting IDLE for a session
+# that is still working lives on the auto-exit side (IDLE_EXIT_TIMEOUT
+# requires 600 s of *sustained* IDLE before anything is killed), so
+# 600 -> 60 only moves the worst-case kill threshold for a silent tool
+# from 1200 s of silence to 660 s. What it buys is large: an
+# Esc-interrupted turn fires no Stop hook and writes no further JSONL,
+# so it used to sit in a false BUSY for ten minutes; it now clears in
+# one. The release requires the CONJUNCTION of raw=IDLE (no spinner on
+# screen) and a frozen JSONL — neither alone is trusted, because a
+# single long silent tool freezes the JSONL too, and spinner detection
+# has broken before on upstream reworks (2026-03-26 the accept-edits
+# marker, 2026-05-29 the /model footer verb).
+BUSY_STALE_RELEASE_SEC = int(
+    os.environ.get("CCM_BUSY_STALE_RELEASE_SEC", "60"))
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 # Hook-vs-real-activity gap discriminator. A BUSY hook fired more

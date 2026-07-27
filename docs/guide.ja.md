@@ -260,7 +260,7 @@ ccm setup-hooks
 | `PermissionDenied` | PERMIT | autoモードでの拒否（`/permissions`で再試行） |
 
 > [!NOTE]
-> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれます。BUSY は `Stop`/`SessionEnd` フックまたはプロセス終了でクリアされます。BUSY フックと JSONL の両方が `CCM_BUSY_HOOK_JSONL_WINDOW`（デフォルト10分）を超えて沈黙した場合、ccm は古い信号の信頼を打ち切り IDLE へフォールバックするため、`Stop` の取りこぼしで BUSY に張り付くことはありません。PERMIT も同様に解放されます。permission の解決時に上流はフックを発火しないため、permit イベントが最新で、ペインにモーダルが表示されておらず、セッションログが `CCM_PERMIT_MAX_TIMEOUT`（デフォルト10分）を超えて凍結している場合、ccm はその信頼を打ち切り IDLE へフォールバックします。ダイアログが画面に出ている場合はペインから直接読み取られるため、どれだけ待っていても PERMIT のままです。
+> フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれます。BUSY は `Stop`/`SessionEnd` フックまたはプロセス終了でクリアされます。BUSY フックと JSONL の両方が `CCM_BUSY_HOOK_JSONL_WINDOW`（デフォルト10分）を超えて沈黙した場合、ccm は古い信号の信頼を打ち切り IDLE へフォールバックするため、`Stop` の取りこぼしで BUSY に張り付くことはありません。PERMIT も同様に解放されます。permission の解決時に上流はフックを発火しないため、permit イベントが最新で、ペインにモーダルが表示されておらず、セッションログが `CCM_PERMIT_MAX_TIMEOUT`（デフォルト10分）を超えて凍結している場合、ccm はその信頼を打ち切り IDLE へフォールバックします。ダイアログが画面に出ている場合はペインから直接読み取られるため、どれだけ待っていても PERMIT のままです。Esc 中断で残った BUSY（`Stop` フックが発火せず、ログがツール実行中で凍結）はより早く解放されます。画面がアイドルなプロンプトで、ログが `CCM_BUSY_STALE_RELEASE_SEC`（デフォルト60秒）を超えて凍結している場合、ccm は IDLE に委ねます。
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
@@ -659,6 +659,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_COMPLETED_AT_TIMEOUT` | `30`（秒） | BUSY/PERMIT → IDLE 遷移後にダッシュボードで `* elapsed` 完了マーカーが表示される時間 |
 | `CCM_COMPLETION_GRACE_SEC` | `3`（秒） | Stop hook 発火から COMPLETED デスクトップ通知までの猶予時間。Claude Code は各ターン境界（ツール実行中も含む）で Stop を発火するため、ccm はこの秒数だけ待ってから通知する。その間に次の PreToolUse / UserPromptSubmit が発火すれば通知はキャンセルされる |
 | `CCM_PERMIT_MAX_TIMEOUT` | `600`（秒） | stale PERMIT の解放: permit イベントが最新で、かつペインにモーダルが**表示されていない**状態でセッションログがこの秒数以上凍結していたら、その permit の信頼を打ち切り IDLE へフォールバックする。permission の解決時に上流はフックを発火しないため、これがないと数分前に承認（または Esc で解除）した permission が `⚠ PERMIT` を無期限に保持しうる。モーダルが**画面に出ている**場合はペイン自体から検出されるため、どれだけ長く放置しても解放されない |
+| `CCM_BUSY_STALE_RELEASE_SEC` | `60`（秒） | stale BUSY の解放: Esc でツール実行を中断したセッション（`Stop` フックが発火せず、セッションログが `tool_use` で凍結し、画面はアイドルなプロンプト）が BUSY のまま残る時間。ちらつき防止の窓であり、ログが凍結する実稼働セッション（長時間の無言 build 等）を誤って殺さない安全網は `CCM_IDLE_EXIT_TIMEOUT`（10分の IDLE 持続が必要）側にある |
 | `CCM_IDLE_EXIT_TIMEOUT` | `600`（秒） | Claude Code セッションが IDLE 状態でいられる最大時間（`x` 一括終了の対象となる閾値、自動終了のトリガー） |
 | `CCM_IDLE_PROMPT_GUARD_SEC` | `60`（秒） | `on-notification.sh` の idle_prompt ガード。idle_prompt は 10〜60 秒以上遅れて届く（anthropics/claude-code#5186）ため、この秒数より新しい BUSY シグナルは通知の生成「後」に開始された作業によるものである可能性があり、削除すると稼働中セッションが IDLE に落ちる（auto-exit の kill path にも乗る）。ガードより新しいシグナルは保持し、古いものは従来通り削除する。`0` で opt-out して旧挙動（常に削除）に戻る |
 | `CCM_IGNORE` | 未設定 | チューニング値ではなく起動時フラグ: `CCM_IGNORE=1 claude` で ccm が完全に無視するセッションを起動（「別モデルをサイドキックとして使う」参照）。稼働中のセッションは `ccm ignore` / `ccm unignore` でトグル |

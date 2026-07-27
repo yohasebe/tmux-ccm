@@ -90,7 +90,9 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
      - else → fall through to the next rules
    - else if JSONL terminal stop_reason is fresher than the event AND `raw≠"PERMIT"` → `IDLE` (Esc interrupt or hook silence within 60 s)
    - else if both event_age AND jsonl_age exceed `BUSY_HOOK_JSONL_WINDOW` (10 min) AND `raw≠"PERMIT"` → `None` (combined-stale fallback — defer to legacy, which resolves to IDLE via `default`. Catches other spurious upstream firings beyond the specific subagent shortcut above)
-   - else → `BUSY`
+   - else → `BUSY`, subject to the stale-BUSY release in `map_activity_to_state`: `raw=="IDLE"` AND jsonl_age exceeds `BUSY_STALE_RELEASE_SEC` (60 s) → `None` (defer to legacy → IDLE)
+
+   **Stale-BUSY release (added 2026-07-23).** An Esc interrupt mid-tool fires no `Stop` hook and freezes the JSONL at a non-terminal `tool_use`, so a start-class event stays "latest" and the session would hold `BUSY` for the whole 10-minute window. The release fires on the conjunction `raw="IDLE"` AND frozen JSONL — raw alone is not trusted, because spinner detection has broken silently on upstream text changes before (`❯❯`→`⏵⏵` 2026-03-26, `/model` footer verb rename 2026-05-29). The window is short by design: it only prevents flicker, while the real safety net for a genuinely working session (e.g. a long silent build whose JSONL also freezes) is `IDLE_EXIT_TIMEOUT` requiring 600 s of sustained IDLE before auto-exit. The release applies **only to start-class origins** (the Esc case it exists for); a BUSY promoted from a permit event (auto-approved tool, which may legitimately run for minutes) is exempt from the short window and keeps the promotion's own long-tool semantics.
 6. Latest event is `notify_idle` → `IDLE`
 7. Latest event is `stop`:
    - JSONL stop_reason terminal → `IDLE`
@@ -182,7 +184,8 @@ Tunable thresholds with empirically-chosen defaults:
 |---|---|---|
 | `HOOK_FRESH_THRESHOLD` | 2 s | legacy `hook_fresh_busy` rule's "hook just fired" gate |
 | `JSONL_HOOK_GAP_TOLERANCE` | 60 s | recap-phantom guard + Esc-release / silent-completion freshness window in derive |
-| `BUSY_HOOK_JSONL_WINDOW` | 600 s | combined-stale fallback in derive (event AND jsonl both stale → defer to legacy); also the stale-BUSY release when `raw="IDLE"` |
+| `BUSY_HOOK_JSONL_WINDOW` | 600 s | combined-stale fallback in derive (event AND jsonl both stale → defer to legacy) |
+| `BUSY_STALE_RELEASE_SEC` | 60 s | stale-BUSY release in `map_activity_to_state` (BUSY candidate + `raw="IDLE"` + frozen JSONL → defer to legacy). A flicker-prevention window, not an estimate of the longest silent tool — the safety net against killing a working session is `IDLE_EXIT_TIMEOUT` (600 s of sustained IDLE), so 600→60 only moves the worst-case kill threshold for a silent tool from 1200 s to 660 s of silence. Separate knob via `CCM_BUSY_STALE_RELEASE_SEC` |
 | `PERMIT_MAX_TIMEOUT` | 600 s | stale-permit release in derive (permit-latest + `raw="IDLE"` + frozen JSONL → defer to legacy). Separate knob from the BUSY window so the PERMIT axis can be tuned alone (`CCM_PERMIT_MAX_TIMEOUT`) |
 | `STARTUP_GRACE_SEC` | 60 s | startup transient pid-age window (legacy `startup_transient_raw_busy`) |
 | `SLIVER_HEIGHT_THRESHOLD` | 4 rows | minimum pane height to participate in window aggregation |

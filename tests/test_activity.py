@@ -381,9 +381,10 @@ class TestMapActivityToState:
     (preserving the "no event signal → legacy decides" invariant)."""
 
     def _map(self, activity, raw="IDLE",
-             jsonl_stop_reason=None, jsonl_age=-1):
+             jsonl_stop_reason=None, jsonl_age=-1, event_type=None):
         from ccm_activity import map_activity_to_state
-        return map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age)
+        return map_activity_to_state(activity, raw, jsonl_stop_reason,
+                                     jsonl_age, event_type=event_type)
 
     def test_at_rest_returns_idle(self):
         from ccm_activity import ACTIVITY_AT_REST
@@ -394,30 +395,30 @@ class TestMapActivityToState:
         assert self._map(ACTIVITY_IN_PROGRESS, raw="BUSY") == "BUSY"
 
     def test_stale_busy_with_idle_screen_defers(self):
-        """BUSY candidate + raw=IDLE + JSONL frozen past the long-tool
+        """BUSY candidate + raw=IDLE + JSONL frozen past the release
         window → defer to legacy (None → IDLE). A genuinely working
         session shows a spinner (raw=BUSY), so raw=IDLE here means the
         event log is stale — a hook-silent turn end or a recap-moment
         phantom SubagentStart holding a stuck BUSY (2026-07-07
         monadic-chat incident)."""
-        from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_HOOK_JSONL_WINDOW
+        from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_STALE_RELEASE_SEC
         assert self._map(
             ACTIVITY_IN_PROGRESS, raw="IDLE",
             jsonl_stop_reason="tool_use",
-            jsonl_age=BUSY_HOOK_JSONL_WINDOW + 1,
+            jsonl_age=BUSY_STALE_RELEASE_SEC + 1,
         ) is None
 
     def test_stale_busy_guard_does_not_touch_fresh_jsonl(self):
-        """The guard is bounded by the long-tool window: a BUSY
+        """The guard is bounded by the release window: a BUSY
         candidate with FRESH JSONL (raw=IDLE, e.g. accept-edits) stays
         BUSY. This is the approved-long-tool case whose fix keeps the
         composer on screen — jsonl_age is small, well inside the
         window, so the guard never applies."""
-        from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_HOOK_JSONL_WINDOW
+        from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_STALE_RELEASE_SEC
         assert self._map(
             ACTIVITY_IN_PROGRESS, raw="IDLE",
             jsonl_stop_reason="tool_use",
-            jsonl_age=BUSY_HOOK_JSONL_WINDOW - 1,
+            jsonl_age=BUSY_STALE_RELEASE_SEC - 1,
         ) == "BUSY"
 
     def test_stale_busy_guard_does_not_touch_raw_busy(self):
@@ -428,6 +429,42 @@ class TestMapActivityToState:
         assert self._map(
             ACTIVITY_IN_PROGRESS, raw="BUSY",
             jsonl_stop_reason="tool_use", jsonl_age=99999) == "BUSY"
+
+    def test_busy_and_permit_release_windows_are_independent(self, monkeypatch):
+        """The BUSY and PERMIT release windows are separate constants:
+        shrinking one must not release the other."""
+        import ccm_activity
+        from ccm_activity import ACTIVITY_AWAITING_PERMIT, ACTIVITY_IN_PROGRESS
+        # BUSY window tiny: BUSY releases; PERMIT (long window) holds.
+        monkeypatch.setattr(ccm_activity, "BUSY_STALE_RELEASE_SEC", 10)
+        monkeypatch.setattr(ccm_activity, "PERMIT_MAX_TIMEOUT", 6000)
+        assert self._map(ACTIVITY_IN_PROGRESS, raw="IDLE",
+                         jsonl_stop_reason="tool_use", jsonl_age=20) is None
+        assert self._map(ACTIVITY_AWAITING_PERMIT, raw="IDLE",
+                         jsonl_stop_reason="tool_use", jsonl_age=20) == "PERMIT"
+        # PERMIT window tiny: PERMIT releases; BUSY (long window) holds.
+        monkeypatch.setattr(ccm_activity, "BUSY_STALE_RELEASE_SEC", 6000)
+        monkeypatch.setattr(ccm_activity, "PERMIT_MAX_TIMEOUT", 10)
+        assert self._map(ACTIVITY_IN_PROGRESS, raw="IDLE",
+                         jsonl_stop_reason="tool_use", jsonl_age=20) == "BUSY"
+        assert self._map(ACTIVITY_AWAITING_PERMIT, raw="IDLE",
+                         jsonl_stop_reason="tool_use", jsonl_age=20) is None
+
+    def test_stale_busy_release_skips_permit_origin(self):
+        """The stale-BUSY release only applies to START-class origins:
+        a BUSY whose latest event is a permit event keeps the long
+        promotion semantics and is not released by the short window,
+        while the same shape with a pretool event releases."""
+        from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_STALE_RELEASE_SEC
+        age = BUSY_STALE_RELEASE_SEC + 1
+        assert self._map(
+            ACTIVITY_IN_PROGRESS, raw="IDLE",
+            jsonl_stop_reason="tool_use", jsonl_age=age,
+            event_type="notify_permit") == "BUSY"
+        assert self._map(
+            ACTIVITY_IN_PROGRESS, raw="IDLE",
+            jsonl_stop_reason="tool_use", jsonl_age=age,
+            event_type="pretool") is None
 
     def test_stale_permit_with_idle_screen_releases_to_legacy(self):
         """permit-latest + raw=IDLE + JSONL frozen past
@@ -572,6 +609,57 @@ class TestDeriveStateFromEvents:
                 pid_present=True, claude_pid_age=11000,
                 raw="IDLE", jsonl_age=now - jsonl_ts, now=now,
             ) is None, f"stuck BUSY reproduced at +{offset}s"
+
+    def test_esc_interrupt_stale_busy_releases(self):
+        """2026-07-23: Esc mid-tool fires no Stop hook, so the
+        start-class pretool event stays latest and the JSONL freezes
+        at tool_use (non-terminal) with an idle screen. Past
+        BUSY_STALE_RELEASE_SEC the in-progress claim is stale and
+        derive defers to legacy (None → IDLE) instead of holding BUSY
+        for 10 minutes."""
+        from ccm_activity import BUSY_STALE_RELEASE_SEC
+        now = 1800000000
+        for age in (BUSY_STALE_RELEASE_SEC + 1,
+                    BUSY_STALE_RELEASE_SEC + 300):
+            assert ccm_activity.derive_state_from_events(
+                events=({"ts": now - 60, "type": "pretool"},),
+                jsonl_stop_reason="tool_use",
+                pid_present=True, claude_pid_age=9999,
+                jsonl_age=age, now=now, raw="IDLE",
+            ) is None, f"stuck BUSY reproduced at jsonl_age={age}"
+
+    def test_esc_interrupt_inside_window_stays_busy(self):
+        """The same Esc-interrupted shape INSIDE the release window
+        still reads BUSY — the guard only fires on a JSONL frozen
+        past it (flicker prevention)."""
+        from ccm_activity import BUSY_STALE_RELEASE_SEC
+        now = 1800000000
+        assert ccm_activity.derive_state_from_events(
+            events=({"ts": now - 60, "type": "pretool"},),
+            jsonl_stop_reason="tool_use",
+            pid_present=True, claude_pid_age=9999,
+            jsonl_age=BUSY_STALE_RELEASE_SEC - 1, now=now, raw="IDLE",
+        ) == "BUSY"
+
+    def test_permit_promoted_busy_not_cut_by_short_window(self):
+        """2026-07-23 regression pin: a BUSY promoted from a permit
+        event (auto-approved tool, fresher JSONL proves dispatch) can
+        run for minutes legitimately — the short stale-BUSY release
+        window must NOT cut it. Only START-class origins (the Esc
+        interrupt case) are eligible for the short release."""
+        from ccm_activity import BUSY_HOOK_JSONL_WINDOW, BUSY_STALE_RELEASE_SEC
+        now = 1800000000
+        for age in (BUSY_STALE_RELEASE_SEC + 1, 90,
+                    BUSY_HOOK_JSONL_WINDOW - 1):
+            assert ccm_activity.derive_state_from_events(
+                # The promotion requires the JSONL to be strictly
+                # fresher than the permit event, so the event is aged
+                # just past each probe.
+                events=({"ts": now - age - 10, "type": "notify_permit"},),
+                jsonl_stop_reason="tool_use",
+                pid_present=True, claude_pid_age=9999,
+                jsonl_age=age, now=now, raw="IDLE",
+            ) == "BUSY", f"promoted BUSY cut at jsonl_age={age}"
 
     def test_pid_absent_with_events_still_shell(self):
         """Process tree is authoritative over stale event log."""

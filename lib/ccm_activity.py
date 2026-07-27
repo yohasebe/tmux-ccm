@@ -30,6 +30,7 @@ real terminator at the end of the tail.
 
 from ccm_constants import (
     BUSY_HOOK_JSONL_WINDOW,
+    BUSY_STALE_RELEASE_SEC,
     JSONL_HOOK_GAP_TOLERANCE,
     PERMIT_MAX_TIMEOUT,
     TERMINAL_STOP_REASONS,
@@ -281,7 +282,8 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
 
 # ─── Activity → state mapping ───
 
-def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
+def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
+                          event_type=None):
     """Map (activity, raw observation, JSONL signals) to a definite
     state, or None to defer to legacy detection.
 
@@ -291,7 +293,17 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
     UNKNOWN activity returns None even when raw=PERMIT — the rule
     "no event-log signal → legacy fallback" is preserved end-to-end
     so any future legacy-only logic (e.g. raw_permit_passthrough)
-    keeps working consistently."""
+    keeps working consistently.
+
+    event_type: the `type` of the latest event that produced the
+    activity, when known. The stale-BUSY release below only applies
+    to START-class origins (prompt/pretool/posttool/subagent/
+    compact) — the case it exists for is an Esc-interrupted turn. A
+    BUSY promoted from a permit event (an auto-approved tool whose
+    run may legitimately take minutes) must NOT be cut by the short
+    release window; it keeps the long-tool semantics of the permit
+    promotion itself. None (direct callers) keeps the release
+    enabled, matching the pre-parameter behaviour."""
     candidate = None
 
     if activity == ACTIVITY_AT_REST:
@@ -315,10 +327,10 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
     # genuinely idle prompt — raw=IDLE means the `❯` composer is visible
     # with NO active-work spinner — yet the event log resolves to BUSY,
     # and the JSONL has recorded no real activity for longer than the
-    # long-tool window, the event log is stale and must not override the
-    # screen. A genuinely working session ALWAYS shows a spinner
-    # (raw=BUSY), so raw=IDLE + a BUSY candidate + a 10-min-frozen JSONL
-    # is unambiguously stale: a turn that ended without a Stop event
+    # release window, the event log is stale and must not override the
+    # screen. A genuinely working session almost always shows a spinner
+    # (raw=BUSY), so raw=IDLE + a BUSY candidate + a frozen JSONL
+    # means the in-progress claim is stale: a turn that ended without a Stop event
     # (hook silence, so a start event stays "latest" forever), or a
     # recap-moment phantom SubagentStart fired when the user returned to
     # an idle session (2026-07-07 monadic-chat incident: a recap phantom
@@ -355,9 +367,29 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age):
     #
     # Long-tool cases stay intact for both candidates: they carry
     # FRESH JSONL (tool_use within minutes), well inside the window.
-    stale_window = (BUSY_HOOK_JSONL_WINDOW if candidate == "BUSY"
+    #
+    # The BUSY window is BUSY_STALE_RELEASE_SEC (default 60s, split
+    # from BUSY_HOOK_JSONL_WINDOW's 600s). It is a FLICKER-PREVENTION
+    # window, not an estimate of the longest silent tool: the actual
+    # safety net against killing a working session is on the auto-exit
+    # side (IDLE_EXIT_TIMEOUT requires 600s of sustained IDLE), so
+    # 600→60 only moves the worst-case kill threshold for a silent
+    # tool from 1200s to 660s of silence, while an Esc-interrupted
+    # session (no Stop hook, no further JSONL — the conjunction of
+    # raw=IDLE AND frozen JSONL is what earns the release) escapes a
+    # stuck BUSY in 60s instead of 10 minutes.
+    # The release is further restricted to START-class origins: a BUSY
+    # promoted from a permit event (auto-approved tool) can run for
+    # minutes legitimately, so it is exempt from the short window and
+    # keeps the promotion's own long-tool semantics.
+    stale_window = (BUSY_STALE_RELEASE_SEC if candidate == "BUSY"
                     else PERMIT_MAX_TIMEOUT)
-    if (candidate in ("BUSY", "PERMIT") and raw == "IDLE"
+    busy_release_eligible = (
+        candidate == "BUSY"
+        and (event_type is None
+             or EVENT_CLASSES.get(event_type) == EVENT_CLASS_START))
+    if ((candidate == "PERMIT" or busy_release_eligible)
+            and raw == "IDLE"
             and jsonl_age is not None
             and jsonl_age > stale_window):
         return None
@@ -407,9 +439,12 @@ def derive_state_from_events(events, jsonl_stop_reason,
 
     events_seq = tuple(events) if not isinstance(events, tuple) else events
 
-    activity, _evidence = classify_activity(
+    activity, evidence = classify_activity(
         events_seq, jsonl_stop_reason, jsonl_age, raw, now,
     )
+    event_type = (evidence.get("type")
+                  if isinstance(evidence, dict) else None)
     return map_activity_to_state(
         activity, raw, jsonl_stop_reason, jsonl_age,
+        event_type=event_type,
     )

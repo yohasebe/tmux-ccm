@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   tracking of the other agent — which is why it works for any CLI that can run
   a shell command.
 
+### Fixed
+- A session interrupted with Esc mid-tool no longer shows `BUSY` for up to 10
+  minutes. Esc fires no `Stop` hook, so the start-class event stayed "latest"
+  and the session log froze at a non-terminal `tool_use` — leaving every
+  release path closed. The aging guard now releases a BUSY candidate with an
+  idle screen and a frozen log past `BUSY_STALE_RELEASE_SEC` (default 60 s,
+  `CCM_BUSY_STALE_RELEASE_SEC`). The window is flicker prevention, not a
+  longest-silent-tool estimate: the safety net for a genuinely working session
+  whose log also freezes (a long silent build) is `CCM_IDLE_EXIT_TIMEOUT`
+  requiring 10 minutes of sustained IDLE before auto-exit, so 600→60 only
+  moves the worst-case kill threshold from 1200 s to 660 s of silence. The
+  release applies only to start-class origins (the Esc case): a BUSY promoted
+  from a permit event (auto-approved tool, which may run for minutes) is
+  exempt. The other `BUSY_HOOK_JSONL_WINDOW` uses (permit promotion,
+  combined-stale, legacy rules) are unchanged, and PERMIT keeps its own
+  `PERMIT_MAX_TIMEOUT` window.
+
 ## [0.7.1] - 2026-07-27
 
 ### Fixed
