@@ -68,26 +68,48 @@ teardown() {
     [ "$status" -eq 0 ]
 }
 
-@test "reconcile: the gate itself spawns no processes on the skip path" {
-    # The whole point. A gate that forks `date` and `tmux` to decide
-    # not to fork python3 gives most of the saving back, so the skip
-    # path uses the EPOCHSECONDS builtin and a `[[ -nt ]]` test.
+@test "reconcile: the skip path never consults tmux or stat" {
+    # The point of gating in the shell is to not pay for the work the
+    # gate is avoiding. Consulting the tmux server or stat(1) to decide
+    # would hand most of the saving back, so the restart check reads
+    # the socket mtime with `[[ -nt ]]` — a builtin — and never runs a
+    # tmux client. This half of the property holds on every bash.
     export CCM_RECONCILE_INTERVAL=60
     export TMUX="${CCM_TMP_DIR}/fake-socket,1,0"
     : > "${CCM_TMP_DIR}/fake-socket"
     _ccm_should_reconcile
 
-    # Shadow every external command the gate could reach as a builtin
-    # that fails the test if called.
-    date() { echo "GATE FORKED date" >&2; return 1; }
     tmux() { echo "GATE FORKED tmux" >&2; return 1; }
     stat() { echo "GATE FORKED stat" >&2; return 1; }
-    export -f date tmux stat 2>/dev/null || true
 
     run _ccm_should_reconcile
     [ "$status" -eq 1 ]
     [[ "$output" != *"GATE FORKED"* ]] || {
         echo "gate shelled out on the skip path: $output"; return 1; }
+}
+
+@test "reconcile: skip path is fork-free where EPOCHSECONDS exists" {
+    # Time is the one value the gate cannot get from a builtin on
+    # every shell: EPOCHSECONDS arrived in bash 5, and macOS still
+    # ships 3.2 as /bin/bash, so there the gate spends exactly one
+    # `date`. That fallback is deliberate — 3 processes per second
+    # instead of 2 is still an order of magnitude below the ~24 a full
+    # pass costs — so this asserts the stronger property only where
+    # the shell can actually deliver it, rather than pretending the
+    # guarantee is universal (which is how this test first failed on
+    # a macOS runner while passing on a homebrew bash 5).
+    [[ -n "${EPOCHSECONDS:-}" ]] || skip "bash < 5: no EPOCHSECONDS builtin"
+    export CCM_RECONCILE_INTERVAL=60
+    export TMUX="${CCM_TMP_DIR}/fake-socket,1,0"
+    : > "${CCM_TMP_DIR}/fake-socket"
+    _ccm_should_reconcile
+
+    date() { echo "GATE FORKED date" >&2; return 1; }
+
+    run _ccm_should_reconcile
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"GATE FORKED"* ]] || {
+        echo "gate forked date despite EPOCHSECONDS: $output"; return 1; }
 }
 
 @test "ccm dispatcher: --fast is never rate-limited" {
