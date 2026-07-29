@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   was considered and dropped: it would have reached Agent Teams users too, for
   whom hiding a teammate costs that teammate's PERMIT.
 
+### Fixed
+- The documented way to reach a sidekick pane could deliver nothing while
+  looking like it worked. Chaining the body and `Enter` with `&&` lets the
+  peer's TUI read the `Enter` as a newline, leaving the message unsent in its
+  composer — measured against Kimi K3, no gap fails every time while 0.3 s
+  succeeds. The guide now includes the pause, and says plainly that text
+  visible in the peer's input box is proof of failure rather than delivery.
+  `ccm setup-claude-md` had never carried this procedure at all, so every
+  Claude session was improvising it; it is in the template now. Existing
+  `~/.claude/CLAUDE.md` sections are not rewritten — re-run
+  `ccm remove-claude-md && ccm setup-claude-md` to pick it up.
+
 ### Changed
 - The `ccm send` ambiguity refusal now offers the way out. Two visible Claude
   panes and a focus elsewhere is unresolvable by focus alone; the message names

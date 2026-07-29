@@ -599,9 +599,14 @@ The conventions that make the relay work:
 - **Claude → other agent**: check the peer is ready with `ccm capture <project>` first (ccm cannot state-gate a non-Claude pane), then send the body and the submit key separately:
   ```bash
   tmux send-keys -t <pane> -l -- "<message>"   # -l: literal, do not resolve as key names
+  sleep 0.3                                    # let the composer settle (see below)
   tmux send-keys -t <pane> Enter
   ```
   The `-l` matters: without it tmux resolves arguments as key *names*, so a message containing a word like `Space` or `Enter` silently turns into that keystroke. (ccm's own delivery uses `-l --` for the same reason.) Newline keys differ between CLIs — Claude uses `M-Enter`, many others accept `C-j` — so for multi-line bodies send each line literally with the peer's newline key between them.
+
+  **The pause before `Enter` is load-bearing, and it is the failure you are most likely to hit.** Chain the two `send-keys` with `&&` and the peer's TUI can still be digesting the inserted text when `Enter` arrives, and take it as a *newline* instead of a submit. The body then sits in the composer, unsent, looking exactly like a message that went through. Measured against Kimi K3: no gap fails every time, 0.3 s and 1 s both submit. Claude Code's own composer tolerates a zero gap — which is why `ccm send` needs no pause and why this bites only when the peer is something else.
+
+  **So confirm the send, don't assume it.** `ccm capture` after `Enter` and look at the peer's input box: *empty* means submitted, *your text still sitting there* means it was not. Reading the visible text as proof of delivery is backwards — it is proof of the opposite. Verifying before `Enter` is even better, and is what `ccm send` does on its riskiest path (`lib/ccm_send.py`): check the body landed, retry the typing if not, and only then commit the `Enter`, so a retry can never double-submit.
 - **Report, don't poll**: neither side can observe the other's progress. When you finish a request, report back with `ccm send` — the reply arrives as a new turn on its own.
 - **Long results**: write them to a file and send a one-line pointer; this also sidesteps the differing newline keys.
 

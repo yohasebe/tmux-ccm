@@ -616,6 +616,23 @@ Use the following commands to discover, inspect, and coordinate other projects:
   results, write a file and send a one-line pointer to it rather than
   pasting the body.
 
+  **Reaching a sidekick beside you.** `ccm send` only targets Claude
+  panes. A second, non-Claude agent CLI sharing your window is reached
+  with tmux directly — check it is at its prompt with `ccm capture`
+  first, then:
+
+      tmux send-keys -t <pane> -l -- "<message>"
+      sleep 0.3
+      tmux send-keys -t <pane> Enter
+
+  `-l` sends the text literally; without it a word like `Enter` inside
+  your message becomes that keystroke. The pause is not cosmetic: with
+  no gap the peer's TUI can still be digesting the text when `Enter`
+  lands and take it as a newline rather than a submit, leaving the body
+  in its composer. Then `ccm capture` again and read its input box —
+  **empty means sent; your text still sitting there means it was not.**
+  Visible text is proof of failure, not proof of delivery.
+
   Other flags: `--no-enter` (type without submitting), `-y` / `--yes`
   (skip the interactive confirmation), `--` (end of flag parsing, for
   messages that start with `-`). Confirmation is auto-skipped when
