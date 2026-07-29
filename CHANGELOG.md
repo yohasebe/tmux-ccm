@@ -18,7 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a way worth stating: a name that never appears simply never matches, while a
   correct guess starts working the day the tool is installed.
 
+- The guide and the sidekick diagram now say outright that the sidekick may be
+  another Claude Code — the arrangement `CCM_IGNORE` was written for, which a
+  list of third-party CLIs had come to read as excluding. What differs is only
+  the badge: `⊘` for a session ccm would otherwise track, `⚙` for one it never
+  would.
+- `ccm doctor` lists windows hosting more than one visible Claude session under
+  *multi-claude windows*, naming both readings — an Agent Teams split, or a
+  sidekick nobody hid — without recommending either. A standing dashboard hint
+  was considered and dropped: it would have reached Agent Teams users too, for
+  whom hiding a teammate costs that teammate's PERMIT.
+
 ### Changed
+- The `ccm send` ambiguity refusal now offers the way out. Two visible Claude
+  panes and a focus elsewhere is unresolvable by focus alone; the message names
+  `CCM_IGNORE` and the dashboard's `i` key, which drop the sidekick from
+  delivery for good. This is the one place ccm volunteers hiding a pane —
+  the reader has already hit the ambiguity, so the advice cannot misfire.
 - Product names are capitalised consistently (`Claude Code`, not `claude code`)
   across the diagrams, README and guide. The figures had drifted to lowercase
   while the prose used the proper name 84 times to 4; commands and tool names

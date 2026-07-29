@@ -581,6 +581,8 @@ ccm unignore <project>  # restore a project
 
 or press `i` on a project in the dashboard.
 
+**If you forget.** Nothing goes wrong silently. A window with two visible Claude sessions aggregates both, and `ccm send` refuses to guess between them rather than typing into the wrong conversation — the refusal points back at `CCM_IGNORE` and the `i` key. `ccm doctor` also lists such windows under *multi-claude windows*. Neither is phrased as a warning, because the same window shape is a normal Agent Teams split, where both sessions must stay visible so that either one's PERMIT reaches you. They name both readings and leave the choice where it belongs.
+
 **Make the ignore visible on the pane itself** (optional): ccm sets a `⊘ ccm-ignored` pane title, which tmux shows only if you enable pane borders. Opt in with `tmux set -g @ccm-ignore-pane-border on` — ccm then turns on `pane-border-status` when a session is ignored (a global tmux change, so it happens only with this explicit opt-in). Without it, the dashboard `⊘` remains the cue.
 
 **Caveat — same directory.** Running two Claude Code sessions in the same working directory hits an upstream bug (anthropics/claude-code#48112) where one session's background-task notifications can leak into the other's session log. `CCM_IGNORE` stops ccm from *tracking* the sidekick, but it cannot stop that leak from polluting your main session's log if the sidekick runs background tasks concurrently. Keep the sidekick for interactive consultation (avoid concurrent `run_in_background` work and simultaneous edits to the same files), or give each model its own directory via a git worktree if you need two co-equal agents.
@@ -604,6 +606,8 @@ The conventions that make the relay work:
 - **Long results**: write them to a file and send a one-line pointer; this also sidesteps the differing newline keys.
 
 `ccm setup-claude-md` writes these conventions into `~/.claude/CLAUDE.md` so every Claude session knows them; putting the equivalent in the other CLI's own instructions file completes the loop.
+
+**The sidekick can be another Claude Code.** Nothing above depends on the peer being a different product — a second `claude` in the split pane relays exactly the same way. What changes is how ccm sees it: a second Claude Code is a session ccm *would* track, so you hide it deliberately with `CCM_IGNORE` (see the section above) and it carries `⊘` rather than the `⚙` a non-Claude CLI gets. The directions are unchanged: an ignored pane is not a `ccm send` target either, so reaching it still means `ccm capture` to check, then `tmux send-keys`. In practice it is the easier pairing — the submit and newline keys match, and the peer already knows the conventions from your `CLAUDE.md`.
 
 ## Using with agent view (background sessions)
 

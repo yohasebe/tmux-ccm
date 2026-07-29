@@ -37,6 +37,7 @@ import ccm_canaries
 import ccm_commands
 import ccm_detection
 import ccm_jsonl
+import ccm_pane_state
 import ccm_render
 import ccm_rules
 import ccm_signals
@@ -950,6 +951,46 @@ def cmd_doctor():
         ver = version_map.get(sid, "")
         sid_label = f"{sid} v{ver}" if ver else sid
         row(OK, f"{p.name:<20}", f"{state_label}  {sid_label}")
+
+    # Windows where more than one *visible* pane hosts claude. Two
+    # readings are equally legitimate — Agent Teams teammates, or a
+    # sidekick nobody hid — and they want opposite things, so this
+    # states the fact and names both. It must not read as "hide one":
+    # for the teammate reading that is advice which costs the reader a
+    # PERMIT. Same reason the standing dashboard hint was dropped in
+    # favour of the `ccm send` refusal line, which fires only once the
+    # ambiguity has actually bitten.
+    #
+    # Computed here rather than carried on `Project`: only doctor wants
+    # it, and doctor is on-demand, whereas `build_project_list` runs on
+    # the 2-second detection cycle.
+    #
+    # One bulk `list-panes -a` for every window, not
+    # `enumerate_window_panes` per project — that helper forks once per
+    # window, which measured +40% on a 34-project doctor. Same trade
+    # `_resolve_ignored_panes` already makes for the `⊘` count, and the
+    # same reason: this is a whole-inventory question, so ask it once.
+    multi_claude = []
+    try:
+        doctor_ps = ccm_core.ps_snapshot().strip().split("\n")
+        panes_cache = ccm_core._build_panes_cache()
+    except Exception:
+        doctor_ps, panes_cache = [], []
+    for p in projects if (doctor_ps and panes_cache) else ():
+        visible = sum(
+            1 for pc in panes_cache
+            if pc[0] == p.win_target
+            and not ccm_core._pane_is_ignored(pc)
+            and ccm_pane_state.find_claude_pid(pc[1], doctor_ps)
+        )
+        if visible >= 2:
+            multi_claude.append(f"{p.name} ({visible})")
+    if multi_claude:
+        row(OK, "multi-claude windows",
+            f"{', '.join(multi_claude)} — normal for Agent Teams, where "
+            "each teammate's PERMIT has to stay visible. If one is a "
+            "sidekick instead, `CCM_IGNORE=1` or the dashboard's `i` "
+            "keeps it out of the window's state.")
 
     section("Silent-exception log")
     log_count = 0

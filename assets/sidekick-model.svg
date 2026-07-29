@@ -132,10 +132,15 @@
        says the second CLI is subordinate to the tracked one, which a
        list of products alone would not — an earlier draft read as though
        any of them could be the harness ccm manages. -->
-  <rect class="aside-box" x="466" y="190" width="292" height="78" rx="8"/>
-  <text class="aside-key" x="482" y="212" dominant-baseline="central">sidekick</text>
-  <text class="aside-text" x="482" y="233" dominant-baseline="central">a second agent CLI in a split pane</text>
-  <text class="aside-text" x="482" y="253" dominant-baseline="central">Codex CLI · Gemini CLI · Kimi Code</text>
+  <rect class="aside-box" x="466" y="176" width="318" height="100" rx="8"/>
+  <text class="aside-key" x="482" y="198" dominant-baseline="central">sidekick</text>
+  <text class="aside-text" x="482" y="219" dominant-baseline="central">a second agent CLI in a split pane</text>
+  <text class="aside-text" x="482" y="239" dominant-baseline="central">Codex CLI · Gemini CLI · Kimi Code</text>
+  <!-- The definition above already admits a second Claude Code, but a list
+       of other products reads as excluding it. One line closes that, and
+       gives the ⊘ / ⚙ distinction a place to land before a reader running
+       a Claude sidekick goes looking for the badge this figure draws. -->
+  <text class="dim" x="482" y="259" dominant-baseline="central">or a second Claude Code — ⊘ via CCM_IGNORE</text>
 
   <path class="edge" d="M370,298 H452" marker-end="url(#arrow)"/>
   <text class="lbl-key" x="466" y="290" dominant-baseline="central">presence only</text>

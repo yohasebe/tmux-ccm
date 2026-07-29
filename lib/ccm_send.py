@@ -299,12 +299,22 @@ def _resolve_delivery_pane(win_target):
         return active_pane, active_cmd
     if len(claude_panes) == 1:
         return claude_panes[0], active_cmd
+    # The second line is the only place ccm volunteers CCM_IGNORE, and
+    # deliberately so. A standing hint ("this window has two claude
+    # panes — hide one") would fire for Agent Teams too, where hiding a
+    # teammate costs you its PERMIT: advice that harms if followed.
+    # Here the reader has already hit the ambiguity, and hiding really
+    # does resolve it — an ignored pane drops out of `live` above, so
+    # the remaining claude pane becomes the unique target.
     ccm_core.ccm_die(
         f"Multiple panes in {win_target} host a claude process "
         f"({', '.join(claude_panes)}) and the active pane is not one "
         "of them — the delivery target is ambiguous.\n"
         "  Switch focus to the pane that should receive the message, "
-        "then retry."
+        "then retry.\n"
+        "  If one of them is a sidekick rather than a teammate, hiding "
+        "it from ccm resolves this for good — start it with "
+        "`CCM_IGNORE=1`, or press `i` on it in the dashboard."
     )
 
 

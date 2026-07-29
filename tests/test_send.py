@@ -818,6 +818,62 @@ class TestDeliveryPaneResolution:
             for c in calls
         ), "literal payload leaked despite ambiguity refusal"
 
+    def test_ambiguity_refusal_offers_the_sidekick_escape_hatch(
+        self, monkeypatch, capsys
+    ):
+        """The refusal names CCM_IGNORE / the dashboard's `i` key.
+
+        This is the ONE place ccm volunteers hiding a pane, chosen
+        over a standing "this window has two claudes" hint precisely
+        because a standing hint also reaches Agent Teams users, for
+        whom hiding a teammate means losing its PERMIT. Deleting the
+        line would leave a reader who hits the ambiguity with only
+        "switch focus", which does not resolve it for good."""
+        project = self._make_project(state="IDLE")
+        ps = (
+            "61814 12077 61814 claude\n"
+            "61999 81413 61999 claude"
+        )
+        self._patch_resolution(monkeypatch, project, ps)
+        stub, _calls = self._tmux_stub(
+            "%70\t99999\t1\tzsh\n"
+            "%72\t81413\t0\tzsh\n"
+            "%51\t12077\t0\tzsh"
+        )
+        with patch("ccm_core.tmux_cmd", side_effect=stub), \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["blog", "hello"])
+        msg = capsys.readouterr().err
+        assert "CCM_IGNORE" in msg
+        assert "sidekick" in msg
+
+    def test_ignoring_one_of_two_claude_panes_resolves_ambiguity(
+        self, monkeypatch
+    ):
+        """The escape hatch the refusal advertises actually works.
+
+        Same window as the refusal case, except %72 carries
+        `@ccm_ignore`. It drops out of `live`, so a single claude
+        pane remains and delivery resolves to it. Without this the
+        advice above would be a promise the code does not keep."""
+        project = self._make_project(state="IDLE")
+        ps = (
+            "61814 12077 61814 claude\n"
+            "61999 81413 61999 claude"
+        )
+        self._patch_resolution(monkeypatch, project, ps)
+        stub, calls = self._tmux_stub(
+            "%70\t99999\t1\tzsh\t\n"
+            "%72\t81413\t0\tclaude\t1\n"
+            "%51\t12077\t0\tclaude\t"
+        )
+        with patch("ccm_core.tmux_cmd", side_effect=stub):
+            ccm_send.cmd_send(["blog", "hello"])
+        assert ("send-keys", "-t", "%51", "-l", "--", "hello") in calls
+        assert not any(
+            c[0] == "send-keys" and c[2] == "%72" for c in calls
+        ), "delivered to the ignored sidekick pane"
+
     def test_pane_enumeration_failure_falls_back_to_window(self, monkeypatch):
         """list-panes returning nothing (tmux hiccup) must not break
         the send — fall back to the window target, matching the

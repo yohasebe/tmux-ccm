@@ -119,7 +119,7 @@ class TestCmdDoctor:
                     hooks=True, hooks_log_warning="",
                     disable_warning="", managed_warning="",
                     cluster_warnings=(), projects=(),
-                    errors_log_lines=0):
+                    errors_log_lines=0, ps_text="", panes_cache=()):
         """Stub every external dependency cmd_doctor reads, returning
         controlled values so each test exercises a specific branch
         without standing up real tmux / claude state."""
@@ -140,6 +140,13 @@ class TestCmdDoctor:
         # tmux_cmd is called for show-option @ccm_session_id per
         # project; return empty for all of them.
         monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **kw: "")
+        # The multi-claude row reads the bulk panes cache plus a ps
+        # snapshot. Both would trip conftest's live-subprocess guard,
+        # and the scan swallows that failure — so without these stubs
+        # it would silently no-op in every doctor test.
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: ps_text)
+        monkeypatch.setattr(ccm_core, "_build_panes_cache",
+                            lambda: list(panes_cache))
         # Errors log
         log_path = tmp_path / "errors.log"
         if errors_log_lines:
@@ -215,6 +222,77 @@ class TestCmdDoctor:
         assert "alpha" in out and "BUSY" in out
         assert "beta" in out and "IDLE" in out
         assert "(2)" in out  # active projects (2)
+
+    # ── multi-claude windows row ────────────────────────────────────
+    # Two panes hosting claude in window 0:1 — shell pids 100 and 200,
+    # each given a claude child by `_PS_TWO_CLAUDE` so
+    # `find_claude_pid` resolves both. panes_cache entries are
+    # `_build_panes_cache`'s 7-tuples: (target, pid, pane_id,
+    # current_command, pane_active, pane_height, ignore).
+    _PS_TWO_CLAUDE = "900 100 900 claude\n901 200 901 claude"
+    _PANES_TWO_CLAUDE = (
+        ("0:1", "100", "%10", "claude", "1", "40", ""),
+        ("0:1", "200", "%11", "claude", "0", "40", ""),
+    )
+
+    def _one_project(self):
+        return ccm_core.Project(
+            win_target="0:1", win_idx="1", name="alpha",
+            directory="/p/a", state="BUSY",
+        )
+
+    def test_reports_windows_hosting_two_visible_claudes(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The informational row: state the fact, name both readings.
+
+        It must NOT read as "hide one" — the same window shape is a
+        normal Agent Teams split, where hiding a teammate costs the
+        reader that teammate's PERMIT."""
+        self._stub_world(
+            monkeypatch, tmp_path,
+            projects=(self._one_project(),),
+            ps_text=self._PS_TWO_CLAUDE,
+            panes_cache=self._PANES_TWO_CLAUDE,
+        )
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "multi-claude windows" in out
+        assert "alpha (2)" in out
+        assert "Agent Teams" in out, "the teammate reading is missing"
+        assert "CCM_IGNORE" in out, "the sidekick reading is missing"
+
+    def test_no_multi_claude_row_for_a_single_claude_window(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The ordinary one-claude window must stay silent — this row
+        exists to explain a surprise, not to annotate normality."""
+        self._stub_world(
+            monkeypatch, tmp_path,
+            projects=(self._one_project(),),
+            ps_text="900 100 900 claude",
+            panes_cache=(("0:1", "100", "%10", "claude", "1", "40", ""),),
+        )
+        ccm_commands.cmd_doctor()
+        assert "multi-claude" not in capsys.readouterr().out
+
+    def test_ignored_sidekick_pane_is_not_counted(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Once the sidekick is hidden the window has ONE visible
+        claude, so the row disappears. Counting ignored panes here
+        would keep nagging a reader who already acted on it."""
+        self._stub_world(
+            monkeypatch, tmp_path,
+            projects=(self._one_project(),),
+            ps_text=self._PS_TWO_CLAUDE,
+            panes_cache=(
+                ("0:1", "100", "%10", "claude", "1", "40", ""),
+                ("0:1", "200", "%11", "claude", "0", "40", "1"),
+            ),
+        )
+        ccm_commands.cmd_doctor()
+        assert "multi-claude" not in capsys.readouterr().out
 
     def test_reports_empty_errors_log(self, tmp_path, monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path)
