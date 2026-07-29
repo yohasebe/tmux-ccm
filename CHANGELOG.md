@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   was considered and dropped: it would have reached Agent Teams users too, for
   whom hiding a teammate costs that teammate's PERMIT.
 
+- A sidekick is now documented as answering only to the Claude session sharing
+  its window; to reach another project's sidekick you ask that project's Claude
+  to relay. `ccm send` has always drawn this line (a sidekick is dropped from
+  delivery so it cannot intercept a message), but the raw `tmux send-keys` path
+  had no stated boundary, and the guide's `ccm capture <project>` read as an
+  invitation to reach into someone else's window. The session next door knows
+  whether its peer is idle and which keys its TUI takes; from outside, both are
+  guesses — and two senders in one composer interleave into one garbled prompt.
+
 ### Fixed
 - The documented way to reach a sidekick pane could deliver nothing while
   looking like it worked. Chaining the body and `Enter` with `&&` lets the

@@ -596,7 +596,7 @@ You can run an agent CLI other than Claude Code in a split pane of a project win
 The conventions that make the relay work:
 
 - **Other agent → Claude**: the other agent runs `ccm send <project> "<message>"`. State gating applies (never into PERMIT), and the message lands as Claude's next turn — no one needs to watch.
-- **Claude → other agent**: check the peer is ready with `ccm capture <project>` first (ccm cannot state-gate a non-Claude pane), then send the body and the submit key separately:
+- **Claude → the sidekick in its own window**: check the peer is ready with `ccm capture <its own project>` first (ccm cannot state-gate a non-Claude pane), then send the body and the submit key separately:
   ```bash
   tmux send-keys -t <pane> -l -- "<message>"   # -l: literal, do not resolve as key names
   sleep 0.3                                    # let the composer settle (see below)
@@ -607,6 +607,7 @@ The conventions that make the relay work:
   **The pause before `Enter` is load-bearing, and it is the failure you are most likely to hit.** Chain the two `send-keys` with `&&` and the peer's TUI can still be digesting the inserted text when `Enter` arrives, and take it as a *newline* instead of a submit. The body then sits in the composer, unsent, looking exactly like a message that went through. Measured against Kimi K3: no gap fails every time, 0.3 s and 1 s both submit. Claude Code's own composer tolerates a zero gap — which is why `ccm send` needs no pause and why this bites only when the peer is something else.
 
   **So confirm the send, don't assume it.** `ccm capture` after `Enter` and look at the peer's input box: *empty* means submitted, *your text still sitting there* means it was not. Reading the visible text as proof of delivery is backwards — it is proof of the opposite. Verifying before `Enter` is even better, and is what `ccm send` does on its riskiest path (`lib/ccm_send.py`): check the body landed, retry the typing if not, and only then commit the `Enter`, so a retry can never double-submit.
+- **A sidekick answers to its own window.** `ccm send` reaches a project's *Claude* — never a sidekick, which is dropped from delivery precisely so it cannot intercept one. Keep the raw `tmux send-keys` path to the same boundary: type only into the sidekick sharing your window, and when you want something from another project's sidekick, ask that project's Claude to relay it. That session knows whether its peer is idle and which keys its TUI takes; you would be guessing at both from outside. It also stays aware of what its own sidekick is doing — reach in from elsewhere and two senders can land in one composer, interleaved into a single garbled prompt. This is a convention rather than something ccm enforces: tmux belongs to you, not to ccm.
 - **Report, don't poll**: neither side can observe the other's progress. When you finish a request, report back with `ccm send` — the reply arrives as a new turn on its own.
 - **Long results**: write them to a file and send a one-line pointer; this also sidesteps the differing newline keys.
 

@@ -616,10 +616,18 @@ Use the following commands to discover, inspect, and coordinate other projects:
   results, write a file and send a one-line pointer to it rather than
   pasting the body.
 
-  **Reaching a sidekick beside you.** `ccm send` only targets Claude
-  panes. A second, non-Claude agent CLI sharing your window is reached
-  with tmux directly — check it is at its prompt with `ccm capture`
-  first, then:
+  **Reaching a sidekick beside you — and only the one beside you.** A
+  sidekick belongs to the Claude session sharing its window, and that
+  session is the only one that should type into it. Want something from
+  another project's sidekick? Ask that project's Claude (`ccm send
+  <project> "…"`) instead of reaching into its window: it knows whether
+  its sidekick is free and which keys that TUI takes, and it stays aware
+  of what its own sidekick is doing. Two senders typing into one
+  composer interleave into a single garbled prompt.
+
+  `ccm send` only targets Claude panes, so the sidekick in YOUR window
+  is reached with tmux directly — check it is at its prompt with
+  `ccm capture <this project>` first, then:
 
       tmux send-keys -t <pane> -l -- "<message>"
       sleep 0.3
