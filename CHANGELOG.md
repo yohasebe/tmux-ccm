@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-30
+
+Sidekick support shipped in 0.8.0 as a badge and an ignore flag; this release
+is the part that makes it usable — the arrangement drawn and written down, and
+the one step in it that could silently drop a message put right.
+
 ### Added
 - A diagram for the sidekick arrangement (`assets/sidekick-model.svg`), embedded
   in the guide's relay section: which pane ccm tracks, which one it only shows a
@@ -17,7 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   against a running pane; the rest are the CLIs' binary names, which is safe in
   a way worth stating: a name that never appears simply never matches, while a
   correct guess starts working the day the tool is installed.
-
 - The guide and the sidekick diagram now say outright that the sidekick may be
   another Claude Code — the arrangement `CCM_IGNORE` was written for, which a
   list of third-party CLIs had come to read as excluding. What differs is only
@@ -28,7 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sidekick nobody hid — without recommending either. A standing dashboard hint
   was considered and dropped: it would have reached Agent Teams users too, for
   whom hiding a teammate costs that teammate's PERMIT.
-
 - A sidekick is now documented as answering only to the Claude session sharing
   its window; to reach another project's sidekick you ask that project's Claude
   to relay. `ccm send` has always drawn this line (a sidekick is dropped from
