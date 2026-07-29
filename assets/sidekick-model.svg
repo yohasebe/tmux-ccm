@@ -132,10 +132,16 @@
        says the second CLI is subordinate to the tracked one, which a
        list of products alone would not — an earlier draft read as though
        any of them could be the harness ccm manages. -->
-  <rect class="aside-box" x="466" y="176" width="318" height="100" rx="8"/>
+  <!-- Box width is set by the longest line, and both of the lines below
+       are near it. Sized for the widest plausible fallback face rather
+       than the mac one this was drawn on: the stack ends in generic
+       `sans-serif`, which on Linux resolves to something appreciably
+       wider than SF Pro, and a list that wraps out of its box would be
+       a worse fault than a few pixels of margin here. -->
+  <rect class="aside-box" x="466" y="176" width="338" height="100" rx="8"/>
   <text class="aside-key" x="482" y="198" dominant-baseline="central">sidekick</text>
   <text class="aside-text" x="482" y="219" dominant-baseline="central">a second agent CLI in a split pane</text>
-  <text class="aside-text" x="482" y="239" dominant-baseline="central">Codex CLI · Gemini CLI · Kimi Code</text>
+  <text class="aside-text" x="482" y="239" dominant-baseline="central">Codex CLI · Gemini CLI · Grok Build · Kimi Code</text>
   <!-- The definition above already admits a second Claude Code, but a list
        of other products reads as excluding it. One line closes that, and
        gives the ⊘ / ⚙ distinction a place to land before a reader running

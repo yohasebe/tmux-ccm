@@ -491,7 +491,10 @@ EXTERNAL_AGENT_COMMANDS = frozenset({
     # this is a debugging note rather than something to fix here.
     "codex",    # OpenAI Codex CLI
     "gemini",   # Google Gemini CLI
-    "grok",     # xAI Grok CLI
+    # The product is Grok Build; `grok` is what the official installer
+    # puts on PATH, which is what tmux reports. It also ships an `agent`
+    # symlink — too generic to allowlist, same call as `node` above.
+    "grok",     # xAI Grok Build
 })
 
 CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
