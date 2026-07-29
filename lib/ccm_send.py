@@ -196,33 +196,45 @@ _DELIVERY_SIG_MIN_LEN = 8
 
 
 def _message_signature(message):
-    """Return a distinctive substring of `message` to look for in
-    the target's input box, or None when the message is too short
-    to verify reliably. Uses the longest of the first few non-empty
-    lines (truncated) so wrapping / multi-line composers still match
-    on the leading row."""
+    """Return distinctive substrings of `message` to look for in the
+    target's input box, or None when the message is too short to
+    verify reliably.
+
+    Returns a tuple, and a match on ANY of them counts, because a
+    composer holding a long body shows only part of it. Claude's grows
+    upward and keeps the leading row; a body that outgrows the pane
+    scrolls instead and keeps the trailing row (observed 2026-07-30
+    against Kimi K3: a 30-line brief rendered as `↑ 24 more` with the
+    head cut off). Checking one end only would report "did not land"
+    for a message sitting right there, which on the --start path means
+    re-typing a body that already arrived and then refusing the send.
+    So take a candidate from each end."""
     candidates = [ln.strip() for ln in message.split("\n") if ln.strip()]
     if not candidates:
         return None
-    sig = max(candidates[:5], key=len)
-    if len(sig) < _DELIVERY_SIG_MIN_LEN:
-        return None
-    # Cap the signature so a long line that wraps in the composer
+    # Cap each signature so a long line that wraps in the composer
     # still matches on its visible head.
-    return sig[:40]
+    sigs = []
+    for group in (candidates[:5], candidates[-5:]):
+        sig = max(group, key=len)[:40]
+        if len(sig) >= _DELIVERY_SIG_MIN_LEN and sig not in sigs:
+            sigs.append(sig)
+    return tuple(sigs) or None
 
 
-def _body_landed(win_target, signature):
-    """True iff `signature` appears in the target pane's visible
-    text — i.e. the typed body reached the `❯` composer. Captures
-    the whole visible area (the composer grows upward for multi-line
-    input, so a tail-only read can miss the leading row)."""
+def _body_landed(win_target, signatures):
+    """True iff ANY of `signatures` appears in the target pane's
+    visible text — i.e. the typed body reached the `❯` composer.
+    Captures the whole visible area (the composer grows upward for
+    multi-line input, so a tail-only read can miss the leading row).
+    See `_message_signature` for why either end may be the one on
+    screen."""
     cap = ccm_core.tmux_cmd("capture-pane", "-t", win_target, "-p") or ""
     if not cap.strip():
         cap = ccm_core.tmux_cmd(
             "capture-pane", "-a", "-t", win_target, "-p"
         ) or ""
-    return signature in cap
+    return any(sig in cap for sig in signatures)
 
 
 def _type_body(win_target, lines):

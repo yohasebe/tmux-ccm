@@ -294,6 +294,48 @@ class TestCmdDoctor:
         ccm_commands.cmd_doctor()
         assert "multi-claude" not in capsys.readouterr().out
 
+    def test_multi_claude_scan_failure_is_reported_not_dropped(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """When the scan itself fails, say so. A check that vanishes
+        silently reads as a check that passed, and doctor is the
+        command you run when something is already wrong."""
+        self._stub_world(monkeypatch, tmp_path,
+                         projects=(self._one_project(),))
+        monkeypatch.setattr(ccm_core, "_build_panes_cache",
+                            lambda: (_ for _ in ()).throw(OSError("tmux gone")))
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "multi-claude windows" in out
+        assert "not checked" in out
+
+    def test_empty_ps_output_does_not_pass_the_scan_guard(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """`"".split("\\n")` is `[""]`, which is truthy — so an empty ps
+        snapshot used to wave the guard through with no data.
+
+        Asserting only "no row appears" would pass either way, since a
+        scan over `[""]` resolves no claude and prints nothing anyway.
+        So assert the scan is not entered at all: with no process list
+        there is nothing to resolve panes against, and the guard exists
+        to say so."""
+        scanned = []
+        monkeypatch.setattr(
+            ccm_pane_state, "find_claude_pid",
+            lambda pid, ps: scanned.append(pid),
+        )
+        self._stub_world(
+            monkeypatch, tmp_path,
+            projects=(self._one_project(),),
+            ps_text="",
+            panes_cache=self._PANES_TWO_CLAUDE,
+        )
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert scanned == [], f"scanned panes with no ps data: {scanned}"
+        assert "multi-claude" not in out
+
     def test_reports_empty_errors_log(self, tmp_path, monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path)
         ccm_commands.cmd_doctor()

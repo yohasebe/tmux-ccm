@@ -971,11 +971,14 @@ def cmd_doctor():
     # `_resolve_ignored_panes` already makes for the `⊘` count, and the
     # same reason: this is a whole-inventory question, so ask it once.
     multi_claude = []
+    scan_failed = False
     try:
-        doctor_ps = ccm_core.ps_snapshot().strip().split("\n")
+        # `"".split("\n")` is `[""]` — truthy. Filter so the guard
+        # below means what it says instead of waving empty data through.
+        doctor_ps = [ln for ln in ccm_core.ps_snapshot().split("\n") if ln.strip()]
         panes_cache = ccm_core._build_panes_cache()
     except Exception:
-        doctor_ps, panes_cache = [], []
+        doctor_ps, panes_cache, scan_failed = [], [], True
     for p in projects if (doctor_ps and panes_cache) else ():
         visible = sum(
             1 for pc in panes_cache
@@ -991,6 +994,12 @@ def cmd_doctor():
             "each teammate's PERMIT has to stay visible. If one is a "
             "sidekick instead, `CCM_IGNORE=1` or the dashboard's `i` "
             "keeps it out of the window's state.")
+    elif scan_failed:
+        # A silently missing check reads as a passed check. doctor is
+        # the command you run when something is already wrong, so say
+        # which question went unanswered rather than dropping the row.
+        row(WARN, "multi-claude windows",
+            "not checked — reading panes or the process list failed")
 
     section("Silent-exception log")
     log_count = 0

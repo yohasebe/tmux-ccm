@@ -580,6 +580,47 @@ class TestCmdSend:
         # The committing Enter (bare, no payload) was sent.
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls
 
+    # A long body whose head has scrolled out of the composer. Observed
+    # 2026-07-30 against Kimi K3: a ~30-line brief rendered as
+    # `↑ 24 more` with only the trailing lines on screen.
+    _LONG_MSG = "\n".join(
+        [f"opening line about the region-shade task, part {i}" for i in range(3)]
+        + [f"middle line {i} of the same brief" for i in range(20)]
+        + ["closing instruction: reply with ccm send when done"]
+    )
+
+    def test_start_verifies_against_the_tail_when_head_scrolled_off(
+        self, monkeypatch
+    ):
+        """A composer showing only the END of a long body still counts
+        as landed.
+
+        Claude's composer grows upward and keeps the leading row, but a
+        body that outgrows the pane scrolls and keeps the trailing row
+        instead. Matching the head alone would report "did not land"
+        for a message sitting right there — and on this path that means
+        re-typing a body that already arrived, then refusing the send."""
+        tail = "closing instruction: reply with ccm send when done"
+        send_calls, raised = self._run_start_with_captures(
+            monkeypatch, self._LONG_MSG,
+            capture_responses=[f"↑ 24 more\n  {tail}"],
+        )
+        assert not raised, "a visible tail must satisfy verification"
+        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+
+    def test_start_verifies_against_the_head_when_tail_scrolled_off(
+        self, monkeypatch
+    ):
+        """The mirror case, so fixing the tail did not trade away the
+        head: a composer showing only the opening rows also counts."""
+        send_calls, raised = self._run_start_with_captures(
+            monkeypatch, self._LONG_MSG,
+            capture_responses=[
+                "❯ opening line about the region-shade task, part 0"],
+        )
+        assert not raised, "a visible head must satisfy verification"
+        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+
     def test_start_premature_idle_refuses_without_false_sent(self, monkeypatch):
         """Premature-IDLE bug (2026-06-24): the composer shows but the
         input handler eats the keystrokes, so the body never lands.

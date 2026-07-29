@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `ccm send --start` no longer refuses a long message that did arrive. Delivery
+  verification looked for the body's opening line, which holds for Claude's
+  composer (it grows upward) but not for one that scrolls a long body and keeps
+  only the trailing rows — observed against Kimi K3, a ~30-line brief rendering
+  as `↑ 24 more`. A signature from each end is now checked and either satisfies
+  it, so the retry path no longer re-types a body already on screen and then
+  declines a send that had in fact landed.
+- `ccm doctor`'s multi-claude scan reports itself when it cannot run, instead of
+  omitting the row — in a diagnostic command a check that vanishes silently
+  reads as a check that passed. Its guard against empty input also now works:
+  `"".split("\n")` is `[""]`, truthy, so an absent process list used to enter
+  the scan rather than skip it.
+
 ## [0.8.1] - 2026-07-30
 
 Sidekick support shipped in 0.8.0 as a badge and an ignore flag; this release
