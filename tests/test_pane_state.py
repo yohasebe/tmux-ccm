@@ -212,6 +212,44 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_with_hour_component(self, mock_tmux):
+        """Past the hour mark the elapsed gains an `h` unit —
+        "(3h 11m 16s · ↓ 8.8k tokens)". The minutes-only pattern stopped
+        matching there, and since an accept-edits pane keeps `❯` on
+        screen while a tool runs, raw fell to IDLE — taking with it the
+        only promotion that rescues a resolved-but-unreported
+        permission (`raw == "BUSY"` in ccm_activity). Observed
+        2026-07-30 on ccm-dev: a permission approved within ~6 s left
+        the dashboard showing `⚠ PERMIT` for the remaining ~110 s of a
+        `bats` run. Verbatim shape from that incident."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "bats")
+        )
+        mock_tmux.return_value = (
+            "✳ Waddling… (3h 11m 16s · ↓ 8.8k tokens)\n"
+            "❯ \n"
+            "  ~/code/ccm  main  Opus 5  ctx ███░ 27%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_hours_without_minutes(self, mock_tmux):
+        """Each unit is independently optional: nothing promises Claude
+        Code prints a zero-valued minutes field, so `1h 4s` must match
+        as well. Guards the fix against being written as a rigid
+        `h m s` triple."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
+        )
+        mock_tmux.return_value = (
+            "✻ Still going… (1h 4s · ↑ 12.5k tokens)\n"
+            "❯ \n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
     def test_idle_when_prompt_visible_and_no_spinner(self, mock_tmux):
         """The other side of the spinner fix: a visible `❯` with NO
         spinner footer is a genuine idle prompt (the user can type).

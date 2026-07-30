@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- A turn running past the hour mark went invisible to raw detection. The
+  active-work spinner is the one piece of direct on-screen evidence that Claude
+  is working, and its elapsed gains an `h` unit past 60 minutes —
+  `(3h 11m 16s · ↓ 8.8k tokens)` — which the minutes-only pattern did not match.
+  Because an accept-edits pane keeps `❯` on screen while a tool runs, raw then
+  fell to IDLE, taking with it the promotion that rescues a permission already
+  approved (Claude Code fires `PermissionRequest` but nothing on resolution, so
+  the approved permit stays the latest event until the tool finishes). Observed
+  on ccm-dev: a permission granted within ~6 s left the dashboard on `⚠ PERMIT`
+  for the remaining ~110 s of a `bats` run, with no user action pending. Each
+  unit is now independently optional, since nothing promises Claude Code prints
+  a zero-valued field. Same lesson as the sub-1k token count in 0.6.0 — an
+  assumed shape for a string that upstream is free to reformat.
 - `ccm send --start` no longer refuses a long message that did arrive. Delivery
   verification looked for the body's opening line, which holds for Claude's
   composer (it grows upward) but not for one that scrolls a long body and keeps

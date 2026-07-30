@@ -177,14 +177,22 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # AskUserQuestion menu waits do not. See memory
 # project_false_idle_long_tool.md.
 #
-# Elapsed forms: "59s" or "2m 2s". Token forms: "8.0k", "8k", or —
-# below 1000 — a bare count with NO k suffix ("557 tokens"; observed
-# 2026-07-22, wp2txt: a fresh turn streamed for 1m39s showing
+# Elapsed forms: "59s", "2m 2s", or "3h 11m 16s". Token forms: "8.0k",
+# "8k", or — below 1000 — a bare count with NO k suffix ("557 tokens";
+# observed 2026-07-22, wp2txt: a fresh turn streamed for 1m39s showing
 # "(1m 39s · ↓ 557 tokens)" and the then-mandatory `k` made the
 # spinner invisible to raw detection, so an accept-edits pane sat at
 # false IDLE through the whole sub-1k window).
+#
+# The hour component is the same lesson a second time (observed
+# 2026-07-30, ccm-dev: a turn past the hour mark rendered
+# "(3h 11m 16s · ↓ 8.8k tokens)" and the minutes-only form stopped
+# matching, so the ONE piece of direct on-screen evidence that Claude
+# is working went dark for the rest of that turn). Each unit is
+# independently optional rather than a fixed "h m s" shape, because
+# nothing guarantees Claude Code keeps printing a zero-valued unit.
 PATTERN_ACTIVE_SPINNER = re.compile(
-    r"\((?:\d+m\s+)?\d+s\s*·\s*[↑↓]\s*[\d.]+k?\s+tokens\)"
+    r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·\s*[↑↓]\s*[\d.]+k?\s+tokens\)"
 )
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:
