@@ -31,7 +31,7 @@ import re
 
 # Version string. Keep in sync with the `CCM_VERSION` constant in
 # the bash `ccm` wrapper and with CHANGELOG.md's top entry.
-CCM_VERSION = "0.8.1"
+CCM_VERSION = "0.8.2"
 
 
 # ─── Runtime paths ───
@@ -284,8 +284,16 @@ PATTERN_PERMIT_FOOTER = re.compile(
 # We match these against the full captured tail, not just the
 # footer line, because the footer alone is ambiguous: both
 # session-resume and /model use `Enter to confirm · Esc to …`.
+# The age expression takes whatever units it needs — `45m old` under the
+# hour, `3h 11m old` over it, `2d 4h old` for a session resumed days
+# later, which `--continue` invites. Spelled as a repeated unit rather
+# than a fixed pair after the same mistake was found in
+# PATTERN_ACTIVE_SPINNER (2026-07-30): requiring `\d+h \d+m` silently
+# excluded every session younger than an hour. Days are worth allowing
+# here even though the spinner ignores them — a single turn does not
+# span days, but a resumable session easily does.
 PATTERN_RESUME_MODAL = re.compile(
-    r"This session is \d+h \d+m old"
+    r"This session is (?:\d+[dhm]\s+)+old"
     r"|Resume from summary \(recommended\)"
 )
 PATTERN_PERMISSION_DIALOG = re.compile(

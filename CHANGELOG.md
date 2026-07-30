@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-30
+
+Three detection fixes, all of them cases where ccm looked confident and was
+wrong: a working session reported as needing you, and a delivered message
+reported as lost.
+
 ### Fixed
 - A turn running past the hour mark went invisible to raw detection. The
   active-work spinner is the one piece of direct on-screen evidence that Claude
@@ -21,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   unit is now independently optional, since nothing promises Claude Code prints
   a zero-valued field. Same lesson as the sub-1k token count in 0.6.0 — an
   assumed shape for a string that upstream is free to reformat.
+- The session-resume modal went unrecognised for any session under an hour. Its
+  age line was matched as a fixed `\d+h \d+m` pair, so `This session is 45m
+  old` missed — and `2d 4h old`, which `--continue` invites, missed too. Found
+  by the same review that caught the spinner, and it is the same mistake; both
+  now spell the age as repeated units rather than a fixed shape. Impact was
+  limited because the picker's recommended-summary line matches independently,
+  which is why it survived this long.
 - `ccm send --start` no longer refuses a long message that did arrive. Delivery
   verification looked for the body's opening line, which holds for Claude's
   composer (it grows upward) but not for one that scrolls a long body and keeps

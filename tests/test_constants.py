@@ -72,6 +72,24 @@ class TestClassifyPermitModal:
         assert cat == "session-resume"
         assert "Resume" in guidance or "resume" in guidance
 
+    @pytest.mark.parametrize("age", ["45m", "2h 15m", "2d 4h", "1d"])
+    def test_session_resume_age_takes_any_units(self, age):
+        """The age line carries whatever units it needs. Requiring a
+        fixed `\\d+h \\d+m` pair excluded every session under the hour,
+        and `--continue` also resumes ones days old. Found while fixing
+        the same mistake in PATTERN_ACTIVE_SPINNER (2026-07-30), where
+        an hours component silently stopped the match.
+
+        The age line alone must classify: the recommended-summary line
+        that would otherwise carry it is dropped here on purpose."""
+        text = (
+            f"This session is {age} old and 43k tokens.\n"
+            "1. Resume where it left off\n"
+            "Enter to confirm · Esc to cancel"
+        )
+        cat, _guidance = ccm_constants.classify_permit_modal(text)
+        assert cat == "session-resume"
+
     def test_permission_request_tab_to_amend(self):
         text = (
             "Do you want to proceed?\n"
