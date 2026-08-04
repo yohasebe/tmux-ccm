@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- ccm's hook scripts now reject payloads from foreign agent harnesses. Grok
+  Build reads `~/.claude/settings.json` hooks by default for Claude Code
+  compatibility, and its payloads parse well enough to slip through — the
+  camelCase `sessionId` is accepted deliberately, so a Grok sidekick would have
+  written BUSY signals under its own session id, stamped `@ccm_prev_state`, and
+  fired completion notifications for turns no Claude ran. Every event carries
+  `workspaceRoot`, which Claude Code never sends, so that field now gates
+  `ccm_hook_init` before any artefact is written.
+
 ### Changed
 - Verified against Claude Code v2.1.221. Nothing in ccm needed changing: the
   four detection patterns matched the live pane unaltered, the hook event

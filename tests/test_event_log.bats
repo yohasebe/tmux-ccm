@@ -138,6 +138,32 @@ teardown() {
     [[ "$status" -eq 0 ]]
 }
 
+# ─── Foreign-harness gate (Grok Build reads ~/.claude/settings.json) ───
+
+@test "hook_init: Grok Build payload is rejected (workspaceRoot discriminator)" {
+    # Verbatim field shape from grok-build user-guide/10-hooks.md: the
+    # camelCase sessionId would pass the dual-case extraction below,
+    # so without the gate this payload would key signals and events
+    # under a Grok session id.
+    run ccm_hook_init <<< '{"hookEventName":"pre_tool_use","sessionId":"abc-123","cwd":"/x","workspaceRoot":"/x","permissionMode":"default","timestamp":"2026-08-05T00:00:00Z"}'
+    [[ "$status" -eq 1 ]]
+}
+
+@test "on-pre-tool-use.sh: Grok payload writes no signal and no event log" {
+    printf '%s' '{"hookEventName":"pre_tool_use","sessionId":"abc-123","cwd":"/x/test-project","workspaceRoot":"/x/test-project"}' \
+        | bash "${CCM_ROOT}/hooks/on-pre-tool-use.sh"
+    [[ ! -f "${HOOK_DIR}/abc-123" ]]
+    [[ ! -f "${HOOK_DIR}/abc-123.events.jsonl" ]]
+}
+
+@test "hook_init: workspaceRoot gate does not reject Claude payloads" {
+    # A Claude payload never carries workspaceRoot; assert the gate is
+    # keyed on that field and not on any coincidental shape, by running
+    # the richest Claude-form payload we consume.
+    run ccm_hook_init <<< '{"session_id":"'"$TEST_SESSION_ID"'","cwd":"/x","permission_mode":"acceptEdits","hook_event_name":"PreToolUse"}'
+    [[ "$status" -eq 0 ]]
+}
+
 @test "on-pre-tool-use.sh: CCM_IGNORE'd session writes no event log" {
     export TMUX_PANE="%5"
     printf '%s' "$(_with_session '{"hook_event_name":"PreToolUse","cwd":"/x/test-project"}')" \

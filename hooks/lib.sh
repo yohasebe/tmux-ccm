@@ -65,6 +65,21 @@ ccm_hook_init() {
         _ccm_mark_ignored_pane
     fi
 
+    # Foreign-harness gate. Grok Build reads `~/.claude/settings.json`
+    # hooks BY DEFAULT for Claude Code compatibility (grok-build docs,
+    # user-guide/10-hooks.md), so these scripts can be invoked by a
+    # non-Claude agent with a payload that parses well enough to slip
+    # through — camelCase `sessionId` is accepted below on purpose.
+    # Left unguarded, a Grok sidekick would write BUSY signals under
+    # its own session id, stamp `@ccm_prev_state` through the fast-path
+    # spawn, and fire COMPLETED notifications for turns no Claude ran.
+    # `workspaceRoot` is the discriminator: Grok sends it on every
+    # event, Claude Code sends it on none. (ringi adopted the same
+    # test for the same exposure, their commit 9813d68.)
+    if printf '%s' "$INPUT" | jq -e 'has("workspaceRoot")' >/dev/null 2>&1; then
+        return 1
+    fi
+
     # session_id: the primary KEY. Try snake_case then camelCase —
     # upstream payload schema uses both depending on the field.
     SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || \
