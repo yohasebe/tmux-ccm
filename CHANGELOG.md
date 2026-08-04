@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Verified against Claude Code v2.1.221. Nothing in ccm needed changing: the
+  four detection patterns matched the live pane unaltered, the hook event
+  sequence was unchanged, and the permission-request escalation timing held.
+  The release does move permission checking — Bash commands hidden in `[[ ]]`
+  conditionals now prompt, and an auto-mode check left pending across a mode
+  switch re-prompts rather than applying the stale result — so sessions may see
+  more permission prompts than before, which ccm reports the same way.
+
 ## [0.8.2] - 2026-07-30
 
 Three detection fixes, all of them cases where ccm looked confident and was
