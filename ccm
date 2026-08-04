@@ -80,6 +80,8 @@ Usage:
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
   ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
+  ccm setup-sidekick-hooks <agent>  Install attention hooks into a sidekick CLI's config (kimi)
+  ccm remove-sidekick-hooks <agent>  Remove the sidekick attention hooks
   ccm debug trace <name> [interval]  Live state-detection trace (read-only; Ctrl-C to stop)
   ccm errors [--clear]              View / clear the silent-exception log
   ccm reset <name>                  Clear stuck runtime state for a project (last-resort recovery)
@@ -236,6 +238,18 @@ case "${1:-help}" in
         ;;
     remove-hooks)
         ccm_remove_hooks
+        ;;
+    setup-sidekick-hooks)
+        # Install ccm's attention adapter into a sidekick CLI's own
+        # hook config (Kimi), so it self-reports "waiting on a
+        # decision" — the ⚙ badge turns PERMIT-yellow and a desktop
+        # notification fires.
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" setup-sidekick-hooks "$@"
+        ;;
+    remove-sidekick-hooks)
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" remove-sidekick-hooks "$@"
         ;;
     setup-claude-md)
         ccm_setup_claude_md

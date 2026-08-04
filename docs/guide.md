@@ -615,6 +615,23 @@ The conventions that make the relay work:
 
 **The sidekick can be another Claude Code.** Nothing above depends on the peer being a different product — a second `claude` in the split pane relays exactly the same way. What changes is how ccm sees it: a second Claude Code is a session ccm *would* track, so you hide it deliberately with `CCM_IGNORE` (see the section above) and it carries `⊘` rather than the `⚙` a non-Claude CLI gets. The directions are unchanged: an ignored pane is not a `ccm send` target either, so reaching it still means `ccm capture` to check, then `tmux send-keys`. In practice it is the easier pairing — the submit and newline keys match, and the peer already knows the conventions from your `CLAUDE.md`.
 
+## Sidekick attention: knowing when it needs you
+
+A sidekick's approval dialog is easy to miss: ccm deliberately reads no state from a non-Claude pane, so a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `⚙kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships:
+
+```bash
+ccm setup-sidekick-hooks kimi     # writes [[hooks]] entries into ~/.kimi-code/config.toml
+ccm remove-sidekick-hooks kimi    # removes them (backup kept either way)
+```
+
+Takes effect in **new** Kimi sessions only — Kimi loads its config at session start, so restart the sidekick pane's `kimi` once after installing.
+
+From then on, when the sidekick hits a permission prompt its hook drops an attention marker keyed to its tmux pane, and ccm reacts on every surface at once: the `⚙kimi` badge turns PERMIT-yellow on the dashboard, `ccm status` and the status bar, and a desktop notification fires with the tool it is asking about. When you (or the buddy Claude) answer the dialog, the resolution hook clears the wait and the badge dims again. The window's own state never changes — PERMIT still means *Claude* needs you; the yellow gear means the *sidekick* does.
+
+Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-sidekick-attention off` (markers are still written when off — only ccm's display and notification go quiet, so other local consumers of the marker directory keep working).
+
+Currently installable for **Kimi** (verified live: its hook set has both `PermissionRequest` and `PermissionResult`, so waits open and close precisely). Gemini CLI and Grok Build have hook systems whose permission events are not yet verified; Codex CLI has no approval-time hook at all ([openai/codex#11808](https://github.com/openai/codex/issues/11808)) and stays presence-only until upstream adds one.
+
 ## Using with agent view (background sessions)
 
 Claude Code 2.1.139 introduced an [agent view](https://claude.com/blog/agent-view-in-claude-code): `claude agents` (TUI), `claude --bg <prompt>` (background dispatch), and `claude attach <short>` (foreground attach). All three run sessions as workers under a per-user supervisor daemon, completely outside tmux. ccm reads the daemon's state and surfaces those sessions in a read-only dashboard section so a single view shows both ccm-managed project windows and out-of-tmux background sessions.

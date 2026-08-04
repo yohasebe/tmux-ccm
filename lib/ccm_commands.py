@@ -1233,3 +1233,130 @@ def cmd_debug_trace(project_match, interval=0.3):
         remaining = interval - elapsed
         if remaining > 0:
             _time.sleep(remaining)
+
+
+# ─── Sidekick attention hooks (per-CLI adapters) ───
+
+# Registry of sidekick CLIs whose own hook system can run ccm's
+# attention adapter. Each entry knows where the CLI's hook config
+# lives and how to render the managed block. Only measured
+# integrations belong here: Kimi's was verified live (kimi 0.31.1,
+# 2026-08-05 — PermissionRequest/PermissionResult fire, $TMUX_PANE is
+# inherited, config loads at session start). Gemini / Grok Build have
+# hook systems but their permission-wait events are unverified;
+# Codex has no approval-time hook at all (openai/codex#11808).
+_SIDEKICK_BLOCK_BEGIN = "# ccm:sidekick-attention begin (managed by ccm)"
+_SIDEKICK_BLOCK_END = "# ccm:sidekick-attention end"
+
+# Events that open a wait vs. events that end one — the adapter
+# script dispatches on the payload's hook_event_name, so every event
+# routes to the same command line.
+_KIMI_ATTENTION_EVENTS = (
+    "PermissionRequest", "PermissionResult", "Interrupt",
+    "Stop", "StopFailure", "SessionEnd",
+)
+
+
+def _kimi_config_path():
+    return os.environ.get(
+        "CCM_KIMI_CONFIG",
+        os.path.expanduser("~/.kimi-code/config.toml"))
+
+
+def _kimi_attention_block():
+    """The managed `[[hooks]]` block for Kimi's config.toml.
+
+    Kimi's TOML hook parser is strict — an unknown field inside a
+    `[[hooks]]` entry fails the WHOLE config load (measured constraint)
+    — so entries carry exactly `event` / `command` / `timeout` and
+    nothing else. The script path is single-quoted inside the TOML
+    string so a plugin directory containing spaces survives the shell."""
+    script = os.path.join(ccm_core.CCM_ROOT, "hooks", "sidekick-attention.sh")
+    lines = [_SIDEKICK_BLOCK_BEGIN]
+    for event in _KIMI_ATTENTION_EVENTS:
+        lines += [
+            "[[hooks]]",
+            f'event = "{event}"',
+            f"command = \"'{script}' kimi\"",
+            "timeout = 5",
+        ]
+    lines.append(_SIDEKICK_BLOCK_END)
+    return "\n".join(lines) + "\n"
+
+
+def _strip_sidekick_block(text):
+    """Remove a previously-installed managed block (idempotency)."""
+    out, skipping = [], False
+    for line in text.split("\n"):
+        if line.strip() == _SIDEKICK_BLOCK_BEGIN:
+            skipping = True
+            continue
+        if line.strip() == _SIDEKICK_BLOCK_END:
+            skipping = False
+            continue
+        if not skipping:
+            out.append(line)
+    # Collapse the blank-line seam the removal leaves behind.
+    text = "\n".join(out)
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text
+
+
+def cmd_setup_sidekick_hooks(agent):
+    """`ccm setup-sidekick-hooks <agent>` — install ccm's attention
+    adapter into the sidekick CLI's own hook config, so the sidekick
+    self-reports "waiting on a decision" without ccm parsing its
+    screen."""
+    if agent != "kimi":
+        ccm_core.ccm_die(
+            f"unsupported sidekick agent: {agent!r}. Supported: kimi.\n"
+            "  Gemini and Grok Build have hook systems but their "
+            "permission-wait events are not yet verified; Codex has no "
+            "approval-time hook (openai/codex#11808).")
+    config = _kimi_config_path()
+    if not os.path.isdir(os.path.dirname(config)):
+        ccm_core.ccm_die(
+            f"{os.path.dirname(config)} not found — is Kimi Code "
+            "installed? (Its installer creates the directory.)")
+    text = ""
+    if os.path.exists(config):
+        with open(config, encoding="utf-8") as f:
+            text = f.read()
+        with open(config + ".ccm-bak", "w", encoding="utf-8") as f:
+            f.write(text)
+    text = _strip_sidekick_block(text)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    if text.strip():
+        text += "\n"
+    text += _kimi_attention_block()
+    with open(config, "w", encoding="utf-8") as f:
+        f.write(text)
+    ccm_core.ccm_info(f"attention hooks installed into {config}")
+    print("  Takes effect in NEW Kimi sessions only — the config is "
+          "loaded at session start,\n  so restart the sidekick pane's "
+          "kimi to activate. Backup: config.toml.ccm-bak")
+
+
+def cmd_remove_sidekick_hooks(agent):
+    """`ccm remove-sidekick-hooks <agent>` — uninstall the adapter."""
+    if agent != "kimi":
+        ccm_core.ccm_die(
+            f"unsupported sidekick agent: {agent!r}. Supported: kimi.")
+    config = _kimi_config_path()
+    if not os.path.exists(config):
+        ccm_core.ccm_info("nothing to remove (no Kimi config found)")
+        return
+    with open(config, encoding="utf-8") as f:
+        text = f.read()
+    if _SIDEKICK_BLOCK_BEGIN not in text:
+        ccm_core.ccm_info("nothing to remove (no ccm block in config)")
+        return
+    with open(config + ".ccm-bak", "w", encoding="utf-8") as f:
+        f.write(text)
+    with open(config, "w", encoding="utf-8") as f:
+        f.write(_strip_sidekick_block(text))
+    ccm_core.ccm_info(f"attention hooks removed from {config}")
+    print("  Takes effect in NEW Kimi sessions (running ones loaded "
+          "the old config).")

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Sidekick attention: a sidekick blocked on a permission dialog is now visible
+  without anyone watching its pane. `ccm setup-sidekick-hooks kimi` installs
+  ccm's adapter into Kimi's own `[[hooks]]` config; when Kimi raises a
+  permission prompt, the hook writes a pane-keyed attention marker, the
+  `⚙kimi` badge turns PERMIT-yellow on the dashboard / `ccm status` / status
+  bar, and a desktop notification names the tool being asked about. Resolution
+  (approve, deny, Esc, turn end) clears it. The window's own state never
+  changes — PERMIT still means Claude needs you; the yellow gear means the
+  sidekick does. Toggle with `w` in the dashboard or
+  `@ccm-sidekick-attention off`.
+
+  The marker is a contract, not an implementation detail: writers overwrite
+  `waiting` → `resolved` rather than deleting (a consumer that sees `resolved`
+  KNOWS the wait ended; a vanished file could be anything), and ccm's reader
+  is the single garbage collector. Fields were agreed with ringi, which plans
+  to consume the same directory for phone/watch delivery.
+
+  Detection is hook-self-report only, by design. Parsing each product's
+  screen was rejected after 0.8.2 shipped three fixes for exactly that class
+  of assumption against ONE product's strings. Kimi is the first supported
+  agent because it was the first verified live — its hook set has both
+  `PermissionRequest` and `PermissionResult`, a resolution event Claude Code
+  itself lacks. Gemini and Grok Build wait on verification; Codex has no
+  approval-time hook (openai/codex#11808).
+
 ### Fixed
 - ccm's hook scripts now reject payloads from foreign agent harnesses. Grok
   Build reads `~/.claude/settings.json` hooks by default for Claude Code

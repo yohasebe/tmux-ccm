@@ -616,6 +616,23 @@ Claude Code 以外のエージェント CLI を、プロジェクトウィンド
 
 **サイドキックは別の Claude Code でも構いません。** 上記のどれも相手が別製品であることに依存していません。split ペインの2つ目の `claude` でも往復の仕方は同じです。変わるのは ccm から見た扱いだけで、2つ目の Claude Code は ccm が**追跡してしまう**セッションなので、`CCM_IGNORE` で意図的に隠すことになり（上節参照）、印も非 Claude CLI の `⚙` ではなく `⊘` になります。方向ごとの手順は変わりません。無視されたペインは `ccm send` の宛先にもならないため、そちらへ届けるには `ccm capture` で確認してから `tmux send-keys` を使います。実際にはこちらの組み合わせの方が扱いやすく、送信キーと改行キーが共通で、相手も `CLAUDE.md` 経由で規約を既に知っています。
 
+## サイドキックの注意喚起: いつあなたを必要としているかを知る
+
+サイドキックの承認ダイアログは見落としやすいものです。ccm は非 Claude ペインから意図的に状態を読まないので、*「Run this command?」* でブロックされた Kimi も、作業中の Kimi も、見た目は同じ dim の `⚙kimi` です。各製品の画面をパースする代わりに（書式は CLI ごとに違い、予告なく変わります）、ccm はサイドキック**自身に報告させます** — そのベンダー自身が出荷している hook 機構を通じて:
+
+```bash
+ccm setup-sidekick-hooks kimi     # ~/.kimi-code/config.toml に [[hooks]] エントリを書き込む
+ccm remove-sidekick-hooks kimi    # 削除する（どちらもバックアップを残す）
+```
+
+反映されるのは**新しい** Kimi セッションからです — Kimi は起動時に config をロードするため、インストール後にサイドキックペインの `kimi` を一度再起動してください。
+
+以後、サイドキックが許可プロンプトに突き当たると、その hook が tmux ペインをキーにした attention marker を書き、ccm は全ての面で同時に反応します: `⚙kimi` バッジがダッシュボード・`ccm status`・ステータスバーで PERMIT の黄色に変わり、何のツールについて尋ねているかを載せたデスクトップ通知が飛びます。あなた（または相棒の Claude）がダイアログに答えると、解決側の hook が待ちを閉じ、バッジは dim に戻ります。ウィンドウ自体の状態は一切変わりません — PERMIT は今までどおり *Claude* があなたを必要としている印で、黄色い歯車は*サイドキック*がそうである印です。
+
+切り替えはダッシュボードの `w` キー、恒久的には `tmux set -g @ccm-sidekick-attention off` で（off でも marker は書かれ続けます — 静かになるのは ccm の表示と通知だけなので、marker ディレクトリを読む他のローカルツールは動き続けます）。
+
+現在インストールできるのは **Kimi** です（実機検証済み: hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます）。Gemini CLI と Grok Build にも hook 機構はありますが許可イベントが未検証で、Codex CLI には承認時の hook 自体がなく（[openai/codex#11808](https://github.com/openai/codex/issues/11808)）、upstream が追加するまで presence 表示のままです。
+
 ## agent view（バックグラウンドセッション）との併用
 
 Claude Code 2.1.139 で導入された [agent view](https://claude.com/blog/agent-view-in-claude-code) は、`claude agents`（TUI）/ `claude --bg <prompt>`（バックグラウンドディスパッチ）/ `claude attach <short>`（フォアグラウンドアタッチ）の 3 つの入口を持ちます。これらはすべてユーザーごとの supervisor daemon の下で動作し、tmux の外側にいます。ccm はこの daemon の状態を読んでダッシュボードに読み取り専用セクションとして表示するため、tmux 管理下のプロジェクトと daemon 管理下のバックグラウンドセッションを 1 つのビューで俯瞰できます。

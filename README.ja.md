@@ -335,6 +335,8 @@ ccm setup-hooks                   Claude Codeフックをインストール（�
 ccm remove-hooks                  Claude Codeフックをアンインストール
 ccm setup-claude-md               ~/.claude/CLAUDE.mdにccmセクションを追加
 ccm remove-claude-md              ~/.claude/CLAUDE.mdからccmセクションを削除
+ccm setup-sidekick-hooks <agent>  サイドキックCLIの設定にattentionフックを導入 (kimi)
+ccm remove-sidekick-hooks <agent>  サイドキックattentionフックを削除
 ccm statusline                    1行ステータス出力（tmuxステータスバー用）
 ccm inject-status                 tmuxステータスバー更新（内部使用）
 ccm debug trace <name> [interval] 状態検出のライブトレース（読み取り専用、Ctrl-Cで終了）

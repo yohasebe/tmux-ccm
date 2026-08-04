@@ -30,6 +30,8 @@ _ccm() {
         'remove-hooks:Remove ccm hooks from Claude Code settings'
         'setup-claude-md:Add ccm section to ~/.claude/CLAUDE.md'
         'remove-claude-md:Remove ccm section from ~/.claude/CLAUDE.md'
+        'setup-sidekick-hooks:Install attention hooks into a sidekick CLI config'
+        'remove-sidekick-hooks:Remove the sidekick attention hooks'
         'errors:View / clear the silent-exception log'
         'reset:Clear stuck runtime state for a project'
         'reset-window:Internal post-attach reset (not user-facing)'

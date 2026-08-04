@@ -60,6 +60,17 @@ CCM_PORT_CACHE_DIR = os.path.join(CCM_TMP_DIR, "port-cache")
 # bash hook already sent. Must stay in sync with the `marker_dir`
 # resolver in `hooks/lib.sh`.
 CCM_NOTIFY_MARKER_DIR = os.path.join(CCM_TMP_DIR, "notified")
+# Sidekick attention markers, one JSON file per tmux pane
+# (`<pane_id>.json`), written by `hooks/sidekick-attention.sh` from a
+# sidekick CLI's OWN hook config (Kimi's `[[hooks]]`, etc.) — the
+# CCM_IGNORE-style self-report bridge, keyed by the `$TMUX_PANE` the
+# hook process inherits. A marker is OVERWRITTEN with
+# `state: "resolved"` rather than deleted when the wait ends, so a
+# consumer (ringi) can tell "resolved" from "stale file"; ccm's reader
+# is the garbage collector. Contract v1 fields:
+#   agent / state / id / cwd / ts  (required)
+#   session / summary / pane / tool / resolved_ts / expires (optional)
+CCM_ATTENTION_DIR = os.path.join(CCM_TMP_DIR, "attention")
 
 
 # ─── Detection thresholds (tunable via env vars) ───
@@ -134,6 +145,17 @@ STARTUP_GRACE_SEC = int(os.environ.get("CCM_STARTUP_GRACE_SEC", "60"))
 # footer; capture-pane–based prompt detection silently fails and
 # the pane falsely reads BUSY (has children, no prompt visible).
 SLIVER_HEIGHT_THRESHOLD = int(os.environ.get("CCM_SLIVER_HEIGHT_THRESHOLD", "4"))
+# Attention-marker garbage collection. A `resolved` marker is kept
+# this long so a slow consumer (ringi's poll) can still see the
+# resolution, then unlinked. A `waiting` marker is dropped past this
+# hard TTL even when nothing resolved it — the safety net for an
+# agent that died mid-wait without firing its resolution hook. Both
+# are reader-side: the writers are per-CLI hook scripts that ccm does
+# not control, so the ONE reader ccm owns is where cleanup can live.
+ATTENTION_RESOLVED_GC_SEC = int(
+    os.environ.get("CCM_ATTENTION_RESOLVED_GC_SEC", "300"))
+ATTENTION_WAITING_TTL_SEC = int(
+    os.environ.get("CCM_ATTENTION_WAITING_TTL_SEC", "3600"))
 
 
 # ─── Claude Code UI patterns ───

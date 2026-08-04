@@ -37,8 +37,11 @@ sys.modules.setdefault("ccm_core", sys.modules[__name__])
 # locals so this module's own body can use unqualified names; other
 # modules import directly from ccm_constants.
 from ccm_constants import (  # noqa: F401 (used as module-local names)
+    ATTENTION_RESOLVED_GC_SEC,
+    ATTENTION_WAITING_TTL_SEC,
     BUSY_HOOK_JSONL_WINDOW,
     CACHE_TTL,
+    CCM_ATTENTION_DIR,
     CCM_DATA_DIR,
     CCM_GIT_CACHE_DIR,
     CCM_HOOK_DIR,
@@ -330,13 +333,14 @@ class Project:
         "win_target", "win_idx", "name", "dir", "state",
         "branch", "ports", "completed_at", "bg_active", "pane_count",
         "ignored_panes", "permission_mode", "sort_key",
-        "cached_session_id", "external_agents",
+        "cached_session_id", "external_agents", "attention_agents",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
                  branch="", ports="", completed_at=0, bg_active=False,
                  pane_count=1, permission_mode="", ignored_panes=0,
-                 cached_session_id=None, external_agents=()):
+                 cached_session_id=None, external_agents=(),
+                 attention_agents=()):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -377,6 +381,12 @@ class Project:
         # panes_cache (zero extra subprocesses); () on the fast
         # path, mirroring pane_count=1 / ignored_panes=0 there.
         self.external_agents = external_agents
+        # Agent names (subset of external_agents) whose pane currently
+        # holds a `waiting` attention marker — the sidekick is blocked
+        # on a decision. Drives the ⚙ badge's attention colour and
+        # nothing else: NOT part of the 4-state model, never consulted
+        # by detection, () on the fast path.
+        self.attention_agents = attention_agents
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
@@ -424,7 +434,7 @@ def read_cache_file(cache_dir, directory):
 _WINDOW_FORMAT = (
     "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
     "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
-    "#{@ccm_bg_active}\t#{@ccm_session_id}"
+    "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}"
 )
 _WINDOW_FIELDS_MIN = 6  # win_target, project, dir, prev_state, completed_at, win_activity
 
@@ -491,6 +501,11 @@ def _parse_window_line(line):
     #   - None             → format string was missing the field
     #     (legacy tmux window, fallback to per-call show-option)
     cached_session_id = parts[7] if len(parts) >= 8 else None
+    # Global @ccm-sidekick-attention toggle, piggybacked on the bulk
+    # query (global user options resolve in window-format context, so
+    # every row carries the same value — one subprocess saved over a
+    # dedicated show-option).
+    attention_toggle = parts[8] if len(parts) >= 9 else ""
     return {
         "win_target": parts[0],
         "project": project,
@@ -500,6 +515,7 @@ def _parse_window_line(line):
         "win_activity_str": parts[5],
         "bg_active_str": bg_active_str,
         "cached_session_id": cached_session_id,
+        "attention_toggle": attention_toggle,
     }
 
 
@@ -570,6 +586,83 @@ def _resolve_ignored_panes(panes_cache, win_target, ps_lines):
     return count
 
 
+def _read_attention_markers(panes_cache):
+    """Read every sidekick attention marker once per build and GC the
+    dead ones. Returns {pane_id: marker_dict} for markers that are
+    live `waiting` — the only state any display surface acts on.
+
+    ccm is the single reader of the attention directory, so it is
+    also the garbage collector (the writers are per-CLI hook scripts
+    ccm does not control). A marker is unlinked when:
+      - state == "resolved" and older than ATTENTION_RESOLVED_GC_SEC
+        (kept that long so a slower consumer can still see the
+        resolution — the contract is overwrite-then-reap, never
+        silent deletion by the writer);
+      - its pane no longer exists, or no longer runs an external
+        agent (the sidekick exited; same self-heal shape as
+        `_resolve_ignored_panes`);
+      - `expires` (RFC3339, set by adapters for CLIs without a
+        resolution event) has passed, or the hard
+        ATTENTION_WAITING_TTL_SEC has — the safety net for an agent
+        that died mid-wait without firing anything.
+    Unparseable files are treated as dead. All failures are silent:
+    attention is a display garnish and must never break a build."""
+    try:
+        entries = os.listdir(CCM_ATTENTION_DIR)
+    except OSError:
+        return {}
+    import json as _json
+    from datetime import datetime, timezone
+    now = time.time()
+    agent_panes = {pc[2] for pc in panes_cache
+                   if pc[3] in EXTERNAL_AGENT_COMMANDS}
+
+    def _epoch(iso):
+        try:
+            return datetime.fromisoformat(
+                iso.replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError, TypeError):
+            return None
+
+    live = {}
+    for entry in entries:
+        if not entry.endswith(".json"):
+            continue
+        path = os.path.join(CCM_ATTENTION_DIR, entry)
+        pane_id = entry[:-5]
+        marker = None
+        try:
+            with open(path, encoding="utf-8") as f:
+                marker = _json.load(f)
+        except (OSError, ValueError):
+            pass
+        reap = False
+        if not isinstance(marker, dict):
+            reap = True
+        elif marker.get("state") == "resolved":
+            rts = _epoch(marker.get("resolved_ts")) or 0
+            reap = (now - rts) > ATTENTION_RESOLVED_GC_SEC
+        elif marker.get("state") == "waiting":
+            ts = _epoch(marker.get("ts"))
+            exp = _epoch(marker.get("expires"))
+            if pane_id not in agent_panes:
+                reap = True
+            elif exp is not None and now > exp:
+                reap = True
+            elif ts is None or (now - ts) > ATTENTION_WAITING_TTL_SEC:
+                reap = True
+            else:
+                live[pane_id] = marker
+        else:
+            reap = True
+        if reap:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return live
+
+
 def _resolve_external_agent_panes(panes_cache, win_target):
     """Foreground command names of this window's panes that match
     EXTERNAL_AGENT_COMMANDS — one tuple entry per matching pane.
@@ -610,6 +703,12 @@ def build_project_list(fast=False):
     ps_lines = [] if fast else ps_snapshot().strip().split("\n")
     panes_cache = [] if fast else _build_panes_cache()
     own_pgid = str(os.getpgrp())
+    # Sidekick attention markers: read once per build (a single
+    # readdir), lazily on the first row because the global
+    # @ccm-sidekick-attention toggle rides the bulk window query
+    # rather than costing its own show-option. {} on the fast path
+    # and when toggled off. Never allowed to break a build.
+    attention_markers = None
 
     seen_dirs = set()
     projects = []
@@ -640,6 +739,23 @@ def build_project_list(fast=False):
             panes_cache, row["win_target"], ps_lines))
         external_agents = (() if fast else _resolve_external_agent_panes(
             panes_cache, row["win_target"]))
+        if attention_markers is None:
+            attention_markers = {}
+            if not fast and row["attention_toggle"] != "off":
+                try:
+                    attention_markers = _read_attention_markers(panes_cache)
+                except Exception:
+                    log_caught_exception("attention_markers")
+        # Names among this window's agent panes whose marker says
+        # `waiting` — join by pane id against the bulk cache, so a
+        # window with two kimi panes colours only the waiting one's
+        # name into the set.
+        attention_agents = tuple(sorted({
+            m.get("agent") or pc[3]
+            for pc in panes_cache
+            if pc[0] == row["win_target"]
+            for m in (attention_markers.get(pc[2]),) if m
+        })) if attention_markers else ()
 
         # Permission-mode badge (slow path, live sessions only). The
         # events tail was just read by detection for this same cycle,
@@ -669,6 +785,7 @@ def build_project_list(fast=False):
             ignored_panes=ignored_panes,
             cached_session_id=row["cached_session_id"],
             external_agents=external_agents,
+            attention_agents=attention_agents,
         ))
 
     projects.sort(key=lambda p: p.sort_key)
@@ -1078,6 +1195,10 @@ _SUBCOMMANDS = (
      lambda a: ccm_commands.cmd_errors(a.rest)),
     ("doctor", lambda p: None,
      lambda a: ccm_commands.cmd_doctor()),
+    ("setup-sidekick-hooks", _add_name_arg,
+     lambda a: ccm_commands.cmd_setup_sidekick_hooks(a.name)),
+    ("remove-sidekick-hooks", _add_name_arg,
+     lambda a: ccm_commands.cmd_remove_sidekick_hooks(a.name)),
     ("clear-notifications", lambda p: None, _clear_notifications_handler),
     ("debug", _add_debug_args, _debug_handler),
     ("bg-list", lambda p: None,

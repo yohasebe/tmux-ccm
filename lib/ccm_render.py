@@ -398,11 +398,17 @@ def print_status():
         pane_marker += ignore_marker
         # External-agent presence badge `⚙<name>`: a pane running an
         # external agent CLI exists in this window. Dim like `⊘` —
-        # presence only, not a state.
+        # presence only, not a state. When a sidekick has a live
+        # attention marker (it is blocked on a decision), the badge
+        # takes PERMIT's bold yellow: same colour vocabulary, same
+        # meaning — a human is needed — while staying out of the
+        # 4-state model itself.
         ext_label = external_agent_label(p)
         if ext_label:
             badge = f"⚙{ext_label}"
-            pane_marker += f" {C_DIM}{badge}{C_RESET}"
+            colour = (C_STATE["PERMIT"]
+                      if getattr(p, "attention_agents", ()) else C_DIM)
+            pane_marker += f" {colour}{badge}{C_RESET}"
             pane_marker_visible_w += 1 + display_width(badge)
         branch = p.branch or "-"
         ports = p.ports or "-"

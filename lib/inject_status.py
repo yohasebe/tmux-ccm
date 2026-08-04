@@ -229,10 +229,16 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
             entry += _render_pane_marker(
                 "#ffffff,bold" if is_current else "#9E9E9E"
             )
-            # Presence badge next to [N], same dim treatment.
+            # Presence badge next to [N], same dim treatment — except
+            # when a sidekick holds a live attention marker, where the
+            # badge takes PERMIT yellow (a human is needed) without
+            # entering the state model.
             if ext_label:
+                badge_fg = ("yellow,bold"
+                            if getattr(p, "attention_agents", ())
+                            else "#666666")
                 entry += (
-                    f" #[fg=#666666]⚙{ext_label}"
+                    f" #[fg={badge_fg}]⚙{ext_label}"
                     f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
                 )
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"

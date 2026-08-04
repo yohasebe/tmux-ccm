@@ -1034,10 +1034,19 @@ class Dashboard:
                         col += display_width(ann["ignore_marker"]) + 1
 
                     # External-agent badge ⚙<name>: a pane running an
-                    # external agent CLI exists. Dim — presence only.
+                    # external agent CLI exists. Dim — presence only —
+                    # unless the sidekick holds a live attention
+                    # marker (blocked on a decision), which borrows
+                    # PERMIT's yellow: same colour vocabulary, same
+                    # meaning (a human is needed), without joining the
+                    # 4-state model.
                     if ann.get("ext_badge"):
+                        badge_attr = (
+                            curses.color_pair(C_PERMIT) | curses.A_BOLD
+                            if getattr(p, "attention_agents", ())
+                            else curses.color_pair(C_DIM))
                         self._addstr(stdscr, y, col, ann["ext_badge"],
-                                     curses.color_pair(C_DIM))
+                                     badge_attr)
                         col += display_width(ann["ext_badge"]) + 1
 
                     # Permission-mode badge {label}: dim as secondary
@@ -1145,7 +1154,8 @@ class Dashboard:
                 "[↑↓/jk] select", "[Enter] attach", "[/] search",
                 "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
                 "[r]emove", "[i]gnore", "e[x]it all", "[s]ave", "[t]ree",
-                "[b]g sessions", "[m/?] menu", "[q] quit",
+                "[b]g sessions", "[w]atch sidekicks", "[m/?] menu",
+                "[q] quit",
             ]
             # Split into lines that fit within avail_w
             help_lines = []
@@ -1347,6 +1357,20 @@ class Dashboard:
             self.mode = "menu"
             self._build_menu()
             self.menu_selected = 0
+        elif key in (ord("w"), ord("W")):
+            # Sidekick-attention toggle (`w` = watch). Unlike `b`,
+            # this writes the GLOBAL @ccm-sidekick-attention option:
+            # the badge colour, the status bar and the hook-side
+            # desktop notification all read the same switch, and a
+            # session-local flag would let those surfaces disagree —
+            # the split-brain this feature exists to prevent.
+            cur = ccm_core.tmux_cmd(
+                "show-option", "-gqv", "@ccm-sidekick-attention")
+            new = "on" if cur == "off" else "off"
+            ccm_core.tmux_cmd(
+                "set-option", "-g", "@ccm-sidekick-attention", new)
+            self._show_message(stdscr, f"Sidekick attention: {new}", 1)
+            self._trigger_rebuild()
         elif key in (ord("b"), ord("B")):
             # Session-local toggle for the background-sessions
             # section. Independent of the @ccm-bg-section persistent
