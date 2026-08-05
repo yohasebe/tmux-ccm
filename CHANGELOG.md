@@ -72,11 +72,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   needed anywhere in the decision tree. Reported by ringi, who hit three
   consecutive `ccm send` refusals against a session sitting at an empty prompt.
 
-  Read naively the record makes things worse, and both traps are pinned by
-  tests: it is newer than the assistant turn it cut short, so counting it as
-  activity restarted the very wait being served out, and its type is `user`, so
-  it would have promoted to "a prompt was just submitted" and held BUSY for ten
-  minutes.
+  Read naively the record makes things worse, and the traps are pinned by tests.
+  It is newer than the assistant turn it cut short, so counting it as activity
+  restarted the very wait being served out; its type is `user`, so it would have
+  promoted to "a prompt was just submitted" and held BUSY for ten minutes; and
+  matching the phrase as a substring fires on any message that merely mentions
+  it — a false IDLE, which is the dangerous direction, since `ccm send` would
+  then deliver into a working session. Claude's note is the entire content of
+  its record, so the match is anchored to the whole text with only the trailing
+  clause left open (three spellings are known, including a bare
+  `[Request interrupted]`). A naive scan of the session that built this feature
+  returned 41 hits for 7 real interrupts.
 - The aging guard works without a readable transcript. It compared the JSONL
   age against its window, and an unreadable transcript reports `-1` — never past
   any window — so a session whose transcript ccm cannot find stayed BUSY with no

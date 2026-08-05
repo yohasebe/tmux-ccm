@@ -38,7 +38,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 
 import ccm_core  # late-bound for find_process_age (pid-reuse staleness check)
-from ccm_constants import (JSONL_INTERRUPT_MARKER, JSONL_INTERRUPTED,
+from ccm_constants import (JSONL_INTERRUPT_RE, JSONL_INTERRUPTED,
                            JSONL_USER_PENDING, TERMINAL_STOP_REASONS)
 
 
@@ -399,9 +399,13 @@ def _is_interrupt_user_record(rec: dict) -> bool:
     Read as a genuine prompt it is actively harmful — the record is
     NEWER than the interrupted assistant turn, so it would promote to
     `user_pending` ("user just submitted, no response yet") and pin
-    BUSY for the whole BUSY_HOOK_JSONL_WINDOW."""
+    BUSY for the whole BUSY_HOOK_JSONL_WINDOW.
+
+    Matched against the WHOLE stripped text, never as a substring: a
+    message that merely mentions the phrase would otherwise release a
+    working session to IDLE. See JSONL_INTERRUPT_RE."""
     text = _user_record_text(rec)
-    return isinstance(text, str) and JSONL_INTERRUPT_MARKER in text
+    return isinstance(text, str) and bool(JSONL_INTERRUPT_RE.match(text.strip()))
 
 
 def _parse_jsonl_tail(

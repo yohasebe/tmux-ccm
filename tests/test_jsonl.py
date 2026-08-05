@@ -900,22 +900,47 @@ class TestJsonlEscInterruptRecord:
         _age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
         assert stop == "end_turn"
 
-    def test_a_prompt_merely_quoting_the_phrase_is_still_a_prompt(
-            self, tmp_path, monkeypatch):
-        """The marker is matched as a substring, so a user genuinely
-        typing about interrupts must not be mistaken for one. The
-        discriminator is that Claude's own note is the WHOLE content;
-        this asserts the current, deliberately simple behaviour so a
-        future tightening is a visible decision rather than a
-        surprise."""
+    @pytest.mark.parametrize("text", [
+        "why does Request interrupted appear twice?",
+        "the marker is [Request interrupted by user] - see backlog",
+        "[Request interrupted by user] and then I typed this",
+    ])
+    def test_a_message_merely_mentioning_the_phrase_is_a_prompt(
+            self, tmp_path, monkeypatch, text):
+        """Matching as a substring released working sessions.
+
+        Claude's note is the ENTIRE content of its record, so anything
+        with the phrase embedded in a longer message is a human
+        talking about interrupts, not an interrupt. Getting this wrong
+        is a false IDLE — the dangerous direction: `ccm send` would
+        deliver into a working session and auto-exit could eventually
+        kill it. Not hypothetical: a naive substring scan of the
+        session that built this feature returned 41 hits for 7 real
+        interrupts, all the extras being its own discussion of the
+        marker (independently hit by ringi, 2026-08-05)."""
         f = self._setup_project(tmp_path, monkeypatch)
         now = time.time()
         write_jsonl(f, [
             assistant_record(now - 300, stop_reason="tool_use"),
             {"type": "user", "timestamp": _iso_ts(now - 5),
-             "message": {"role": "user", "content": [
-                 {"type": "text",
-                  "text": "why does Request interrupted appear twice?"}]}},
+             "message": {"role": "user",
+                         "content": [{"type": "text", "text": text}]}},
+        ])
+        age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
+        assert stop != ccm_constants.JSONL_INTERRUPTED
+        assert age <= 10, "a real message must count as activity"
+
+    def test_bare_interrupt_variant_is_recognised(
+            self, tmp_path, monkeypatch):
+        """A third spelling, "[Request interrupted]", appears in
+        ringi's corpus of ~165. The trailing clause is the part that
+        gets reworded, so it is left open while the anchoring is
+        not."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 300, stop_reason="tool_use"),
+            self._interrupt(now - 5, "[Request interrupted]"),
         ])
         _age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
         assert stop == ccm_constants.JSONL_INTERRUPTED

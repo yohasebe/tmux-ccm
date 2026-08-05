@@ -141,12 +141,21 @@ JSONL_USER_PENDING = "user_pending"
 # path in `ccm_activity` picks it up, instead of the session waiting
 # out BUSY_STALE_RELEASE_SEC with an idle screen.
 JSONL_INTERRUPTED = "interrupted"
-# Substring, not the full line: upstream writes at least
-# "[Request interrupted by user]" and
-# "[Request interrupted by user for tool use]", and the trailing
-# clause is exactly the kind of detail that gets reworded. Matching
-# the stable head is the lesson from 0.8.2's three fixed-shape bugs.
-JSONL_INTERRUPT_MARKER = "Request interrupted"
+# Anchored to the WHOLE record text, with the trailing clause left
+# open. Three spellings are known — "[Request interrupted by user]",
+# "[Request interrupted by user for tool use]" and a rare bare
+# "[Request interrupted]" (the last from ringi's corpus of ~165) — so
+# the clause is exactly the detail that gets reworded and must not be
+# pinned. What must NOT be loose is the anchoring: a substring test
+# fires on any message that merely mentions the phrase, and a session
+# discussing interrupts then reads as interrupted — a false IDLE,
+# the dangerous direction, since `ccm send` would deliver into a
+# working session and auto-exit could eventually kill it. Claude's
+# own note is the entire content of its record, so requiring that
+# separates it from every quotation of it. (Measured 2026-08-05: a
+# naive substring scan of this very session's transcript returned 41
+# hits for 7 real interrupts. ringi hit the same contamination.)
+JSONL_INTERRUPT_RE = re.compile(r"^\[Request interrupted[^\]]*\]$")
 # How long after the `claude` process starts a `raw=BUSY` reading
 # is treated as MCP-loading startup rather than real work, when no
 # hook signal has been written yet. MCP server initialization
