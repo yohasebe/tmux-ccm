@@ -1365,9 +1365,10 @@ def cmd_setup_sidekick_hooks(agent):
     if agent != "kimi":
         ccm_core.ccm_die(
             f"unsupported sidekick agent: {agent!r}. Supported: kimi, grok.\n"
-            "  Codex has no approval-time hook (openai/codex#11808), so a "
-            "wait cannot be observed there at all. Antigravity CLI is not "
-            "yet measured.")
+            "  Neither of the other two can be supported from ccm's side: "
+            "Codex has no approval-time hook at all "
+            "(openai/codex#11808), and Antigravity CLI loads hooks without "
+            "firing them (measured against 1.1.10).")
     config = _kimi_config_path()
     if not os.path.isdir(os.path.dirname(config)):
         ccm_core.ccm_die(

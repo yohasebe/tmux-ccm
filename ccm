@@ -17,7 +17,7 @@ CCM_ROOT="$(_ccm_resolve "$0")"
 
 # Version of this ccm release. Keep in sync with CHANGELOG.md's
 # top entry. Surfaced via `ccm --version` and `ccm version`.
-CCM_VERSION="0.8.2"
+CCM_VERSION="0.9.0"
 
 # Background commands must not fail on errors
 case "${1:-}" in
@@ -80,8 +80,6 @@ Usage:
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
   ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
-  ccm setup-sidekick-hooks <agent>  Install attention hooks into a sidekick CLI's config (kimi)
-  ccm remove-sidekick-hooks <agent>  Remove the sidekick attention hooks
   ccm debug trace <name> [interval]  Live state-detection trace (read-only; Ctrl-C to stop)
   ccm errors [--clear]              View / clear the silent-exception log
   ccm reset <name>                  Clear stuck runtime state for a project (last-resort recovery)

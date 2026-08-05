@@ -7,89 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-05
+
+Sidekick support grows a second half. 0.8.x could show you that another agent
+CLI was running beside Claude; it could not show you that the agent had stopped
+and was waiting for a human. It can now — without ccm reading anyone's screen.
+
 ### Added
-- Sidekick attention: a sidekick blocked on a permission dialog is now visible
-  without anyone watching its pane. `ccm setup-sidekick-hooks kimi` installs
-  ccm's adapter into Kimi's own `[[hooks]]` config; when Kimi raises a
-  permission prompt, the hook writes a pane-keyed attention marker, the
-  `⚙kimi` badge turns PERMIT-yellow on the dashboard / `ccm status` / status
-  bar, and a desktop notification names the tool being asked about. Resolution
-  (approve, deny, Esc, turn end) clears it. The window's own state never
-  changes — PERMIT still means Claude needs you; the yellow gear means the
-  sidekick does. Toggle with `w` in the dashboard or
-  `@ccm-sidekick-attention off`.
+- Sidekick attention. When a sidekick blocks on a permission dialog, its badge
+  turns PERMIT-yellow on the dashboard, `ccm status` and the status bar, and a
+  desktop notification names what it is asking about; answering clears it. The
+  window's own state never changes — PERMIT still means *Claude* needs you.
+  Toggle with `w` in the dashboard or `@ccm-sidekick-attention off`.
 
-  The marker is a contract, not an implementation detail: writers overwrite
-  `waiting` → `resolved` rather than deleting (a consumer that sees `resolved`
-  KNOWS the wait ended; a vanished file could be anything), and ccm's reader
-  is the single garbage collector. Fields were agreed with ringi, which plans
-  to consume the same directory for phone/watch delivery.
+  A second Claude Code sidekick (`CCM_IGNORE=1 claude`) needs no setup: those
+  sessions already ran ccm's hooks and were exiting silently, so the ignore
+  branch now forwards their permission events. The ignore contract is
+  untouched — nothing reaches window state, `ccm send` delivery, or auto-exit.
 
-  Detection is hook-self-report only, by design. Parsing each product's
-  screen was rejected after 0.8.2 shipped three fixes for exactly that class
-  of assumption against ONE product's strings. Kimi is the first supported
-  agent because it was the first verified live — its hook set has both
-  `PermissionRequest` and `PermissionResult`, a resolution event Claude Code
-  itself lacks. Gemini and Grok Build wait on verification; Codex has no
-  approval-time hook (openai/codex#11808).
-- Grok Build joins the attention channel: `ccm setup-sidekick-hooks grok` drops
-  a hook file into `~/.grok/hooks/` — its own file, not an edit to your config,
-  so removal is an unlink. Measured against grok 0.2.118 rather than assumed:
-  Grok has no `PermissionRequest` event (the wait arrives as `Notification`
-  with `notificationType: "permission_prompt"`), no resolution event (the next
-  activity event closes the wait), and its permission payload carries no tool
-  fields at all, so the marker's `summary` falls back to Grok's own message
-  rather than going empty on a watch face.
-- Agent CLIs launched through a platform-suffixed binary are recognised again.
-  Grok Build's `grok` is a symlink to `grok-macos-aarch64`, and tmux reports
-  the resolved name truncated (`grok-macos-aarc`) — so the `grok` entry in the
-  allowlist could never match, costing the ⚙ badge and reaping every attention
-  marker as "sidekick exited". Matching now accepts a `grok-` prefix for the
-  whole platform/arch family, and the badge shows the canonical short name.
-- A second Claude Code sidekick joins the attention channel with no installer:
-  an ignored session (`CCM_IGNORE=1 claude`) was already running ccm's hooks
-  and silently exiting, so the ignore branch now forwards its permission
-  events to the same adapter. The `⊘` marker turns PERMIT-yellow while the
-  hidden Claude waits and dims when answered; the ignore contract itself is
-  untouched (nothing reaches window state, `ccm send` delivery, or auto-exit).
-  Claude Code lacks a resolution event, so the wait closes on the next hook
-  activity — approval fires `PostToolUse`, a denial's feedback round ends in
-  `Stop`; only Esc-then-silence is left to the marker's TTL. One dialog also
-  raises both `PermissionRequest` and `Notification(permission_prompt)`, so
-  the adapter treats a second waiting-write as a no-op — one dialog, one
-  desktop notification.
+  Support for non-Claude agents is exploratory and documented in the guide
+  rather than the CLI table: it works by asking each vendor's own hook system
+  to self-report, and those contracts are young. Screen parsing was rejected
+  outright — 0.8.2 shipped three fixes for exactly that class of assumption
+  against a single product's strings.
 
 ### Fixed
-- The Claude-sidekick half of sidekick attention never worked. Its marker was
-  kept alive by comparing a pane's foreground command to `claude`, but the
-  versioned-install symlink makes tmux report the launcher name (`2.1.221`), so
-  the test was false in every real environment and every Claude sidekick's
-  marker was reaped by the next scan — no badge, and the resolve hook then found
-  nothing to clear. The pane is identified by its process tree now, as
-  `auto_exit_idle` already documented it must be. The test that covered this
-  passed on a fixture saying `claude`, which no real pane reports.
-- Attention markers are written through an atomic rename. A direct write
-  truncates first, so a reader landing in that gap saw an empty file, judged it
-  unparseable and unlinked it — after which the writer kept writing to a
-  deleted file and the marker was lost. The resolve path already did this; only
-  the initial write did not. Stage files left by a killed writer are now reaped
-  too, and a `resolved_ts` in the future (clock skew) no longer pins a marker
-  forever.
-- The attention reader runs even when `@ccm-sidekick-attention` is off, because
-  it is also the only garbage collector — the writers are per-CLI hook scripts
-  that keep writing regardless of a ccm-side switch. Only its result is
-  discarded when off.
 - A session interrupted with Esc is released at once instead of after a minute.
   Detection had been built on the belief that a user interrupt leaves no trace —
   a code comment stated the turn "fires no Stop hook and writes no further
   JSONL" — so the only way out was an aging guard that waits
   `BUSY_STALE_RELEASE_SEC` before trusting an idle screen. The second half of
-  that belief is false: Claude Code writes a transcript record whose text reads
-  `[Request interrupted by user]` (8 occurrences in one session). It is now
-  recognised as a synthetic terminal `stop_reason`, joining the values the
-  existing release path already keys on, so no interrupt-specific branch was
-  needed anywhere in the decision tree. Reported by ringi, who hit three
-  consecutive `ccm send` refusals against a session sitting at an empty prompt.
+  that belief is false: Claude Code writes a transcript record reading
+  `[Request interrupted by user]`. It is now recognised as a synthetic terminal
+  `stop_reason`, joining the values the existing release path already keys on,
+  so no interrupt-specific branch was needed anywhere in the decision tree.
 
   Read naively the record makes things worse, and the traps are pinned by tests.
   It is newer than the assistant turn it cut short, so counting it as activity
@@ -97,26 +48,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   promoted to "a prompt was just submitted" and held BUSY for ten minutes; and
   matching the phrase as a substring fires on any message that merely mentions
   it — a false IDLE, which is the dangerous direction, since `ccm send` would
-  then deliver into a working session. Claude's note is the entire content of
-  its record, so the match is anchored to the whole text with only the trailing
-  clause left open (three spellings are known, including a bare
-  `[Request interrupted]`). A naive scan of the session that built this feature
-  returned 41 hits for 7 real interrupts.
+  then deliver into a working session.
 - The aging guard works without a readable transcript. It compared the JSONL
   age against its window, and an unreadable transcript reports `-1` — never past
   any window — so a session whose transcript ccm cannot find stayed BUSY with no
   release path at all, while legacy detection (which would have freed it) was
-  never consulted. It now falls back to the age of the newest event, which
-  answers the same question. Same failure shape as the gc-gakkai incident, whose
-  slug fix closed one route to it rather than the corner itself.
-- ccm's hook scripts now reject payloads from foreign agent harnesses. Grok
-  Build reads `~/.claude/settings.json` hooks by default for Claude Code
-  compatibility, and its payloads parse well enough to slip through — the
-  camelCase `sessionId` is accepted deliberately, so a Grok sidekick would have
-  written BUSY signals under its own session id, stamped `@ccm_prev_state`, and
-  fired completion notifications for turns no Claude ran. Every event carries
-  `workspaceRoot`, which Claude Code never sends, so that field now gates
-  `ccm_hook_init` before any artefact is written.
+  never consulted. It now falls back to the age of the newest event.
+- ccm's hook scripts reject payloads from foreign agent harnesses. Grok Build
+  reads `~/.claude/settings.json` hooks by default for Claude Code
+  compatibility, and its payloads parse well enough to slip through, so a Grok
+  sidekick would have written BUSY signals under its own session id and fired
+  completion notifications for turns no Claude ran. Every such event carries
+  `workspaceRoot`, which Claude Code never sends.
+- Agent CLIs launched through a platform-suffixed binary are recognised again.
+  A launcher symlinked to a per-platform binary makes tmux report the resolved
+  name truncated, so an allowlist entry matching the launcher name never fired —
+  costing the presence badge entirely.
 
 ### Changed
 - Verified against Claude Code v2.1.221. Nothing in ccm needed changing: the

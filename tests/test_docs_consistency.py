@@ -48,6 +48,15 @@ UNDOCUMENTED_OK = {
     "dash", "d", "ls", "st", "a", "rm", "reg", "unreg", "mv", "cap",
     "snap", "sl", "ti",   # aliases (documented as a TIP, not rows)
     "help", "version", "--help", "-h", "--version", "-v",
+    # Sidekick attention installers: deliberately unlisted while the
+    # feature is exploratory. They only do anything for someone
+    # running Kimi Code or Grok Build as a sidekick — a tiny audience
+    # — and the CLI table is where readers look to learn what ccm can
+    # do, so a row naming products most readers do not have costs
+    # every reader attention to buy almost none of them anything. The
+    # commands work; the guide documents them. Promote to rows when
+    # the arrangement is common enough that the row earns its space.
+    "setup-sidekick-hooks", "remove-sidekick-hooks",
 }
 
 

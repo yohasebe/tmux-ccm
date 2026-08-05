@@ -38,7 +38,7 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 - **スナップショット** — プロジェクトレイアウトの保存と復元
 - **プロジェクト間メッセージング** — `ccm send <project> <message>` で他プロジェクトの Claude にプロンプト送信、状態に応じた安全な制御 (PERMIT は拒否、BUSY は `--force` でキュー投入)
 - **Permission mode の可視化** — 各プロジェクトの Claude Code permission mode (manual / accept / plan / auto / bypass) を `ccm status` とダッシュボードに表示。「このプロジェクトは許可を求めてこない」理由が一目で分かる
-- **サイドキック対応** — 分割ペインで2つ目のエージェント CLI を動かせます。`CCM_IGNORE`（`⊘`）でセッションを ccm の追跡から外し、presence バッジ（`⚙`）で Claude 以外のエージェントの存在を示します。2つのエージェントは人間の仲介なしに仕事を往復させることもできます。[別モデルをサイドキックとして使う](docs/guide.ja.md#別モデルをサイドキックとして使うccm_ignore)と[他のエージェント CLI との往復リレー](docs/guide.ja.md#他のエージェント-cli-との往復リレー)を参照
+- **サイドキック対応** — 分割ペインで Claude の隣に2つ目のエージェント CLI を動かせます。ccm はそれを自身の追跡から外したうえで、存在していることを示します。[別モデルをサイドキックとして使う](docs/guide.ja.md#別モデルをサイドキックとして使うccm_ignore)、[2つ目のエージェント CLI との連携](docs/guide.ja.md#2つ目のエージェント-cli-との連携)を参照
 - **自動起動** — Claude Code が起動していないプロジェクトに attach すると自動起動
 - **ステータスライン** — アクティブプロジェクトの状態を tmux ステータスバーに表示
 - **多バイト文字対応** — CJK 文字や絵文字を含むプロジェクト名がダッシュボード・ステータスバー・CLI テーブルで正しく整列
@@ -335,8 +335,6 @@ ccm setup-hooks                   Claude Codeフックをインストール（�
 ccm remove-hooks                  Claude Codeフックをアンインストール
 ccm setup-claude-md               ~/.claude/CLAUDE.mdにccmセクションを追加
 ccm remove-claude-md              ~/.claude/CLAUDE.mdからccmセクションを削除
-ccm setup-sidekick-hooks <agent>  サイドキックCLIの設定にattentionフックを導入 (kimi)
-ccm remove-sidekick-hooks <agent>  サイドキックattentionフックを削除
 ccm statusline                    1行ステータス出力（tmuxステータスバー用）
 ccm inject-status                 tmuxステータスバー更新（内部使用）
 ccm debug trace <name> [interval] 状態検出のライブトレース（読み取り専用、Ctrl-Cで終了）

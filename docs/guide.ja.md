@@ -633,7 +633,12 @@ ccm remove-sidekick-hooks kimi    # 削除する（どちらもバックアッ�
 
 **2つ目の Claude Code にはインストーラすら不要です。** ignore された Claude（`CCM_IGNORE=1 claude`、ガイドで案内している Claude-as-sidekick の形）はもともと ccm のフックを実行していて、ただ黙って抜けていただけです。その許可イベントが同じ attention チャネルに流れるようになりました: 隠れた Claude が待っている間は `⊘` マーカーが PERMIT の黄色になり、ダイアログに答えると dim に戻ります。ignore の契約は不変です — そのセッションはウィンドウ状態にも `ccm send` の配送にも auto-exit にも一切関与しません。正直な注意点が1つ: Claude Code には解決イベントがない（`PermissionResult` の欠落）ため、待ちは*次の* hook 活動で閉じます — 承認されたツールは `PostToolUse` を、拒否のフィードバック往復は `Stop` を発火します。カバーできないのは「Esc で消してそのまま完全に沈黙」だけで、その場合は marker が TTL で消えます。
 
-インストールできるのは **Kimi** と **Grok Build** で、どちらも実際に動いているペインで検証済みです。正確なのは Kimi の方です — hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます。Grok にはどちらもありません: 許可待ちは `Notification` の `notificationType: "permission_prompt"` として届き、ツールの詳細を持たず（summary は Grok 自身の「Tool permission requested」にフォールバックします）、次の活動イベントで閉じます。**Codex CLI** には承認時の hook 自体がなく（[openai/codex#11808](https://github.com/openai/codex/issues/11808)）、upstream が追加するまで presence 表示のままです。Antigravity CLI は未計測です。`ccm setup-sidekick-hooks` は未対応のエージェントを名指しで拒否し、どちらに該当するかを表示します。
+> [!NOTE]
+> Claude 以外のエージェントへの対応は**実験的**で、`ccm setup-sidekick-hooks` は当面 CLI 一覧に載せていません。各ベンダーの hook 契約はまだ若く動いています — 3 つ実測しただけで、未文書のイベント種別、プラットフォーム名付きバイナリ、hook をロードするのに一度も発火しない製品が出てきました。この節は変わる前提でお読みください。上の Claude サイドキックの経路はこれらに一切依存しません。
+
+インストールできるのは **Kimi Code** と **Grok Build** で、どちらも実際に動いているペインで検証済みです。正確なのは Kimi の方です — hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます。Grok にはどちらもありません: 許可待ちは `Notification` の `notificationType: "permission_prompt"` として届き、ツールの詳細を持たず（summary は Grok 自身の「Tool permission requested」にフォールバックします）、次の活動イベントで閉じます。
+
+対応できないエージェントが 2 つあり、いずれも upstream 側の事情です。**Codex CLI** には承認時の hook がなく（[openai/codex#11808](https://github.com/openai/codex/issues/11808)）、**Antigravity CLI**（Gemini CLI の後継）は hook をロードするものの一度も発火しません — 1.1.10 で実測し、実際の承認ダイアログを出しても 6 つのイベントのいずれも呼ばれませんでした。`ccm setup-sidekick-hooks` は未対応のエージェントを名指しで拒否し、どちらに該当するかを表示します。
 
 Grok Build には設定の書き換えではなく専用の hook ファイル（`~/.grok/hooks/ccm-sidekick-attention.json`）を置くので、削除は unlink 一発で、あなたの設定と混ざることは一切ありません。
 
