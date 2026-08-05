@@ -373,7 +373,7 @@ ccm clear-notifications           macOS 通知センターから ccm 通知を�
 ccm setup-hooks
 ```
 
-`~/.claude/settings.json` にフックが追加され、状態変化を通知します：
+`~/.claude/settings.json`（`CLAUDE_CONFIG_DIR` が設定されていればそちら）にフックが追加され、状態変化を通知します：
 - **UserPromptSubmit** → プロンプト送信時にBUSY（テキスト生成を検出）
 - **PreToolUse / PostToolUse / PostToolUseFailure** → ツール実行中にBUSY
 - **SubagentStart / SubagentStop** → サブエージェント実行中にBUSY（親エージェントは作業継続中）

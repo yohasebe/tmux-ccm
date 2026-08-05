@@ -242,7 +242,7 @@ Install hooks for the best detection accuracy:
 ccm setup-hooks
 ```
 
-This adds hooks to `~/.claude/settings.json`:
+This adds hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json` if that's set):
 
 | Hook | Signal | Detects |
 |------|--------|---------|

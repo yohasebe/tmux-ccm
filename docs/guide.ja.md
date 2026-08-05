@@ -243,7 +243,7 @@ ccmはClaude Codeフック（推奨）とプロセスツリー検査を組み合
 ccm setup-hooks
 ```
 
-`~/.claude/settings.json` にフックが追加されます：
+`~/.claude/settings.json`（`CLAUDE_CONFIG_DIR` が設定されていればそちら）にフックが追加されます：
 
 | フック | 信号 | 検出内容 |
 |--------|------|----------|

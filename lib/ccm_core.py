@@ -51,6 +51,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     CCM_SNAPSHOT_DIR,
     CCM_TMP_DIR,
     CLAUDE_CMD,
+    CLAUDE_CONFIG_DIR,
     CLAUDE_PROCESS_NAME,
     COMPLETED_AT_TIMEOUT,
     EXTERNAL_AGENT_COMMANDS,
@@ -860,7 +861,7 @@ def hooks_configured():
     """Return True iff all 7 ccm hook scripts are referenced in the
     user's `~/.claude/settings.json`. Used as a "hooks installed?"
     probe — does not validate the script paths or contents."""
-    settings_file = os.path.expanduser("~/.claude/settings.json")
+    settings_file = os.path.join(CLAUDE_CONFIG_DIR, "settings.json")
     try:
         with open(settings_file, encoding="utf-8") as f:
             content = f.read()

@@ -25,7 +25,7 @@ tmux -L "$SERVER" kill-server 2>/dev/null || true
 sleep 0.5
 
 # Clear Claude Code session history for demo projects (fresh start)
-rm -rf "$HOME/.claude/projects/"*ccm-demo* 2>/dev/null
+rm -rf "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/"*ccm-demo* 2>/dev/null
 
 # Temporarily hide _autosave to prevent auto-restore
 AUTOSAVE="$HOME/.local/share/ccm/snapshots/_autosave.json"

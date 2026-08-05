@@ -29,6 +29,7 @@ import os
 import time
 
 import ccm_core  # late-bound for tmux_cmd
+from ccm_constants import CLAUDE_CONFIG_DIR
 
 
 # ─── Cluster-SHELL configuration ───
@@ -51,7 +52,7 @@ SHELL_CLUSTER_ISSUE_NOTE = "macOS silent-exit"
 # not rotate or cap this file. We warn so the user can
 # `: > ~/.claude/hooks.log` and recover hook delivery.
 
-CLAUDE_HOOKS_LOG = os.path.expanduser("~/.claude/hooks.log")
+CLAUDE_HOOKS_LOG = os.path.join(CLAUDE_CONFIG_DIR, "hooks.log")
 HOOKS_LOG_WARN_BYTES = int(
     os.environ.get("CCM_HOOKS_LOG_WARN_BYTES", str(100 * 1024 * 1024))  # 100 MB
 )
@@ -147,7 +148,7 @@ def errors_log_burst_warning() -> str:
 # detection degrades with no obvious error and the user sees the
 # symptom (sluggish state changes) without the cause.
 
-CLAUDE_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")
+CLAUDE_SETTINGS_FILE = os.path.join(CLAUDE_CONFIG_DIR, "settings.json")
 
 
 def _read_claude_settings():
