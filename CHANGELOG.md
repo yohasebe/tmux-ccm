@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- The dashboard's `w` key is listed in the README's control table. It appears
+  in the dashboard's own on-screen help, so leaving it out of the table left a
+  reader who saw it on screen with nowhere to look it up.
+- A Japanese README link pointed at a guide section under a heading it no longer
+  has, so it landed at the top of the page instead.
+
+
 ## [0.9.0] - 2026-08-05
 
 Sidekick support grows a second half. 0.8.x could show you that another agent

@@ -301,6 +301,7 @@ Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named
 | `x` | Exit all idle Claude Code sessions |
 | `/` | Search projects |
 | `t` | Switch to tree view |
+| `w` | Toggle sidekick attention — highlight a sidekick that is waiting for you (see [Sidekick attention](docs/guide.md#sidekick-attention-knowing-when-it-needs-you)) |
 | `b` | Toggle [background-sessions section](#background-sessions-section-agent-view-coexistence) |
 | `m` | Switch to menu |
 | `q` / `Esc` / `F1` | Close |
