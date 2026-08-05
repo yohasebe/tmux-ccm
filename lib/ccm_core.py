@@ -614,8 +614,15 @@ def _read_attention_markers(panes_cache):
     import json as _json
     from datetime import datetime, timezone
     now = time.time()
+    # Panes whose marker may legitimately be alive: external agent
+    # CLIs, plus claude — an ignored Claude sidekick writes markers
+    # through the ignore branch in hooks/lib.sh. A tracked claude
+    # never writes one (its waits surface as real PERMIT), so no
+    # ignored-flag check is needed here; presence of claude is enough
+    # to keep the pane out of the "sidekick exited" reap.
     agent_panes = {pc[2] for pc in panes_cache
-                   if pc[3] in EXTERNAL_AGENT_COMMANDS}
+                   if pc[3] in EXTERNAL_AGENT_COMMANDS
+                   or pc[3] == CLAUDE_PROCESS_NAME}
 
     def _epoch(iso):
         try:

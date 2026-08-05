@@ -55,9 +55,28 @@ SUMMARY=$(printf '%s' "$INPUT" | jq -r '
     ] | map(select(. != null and . != "")) | join(": ")' 2>/dev/null | head -c 160)
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# Claude Code routes its Notification event here too (via the ignore
+# branch in lib.sh); the payload's notification_type decides which
+# side of the marker lifecycle it is.
+if [[ "$EVENT" == "Notification" || "$EVENT" == "notification" ]]; then
+    NOTIF_TYPE=$(printf '%s' "$INPUT" | jq -r '.notification_type // .notificationType // empty' 2>/dev/null)
+    case "$NOTIF_TYPE" in
+        permission_prompt|elicitation_dialog) EVENT="PermissionRequest" ;;
+        idle_prompt) EVENT="Stop" ;;
+        *) exit 0 ;;
+    esac
+fi
+
 case "$EVENT" in
     PermissionRequest|permission_request)
         mkdir -p "$ATTENTION_DIR" 2>/dev/null || exit 0
+        # Double-fire guard: one Claude dialog raises BOTH
+        # PermissionRequest and Notification(permission_prompt). The
+        # first write owns the marker (and the one notification);
+        # a second waiting-write for a still-open wait is a no-op.
+        if [[ -f "$MARKER" ]] && jq -e '.state == "waiting"' "$MARKER" >/dev/null 2>&1; then
+            exit 0
+        fi
         jq -cn \
             --arg agent "$AGENT" --arg id "${SESSION:-unknown}-$(date +%s)" \
             --arg cwd "$CWD" --arg ts "$NOW" --arg session "$SESSION" \
@@ -84,10 +103,15 @@ case "$EVENT" in
             fi
         fi
         ;;
-    PermissionResult|permission_result|Interrupt|interrupt|Stop|stop|StopFailure|stop_failure|SessionEnd|session_end)
-        # Any of these ends a pending wait. Overwrite in place,
-        # carrying the waiting marker's identity forward so a consumer
-        # can match resolution to request by `id`.
+    PermissionResult|permission_result|Interrupt|interrupt|Stop|stop|StopFailure|stop_failure|SessionEnd|session_end|PreToolUse|PostToolUse|PostToolUseFailure|UserPromptSubmit|SubagentStart|SubagentStop|PreCompact|PostCompact|PermissionDenied)
+        # Any of these ends a pending wait. Kimi has a true
+        # resolution event (PermissionResult); Claude Code does not,
+        # so for a Claude sidekick ANY subsequent activity event is
+        # the proof the dialog was answered — an approved tool fires
+        # PostToolUse, a denial's feedback round ends in Stop.
+        # Overwrite in place, carrying the waiting marker's identity
+        # forward so a consumer can match resolution to request by
+        # `id`.
         [[ -f "$MARKER" ]] || exit 0
         PREV=$(cat "$MARKER" 2>/dev/null)
         printf '%s' "$PREV" | jq -e '.state == "waiting"' >/dev/null 2>&1 || exit 0

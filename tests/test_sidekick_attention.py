@@ -119,6 +119,27 @@ class TestAttentionReader:
                             str(tmp_path / "never-created"))
         assert ccm_core._read_attention_markers(PANES) == {}
 
+    def test_claude_sidekick_marker_survives_the_pane_check(
+            self, attention_dir):
+        """An ignored Claude sidekick writes markers through the
+        ignore branch in hooks/lib.sh; its pane runs `claude`, not an
+        EXTERNAL_AGENT_COMMANDS name, and must not be reaped as
+        "sidekick exited"."""
+        panes = PANES + [("0:2", "300", "%50", "claude", "0", "46", "1")]
+        path = _write_marker(attention_dir, pane="%50", agent="claude")
+        live = ccm_core._read_attention_markers(panes)
+        assert "%50" in live
+        assert os.path.exists(path)
+
+    def test_marker_on_a_plain_shell_pane_is_reaped(self, attention_dir):
+        """The pane exists but hosts neither an agent CLI nor claude
+        (the sidekick exited back to zsh): stale, reap it."""
+        panes = PANES + [("0:2", "300", "%50", "zsh", "0", "46", "")]
+        path = _write_marker(attention_dir, pane="%50", agent="claude")
+        live = ccm_core._read_attention_markers(panes)
+        assert live == {}
+        assert not os.path.exists(path)
+
 
 class TestWindowFormatToggle:
     """The @ccm-sidekick-attention toggle rides the bulk window

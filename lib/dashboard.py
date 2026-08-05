@@ -1027,10 +1027,17 @@ class Dashboard:
                         col += display_width(ann["pane_marker"]) + 1
 
                     # Ignore marker ⊘: a hidden sidekick pane exists.
-                    # Dim — present-but-untracked, not a state.
+                    # Dim — present-but-untracked, not a state — until
+                    # that hidden Claude is blocked on a permission
+                    # dialog, when it borrows PERMIT's yellow (the
+                    # ⊘-wearing counterpart of the ⚙ attention colour).
                     if ann.get("ignore_marker"):
+                        ig_attr = (
+                            curses.color_pair(C_PERMIT) | curses.A_BOLD
+                            if "claude" in getattr(p, "attention_agents", ())
+                            else curses.color_pair(C_DIM))
                         self._addstr(stdscr, y, col, ann["ignore_marker"],
-                                     curses.color_pair(C_DIM))
+                                     ig_attr)
                         col += display_width(ann["ignore_marker"]) + 1
 
                     # External-agent badge ⚙<name>: a pane running an

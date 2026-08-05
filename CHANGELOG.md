@@ -32,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `PermissionRequest` and `PermissionResult`, a resolution event Claude Code
   itself lacks. Gemini and Grok Build wait on verification; Codex has no
   approval-time hook (openai/codex#11808).
+- A second Claude Code sidekick joins the attention channel with no installer:
+  an ignored session (`CCM_IGNORE=1 claude`) was already running ccm's hooks
+  and silently exiting, so the ignore branch now forwards its permission
+  events to the same adapter. The `⊘` marker turns PERMIT-yellow while the
+  hidden Claude waits and dims when answered; the ignore contract itself is
+  untouched (nothing reaches window state, `ccm send` delivery, or auto-exit).
+  Claude Code lacks a resolution event, so the wait closes on the next hook
+  activity — approval fires `PostToolUse`, a denial's feedback round ends in
+  `Stop`; only Esc-then-silence is left to the marker's TTL. One dialog also
+  raises both `PermissionRequest` and `Notification(permission_prompt)`, so
+  the adapter treats a second waiting-write as a no-op — one dialog, one
+  desktop notification.
 
 ### Fixed
 - ccm's hook scripts now reject payloads from foreign agent harnesses. Grok

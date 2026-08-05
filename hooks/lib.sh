@@ -52,6 +52,19 @@ _ccm_mark_ignored_pane() {
     return 0
 }
 
+# Forward the current hook payload to the sidekick-attention adapter
+# as agent "claude". Called ONLY from ccm_hook_init's ignore branches —
+# a tracked session's permission waits surface as real PERMIT and need
+# no marker. Fire-and-forget: attention is garnish, the suppression
+# path must stay as cheap and unbreakable as a plain early-exit.
+_ccm_route_sidekick_attention() {
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    local script="${CCM_HOOK_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/sidekick-attention.sh"
+    [[ -x "$script" ]] || return 0
+    printf '%s' "$INPUT" | "$script" claude 2>/dev/null || true
+    return 0
+}
+
 ccm_hook_init() {
     HOOK_DIR="${TMPDIR:-/tmp}/ccm-${UID}/hooks"
     mkdir -p "$HOOK_DIR" 2>/dev/null || true
@@ -92,12 +105,23 @@ ccm_hook_init() {
     #     later fires take the same path even if the env var is gone);
     #   - runtime `ccm ignore`, which wrote `$HOOK_DIR/<sid>.ignore`.
     # An ignored session writes no signal/event artefacts and fires no
-    # desktop notifications — it is invisible to ccm.
+    # desktop notifications — invisible to STATE detection. The one
+    # thing that still escapes is the sidekick-attention marker: an
+    # ignored Claude IS the documented Claude-as-sidekick arrangement,
+    # and its permission dialog is precisely what the attention channel
+    # exists to surface. The adapter keys by $TMUX_PANE and touches
+    # nothing the state machine reads, so the ignore contract
+    # ("aggregation, send delivery, auto-exit never see this session")
+    # holds unchanged.
     if [[ -n "${CCM_IGNORE:-}" ]]; then
         : > "${HOOK_DIR}/${KEY}.ignore" 2>/dev/null || true
+        _ccm_route_sidekick_attention
         return 1
     fi
-    [[ -f "${HOOK_DIR}/${KEY}.ignore" ]] && return 1
+    if [[ -f "${HOOK_DIR}/${KEY}.ignore" ]]; then
+        _ccm_route_sidekick_attention
+        return 1
+    fi
 
     # cwd is used by `_ccm_instant_notify` to find the matching tmux
     # window for project-name lookup, and by the project-name cache

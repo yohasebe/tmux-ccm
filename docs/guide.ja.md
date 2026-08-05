@@ -631,6 +631,8 @@ ccm remove-sidekick-hooks kimi    # 削除する（どちらもバックアッ�
 
 切り替えはダッシュボードの `w` キー、恒久的には `tmux set -g @ccm-sidekick-attention off` で（off でも marker は書かれ続けます — 静かになるのは ccm の表示と通知だけなので、marker ディレクトリを読む他のローカルツールは動き続けます）。
 
+**2つ目の Claude Code にはインストーラすら不要です。** ignore された Claude（`CCM_IGNORE=1 claude`、ガイドで案内している Claude-as-sidekick の形）はもともと ccm のフックを実行していて、ただ黙って抜けていただけです。その許可イベントが同じ attention チャネルに流れるようになりました: 隠れた Claude が待っている間は `⊘` マーカーが PERMIT の黄色になり、ダイアログに答えると dim に戻ります。ignore の契約は不変です — そのセッションはウィンドウ状態にも `ccm send` の配送にも auto-exit にも一切関与しません。正直な注意点が1つ: Claude Code には解決イベントがない（`PermissionResult` の欠落）ため、待ちは*次の* hook 活動で閉じます — 承認されたツールは `PostToolUse` を、拒否のフィードバック往復は `Stop` を発火します。カバーできないのは「Esc で消してそのまま完全に沈黙」だけで、その場合は marker が TTL で消えます。
+
 現在インストールできるのは **Kimi** です（実機検証済み: hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます）。Gemini CLI と Grok Build にも hook 機構はありますが許可イベントが未検証で、Codex CLI には承認時の hook 自体がなく（[openai/codex#11808](https://github.com/openai/codex/issues/11808)）、upstream が追加するまで presence 表示のままです。
 
 ## agent view（バックグラウンドセッション）との併用

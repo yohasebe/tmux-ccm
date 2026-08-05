@@ -630,6 +630,8 @@ From then on, when the sidekick hits a permission prompt its hook drops an atten
 
 Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-sidekick-attention off` (markers are still written when off — only ccm's display and notification go quiet, so other local consumers of the marker directory keep working).
 
+**A second Claude Code needs no installer at all.** An ignored Claude (`CCM_IGNORE=1 claude`, the documented Claude-as-sidekick arrangement) already runs ccm's hooks — they were just exiting silently. Its permission events now route to the same attention channel: the `⊘` marker turns PERMIT-yellow while the hidden Claude waits, and dims again when the dialog is answered. The ignore contract is unchanged — the session still contributes nothing to window state, `ccm send` delivery, or auto-exit. One honest caveat: Claude Code has no resolution event (its `PermissionResult` gap), so the wait is closed by the *next* hook activity — an approved tool fires `PostToolUse`, a denial's feedback round ends in `Stop` — which covers everything except a dialog dismissed with Esc followed by pure silence, where the marker ages out on its TTL instead.
+
 Currently installable for **Kimi** (verified live: its hook set has both `PermissionRequest` and `PermissionResult`, so waits open and close precisely). Gemini CLI and Grok Build have hook systems whose permission events are not yet verified; Codex CLI has no approval-time hook at all ([openai/codex#11808](https://github.com/openai/codex/issues/11808)) and stays presence-only until upstream adds one.
 
 ## Using with agent view (background sessions)

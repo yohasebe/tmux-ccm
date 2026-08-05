@@ -391,7 +391,15 @@ def print_status():
         # but untracked. Dim so it reads as a quiet aside, not a
         # state. `⊘` (U+2298) is one terminal column.
         if getattr(p, "ignored_panes", 0):
-            ignore_marker = f" {C_DIM}⊘{C_RESET}"
+            # An ignored Claude sidekick waiting on a permission
+            # dialog turns its ⊘ PERMIT-yellow — the counterpart of
+            # the ⚙ badge's attention colour, since a hidden claude
+            # wears ⊘ rather than ⚙.
+            ignore_colour = (
+                C_STATE["PERMIT"]
+                if "claude" in getattr(p, "attention_agents", ())
+                else C_DIM)
+            ignore_marker = f" {ignore_colour}⊘{C_RESET}"
             pane_marker_visible_w += 2  # " ⊘"
         else:
             ignore_marker = ""
