@@ -131,6 +131,22 @@ JSONL_HOOK_GAP_TOLERANCE = int(
 # `ccm_jsonl`) so `ccm_rules` can reference it at module-load time
 # without forming an import cycle.
 JSONL_USER_PENDING = "user_pending"
+# Synthetic `stop_reason` for an Esc-interrupted turn. Claude Code
+# fires no Stop hook on a user interrupt (documented upstream), which
+# is why detection long treated Esc as leaving no trace at all — but
+# it DOES write a transcript record saying so, and that record is the
+# only positive evidence the turn ended (measured 2026-08-05: 8
+# occurrences in one session). Treated as terminal so the existing
+# "terminal stop_reason newer than the latest event → release"
+# path in `ccm_activity` picks it up, instead of the session waiting
+# out BUSY_STALE_RELEASE_SEC with an idle screen.
+JSONL_INTERRUPTED = "interrupted"
+# Substring, not the full line: upstream writes at least
+# "[Request interrupted by user]" and
+# "[Request interrupted by user for tool use]", and the trailing
+# clause is exactly the kind of detail that gets reworded. Matching
+# the stable head is the lesson from 0.8.2's three fixed-shape bugs.
+JSONL_INTERRUPT_MARKER = "Request interrupted"
 # How long after the `claude` process starts a `raw=BUSY` reading
 # is treated as MCP-loading startup rather than real work, when no
 # hook signal has been written yet. MCP server initialization
@@ -587,7 +603,16 @@ STATE_PRIORITY = {"PERMIT": 0, "BUSY": 1, "IDLE": 2, "SHELL": 3, "DOWN": 4}
 # (`ccm_rules.DETECTION_RULES`, via the tuple form for declarative
 # fields) and the event-log derive path (`ccm_activity`, via the
 # frozenset for fast `in` checks).
-TERMINAL_STOP_REASONS = frozenset({"end_turn", "max_tokens", "stop_sequence"})
+#
+# `JSONL_INTERRUPTED` is ccm's own synthesis rather than an upstream
+# value, and belongs here for the same reason the real ones do: an
+# Esc-interrupted turn has ended just as definitively as one that ran
+# to `end_turn`. Including it means the release paths that already
+# key on "the transcript says this turn is over" cover Esc too,
+# instead of each needing its own interrupt branch.
+TERMINAL_STOP_REASONS = frozenset({
+    "end_turn", "max_tokens", "stop_sequence", JSONL_INTERRUPTED,
+})
 TERMINAL_STOP_REASONS_TUPLE = tuple(sorted(TERMINAL_STOP_REASONS))
 # Detection state icons. Keep in sync with `lib/state_meta.sh` —
 # bash hooks pay a ~50 ms cost per Python cold start, so we cannot

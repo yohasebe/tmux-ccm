@@ -60,6 +60,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   desktop notification.
 
 ### Fixed
+- A session interrupted with Esc is released at once instead of after a minute.
+  Detection had been built on the belief that a user interrupt leaves no trace —
+  a code comment stated the turn "fires no Stop hook and writes no further
+  JSONL" — so the only way out was an aging guard that waits
+  `BUSY_STALE_RELEASE_SEC` before trusting an idle screen. The second half of
+  that belief is false: Claude Code writes a transcript record whose text reads
+  `[Request interrupted by user]` (8 occurrences in one session). It is now
+  recognised as a synthetic terminal `stop_reason`, joining the values the
+  existing release path already keys on, so no interrupt-specific branch was
+  needed anywhere in the decision tree. Reported by ringi, who hit three
+  consecutive `ccm send` refusals against a session sitting at an empty prompt.
+
+  Read naively the record makes things worse, and both traps are pinned by
+  tests: it is newer than the assistant turn it cut short, so counting it as
+  activity restarted the very wait being served out, and its type is `user`, so
+  it would have promoted to "a prompt was just submitted" and held BUSY for ten
+  minutes.
+- The aging guard works without a readable transcript. It compared the JSONL
+  age against its window, and an unreadable transcript reports `-1` — never past
+  any window — so a session whose transcript ccm cannot find stayed BUSY with no
+  release path at all, while legacy detection (which would have freed it) was
+  never consulted. It now falls back to the age of the newest event, which
+  answers the same question. Same failure shape as the gc-gakkai incident, whose
+  slug fix closed one route to it rather than the corner itself.
 - ccm's hook scripts now reject payloads from foreign agent harnesses. Grok
   Build reads `~/.claude/settings.json` hooks by default for Claude Code
   compatibility, and its payloads parse well enough to slip through — the

@@ -283,7 +283,7 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
 # ─── Activity → state mapping ───
 
 def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
-                          event_type=None):
+                          event_type=None, event_age=-1):
     """Map (activity, raw observation, JSONL signals) to a definite
     state, or None to defer to legacy detection.
 
@@ -388,10 +388,23 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
         candidate == "BUSY"
         and (event_type is None
              or EVENT_CLASSES.get(event_type) == EVENT_CLASS_START))
+    # With no readable JSONL the guard used to be unsatisfiable — the
+    # age it compares is -1, which is never past the window — so a
+    # session whose transcript ccm cannot find (missing file, a slug
+    # rule that drifted, a session too new to have one) stayed BUSY
+    # with no release path at all. Legacy would have freed it, but
+    # returning a state here means legacy is never consulted. The
+    # event's own age answers the same question the JSONL age was
+    # asked: has the screen been idle long enough to trust. Falling
+    # back to it keeps the guard's shape while removing the
+    # indefinite-BUSY corner (the gc-gakkai failure class).
+    aging_age = jsonl_age
+    if aging_age is None or aging_age < 0:
+        aging_age = event_age if event_age is not None and event_age >= 0 else None
     if ((candidate == "PERMIT" or busy_release_eligible)
             and raw == "IDLE"
-            and jsonl_age is not None
-            and jsonl_age > stale_window):
+            and aging_age is not None
+            and aging_age > stale_window):
         return None
 
     # Capture-pane authority. raw=PERMIT (modal physically rendered)
@@ -444,7 +457,11 @@ def derive_state_from_events(events, jsonl_stop_reason,
     )
     event_type = (evidence.get("type")
                   if isinstance(evidence, dict) else None)
+    # Age of the newest event, so the aging guard has a clock even
+    # when the transcript is unreadable (see map_activity_to_state).
+    evidence_ts = evidence.get("ts", 0) if isinstance(evidence, dict) else 0
+    event_age = (now - evidence_ts) if (now > 0 and evidence_ts > 0) else -1
     return map_activity_to_state(
         activity, raw, jsonl_stop_reason, jsonl_age,
-        event_type=event_type,
+        event_type=event_type, event_age=event_age,
     )

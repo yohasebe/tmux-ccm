@@ -628,6 +628,76 @@ class TestDeriveStateFromEvents:
                 jsonl_age=age, now=now, raw="IDLE",
             ) is None, f"stuck BUSY reproduced at jsonl_age={age}"
 
+    def test_esc_interrupt_record_releases_immediately(self):
+        """The transcript's own interrupt note ends the turn at once.
+
+        Before this, an Esc with an idle screen still read BUSY for
+        the whole BUSY_STALE_RELEASE_SEC window, because the only
+        evidence was an ABSENCE (no Stop hook, frozen log) and absence
+        has to be aged before it can be trusted. Claude Code writes a
+        `[Request interrupted by user]` transcript record, which
+        `ccm_jsonl` surfaces as the synthetic terminal
+        JSONL_INTERRUPTED — positive evidence, so no waiting.
+
+        Measured consequence: a cross-project `ccm send` was refused
+        three times in a row against a session sitting at an empty
+        prompt (reported by ringi 2026-08-05)."""
+        now = 1800000000
+        event_ts = now - 100          # prompt submitted
+        for since_interrupt in (1, 5, 30):
+            assert ccm_activity.derive_state_from_events(
+                events=({"ts": event_ts, "type": "prompt"},),
+                jsonl_stop_reason="interrupted",
+                pid_present=True, claude_pid_age=9999,
+                jsonl_age=since_interrupt, now=now, raw="IDLE",
+            ) == "IDLE", f"still BUSY {since_interrupt}s after the interrupt"
+
+    def test_interrupt_older_than_the_event_does_not_release(self):
+        """An interrupt from a PREVIOUS turn must not release the
+        current one: the release keys on the transcript being newer
+        than the latest event, and a resumed session's new prompt
+        event is newer than the old note."""
+        now = 1800000000
+        # jsonl_age kept inside BUSY_STALE_RELEASE_SEC so the aging
+        # guard cannot fire and mask what is being tested: the
+        # interrupt record alone, and it is older than the event.
+        assert ccm_activity.derive_state_from_events(
+            events=({"ts": now - 10, "type": "prompt"},),
+            jsonl_stop_reason="interrupted",
+            pid_present=True, claude_pid_age=9999,
+            jsonl_age=30, now=now, raw="IDLE",
+        ) == "BUSY"
+
+    def test_aging_guard_works_without_a_readable_transcript(self):
+        """No transcript must not mean no release.
+
+        The guard compares the JSONL age against its window, and an
+        unreadable transcript reports -1 — never past any window, so
+        the condition was unsatisfiable and the session stayed BUSY
+        forever. Legacy would have released it, but derive returning a
+        state means legacy is never consulted. This is the shape of
+        the gc-gakkai incident (a slug rule that could not find the
+        file → indefinite false BUSY); closing it here makes the
+        outcome independent of whether the transcript is findable.
+
+        The event's own age answers the same question, so the window
+        itself is unchanged — only the clock it reads."""
+        from ccm_activity import BUSY_STALE_RELEASE_SEC
+        now = 1800000000
+        assert ccm_activity.derive_state_from_events(
+            events=({"ts": now - (BUSY_STALE_RELEASE_SEC + 1),
+                     "type": "prompt"},),
+            jsonl_stop_reason=None, pid_present=True, claude_pid_age=9999,
+            jsonl_age=-1, now=now, raw="IDLE",
+        ) is None, "indefinite BUSY with no readable transcript"
+        # Inside the window it still holds BUSY — the fallback clock
+        # must not weaken the flicker guard, only supply it.
+        assert ccm_activity.derive_state_from_events(
+            events=({"ts": now - 10, "type": "prompt"},),
+            jsonl_stop_reason=None, pid_present=True, claude_pid_age=9999,
+            jsonl_age=-1, now=now, raw="IDLE",
+        ) == "BUSY"
+
     def test_esc_interrupt_inside_window_stays_busy(self):
         """The same Esc-interrupted shape INSIDE the release window
         still reads BUSY — the guard only fires on a JSONL frozen

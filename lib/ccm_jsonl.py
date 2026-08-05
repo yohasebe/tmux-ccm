@@ -38,7 +38,8 @@ from datetime import datetime
 from typing import Optional, Tuple
 
 import ccm_core  # late-bound for find_process_age (pid-reuse staleness check)
-from ccm_constants import JSONL_USER_PENDING, TERMINAL_STOP_REASONS
+from ccm_constants import (JSONL_INTERRUPT_MARKER, JSONL_INTERRUPTED,
+                           JSONL_USER_PENDING, TERMINAL_STOP_REASONS)
 
 
 # ─── Constants ───
@@ -370,6 +371,39 @@ def _is_local_command_user_record(rec: dict) -> bool:
     return text.lstrip().startswith(JSONL_LOCAL_COMMAND_PREFIXES)
 
 
+def _user_record_text(rec: dict) -> Optional[str]:
+    """Leading text content of a `user` record, or None."""
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for blk in content:
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                return blk.get("text")
+            if isinstance(blk, str):
+                return blk
+    return None
+
+
+def _is_interrupt_user_record(rec: dict) -> bool:
+    """True when a `user` record is Claude Code's own note that the
+    turn was interrupted with Esc, not a prompt the user typed.
+
+    This is the ONLY positive evidence an Esc-interrupted turn leaves:
+    no Stop hook fires, so the event log's last entry stays start-class
+    and the session reads BUSY until an aging guard eventually gives
+    up. Distinguishing it here lets the normal terminal-stop_reason
+    release path end the turn at once.
+
+    Read as a genuine prompt it is actively harmful — the record is
+    NEWER than the interrupted assistant turn, so it would promote to
+    `user_pending` ("user just submitted, no response yet") and pin
+    BUSY for the whole BUSY_HOOK_JSONL_WINDOW."""
+    text = _user_record_text(rec)
+    return isinstance(text, str) and JSONL_INTERRUPT_MARKER in text
+
+
 def _parse_jsonl_tail(
     path: str, mtime: int, size: int
 ) -> Tuple[Optional[int], Optional[str]]:
@@ -408,6 +442,7 @@ def _parse_jsonl_tail(
     latest_user_ts: Optional[int] = None
     latest_assistant_ts: Optional[int] = None
     last_stop_reason: Optional[str] = None
+    interrupt_seen = False
 
     try:
         with open(path, "rb") as f:
@@ -452,6 +487,21 @@ def _parse_jsonl_tail(
         # for the whole BUSY_HOOK_JSONL_WINDOW (~10 min).
         if rec_type == "user" and _is_local_command_user_record(rec):
             continue
+        # Esc-interrupt note: evidence the turn ENDED, so it must not
+        # count as activity (it would reset the aging guard's clock to
+        # the moment of the interrupt — the very thing being waited
+        # out) nor as a prompt (it would promote to `user_pending`).
+        # Recorded as a terminal stop_reason instead, and only when
+        # nothing newer has been seen, so a later real record wins.
+        if rec_type == "user" and _is_interrupt_user_record(rec):
+            # Scanning newest-first, so "nothing recorded yet" means
+            # nothing NEWER than this interrupt exists — neither the
+            # assistant turn it cut short nor a fresh prompt that
+            # would have restarted the session.
+            if (last_stop_reason is None and latest_assistant_ts is None
+                    and latest_user_ts is None):
+                interrupt_seen = True
+            continue
         # Parse timestamp — defence-in-depth in case Claude Code adds
         # a whitelisted type that omits the field.
         rec_ts: Optional[int] = None
@@ -486,6 +536,15 @@ def _parse_jsonl_tail(
             and latest_user_ts > latest_assistant_ts
             and last_stop_reason in TERMINAL_STOP_REASONS):
         last_stop_reason = JSONL_USER_PENDING
+
+    # An interrupt note newer than everything else ends the turn, and
+    # OVERRIDES the stop_reason of the assistant record it cut short.
+    # That record almost always says `tool_use` — non-terminal, and
+    # precisely the value that pins a session to BUSY with every
+    # release path closed. `interrupt_seen` is only set when nothing
+    # newer was found, so this cannot mask a resumed session.
+    if interrupt_seen:
+        last_stop_reason = JSONL_INTERRUPTED
 
     result = (real_ts, last_stop_reason)
     _cache_jsonl_activity(path, key, result)

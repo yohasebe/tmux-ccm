@@ -17,6 +17,7 @@ import pytest
 
 import ccm_core
 import ccm_activity
+import ccm_constants
 import ccm_canaries
 import ccm_commands
 import ccm_detection
@@ -806,3 +807,115 @@ class TestReadSessionVersions:
         m = ccm_jsonl.read_session_versions()
         assert m == {"sid-evil": "2.1.126"}
 
+
+
+class TestJsonlEscInterruptRecord:
+    """Esc-interrupt notes in the transcript.
+
+    Claude Code fires no Stop hook on a user interrupt — long taken to
+    mean an interrupted turn leaves no trace at all, which is why
+    detection had to wait out an aging guard with an idle screen. It
+    does leave a trace: a `user` record reading "[Request interrupted
+    by user…]" (measured 2026-08-05, 8 occurrences in one session).
+    Read correctly it is the missing terminal; read naively it is
+    worse than nothing, because it is NEWER than the assistant turn it
+    cut short and would promote to `user_pending`.
+    """
+
+    def setup_method(self):
+        ccm_jsonl._jsonl_path_cache.clear()
+        ccm_jsonl._jsonl_activity_cache.clear()
+
+    teardown_method = setup_method
+
+    def _setup_project(self, tmp_path, monkeypatch, project_dir="/p/q"):
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        d = tmp_path / ccm_jsonl._project_slug(project_dir)
+        d.mkdir()
+        return d / "session.jsonl"
+
+    @staticmethod
+    def _interrupt(ts, text="[Request interrupted by user]"):
+        return {"type": "user", "timestamp": _iso_ts(ts),
+                "message": {"role": "user",
+                            "content": [{"type": "text", "text": text}]}}
+
+    @pytest.mark.parametrize("text", [
+        "[Request interrupted by user]",
+        "[Request interrupted by user for tool use]",
+    ])
+    def test_interrupt_overrides_the_cut_short_stop_reason(
+            self, tmp_path, monkeypatch, text):
+        """The interrupted assistant record says `tool_use` — the one
+        value with no release path. The interrupt is newer, and ends
+        the turn."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 300, stop_reason="tool_use"),
+            self._interrupt(now - 5, text),
+        ])
+        _age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
+        assert stop == ccm_constants.JSONL_INTERRUPTED
+
+    def test_interrupt_does_not_count_as_activity(
+            self, tmp_path, monkeypatch):
+        """Counting it would reset the aging guard's clock to the
+        moment of the interrupt — restarting the very wait the release
+        is trying to end."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 300, stop_reason="tool_use"),
+            self._interrupt(now - 5),
+        ])
+        age, _stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
+        assert age >= 290, "the interrupt note refreshed the activity age"
+
+    def test_a_real_prompt_after_the_interrupt_wins(
+            self, tmp_path, monkeypatch):
+        """Esc then a new prompt: the session is working again, and
+        must not read as interrupted."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 300, stop_reason="tool_use"),
+            self._interrupt(now - 60),
+            {"type": "user", "timestamp": _iso_ts(now - 2),
+             "message": {"content": "next task please"}},
+        ])
+        age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
+        assert stop != ccm_constants.JSONL_INTERRUPTED
+        assert age <= 5, "the new prompt is real activity"
+
+    def test_an_assistant_turn_after_the_interrupt_wins(
+            self, tmp_path, monkeypatch):
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 300, stop_reason="tool_use"),
+            self._interrupt(now - 60),
+            assistant_record(now - 2, stop_reason="end_turn"),
+        ])
+        _age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
+        assert stop == "end_turn"
+
+    def test_a_prompt_merely_quoting_the_phrase_is_still_a_prompt(
+            self, tmp_path, monkeypatch):
+        """The marker is matched as a substring, so a user genuinely
+        typing about interrupts must not be mistaken for one. The
+        discriminator is that Claude's own note is the WHOLE content;
+        this asserts the current, deliberately simple behaviour so a
+        future tightening is a visible decision rather than a
+        surprise."""
+        f = self._setup_project(tmp_path, monkeypatch)
+        now = time.time()
+        write_jsonl(f, [
+            assistant_record(now - 300, stop_reason="tool_use"),
+            {"type": "user", "timestamp": _iso_ts(now - 5),
+             "message": {"role": "user", "content": [
+                 {"type": "text",
+                  "text": "why does Request interrupted appear twice?"}]}},
+        ])
+        _age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
+        assert stop == ccm_constants.JSONL_INTERRUPTED
