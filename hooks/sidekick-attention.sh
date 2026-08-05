@@ -18,6 +18,13 @@
 #              vanished file cannot be told apart from a stale one —
 #              a consumer that sees `resolved` KNOWS the wait ended.
 #
+# Testing this by hand: use a REAL pane id. ccm's reader reaps any
+# marker whose pane no longer hosts an agent, so a synthetic
+# `TMUX_PANE=%my-probe` is collected the moment ccm next builds its
+# project list — which looks exactly like "the resolve step deleted
+# the file" if a build lands between two invocations. (Reported by
+# ringi 2026-08-05, who caught their own measurement before filing it.)
+#
 # Fail-quiet by design: the sidekick's hook runners are fail-open with
 # short timeouts, and a broken marker must never cost the user their
 # sidekick. Anything unexpected → exit 0 with no artefact.
