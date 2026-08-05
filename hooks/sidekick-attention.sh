@@ -48,27 +48,46 @@ TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // .toolName // empty' 2>/dev/nu
 # One-line summary: tool name plus its most descriptive input field,
 # hard-capped — this string crosses into other tools' UIs (ccm
 # notification, ringi's Watch face), so it is data, never markup.
+# `.message` is the last resort: Grok Build's permission Notification
+# carries no tool fields at all (measured — only "Tool permission
+# requested"), and a generic line still beats an empty one on a watch
+# face, which is the surface ringi asked this field for.
 SUMMARY=$(printf '%s' "$INPUT" | jq -r '
-    [ (.tool_name // .toolName // empty),
-      (.tool_input.command // .tool_input.file_path
-        // .toolInput.command // .toolInput.file_path // empty)
-    ] | map(select(. != null and . != "")) | join(": ")' 2>/dev/null | head -c 160)
+    . as $p
+    | ([ ($p.tool_name // $p.toolName // empty),
+         ($p.tool_input.command // $p.tool_input.file_path
+           // $p.toolInput.command // $p.toolInput.file_path // empty)
+       ] | map(select(. != null and . != "")) | join(": "))
+    | if . == "" then ($p.message // "") else . end' 2>/dev/null | head -c 160)
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# Claude Code routes its Notification event here too (via the ignore
-# branch in lib.sh); the payload's notification_type decides which
-# side of the marker lifecycle it is.
-if [[ "$EVENT" == "Notification" || "$EVENT" == "notification" ]]; then
+# Normalize the event name to lowercase-without-separators before
+# dispatching. Vendors disagree on casing for the SAME event and are
+# free to change it: Kimi sends "PermissionRequest", Grok Build sends
+# "pre_tool_use" / "stop" (measured 2026-08-05), and ringi found Grok's
+# values snake_case where its own dispatch expected PascalCase — an
+# accidental near-miss. Matching a normalized form instead of listing
+# spellings is the same lesson 0.8.2 taught about upstream strings:
+# never pin a shape the vendor can restyle.
+# (`tr` rather than `${var,,}`: hooks must run under macOS bash 3.2.)
+EVENT=$(printf '%s' "$EVENT" | tr '[:upper:]' '[:lower:]' | tr -d '_-')
+
+# Notification is a family, not an event: the payload's type field
+# says which side of the marker lifecycle it belongs to. Claude Code
+# (routed via lib.sh's ignore branch) and Grok Build both use it —
+# Grok has no PermissionRequest event at all, so for a Grok sidekick
+# this IS the permission signal.
+if [[ "$EVENT" == "notification" ]]; then
     NOTIF_TYPE=$(printf '%s' "$INPUT" | jq -r '.notification_type // .notificationType // empty' 2>/dev/null)
     case "$NOTIF_TYPE" in
-        permission_prompt|elicitation_dialog) EVENT="PermissionRequest" ;;
-        idle_prompt) EVENT="Stop" ;;
+        permission_prompt|elicitation_dialog) EVENT="permissionrequest" ;;
+        idle_prompt) EVENT="stop" ;;
         *) exit 0 ;;
     esac
 fi
 
 case "$EVENT" in
-    PermissionRequest|permission_request)
+    permissionrequest)
         mkdir -p "$ATTENTION_DIR" 2>/dev/null || exit 0
         # Double-fire guard: one Claude dialog raises BOTH
         # PermissionRequest and Notification(permission_prompt). The
@@ -103,7 +122,7 @@ case "$EVENT" in
             fi
         fi
         ;;
-    PermissionResult|permission_result|Interrupt|interrupt|Stop|stop|StopFailure|stop_failure|SessionEnd|session_end|PreToolUse|PostToolUse|PostToolUseFailure|UserPromptSubmit|SubagentStart|SubagentStop|PreCompact|PostCompact|PermissionDenied)
+    permissionresult|interrupt|stop|stopfailure|sessionend|pretooluse|posttooluse|posttoolusefailure|userpromptsubmit|subagentstart|subagentstop|precompact|postcompact|permissiondenied)
         # Any of these ends a pending wait. Kimi has a true
         # resolution event (PermissionResult); Claude Code does not,
         # so for a Claude sidekick ANY subsequent activity event is

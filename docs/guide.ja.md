@@ -633,7 +633,9 @@ ccm remove-sidekick-hooks kimi    # 削除する（どちらもバックアッ�
 
 **2つ目の Claude Code にはインストーラすら不要です。** ignore された Claude（`CCM_IGNORE=1 claude`、ガイドで案内している Claude-as-sidekick の形）はもともと ccm のフックを実行していて、ただ黙って抜けていただけです。その許可イベントが同じ attention チャネルに流れるようになりました: 隠れた Claude が待っている間は `⊘` マーカーが PERMIT の黄色になり、ダイアログに答えると dim に戻ります。ignore の契約は不変です — そのセッションはウィンドウ状態にも `ccm send` の配送にも auto-exit にも一切関与しません。正直な注意点が1つ: Claude Code には解決イベントがない（`PermissionResult` の欠落）ため、待ちは*次の* hook 活動で閉じます — 承認されたツールは `PostToolUse` を、拒否のフィードバック往復は `Stop` を発火します。カバーできないのは「Esc で消してそのまま完全に沈黙」だけで、その場合は marker が TTL で消えます。
 
-現在インストールできるのは **Kimi** です（実機検証済み: hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます）。Gemini CLI と Grok Build にも hook 機構はありますが許可イベントが未検証で、Codex CLI には承認時の hook 自体がなく（[openai/codex#11808](https://github.com/openai/codex/issues/11808)）、upstream が追加するまで presence 表示のままです。
+インストールできるのは **Kimi** と **Grok Build** で、どちらも実際に動いているペインで検証済みです。正確なのは Kimi の方です — hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます。Grok にはどちらもありません: 許可待ちは `Notification` の `notificationType: "permission_prompt"` として届き、ツールの詳細を持たず（summary は Grok 自身の「Tool permission requested」にフォールバックします）、次の活動イベントで閉じます。**Codex CLI** には承認時の hook 自体がなく（[openai/codex#11808](https://github.com/openai/codex/issues/11808)）、upstream が追加するまで presence 表示のままです。Antigravity CLI は未計測です。`ccm setup-sidekick-hooks` は未対応のエージェントを名指しで拒否し、どちらに該当するかを表示します。
+
+Grok Build には設定の書き換えではなく専用の hook ファイル（`~/.grok/hooks/ccm-sidekick-attention.json`）を置くので、削除は unlink 一発で、あなたの設定と混ざることは一切ありません。
 
 ## agent view（バックグラウンドセッション）との併用
 

@@ -32,6 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `PermissionRequest` and `PermissionResult`, a resolution event Claude Code
   itself lacks. Gemini and Grok Build wait on verification; Codex has no
   approval-time hook (openai/codex#11808).
+- Grok Build joins the attention channel: `ccm setup-sidekick-hooks grok` drops
+  a hook file into `~/.grok/hooks/` — its own file, not an edit to your config,
+  so removal is an unlink. Measured against grok 0.2.118 rather than assumed:
+  Grok has no `PermissionRequest` event (the wait arrives as `Notification`
+  with `notificationType: "permission_prompt"`), no resolution event (the next
+  activity event closes the wait), and its permission payload carries no tool
+  fields at all, so the marker's `summary` falls back to Grok's own message
+  rather than going empty on a watch face.
+- Agent CLIs launched through a platform-suffixed binary are recognised again.
+  Grok Build's `grok` is a symlink to `grok-macos-aarch64`, and tmux reports
+  the resolved name truncated (`grok-macos-aarc`) — so the `grok` entry in the
+  allowlist could never match, costing the ⚙ badge and reaping every attention
+  marker as "sidekick exited". Matching now accepts a `grok-` prefix for the
+  whole platform/arch family, and the badge shows the canonical short name.
 - A second Claude Code sidekick joins the attention channel with no installer:
   an ignored session (`CCM_IGNORE=1 claude`) was already running ccm's hooks
   and silently exiting, so the ignore branch now forwards its permission

@@ -42,7 +42,8 @@ import ccm_render
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
-from ccm_constants import CCM_VERSION, CLAUDE_CMD, EXTERNAL_AGENT_COMMANDS
+from ccm_constants import (CCM_VERSION, CLAUDE_CMD,
+                           external_agent_name)
 from ccm_core import _C_BOLD, _C_RESET
 
 
@@ -480,7 +481,7 @@ def _capture_pane_label(pane):
     known external agent CLI, then the raw foreground command."""
     if pane.claude_pid:
         role = "claude"
-    elif pane.current_command in EXTERNAL_AGENT_COMMANDS:
+    elif external_agent_name(pane.current_command):
         role = pane.current_command
     else:
         role = pane.current_command or "?"
@@ -1303,17 +1304,70 @@ def _strip_sidekick_block(text):
     return text
 
 
+def _grok_hook_path():
+    return os.path.join(
+        os.environ.get("CCM_GROK_HOME", os.path.expanduser("~/.grok")),
+        "hooks", "ccm-sidekick-attention.json")
+
+
+# Grok Build's permission-wait signal (measured 2026-08-05, grok
+# 0.2.118): it has no PermissionRequest event — the wait arrives as
+# `Notification` with `notificationType: "permission_prompt"`. There
+# is no resolution event either, so the next activity event closes
+# the wait, exactly as for a Claude sidekick.
+_GROK_ATTENTION_EVENTS = (
+    "Notification", "PostToolUse", "PostToolUseFailure",
+    "PreToolUse", "Stop", "StopFailure", "SessionEnd",
+    "PermissionDenied",
+)
+
+
+def _grok_attention_hooks():
+    script = os.path.join(ccm_core.CCM_ROOT, "hooks", "sidekick-attention.sh")
+    command = f"{shlex.quote(script)} grok"
+    return {
+        "hooks": {
+            event: [{"hooks": [{"type": "command",
+                                "command": command,
+                                "timeout": 5}]}]
+            for event in _GROK_ATTENTION_EVENTS
+        }
+    }
+
+
+def _setup_grok_hooks():
+    """Grok Build reads `~/.grok/hooks/*.json`, so ccm ships a file of
+    its own instead of editing the user's config — nothing of theirs
+    to back up, break, or merge with, and removal is an unlink."""
+    path = _grok_hook_path()
+    if not os.path.isdir(os.path.dirname(os.path.dirname(path))):
+        ccm_core.ccm_die(
+            f"{os.path.dirname(os.path.dirname(path))} not found — is "
+            "Grok Build installed?")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_grok_attention_hooks(), f, indent=2)
+        f.write("\n")
+    ccm_core.ccm_info(f"attention hooks installed at {path}")
+    print("  Takes effect in NEW Grok sessions. Grok has no permission-"
+          "resolution event, so\n  a wait is cleared by the next activity "
+          "event (or its TTL after an Esc).")
+
+
 def cmd_setup_sidekick_hooks(agent):
     """`ccm setup-sidekick-hooks <agent>` — install ccm's attention
     adapter into the sidekick CLI's own hook config, so the sidekick
     self-reports "waiting on a decision" without ccm parsing its
     screen."""
+    if agent == "grok":
+        _setup_grok_hooks()
+        return
     if agent != "kimi":
         ccm_core.ccm_die(
-            f"unsupported sidekick agent: {agent!r}. Supported: kimi.\n"
-            "  Gemini and Grok Build have hook systems but their "
-            "permission-wait events are not yet verified; Codex has no "
-            "approval-time hook (openai/codex#11808).")
+            f"unsupported sidekick agent: {agent!r}. Supported: kimi, grok.\n"
+            "  Codex has no approval-time hook (openai/codex#11808), so a "
+            "wait cannot be observed there at all. Antigravity CLI is not "
+            "yet measured.")
     config = _kimi_config_path()
     if not os.path.isdir(os.path.dirname(config)):
         ccm_core.ccm_die(
@@ -1341,9 +1395,17 @@ def cmd_setup_sidekick_hooks(agent):
 
 def cmd_remove_sidekick_hooks(agent):
     """`ccm remove-sidekick-hooks <agent>` — uninstall the adapter."""
+    if agent == "grok":
+        path = _grok_hook_path()
+        if not os.path.exists(path):
+            ccm_core.ccm_info("nothing to remove (no ccm hook file found)")
+            return
+        os.unlink(path)
+        ccm_core.ccm_info(f"attention hooks removed: {path}")
+        return
     if agent != "kimi":
         ccm_core.ccm_die(
-            f"unsupported sidekick agent: {agent!r}. Supported: kimi.")
+            f"unsupported sidekick agent: {agent!r}. Supported: kimi, grok.")
     config = _kimi_config_path()
     if not os.path.exists(config):
         ccm_core.ccm_info("nothing to remove (no Kimi config found)")

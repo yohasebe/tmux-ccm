@@ -54,6 +54,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     CLAUDE_PROCESS_NAME,
     COMPLETED_AT_TIMEOUT,
     EXTERNAL_AGENT_COMMANDS,
+    external_agent_name,
     HOOK_FRESH_THRESHOLD,
     HOOK_SCRIPTS,
     IDLE_EXIT_TIMEOUT,
@@ -621,7 +622,7 @@ def _read_attention_markers(panes_cache):
     # ignored-flag check is needed here; presence of claude is enough
     # to keep the pane out of the "sidekick exited" reap.
     agent_panes = {pc[2] for pc in panes_cache
-                   if pc[3] in EXTERNAL_AGENT_COMMANDS
+                   if external_agent_name(pc[3])
                    or pc[3] == CLAUDE_PROCESS_NAME}
 
     def _epoch(iso):
@@ -681,9 +682,12 @@ def _resolve_external_agent_panes(panes_cache, win_target):
     a stale entry is impossible. Display-only: the result feeds the
     `⚙<name>` presence badge and the `(name)` note on SHELL rows;
     detection and the state machine never see it."""
+    # Canonical short names, not the raw command: a launcher symlink
+    # resolves to a platform-suffixed binary, and `⚙grok-macos-aarc`
+    # is neither readable nor stable across machines.
     return tuple(
-        pc[3] for pc in panes_cache
-        if pc[0] == win_target and pc[3] in EXTERNAL_AGENT_COMMANDS
+        external_agent_name(pc[3]) for pc in panes_cache
+        if pc[0] == win_target and external_agent_name(pc[3])
     )
 
 

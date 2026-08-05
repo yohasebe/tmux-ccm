@@ -238,3 +238,52 @@ class TestSidekickHooksInstaller:
         with pytest.raises(SystemExit):
             ccm_commands.cmd_setup_sidekick_hooks("kimi")
         assert "installed" in capsys.readouterr().err
+
+
+class TestGrokInstaller:
+    """Grok Build reads `~/.grok/hooks/*.json`, so ccm ships its own
+    file rather than editing the user's config — nothing of theirs to
+    merge with or break, and removal is an unlink."""
+
+    @pytest.fixture
+    def grok_home(self, tmp_path, monkeypatch):
+        home = tmp_path / ".grok"
+        home.mkdir()
+        monkeypatch.setenv("CCM_GROK_HOME", str(home))
+        return home
+
+    def test_install_writes_a_separate_file(self, grok_home, capsys):
+        ccm_commands.cmd_setup_sidekick_hooks("grok")
+        path = grok_home / "hooks" / "ccm-sidekick-attention.json"
+        assert path.exists()
+        data = json.loads(path.read_text())
+        # Notification is the permission signal — Grok has no
+        # PermissionRequest event at all (measured).
+        assert "Notification" in data["hooks"]
+        # And an activity event to close the wait, since Grok has no
+        # resolution event either.
+        assert "PostToolUse" in data["hooks"]
+        assert "sidekick-attention.sh" in json.dumps(data)
+        assert "NEW Grok sessions" in capsys.readouterr().out
+
+    def test_install_touches_no_other_grok_file(self, grok_home):
+        (grok_home / "config.toml").write_text('[cli]\ninstaller = "internal"\n')
+        ccm_commands.cmd_setup_sidekick_hooks("grok")
+        assert (grok_home / "config.toml").read_text() == (
+            '[cli]\ninstaller = "internal"\n')
+
+    def test_remove_unlinks_the_file(self, grok_home):
+        ccm_commands.cmd_setup_sidekick_hooks("grok")
+        ccm_commands.cmd_remove_sidekick_hooks("grok")
+        assert not (grok_home / "hooks" / "ccm-sidekick-attention.json").exists()
+
+    def test_missing_grok_install_refused(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("CCM_GROK_HOME", str(tmp_path / "nope" / ".grok"))
+        with pytest.raises(SystemExit):
+            ccm_commands.cmd_setup_sidekick_hooks("grok")
+        assert "installed" in capsys.readouterr().err
+
+    def test_codex_refusal_names_the_upstream_gap(self, capsys):
+        with pytest.raises(SystemExit):
+            ccm_commands.cmd_setup_sidekick_hooks("codex")
+        assert "11808" in capsys.readouterr().err

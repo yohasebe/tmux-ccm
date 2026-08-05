@@ -303,3 +303,40 @@ class TestAllowlistMembership:
             assert name in ccm_constants.EXTERNAL_AGENT_COMMANDS, (
                 f"{name} is named in the sidekick diagram but would get "
                 "no presence badge")
+
+
+class TestPlatformSuffixedBinaries:
+    """A launcher symlink can resolve to a platform-suffixed binary,
+    and tmux reports the RESOLVED (truncated) name — Grok Build's
+    `grok` arrives as `grok-macos-aarc` (measured 2026-08-05,
+    grok 0.2.118). Enumerating every platform/arch spelling, and
+    guessing tmux's truncation width, is the fixed-shape mistake this
+    project keeps paying for; a prefix stands in for the family."""
+
+    @pytest.mark.parametrize("command,expected", [
+        ("grok-macos-aarc", "grok"),      # measured, truncated by tmux
+        ("grok-macos-aarch64", "grok"),   # untruncated
+        ("grok-linux-x86_64", "grok"),    # another platform
+        ("grok", "grok"),                 # plain launcher, still fine
+        ("kimi", "kimi"),                 # exact-match set unaffected
+    ])
+    def test_known_agents_resolve_to_a_short_name(self, command, expected):
+        assert ccm_constants.external_agent_name(command) == expected
+
+    @pytest.mark.parametrize("command", [
+        "grokking-notes",  # prefix must require the separator
+        "zsh", "vim", "node", "",
+    ])
+    def test_unrelated_commands_do_not_match(self, command):
+        assert ccm_constants.external_agent_name(command) == ""
+
+    def test_claude_never_resolves_as_an_external_agent(self):
+        """The pane ccm TRACKS must never also claim the presence
+        badge — one pane cannot be both sides of the asymmetry."""
+        assert ccm_constants.external_agent_name("claude") == ""
+
+    def test_badge_label_uses_the_short_name(self):
+        """`⚙grok-macos-aarc` is neither readable nor stable across
+        machines; the badge carries the canonical name."""
+        panes = [("0:2", "1", "%1", "grok-macos-aarc", "0", "40", "")]
+        assert ccm_core._resolve_external_agent_panes(panes, "0:2") == ("grok",)

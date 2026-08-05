@@ -115,6 +115,51 @@ _request_payload() {
     [[ ! -e "${ATTENTION_DIR}/%40.json" ]]
 }
 
+# ─── Grok Build (snake_case events, Notification-only permission) ───
+
+# Verbatim payload from grok 0.2.118 (measured 2026-08-05): event
+# names are snake_case VALUES, there is no PermissionRequest event,
+# and the permission Notification carries no tool fields at all.
+_grok_notification() {
+    printf '%s' '{"hookEventName":"notification","sessionId":"g-1","cwd":"/x","workspaceRoot":"/x","permissionMode":"default","notificationType":"permission_prompt","message":"Tool permission requested","level":"info"}'
+}
+
+@test "grok: snake_case notification opens a wait" {
+    _grok_notification | bash "$SCRIPT" grok
+    run jq -r '.state + "/" + .agent' "${ATTENTION_DIR}/%40.json"
+    [[ "$output" == "waiting/grok" ]]
+}
+
+@test "grok: summary falls back to the payload message" {
+    # Grok's permission Notification has no toolName/toolInput, and an
+    # empty summary is what ringi's watch face cannot use.
+    _grok_notification | bash "$SCRIPT" grok
+    run jq -r '.summary' "${ATTENTION_DIR}/%40.json"
+    [[ "$output" == "Tool permission requested" ]]
+}
+
+@test "grok: snake_case activity event resolves the wait" {
+    # `post_tool_use`, not `PostToolUse` — the casing that made ringi's
+    # PascalCase dispatch an accidental near-miss.
+    _grok_notification | bash "$SCRIPT" grok
+    printf '%s' '{"hookEventName":"post_tool_use","sessionId":"g-1"}' \
+        | bash "$SCRIPT" grok
+    run jq -r '.state' "${ATTENTION_DIR}/%40.json"
+    [[ "$output" == "resolved" ]]
+}
+
+@test "event-name matching is casing- and separator-insensitive" {
+    # The dispatch normalizes rather than enumerating spellings, so a
+    # vendor restyling its event names cannot silently stop matching.
+    for spelling in "PermissionRequest" "permission_request" "permission-request" "PERMISSIONREQUEST"; do
+        printf '%s' "{\"hook_event_name\":\"${spelling}\",\"session_id\":\"s\",\"cwd\":\"/x\"}" \
+            | bash "$SCRIPT" kimi
+        run jq -r '.state' "${ATTENTION_DIR}/%40.json"
+        [[ "$output" == "waiting" ]]
+        rm -f "${ATTENTION_DIR}/%40.json"
+    done
+}
+
 # ─── Claude-as-sidekick (routed via lib.sh's ignore branch) ───
 
 @test "claude: Notification permission_prompt opens a wait" {

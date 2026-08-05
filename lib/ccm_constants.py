@@ -529,11 +529,38 @@ EXTERNAL_AGENT_COMMANDS = frozenset({
     # this is a debugging note rather than something to fix here.
     "codex",    # OpenAI Codex CLI
     "gemini",   # Google Gemini CLI
-    # The product is Grok Build; `grok` is what the official installer
-    # puts on PATH, which is what tmux reports. It also ships an `agent`
-    # symlink — too generic to allowlist, same call as `node` above.
-    "grok",     # xAI Grok Build
+    "grok",     # xAI Grok Build — see the prefix note below
 })
+
+# Some CLIs are a launcher symlink pointing at a platform-suffixed
+# binary, and tmux reports the RESOLVED name (truncated): Grok Build's
+# `grok` resolves to `grok-macos-aarch64` and arrives as
+# `grok-macos-aarc` (measured 2026-08-05). Enumerating every
+# platform/arch spelling — and guessing tmux's truncation width — is
+# the fixed-shape mistake this project keeps paying for, so a matching
+# prefix stands in for the whole family. Prefixes must stay specific
+# enough that no unrelated program collides: `grok-` qualifies,
+# a bare `grok` would also swallow `grokking-notes`.
+EXTERNAL_AGENT_PREFIXES = ("grok-",)
+
+
+def external_agent_name(command):
+    """Canonical agent name for a pane's foreground command, or "" if
+    it is not a known external agent CLI.
+
+    Returns the SHORT name, so display and marker records stay stable
+    across a platform-suffixed binary: `grok-macos-aarc` → `grok`.
+    Single source of truth for "is this pane an agent?" — the badge,
+    the SHELL-row note and the attention reader all route through it,
+    so a new spelling is fixed in exactly one place."""
+    if not command:
+        return ""
+    if command in EXTERNAL_AGENT_COMMANDS:
+        return command
+    for prefix in EXTERNAL_AGENT_PREFIXES:
+        if command.startswith(prefix):
+            return prefix.rstrip("-")
+    return ""
 
 CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
 
