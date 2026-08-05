@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Verified against Claude Code v2.1.222. All four detection patterns matched a
+  live pane unaltered (including the sub-1k token spinner form), the hook event
+  sequence was unchanged, and the permission-request escalation held at ~6 s
+  across 41 measured windows. Nothing in the release touches the surfaces ccm
+  reads; the one hook-adjacent change (auto-allow hooks no longer bypass tool
+  restrictions in background agent tasks) alters permission outcomes, not
+  event emission.
+
 ### Fixed
 - The dashboard's `w` key is listed in the README's control table. It appears
   in the dashboard's own on-screen help, so leaving it out of the table left a
