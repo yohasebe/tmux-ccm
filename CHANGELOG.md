@@ -60,6 +60,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   desktop notification.
 
 ### Fixed
+- The Claude-sidekick half of sidekick attention never worked. Its marker was
+  kept alive by comparing a pane's foreground command to `claude`, but the
+  versioned-install symlink makes tmux report the launcher name (`2.1.221`), so
+  the test was false in every real environment and every Claude sidekick's
+  marker was reaped by the next scan — no badge, and the resolve hook then found
+  nothing to clear. The pane is identified by its process tree now, as
+  `auto_exit_idle` already documented it must be. The test that covered this
+  passed on a fixture saying `claude`, which no real pane reports.
+- Attention markers are written through an atomic rename. A direct write
+  truncates first, so a reader landing in that gap saw an empty file, judged it
+  unparseable and unlinked it — after which the writer kept writing to a
+  deleted file and the marker was lost. The resolve path already did this; only
+  the initial write did not. Stage files left by a killed writer are now reaped
+  too, and a `resolved_ts` in the future (clock skew) no longer pins a marker
+  forever.
+- The attention reader runs even when `@ccm-sidekick-attention` is off, because
+  it is also the only garbage collector — the writers are per-CLI hook scripts
+  that keep writing regardless of a ccm-side switch. Only its result is
+  discarded when off.
 - A session interrupted with Esc is released at once instead of after a minute.
   Detection had been built on the belief that a user interrupt leaves no trace —
   a code comment stated the turn "fires no Stop hook and writes no further

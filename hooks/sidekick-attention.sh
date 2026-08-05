@@ -103,13 +103,26 @@ case "$EVENT" in
         if [[ -f "$MARKER" ]] && jq -e '.state == "waiting"' "$MARKER" >/dev/null 2>&1; then
             exit 0
         fi
-        jq -cn \
+        # Write via tmp+rename, matching the resolve path below. A
+        # direct `> "$MARKER"` truncates first, so a reader landing in
+        # the gap between truncate and write sees an empty file,
+        # treats it as unparseable and unlinks it — after which this
+        # process keeps writing to an unlinked fd and the marker is
+        # gone for good. rename(2) is atomic, so a concurrent reader
+        # (ccm's GC, or ringi) only ever sees the old file or the new
+        # one. Same reason the reader never edits a marker in place.
+        if jq -cn \
             --arg agent "$AGENT" --arg id "${SESSION:-unknown}-$(date +%s)" \
             --arg cwd "$CWD" --arg ts "$NOW" --arg session "$SESSION" \
             --arg summary "$SUMMARY" --arg pane "$TMUX_PANE" --arg tool "$TOOL" \
             '{agent:$agent, state:"waiting", id:$id, cwd:$cwd, ts:$ts,
               session:$session, summary:$summary, pane:$pane, tool:$tool}' \
-            > "$MARKER" 2>/dev/null || exit 0
+            > "${MARKER}.tmp" 2>/dev/null; then
+            mv "${MARKER}.tmp" "$MARKER" 2>/dev/null || exit 0
+        else
+            rm -f "${MARKER}.tmp" 2>/dev/null
+            exit 0
+        fi
 
         # Desktop notification, gated by the same toggle the display
         # honours. Fires once per dialog (the event itself is the

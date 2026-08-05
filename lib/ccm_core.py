@@ -587,7 +587,7 @@ def _resolve_ignored_panes(panes_cache, win_target, ps_lines):
     return count
 
 
-def _read_attention_markers(panes_cache):
+def _read_attention_markers(panes_cache, ps_lines):
     """Read every sidekick attention marker once per build and GC the
     dead ones. Returns {pane_id: marker_dict} for markers that are
     live `waiting` — the only state any display surface acts on.
@@ -615,15 +615,31 @@ def _read_attention_markers(panes_cache):
     import json as _json
     from datetime import datetime, timezone
     now = time.time()
-    # Panes whose marker may legitimately be alive: external agent
-    # CLIs, plus claude — an ignored Claude sidekick writes markers
-    # through the ignore branch in hooks/lib.sh. A tracked claude
-    # never writes one (its waits surface as real PERMIT), so no
-    # ignored-flag check is needed here; presence of claude is enough
-    # to keep the pane out of the "sidekick exited" reap.
-    agent_panes = {pc[2] for pc in panes_cache
-                   if external_agent_name(pc[3])
-                   or pc[3] == CLAUDE_PROCESS_NAME}
+    by_pane = {pc[2]: pc for pc in panes_cache}
+
+    def _pane_hosts_agent(pane_id):
+        """Does this pane still host the sidekick its marker came from?
+
+        A pane running a known external agent CLI answers from
+        `pane_current_command` alone. A Claude sidekick does NOT:
+        the versioned-install symlink makes tmux report the launcher
+        name (`2.1.221`, measured), never `claude`, so comparing the
+        command to CLAUDE_PROCESS_NAME is false in every real
+        environment — `ccm_runtime.auto_exit_idle` documents the same
+        quirk and resolves it the same way. Left as a name compare,
+        every Claude-sidekick marker was reaped by the next slow build
+        and the whole Claude path of the contract silently did
+        nothing.
+
+        The process walk runs only for panes that actually have a
+        marker (usually none), so it costs nothing on the common
+        build."""
+        pc = by_pane.get(pane_id)
+        if pc is None:
+            return False
+        if external_agent_name(pc[3]):
+            return True
+        return bool(ccm_detection.find_claude_pid(pc[1], ps_lines))
 
     def _epoch(iso):
         try:
@@ -635,6 +651,19 @@ def _read_attention_markers(panes_cache):
     live = {}
     for entry in entries:
         if not entry.endswith(".json"):
+            # Writers stage through `<marker>.json.tmp` before an
+            # atomic rename; one killed mid-write leaves that behind,
+            # and the `.json` filter would let it accumulate forever.
+            # Reaped on age alone — a live stage file is milliseconds
+            # old, so anything past the resolved-GC window is debris.
+            if entry.endswith(".json.tmp"):
+                tmp_path = os.path.join(CCM_ATTENTION_DIR, entry)
+                try:
+                    if (now - os.path.getmtime(tmp_path)
+                            > ATTENTION_RESOLVED_GC_SEC):
+                        os.unlink(tmp_path)
+                except OSError:
+                    pass
             continue
         path = os.path.join(CCM_ATTENTION_DIR, entry)
         pane_id = entry[:-5]
@@ -648,12 +677,22 @@ def _read_attention_markers(panes_cache):
         if not isinstance(marker, dict):
             reap = True
         elif marker.get("state") == "resolved":
+            # A timestamp in the future (clock skew, or a marker
+            # copied between machines) would make `now - rts`
+            # negative and keep the file forever. Age it from the
+            # file's own mtime in that case — the writer's clock
+            # cannot lie about when the local filesystem saw it.
             rts = _epoch(marker.get("resolved_ts")) or 0
+            if rts > now:
+                try:
+                    rts = os.path.getmtime(path)
+                except OSError:
+                    rts = 0
             reap = (now - rts) > ATTENTION_RESOLVED_GC_SEC
         elif marker.get("state") == "waiting":
             ts = _epoch(marker.get("ts"))
             exp = _epoch(marker.get("expires"))
-            if pane_id not in agent_panes:
+            if not _pane_hosts_agent(pane_id):
                 reap = True
             elif exp is not None and now > exp:
                 reap = True
@@ -752,9 +791,17 @@ def build_project_list(fast=False):
             panes_cache, row["win_target"]))
         if attention_markers is None:
             attention_markers = {}
-            if not fast and row["attention_toggle"] != "off":
+            # The reader runs even when the display is toggled off,
+            # because it is also the only garbage collector: writers
+            # are per-CLI hook scripts that keep writing regardless of
+            # a ccm-side switch, so skipping the read would let the
+            # directory grow without bound. Only the RESULT is
+            # discarded when off.
+            if not fast:
                 try:
-                    attention_markers = _read_attention_markers(panes_cache)
+                    markers = _read_attention_markers(panes_cache, ps_lines)
+                    if row["attention_toggle"] != "off":
+                        attention_markers = markers
                 except Exception:
                     log_caught_exception("attention_markers")
         # Names among this window's agent panes whose marker says

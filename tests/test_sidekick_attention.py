@@ -16,13 +16,19 @@ import pytest
 import ccm_core
 import ccm_commands
 
+from conftest import make_ps_lines
+
 
 PANE = "%40"
 # panes_cache 7-tuples: (target, pid, pane_id, cmd, active, height, ignore)
 PANES = [
-    ("0:2", "100", "%1", "claude", "1", "46", ""),
+    # %1 is the tracked Claude pane. Its command is the versioned
+    # launcher name tmux actually reports, not "claude" — see
+    # test_claude_sidekick_marker_survives_the_pane_check.
+    ("0:2", "100", "%1", "2.1.221", "1", "46", ""),
     ("0:2", "200", PANE, "kimi", "0", "46", ""),
 ]
+PS_LINES = ["  100     1   100 zsh", "  101   100   100 claude"]
 
 
 def _write_marker(dirpath, pane=PANE, **overrides):
@@ -57,7 +63,7 @@ class TestAttentionReader:
 
     def test_live_waiting_marker_surfaces(self, attention_dir):
         path = _write_marker(attention_dir)
-        live = ccm_core._read_attention_markers(PANES)
+        live = ccm_core._read_attention_markers(PANES, PS_LINES)
         assert PANE in live
         assert live[PANE]["agent"] == "kimi"
         assert os.path.exists(path), "a live marker must not be reaped"
@@ -68,7 +74,7 @@ class TestAttentionReader:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         path = _write_marker(attention_dir, state="resolved",
                              resolved_ts=now)
-        live = ccm_core._read_attention_markers(PANES)
+        live = ccm_core._read_attention_markers(PANES, PS_LINES)
         assert live == {}
         assert os.path.exists(path)
 
@@ -77,7 +83,7 @@ class TestAttentionReader:
                             time.gmtime(time.time() - 4000))
         path = _write_marker(attention_dir, state="resolved",
                              resolved_ts=old)
-        ccm_core._read_attention_markers(PANES)
+        ccm_core._read_attention_markers(PANES, PS_LINES)
         assert not os.path.exists(path)
 
     def test_waiting_marker_for_dead_pane_is_reaped(self, attention_dir):
@@ -86,7 +92,7 @@ class TestAttentionReader:
         exists to prevent — same self-heal shape as stale
         `@ccm_ignore`."""
         path = _write_marker(attention_dir, pane="%99")
-        live = ccm_core._read_attention_markers(PANES)
+        live = ccm_core._read_attention_markers(PANES, PS_LINES)
         assert live == {}
         assert not os.path.exists(path)
 
@@ -94,7 +100,7 @@ class TestAttentionReader:
         old = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                             time.gmtime(time.time() - 7200))
         path = _write_marker(attention_dir, ts=old)
-        live = ccm_core._read_attention_markers(PANES)
+        live = ccm_core._read_attention_markers(PANES, PS_LINES)
         assert live == {}
         assert not os.path.exists(path)
 
@@ -102,7 +108,7 @@ class TestAttentionReader:
         exp = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                             time.gmtime(time.time() - 5))
         path = _write_marker(attention_dir, expires=exp)
-        live = ccm_core._read_attention_markers(PANES)
+        live = ccm_core._read_attention_markers(PANES, PS_LINES)
         assert live == {}
         assert not os.path.exists(path)
 
@@ -110,35 +116,94 @@ class TestAttentionReader:
         path = os.path.join(attention_dir, f"{PANE}.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write("not json {")
-        live = ccm_core._read_attention_markers(PANES)
+        live = ccm_core._read_attention_markers(PANES, PS_LINES)
         assert live == {}
         assert not os.path.exists(path)
+
+    def test_stale_stage_file_is_reaped(self, attention_dir):
+        """Writers stage through `<marker>.json.tmp` before an atomic
+        rename. One killed mid-write leaves the stage file behind, and
+        the `.json` filter would let those accumulate forever."""
+        stale = os.path.join(attention_dir, "%77.json.tmp")
+        with open(stale, "w", encoding="utf-8") as f:
+            f.write('{"partial":')
+        os.utime(stale, (time.time() - 4000, time.time() - 4000))
+        ccm_core._read_attention_markers(PANES, PS_LINES)
+        assert not os.path.exists(stale)
+
+    def test_fresh_stage_file_is_left_alone(self, attention_dir):
+        """A stage file milliseconds old belongs to a write in
+        flight — reaping it would destroy the very marker being
+        written."""
+        fresh = os.path.join(attention_dir, "%77.json.tmp")
+        with open(fresh, "w", encoding="utf-8") as f:
+            f.write('{"partial":')
+        ccm_core._read_attention_markers(PANES, PS_LINES)
+        assert os.path.exists(fresh)
 
     def test_missing_directory_is_silent(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ccm_core, "CCM_ATTENTION_DIR",
                             str(tmp_path / "never-created"))
-        assert ccm_core._read_attention_markers(PANES) == {}
+        assert ccm_core._read_attention_markers(PANES, PS_LINES) == {}
 
     def test_claude_sidekick_marker_survives_the_pane_check(
             self, attention_dir):
-        """An ignored Claude sidekick writes markers through the
-        ignore branch in hooks/lib.sh; its pane runs `claude`, not an
-        EXTERNAL_AGENT_COMMANDS name, and must not be reaped as
-        "sidekick exited"."""
-        panes = PANES + [("0:2", "300", "%50", "claude", "0", "46", "1")]
+        """An ignored Claude sidekick's marker must not be reaped as
+        "sidekick exited".
+
+        Its pane is identified by the process tree, NOT by
+        `pane_current_command`: the versioned-install symlink makes
+        tmux report the launcher name (`2.1.221`), never `claude`. A
+        fixture saying "claude" here would pass against a name compare
+        that is false in every real environment — which is exactly how
+        this shipped broken (caught by Kimi's review, 2026-08-05)."""
+        panes = PANES + [("0:2", "300", "%50", "2.1.221", "0", "46", "1")]
+        ps_lines = make_ps_lines((300, 1, 300, "zsh"), (301, 300, 300, "claude"))
         path = _write_marker(attention_dir, pane="%50", agent="claude")
-        live = ccm_core._read_attention_markers(panes)
+        live = ccm_core._read_attention_markers(panes, ps_lines)
         assert "%50" in live
         assert os.path.exists(path)
 
     def test_marker_on_a_plain_shell_pane_is_reaped(self, attention_dir):
-        """The pane exists but hosts neither an agent CLI nor claude
-        (the sidekick exited back to zsh): stale, reap it."""
+        """The pane exists but hosts neither an agent CLI nor a claude
+        process (the sidekick exited back to zsh): stale, reap it."""
         panes = PANES + [("0:2", "300", "%50", "zsh", "0", "46", "")]
+        ps_lines = make_ps_lines((300, 1, 300, "zsh"))
         path = _write_marker(attention_dir, pane="%50", agent="claude")
-        live = ccm_core._read_attention_markers(panes)
+        live = ccm_core._read_attention_markers(panes, ps_lines)
         assert live == {}
         assert not os.path.exists(path)
+
+
+class TestAttentionToggleStillCollectsGarbage:
+    """`@ccm-sidekick-attention off` silences ccm's display, not the
+    writers: per-CLI hook scripts keep writing markers regardless of a
+    ccm-side switch. Skipping the read while off would leave the
+    directory growing with nobody to reap it, so the reader still runs
+    and only its result is discarded."""
+
+    def test_off_discards_the_result_but_still_reaps(
+            self, tmp_path, monkeypatch):
+        d = tmp_path / "attention"
+        d.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_ATTENTION_DIR", str(d))
+        dead = _write_marker(str(d), pane="%99")   # pane hosts nothing
+        live_path = _write_marker(str(d))          # %40 hosts kimi
+
+        rows = ["0:2\tproj\t/x/proj\tIDLE\t0\t123\t0\tsid\toff"]
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *a, **k: "\n".join(rows))
+        monkeypatch.setattr(ccm_core, "_build_panes_cache", lambda: PANES)
+        monkeypatch.setattr(ccm_core, "ps_snapshot",
+                            lambda: "\n".join(PS_LINES))
+        monkeypatch.setattr(ccm_core, "_resolve_window_state",
+                            lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_core, "read_cache_file", lambda *a, **k: "")
+
+        projects = ccm_core.build_project_list(fast=False)
+        assert projects[0].attention_agents == (), "off must not colour badges"
+        assert not os.path.exists(dead), "GC stopped when toggled off"
+        assert os.path.exists(live_path), "a live marker was reaped"
 
 
 class TestWindowFormatToggle:
