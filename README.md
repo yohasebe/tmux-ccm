@@ -516,6 +516,9 @@ tmux switch-client -t oss      # Standard tmux session switching
    ```bash
    ccm remove-hooks        # remove ccm's hooks from ~/.claude/settings.json
    ccm remove-claude-md    # remove the ccm section from ~/.claude/CLAUDE.md
+   # Only if you installed sidekick attention hooks (guide feature):
+   ccm remove-sidekick-hooks kimi
+   ccm remove-sidekick-hooks grok
    ```
    The hooks are registered with absolute paths into the plugin directory, so leaving them behind means Claude Code keeps trying to run scripts that no longer exist on every event. The `CLAUDE.md` section would likewise keep instructing sessions to use commands you have removed.
 

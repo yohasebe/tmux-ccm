@@ -516,6 +516,9 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
    ```bash
    ccm remove-hooks        # ~/.claude/settings.json から ccm のフックを削除
    ccm remove-claude-md    # ~/.claude/CLAUDE.md から ccm セクションを削除
+   # サイドキック attention フックを導入していた場合のみ（ガイドの機能）:
+   ccm remove-sidekick-hooks kimi
+   ccm remove-sidekick-hooks grok
    ```
    フックはプラグインディレクトリへの絶対パスで登録されるため、残したままにすると Claude Code が存在しないスクリプトを毎イベント実行しようとし続けます。`CLAUDE.md` のセクションも、削除済みのコマンドを使うよう各セッションに指示し続けることになります。
 
