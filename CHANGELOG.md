@@ -117,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   fired completion notifications for turns no Claude ran. Every event carries
   `workspaceRoot`, which Claude Code never sends, so that field now gates
   `ccm_hook_init` before any artefact is written.
+- ccm hardcoded `~/.claude` everywhere it read or wrote Claude Code's config
+  (hook installer, `settings.json`/`hooks.log` canaries, JSONL/session
+  readers, `CLAUDE.md` helpers). Setups that relocate Claude Code's config
+  dir via `CLAUDE_CONFIG_DIR` (Claude Code itself honors this env var) had
+  ccm silently looking in the wrong place. ccm now reads `$CLAUDE_CONFIG_DIR`
+  when set, falling back to `~/.claude` otherwise — matching Claude Code's
+  own behavior.
 
 ### Changed
 - Verified against Claude Code v2.1.221. Nothing in ccm needed changing: the

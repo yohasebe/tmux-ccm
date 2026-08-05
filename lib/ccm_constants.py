@@ -39,6 +39,11 @@ CCM_VERSION = "0.8.2"
 CCM_ROOT = os.environ.get(
     "CCM_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
+# Claude Code's own config dir override — mirrored here so ccm looks
+# in the same place Claude Code itself does (e.g. XDG-based setups).
+CLAUDE_CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser(
+    "~/.claude"
+)
 CCM_TMP_DIR = os.environ.get(
     "CCM_TMP_DIR",
     os.path.join(os.environ.get("TMPDIR", "/tmp"), f"ccm-{os.getuid()}"),

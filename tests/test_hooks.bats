@@ -55,6 +55,22 @@ teardown() {
     [[ "$hook_count" -eq 1 ]]
 }
 
+@test "setup-hooks: honors CLAUDE_CONFIG_DIR override" {
+    ALT_DIR="$(mktemp -d)"
+    export CLAUDE_CONFIG_DIR="${ALT_DIR}/claude-alt"
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ -f "${CLAUDE_CONFIG_DIR}/settings.json" ]]
+    [[ ! -f "${MOCK_DIR}/.claude/settings.json" ]]
+    run ccm_remove_hooks
+    [[ "$status" -eq 0 ]]
+    local hook_count
+    hook_count=$(jq '.hooks.UserPromptSubmit | length' "${CLAUDE_CONFIG_DIR}/settings.json")
+    [[ "$hook_count" -eq 0 ]]
+    rm -rf "$ALT_DIR"
+}
+
 @test "setup-hooks: preserves existing settings" {
     echo '{"permissions":{"allow":["Read"]}}' > "${MOCK_DIR}/.claude/settings.json"
     run ccm_setup_hooks

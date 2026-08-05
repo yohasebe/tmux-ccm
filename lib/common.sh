@@ -4,6 +4,9 @@
 # dependency checks, and output formatting.
 # All session management, snapshots, and state detection are in Python (lib/ccm_core.py).
 
+# Claude Code's own config dir override (mirrors Claude Code itself)
+CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+
 # Runtime data directory (overridable for isolated test/demo environments)
 CCM_DATA_DIR="${CCM_DATA_DIR:-${HOME}/.local/share/ccm}"
 CCM_SNAPSHOT_DIR="${CCM_SNAPSHOT_DIR:-${CCM_DATA_DIR}/snapshots}"
@@ -400,7 +403,7 @@ _ccm_version_ge() {
 
 # Check if ccm hooks are installed in Claude Code settings
 ccm_hooks_configured() {
-    local settings_file="${HOME}/.claude/settings.json"
+    local settings_file="${CLAUDE_CONFIG_DIR}/settings.json"
     [[ ! -f "$settings_file" ]] && return 1
     grep -q 'on-prompt-submit\.sh' "$settings_file" 2>/dev/null || return 1
     grep -q 'on-stop\.sh' "$settings_file" 2>/dev/null || return 1
@@ -426,7 +429,7 @@ ccm_hooks_configured() {
 
 # Install Claude Code hooks for improved state detection
 ccm_setup_hooks() {
-    local settings_file="${HOME}/.claude/settings.json"
+    local settings_file="${CLAUDE_CONFIG_DIR}/settings.json"
     local hooks_dir="${CCM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/hooks"
 
     if [[ ! -f "${hooks_dir}/on-prompt-submit.sh" ]]; then
@@ -546,7 +549,7 @@ ccm_setup_hooks() {
 
 # Remove ccm hooks from Claude Code settings
 ccm_remove_hooks() {
-    local settings_file="${HOME}/.claude/settings.json"
+    local settings_file="${CLAUDE_CONFIG_DIR}/settings.json"
 
     if [[ ! -f "$settings_file" ]]; then
         ccm_warn "No settings file found at ${settings_file}"
@@ -651,10 +654,10 @@ SECTION
 }
 
 ccm_setup_claude_md() {
-    local claude_md="${HOME}/.claude/CLAUDE.md"
+    local claude_md="${CLAUDE_CONFIG_DIR}/CLAUDE.md"
 
     # Ensure directory exists
-    mkdir -p "${HOME}/.claude"
+    mkdir -p "${CLAUDE_CONFIG_DIR}"
 
     # Check if section already present
     if [[ -f "$claude_md" ]] && grep -qF "$_CCM_MD_BEGIN" "$claude_md"; then
@@ -687,7 +690,7 @@ ccm_setup_claude_md() {
 }
 
 ccm_remove_claude_md() {
-    local claude_md="${HOME}/.claude/CLAUDE.md"
+    local claude_md="${CLAUDE_CONFIG_DIR}/CLAUDE.md"
 
     if [[ ! -f "$claude_md" ]]; then
         ccm_warn "No file found at ${claude_md}"

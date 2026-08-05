@@ -38,8 +38,9 @@ from datetime import datetime
 from typing import Optional, Tuple
 
 import ccm_core  # late-bound for find_process_age (pid-reuse staleness check)
-from ccm_constants import (JSONL_INTERRUPT_RE, JSONL_INTERRUPTED,
-                           JSONL_USER_PENDING, TERMINAL_STOP_REASONS)
+from ccm_constants import (CLAUDE_CONFIG_DIR, JSONL_INTERRUPT_RE,
+                           JSONL_INTERRUPTED, JSONL_USER_PENDING,
+                           TERMINAL_STOP_REASONS)
 
 
 # ─── Constants ───
@@ -92,8 +93,8 @@ JSONL_TAIL_BYTES = 32768
 # Safety cap on how many lines from the tail we will JSON-parse.
 JSONL_TAIL_MAX_LINES = 200
 
-CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
-CLAUDE_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+CLAUDE_PROJECTS_DIR = os.path.join(CLAUDE_CONFIG_DIR, "projects")
+CLAUDE_SESSIONS_DIR = os.path.join(CLAUDE_CONFIG_DIR, "sessions")
 JSONL_CACHE_TTL = int(os.environ.get("CCM_JSONL_CACHE_TTL", "60"))
 
 # Drift tolerance (seconds) for the session_info staleness check.

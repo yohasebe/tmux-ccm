@@ -42,7 +42,7 @@ import ccm_render
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
-from ccm_constants import (CCM_VERSION, CLAUDE_CMD,
+from ccm_constants import (CCM_VERSION, CLAUDE_CMD, CLAUDE_CONFIG_DIR,
                            external_agent_name)
 from ccm_core import _C_BOLD, _C_RESET
 
@@ -864,7 +864,7 @@ def cmd_doctor():
     else:
         row(WARN, "Hooks not installed",
             "run `ccm setup-hooks` for full state detection")
-    claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
+    claude_md = os.path.join(CLAUDE_CONFIG_DIR, "CLAUDE.md")
     if os.path.exists(claude_md):
         with open(claude_md, encoding="utf-8") as f:
             has_ccm = "ccm" in f.read().lower()

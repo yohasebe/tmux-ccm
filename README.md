@@ -373,7 +373,7 @@ For more accurate state detection, install Claude Code hooks:
 ccm setup-hooks
 ```
 
-This adds hooks to `~/.claude/settings.json` that signal state changes:
+This adds hooks to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json` if that's set) that signal state changes:
 - **UserPromptSubmit** → BUSY when you submit a prompt (detects text generation)
 - **PreToolUse / PostToolUse / PostToolUseFailure** → BUSY across tool execution
 - **SubagentStart / SubagentStop** → BUSY around subagent execution (the parent agent is still working)
