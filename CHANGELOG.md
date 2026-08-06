@@ -8,13 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
-- Verified against Claude Code v2.1.222. All four detection patterns matched a
-  live pane unaltered (including the sub-1k token spinner form), the hook event
-  sequence was unchanged, and the permission-request escalation held at ~6 s
-  across 41 measured windows. Nothing in the release touches the surfaces ccm
-  reads; the one hook-adjacent change (auto-allow hooks no longer bypass tool
-  restrictions in background agent tasks) alters permission outcomes, not
-  event emission.
+- Verified against Claude Code v2.1.222 and v2.1.223. All four detection
+  patterns matched a live pane unaltered on both (including the sub-1k token
+  spinner form), the hook event sequence was unchanged, and the
+  permission-request escalation held at ~6 s throughout — as did the
+  Esc-interrupt transcript record ccm now releases on, exercised live under
+  2.1.222. Neither release touches the surfaces ccm reads. Both do tighten
+  permission checking (2.1.222: background-task auto-allow; 2.1.223: commands
+  hiding parts of themselves from the approval dialog via crafting or invisible
+  Unicode), so sessions may see more permission prompts — which ccm reports the
+  same way.
 
 ### Fixed
 - The dashboard's `w` key is listed in the README's control table. It appears
