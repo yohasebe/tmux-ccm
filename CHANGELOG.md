@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- Verified against Claude Code v2.1.222 through v2.1.224. 2.1.224 adds
+  cross-session `SendMessage`/`ListAgents` — Claude sessions messaging each
+  other over on-disk inbox sockets — which was measured live to leave ccm's
+  detection intact: a received message reads as a new turn (BUSY) and a tool it
+  triggers still surfaces PERMIT, exactly as a typed prompt would; the new hook
+  events it can fire are ones ccm does not subscribe to, and unknown events
+  fall through to legacy detection by design. The `roster.json` ccm's `bg`
+  section reads is unchanged.
 - Verified against Claude Code v2.1.222 and v2.1.223. All four detection
   patterns matched a live pane unaltered on both (including the sub-1k token
   spinner form), the hook event sequence was unchanged, and the
