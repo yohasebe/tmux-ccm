@@ -1447,6 +1447,16 @@ class TestResolveTraceTarget:
         monkeypatch.setattr(ccm_core, "tmux_cmd", self._tmux(display=""))
         assert ccm_commands._resolve_trace_target("ghost") is None
 
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"])
+    def test_blank_target_returns_none(self, monkeypatch, blank):
+        """An empty needle is a substring of every name, so the pass-1
+        substring loop would return whichever project is listed first
+        and trace a window the caller never named. Measured before the
+        guard: `ccm debug trace ""` followed the first project."""
+        monkeypatch.setattr(
+            ccm_core, "tmux_cmd", self._tmux(display="probe:0\t/tmp/p"))
+        assert ccm_commands._resolve_trace_target(blank) is None
+
     def test_target_without_cwd_field_still_resolves(self, monkeypatch):
         # A pane whose current path tmux cannot report yields an empty
         # dir rather than refusing: the event-log path is keyed on

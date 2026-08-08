@@ -117,6 +117,30 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
+    def test_idle_when_pane_process_is_claude(self, mock_tmux):
+        """A pane launched as `tmux new-window "claude …"` has no shell,
+        so the pane pid IS claude. It must not fall into the no-claude
+        SHELL branch. tmux reports the versioned launcher name for
+        `current_command` (e.g. "2.1.226"), which is not a shell name
+        and so must not trip the shell-foreground branch either."""
+        ps = make_ps_lines((100, 50, 100, "claude"))
+        assert ccm_pane_state.detect_pane_state(
+            "100", "%0", ps, "99999", current_command="2.1.226") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_permit_when_pane_process_is_claude(self, mock_tmux):
+        """The shape that exposed the bug: a direct-launch pane sitting
+        on a permission dialog read as SHELL because the claude lookup
+        found nothing. Verified live 2026-08-08 with Claude Code
+        2.1.226."""
+        ps = make_ps_lines((100, 50, 100, "claude"), (300, 100, 100, "node"))
+        mock_tmux.return_value = (
+            "Do you want to proceed?\n"
+            " Esc to cancel · Tab to amend · ctrl+e to explain")
+        assert ccm_pane_state.detect_pane_state(
+            "100", "%0", ps, "99999", current_command="2.1.226") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
     def test_busy_with_children_no_prompt(self, mock_tmux):
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")

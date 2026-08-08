@@ -1119,6 +1119,13 @@ def _resolve_trace_target(target):
     Project matching stays first so an existing project name never
     changes meaning. Returns None when neither pass resolves.
     """
+    # An empty needle is a substring of every project name, so without
+    # this the pass-1 substring loop returns whichever project happens
+    # to be listed first and the trace silently follows a window the
+    # caller never named.
+    if not target or not target.strip():
+        return None
+
     raw = ccm_core.tmux_cmd(
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}",
