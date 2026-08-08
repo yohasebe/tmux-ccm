@@ -50,16 +50,37 @@ from ccm_constants import (
 
 
 def find_claude_pid(parent_pid, ps_lines):
-    """Return the pid of the `claude` process whose parent is
-    `parent_pid` (i.e. the claude running directly under the pane's
-    shell). Returns None when the user is at a bare shell."""
+    """Return the pid of the `claude` process this pane hosts, or None
+    when the pane is a bare shell.
+
+    Two shapes count, because tmux produces both:
+
+    * `claude` running as a child of the pane's shell — what every ccm
+      flow creates, since `ccm add` / `ccm open` type the launch
+      command into a shell.
+    * the pane process *being* `claude` — what `tmux new-window
+      "claude …"` creates, with no shell in between.
+
+    The second shape was missed until 2026-08-08: the walk only ever
+    looked for a child, so a pane whose own process is claude resolved
+    to None and read as SHELL forever. `ccm debug trace` on a probe
+    session hit this immediately (probes launch claude as the pane
+    command), and a window registered with `ccm register` after being
+    created that way would have been just as invisible.
+
+    A child match still wins, so the common shape keeps its exact
+    previous result and only the previously-blind case changes.
+    """
+    want = str(parent_pid)
+    self_match = None
     for line in ps_lines:
         parts = line.split()
-        if (len(parts) >= 4
-                and parts[1] == str(parent_pid)
-                and parts[3] == CLAUDE_PROCESS_NAME):
-            return parts[0]
-    return None
+        if len(parts) >= 4 and parts[3] == CLAUDE_PROCESS_NAME:
+            if parts[1] == want:
+                return parts[0]
+            if parts[0] == want:
+                self_match = parts[0]
+    return self_match
 
 
 # One structured record per pane, produced by `enumerate_window_panes`.

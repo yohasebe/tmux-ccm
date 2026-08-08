@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- A pane whose own process is `claude` — what `tmux new-window "claude …"`
+  creates, with no shell in between — is no longer read as SHELL. The
+  process-tree walk only ever looked for a claude *child* of the pane pid, so
+  when the pane pid was claude itself the lookup found nothing and the window
+  reported SHELL indefinitely, even with a permission dialog on screen. Panes
+  ccm launches itself are unaffected (claude is a shell child there, and a
+  child match still wins); this repairs `ccm debug trace` on probe sessions and
+  windows registered with `ccm register` after being created that way.
+
 ### Added
 - `ccm debug trace` now accepts a tmux target — a pane (`%42`), a window
   (`@7`), or `session:index` — in addition to a project name, so a session ccm
@@ -18,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   name still resolves first, leaving existing invocations unchanged.
 
 ### Changed
+- Verified against Claude Code v2.1.225 and v2.1.226. All four detection
+  patterns matched a live 2.1.226 pane unaltered, including the permission
+  footer (`Esc to cancel · Tab to amend · ctrl+e to explain`) captured from a
+  real dialog, and `roster.json` kept its schema. 2.1.225 extends cross-session
+  `SendMessage` to start conversations with Remote Control sessions on other
+  machines by name, which widens the native path's reach without touching any
+  interface ccm reads.
 - Verified against Claude Code v2.1.222 through v2.1.224. 2.1.224 adds
   cross-session `SendMessage`/`ListAgents` — Claude sessions messaging each
   other over on-disk inbox sockets — which was measured live to leave ccm's

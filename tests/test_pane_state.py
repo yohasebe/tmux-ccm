@@ -53,6 +53,27 @@ class TestFindClaudePid:
         ps = make_ps_lines((200, 999, 999, "claude"))
         assert ccm_pane_state.find_claude_pid(100, ps) is None
 
+    def test_finds_claude_when_pane_process_is_claude(self):
+        """`tmux new-window "claude …"` gives the pane no shell, so the
+        pane pid IS claude. Measured 2026-08-08 with Claude Code
+        2.1.226: the child-only walk returned None here and the pane
+        read as SHELL while a permission dialog was on screen."""
+        ps = make_ps_lines((100, 50, 100, "claude"))
+        assert ccm_pane_state.find_claude_pid(100, ps) == "100"
+
+    def test_child_claude_wins_over_self(self):
+        # Keeps the common shape's result identical: when both could
+        # match, the child is still what callers get.
+        ps = make_ps_lines((100, 50, 100, "claude"),
+                           (200, 100, 100, "claude"))
+        assert ccm_pane_state.find_claude_pid(100, ps) == "200"
+
+    def test_self_match_requires_claude_not_shell(self):
+        # A bare shell pane must stay None — the self branch keys on
+        # the command name, not merely on the pid matching.
+        ps = make_ps_lines((100, 50, 100, "zsh"))
+        assert ccm_pane_state.find_claude_pid(100, ps) is None
+
 
 # ─── has_children ───
 
