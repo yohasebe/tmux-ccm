@@ -1093,7 +1093,76 @@ def cmd_errors(args):
         print("No silent-caught errors logged.")
 
 
-def cmd_debug_trace(project_match, interval=0.3):
+def _resolve_trace_target(target):
+    """Resolve a `debug trace` argument to (win_target, label, dir).
+
+    Two resolution passes, in this order:
+
+    1. **Registered ccm project** — exact `@ccm_project` match, then
+       substring against project name or `@ccm_dir` basename. The
+       directory comes from `@ccm_dir`.
+    2. **Raw tmux target** — any pane (`%42`), window (`@7`), or
+       `session:index` tmux itself accepts. The directory comes from
+       `#{pane_current_path}`, which is the cwd Claude Code keys its
+       JSONL transcript on.
+
+    Pass 2 exists because probe sessions launched for an experiment
+    are not ccm projects, so the pass-1 lookup misses them and the
+    investigator falls back to hand-rolled greps over
+    `$HOOK_DIR/*.events.jsonl`. That glob aggregates every session's
+    events and silently re-introduces the cross-session contamination
+    the session_id keying was built to remove — a miscount that has
+    already sent one investigation down a false trail. Tracing an
+    unregistered pane directly keeps the observation scoped to the one
+    session under test.
+
+    Project matching stays first so an existing project name never
+    changes meaning. Returns None when neither pass resolves.
+    """
+    raw = ccm_core.tmux_cmd(
+        "list-windows", "-a", "-F",
+        "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}",
+    )
+    if raw:
+        rows = []
+        for line in raw.split("\n"):
+            parts = line.split("\t")
+            if len(parts) >= 3 and parts[1]:
+                rows.append((parts[0], parts[1], parts[2]))
+        # Exact match on name first
+        for wt, name, d in rows:
+            if name == target:
+                return wt, name, d
+        # Substring match on name or dir basename
+        needle = target.lower()
+        for wt, name, d in rows:
+            basename = os.path.basename(d) if d else ""
+            if needle in name.lower() or needle in basename.lower():
+                return wt, name, d
+
+    # Pass 2: hand the string to tmux and see whether it names a live
+    # pane / window.
+    #
+    # A non-empty reply is NOT the existence check: `display-message`
+    # exits 0 for an unknown target and substitutes empty fields, so
+    # `%9999` comes back as the bare separator ":" (measured). Requiring
+    # both halves to be populated is what distinguishes a real target
+    # from that empty shell — without it, any typo resolves to a
+    # phantom window and the trace prints rows for nothing.
+    resolved = ccm_core.tmux_cmd(
+        "display-message", "-p", "-t", target,
+        "#{session_name}:#{window_index}\t#{pane_current_path}",
+    )
+    if resolved:
+        parts = resolved.split("\t")
+        sess, _, index = parts[0].partition(":")
+        if sess and index:
+            pane_dir = parts[1] if len(parts) >= 2 else ""
+            return parts[0], f"{target} (unregistered)", pane_dir
+    return None
+
+
+def cmd_debug_trace(target_match, interval=0.3):
     """Print one line per scan showing every DetectionContext input,
     the rule that would match, and the resolved state. Read-only — this
     does NOT mutate @ccm_prev_state or any runtime file, so it can be
@@ -1103,8 +1172,9 @@ def cmd_debug_trace(project_match, interval=0.3):
     seconds after attach?" by correlating the rule-firing sequence
     with the user's observed event timeline.
 
-    project_match: substring match against @ccm_project or @ccm_dir
-    (basename). The first matching ccm window wins.
+    target_match: a ccm project name / substring, or any tmux target
+    (pane `%42`, window `@7`, `session:index`) for sessions that are
+    not ccm projects. See `_resolve_trace_target`.
 
     interval: seconds between scans. Smaller values catch faster
     transients but cost more CPU; 0.3 s is enough to observe the
@@ -1117,36 +1187,14 @@ def cmd_debug_trace(project_match, interval=0.3):
     if not session:
         ccm_core.ccm_die("No tmux session detected — run inside tmux")
 
-    # Resolve the project. Accept an exact @ccm_project match first,
-    # then fall back to substring on project name or dir basename.
-    raw = ccm_core.tmux_cmd(
-        "list-windows", "-a", "-F",
-        "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}",
-    )
-    win_target = None
-    proj_name = None
-    proj_dir = None
-    if raw:
-        rows = []
-        for line in raw.split("\n"):
-            parts = line.split("\t")
-            if len(parts) >= 3 and parts[1]:
-                rows.append((parts[0], parts[1], parts[2]))
-        # Exact match on name first
-        for wt, name, d in rows:
-            if name == project_match:
-                win_target, proj_name, proj_dir = wt, name, d
-                break
-        if win_target is None:
-            # Substring match on name or dir basename
-            needle = project_match.lower()
-            for wt, name, d in rows:
-                basename = os.path.basename(d) if d else ""
-                if needle in name.lower() or needle in basename.lower():
-                    win_target, proj_name, proj_dir = wt, name, d
-                    break
-    if win_target is None:
-        ccm_core.ccm_die(f"No ccm project matches: {project_match!r}")
+    resolved = _resolve_trace_target(target_match)
+    if resolved is None:
+        ccm_core.ccm_die(
+            f"No ccm project or tmux target matches: {target_match!r}\n"
+            "  Pass a project name, or a tmux pane / window "
+            "(e.g. %42, @7, probe:0) to trace a session ccm does not manage."
+        )
+    win_target, proj_name, proj_dir = resolved
 
     # Graceful Ctrl-C.
     stop = {"flag": False}

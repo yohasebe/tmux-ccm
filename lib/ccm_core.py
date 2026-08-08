@@ -1109,14 +1109,16 @@ def _debug_handler(args):
         print(f"Unknown debug subcommand: {args.subcommand!r}", file=sys.stderr)
         print("Available: trace", file=sys.stderr)
         sys.exit(2)
-    ccm_commands.cmd_debug_trace(args.project, interval=args.interval)
+    ccm_commands.cmd_debug_trace(args.target, interval=args.interval)
 
 
 def _add_debug_args(p):
     p.add_argument("subcommand", choices=["trace"],
                    help="Debug action (currently only 'trace')")
-    p.add_argument("project",
-                   help="Project name or substring to trace")
+    p.add_argument("target",
+                   help="Project name/substring, or a tmux target "
+                        "(pane %%42, window @7, session:index) for a "
+                        "session ccm does not manage")
     p.add_argument("interval", nargs="?", type=float, default=0.3,
                    help="Polling interval in seconds (default: 0.3)")
 

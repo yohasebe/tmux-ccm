@@ -819,6 +819,23 @@ ccm debug trace <project-name>           # default 0.3 s interval
 ccm debug trace <project-name> 0.5       # or specify interval
 ```
 
+The target can also be a tmux pane, window, or `session:index` that ccm does
+not manage, which is how you observe a throwaway session started for an
+experiment:
+
+```bash
+ccm debug trace %42                      # a pane
+ccm debug trace @7                       # a window
+ccm debug trace probe:0                  # session:index
+```
+
+Prefer this over reading the hook event logs by hand. Those files are keyed on
+Claude Code's session id, so a glob such as `$TMPDIR/ccm-$UID/hooks/*.events.jsonl`
+sums every session running at that moment and silently attributes another
+session's events to the one under test. Tracing the pane keeps the observation
+scoped to a single session. A registered project name always wins over a tmux
+target, so existing commands keep their meaning.
+
 Each line shows the full detection context, the rule that matched, and the resolved state:
 
 ```

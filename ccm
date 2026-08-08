@@ -80,7 +80,7 @@ Usage:
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
   ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
-  ccm debug trace <name> [interval]  Live state-detection trace (read-only; Ctrl-C to stop)
+  ccm debug trace <target> [interval]  Live state-detection trace; target is a project name or tmux pane/window (read-only)
   ccm errors [--clear]              View / clear the silent-exception log
   ccm reset <name>                  Clear stuck runtime state for a project (last-resort recovery)
   ccm doctor                        Self-check: dependencies, hooks, canaries, projects, errors
@@ -171,7 +171,8 @@ case "${1:-help}" in
         python3 "$CCM_ROOT/lib/ccm_core.py" unignore "${2:-}"
         ;;
     debug)
-        # `ccm debug trace <project> [interval]` — live state-detection trace.
+        # `ccm debug trace <target> [interval]` — live state-detection trace.
+        # `target` is a project name or any tmux pane / window / session:index.
         shift
         python3 "$CCM_ROOT/lib/ccm_core.py" debug "$@"
         ;;

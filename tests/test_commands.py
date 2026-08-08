@@ -1372,6 +1372,8 @@ class TestCmdDebugTrace:
 
     def test_no_match_exits(self, monkeypatch):
         monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
+        # Neither a project match nor a resolvable tmux target: the
+        # display-message probe returns "" for an unknown target.
         monkeypatch.setattr(ccm_core, "tmux_cmd",
                             lambda *a, **kw: "main:1\talpha\t/dir/alpha"
                             if a[0] == "list-windows" else "")
@@ -1382,3 +1384,80 @@ class TestCmdDebugTrace:
         monkeypatch.setattr(ccm_core, "get_session", lambda: None)
         with pytest.raises(SystemExit):
             ccm_commands.cmd_debug_trace("alpha")
+
+
+class TestResolveTraceTarget:
+    """`debug trace` accepts an unregistered tmux target so a probe
+    session — the kind spun up for an experiment and never registered
+    as a ccm project — can be observed directly instead of by grepping
+    across every session's event log."""
+
+    WINDOWS = "main:1\talpha\t/dir/alpha"
+
+    def _tmux(self, *, windows=WINDOWS, display=""):
+        def side_effect(*args, **kw):
+            if args[0] == "list-windows":
+                return windows
+            if args[0] == "display-message":
+                return display
+            return ""
+        return side_effect
+
+    def test_project_match_wins_over_tmux_target(self, monkeypatch):
+        # A registered project must keep its meaning even when tmux
+        # would also resolve the same string, so pass 1 runs first.
+        monkeypatch.setattr(
+            ccm_core, "tmux_cmd",
+            self._tmux(display="other:9\t/somewhere/else"))
+        assert ccm_commands._resolve_trace_target("alpha") == (
+            "main:1", "alpha", "/dir/alpha")
+
+    def test_pane_id_resolves_with_pane_cwd(self, monkeypatch):
+        monkeypatch.setattr(
+            ccm_core, "tmux_cmd",
+            self._tmux(display="probe:0\t/tmp/probe-dir"))
+        win, label, d = ccm_commands._resolve_trace_target("%42")
+        assert win == "probe:0"
+        assert d == "/tmp/probe-dir"
+        # The label must say the target is not a ccm project, so trace
+        # output is never mistaken for a managed window.
+        assert "unregistered" in label
+
+    def test_window_id_resolves(self, monkeypatch):
+        monkeypatch.setattr(
+            ccm_core, "tmux_cmd", self._tmux(display="probe:3\t/tmp/w"))
+        win, _, d = ccm_commands._resolve_trace_target("@7")
+        assert (win, d) == ("probe:3", "/tmp/w")
+
+    def test_unknown_target_returns_none(self, monkeypatch):
+        # Measured tmux behaviour: `display-message -t %9999` exits 0
+        # and substitutes empty fields, so the reply is the bare ":"
+        # separator rather than "". Anchored on the real response —
+        # an earlier mock returned "" here and let every typo resolve
+        # to a phantom window in live use.
+        monkeypatch.setattr(ccm_core, "tmux_cmd", self._tmux(display=":"))
+        assert ccm_commands._resolve_trace_target("ghost") is None
+
+    def test_unknown_target_with_cwd_field_returns_none(self, monkeypatch):
+        # Same empty-target reply, but with the cwd field present.
+        monkeypatch.setattr(ccm_core, "tmux_cmd", self._tmux(display=":\t"))
+        assert ccm_commands._resolve_trace_target("ghost") is None
+
+    def test_empty_display_reply_returns_none(self, monkeypatch):
+        monkeypatch.setattr(ccm_core, "tmux_cmd", self._tmux(display=""))
+        assert ccm_commands._resolve_trace_target("ghost") is None
+
+    def test_target_without_cwd_field_still_resolves(self, monkeypatch):
+        # A pane whose current path tmux cannot report yields an empty
+        # dir rather than refusing: the event-log path is keyed on
+        # session_id, so a missing cwd degrades JSONL lookup only.
+        monkeypatch.setattr(
+            ccm_core, "tmux_cmd", self._tmux(display="probe:0"))
+        win, _, d = ccm_commands._resolve_trace_target("%1")
+        assert (win, d) == ("probe:0", "")
+
+    def test_no_registered_windows_falls_through_to_tmux(self, monkeypatch):
+        monkeypatch.setattr(
+            ccm_core, "tmux_cmd",
+            self._tmux(windows="", display="probe:0\t/tmp/p"))
+        assert ccm_commands._resolve_trace_target("%1")[0] == "probe:0"

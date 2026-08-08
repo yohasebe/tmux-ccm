@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `ccm debug trace` now accepts a tmux target — a pane (`%42`), a window
+  (`@7`), or `session:index` — in addition to a project name, so a session ccm
+  does not manage can be traced directly. Investigating a throwaway session
+  previously meant hand-counting hook events across
+  `$TMPDIR/ccm-$UID/hooks/*.events.jsonl`; that glob re-aggregates the very
+  sessions the session_id keying separates, so events from a concurrently
+  running session get attributed to the one under test. A registered project
+  name still resolves first, leaving existing invocations unchanged.
+
 ### Changed
 - Verified against Claude Code v2.1.222 through v2.1.224. 2.1.224 adds
   cross-session `SendMessage`/`ListAgents` — Claude sessions messaging each

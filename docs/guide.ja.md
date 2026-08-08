@@ -820,6 +820,23 @@ ccm debug trace <project-name>           # デフォルト 0.3 秒間隔
 ccm debug trace <project-name> 0.5       # 間隔指定
 ```
 
+対象には ccm が管理していない tmux のペイン / ウィンドウ / `session:index` も
+指定できます。実験用に一時的に立てたセッションを観察するときはこの形を使います:
+
+```bash
+ccm debug trace %42                      # ペイン
+ccm debug trace @7                       # ウィンドウ
+ccm debug trace probe:0                  # session:index
+```
+
+フックのイベントログを手作業で読むより、こちらを使ってください。イベントログは
+Claude Code の session id をキーにして分かれているため、
+`$TMPDIR/ccm-$UID/hooks/*.events.jsonl` のようなグロブで数えると、その時点で
+動いている全セッションの分が合算され、別セッションのイベントを調査対象のものと
+取り違えます。ペインをトレースすれば観察は 1 セッションに限定されます。登録済み
+プロジェクト名は常に tmux ターゲットより優先されるので、既存のコマンドの意味は
+変わりません。
+
 1 行につき 1 スキャンで、検出コンテキストとマッチしたルール、解決された状態を表示します:
 
 ```
