@@ -7,15 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-- A pane whose own process is `claude` — what `tmux new-window "claude …"`
-  creates, with no shell in between — is no longer read as SHELL. The
-  process-tree walk only ever looked for a claude *child* of the pane pid, so
-  when the pane pid was claude itself the lookup found nothing and the window
-  reported SHELL indefinitely, even with a permission dialog on screen. Panes
-  ccm launches itself are unaffected (claude is a shell child there, and a
-  child match still wins); this repairs `ccm debug trace` on probe sessions and
-  windows registered with `ccm register` after being created that way.
+## [0.10.0] - 2026-08-08
 
 ### Added
 - `ccm debug trace` now accepts a tmux target — a pane (`%42`), a window
@@ -26,6 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sessions the session_id keying separates, so events from a concurrently
   running session get attributed to the one under test. A registered project
   name still resolves first, leaving existing invocations unchanged.
+
+### Fixed
+- A pane whose own process is `claude` — what `tmux new-window "claude …"`
+  creates, with no shell in between — is no longer read as SHELL. The
+  process-tree walk only ever looked for a claude *child* of the pane pid, so
+  when the pane pid was claude itself the lookup found nothing and the window
+  reported SHELL indefinitely, even with a permission dialog on screen. Panes
+  ccm launches itself are unaffected (claude is a shell child there, and a
+  child match still wins); this repairs `ccm debug trace` on probe sessions and
+  windows registered with `ccm register` after being created that way.
+- `ccm debug trace ""` no longer traces whichever project happens to be listed
+  first. An empty needle is a substring of every project name, so a blank
+  target fell through the exact-match pass into the substring pass and resolved
+  to an arbitrary window — with that window's name in the header, so nothing in
+  the output revealed that the argument had been ignored.
+- The dashboard's `w` key is listed in the README's control table. It appears
+  in the dashboard's own on-screen help, so leaving it out of the table left a
+  reader who saw it on screen with nowhere to look it up.
+- A Japanese README link pointed at a guide section under a heading it no longer
+  has, so it landed at the top of the page instead.
 
 ### Changed
 - Verified against Claude Code v2.1.225 and v2.1.226. All four detection
@@ -53,13 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   hiding parts of themselves from the approval dialog via crafting or invisible
   Unicode), so sessions may see more permission prompts — which ccm reports the
   same way.
-
-### Fixed
-- The dashboard's `w` key is listed in the README's control table. It appears
-  in the dashboard's own on-screen help, so leaving it out of the table left a
-  reader who saw it on screen with nowhere to look it up.
-- A Japanese README link pointed at a guide section under a heading it no longer
-  has, so it landed at the top of the page instead.
 
 
 ## [0.9.0] - 2026-08-05
