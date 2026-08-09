@@ -435,7 +435,8 @@ def read_cache_file(cache_dir, directory):
 _WINDOW_FORMAT = (
     "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
     "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
-    "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}"
+    "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}\t"
+    "#{@ccm_pane_order}"
 )
 _WINDOW_FIELDS_MIN = 6  # win_target, project, dir, prev_state, completed_at, win_activity
 
@@ -507,6 +508,11 @@ def _parse_window_line(line):
     # every row carries the same value — one subprocess saved over a
     # dedicated show-option).
     attention_toggle = parts[8] if len(parts) >= 9 else ""
+    # Last pane order this window was seen in, as a comma-joined pane
+    # id list. Rides the bulk query for the same reason as the two
+    # fields above: a per-project show-option would reintroduce the
+    # N+1 the subprocess-count tests pin down.
+    pane_order = parts[9] if len(parts) >= 10 else ""
     return {
         "win_target": parts[0],
         "project": project,
@@ -517,6 +523,7 @@ def _parse_window_line(line):
         "bg_active_str": bg_active_str,
         "cached_session_id": cached_session_id,
         "attention_toggle": attention_toggle,
+        "pane_order": pane_order,
     }
 
 
@@ -550,6 +557,29 @@ def _resolve_window_state(row, fast, panes_cache, ps_lines, own_pgid):
     except Exception:
         log_caught_exception(f"build_project_list[{row['project']}]")
         return row["prev_state"] or "IDLE"
+
+
+def _pane_ids_in_order(panes_cache, win_target):
+    """Pane ids for `win_target` in the order tmux listed them, which
+    is pane-index order. Read straight from the bulk cache so the
+    reorder observer costs no subprocess of its own."""
+    return tuple(pc[2] for pc in panes_cache if pc[0] == win_target)
+
+
+def _observe_pane_order(row, panes_cache):
+    """Feed the reorder observer from a build cycle. Never allowed to
+    break a build: this is a bystander recording what it sees, and a
+    failure here must not cost the caller its project list."""
+    try:
+        current = _pane_ids_in_order(panes_cache, row["win_target"])
+        if not current:
+            return
+        ccm_canaries.observe_pane_order(
+            row["win_target"], row["project"], row["proj_dir"],
+            row.get("pane_order", ""), current, time.time(),
+        )
+    except Exception:
+        log_caught_exception(f"observe_pane_order[{row['project']}]")
 
 
 def _count_panes(panes_cache, win_target):
@@ -784,6 +814,8 @@ def build_project_list(fast=False):
         proj_dir = row["proj_dir"]
         branch = read_cache_file(CCM_GIT_CACHE_DIR, proj_dir) if proj_dir else ""
         ports = read_cache_file(CCM_PORT_CACHE_DIR, proj_dir) if proj_dir else ""
+        if not fast:
+            _observe_pane_order(row, panes_cache)
         pane_count = 1 if fast else _count_panes(panes_cache, row["win_target"])
         ignored_panes = (0 if fast else _resolve_ignored_panes(
             panes_cache, row["win_target"], ps_lines))

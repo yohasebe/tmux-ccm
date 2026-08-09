@@ -860,3 +860,78 @@ class TestHookSilenceFiringLog:
         monkeypatch.setenv("CCM_HOOK_SILENCE_LOG", "/dev/null/impossible/x.log")
         msgs = self._fire(monkeypatch, self.NOW)
         assert len(msgs) == 1
+
+
+# ─── Pane reorder observer ───
+
+class TestClassifyPaneOrder:
+    """The observer's whole job is telling a swap apart from ordinary
+    pane editing. Getting that wrong would file every split — and every
+    tmux server restart, which mints fresh pane ids — as evidence of
+    the drift being investigated."""
+
+    def test_first_sighting_has_no_baseline(self):
+        assert ccm_canaries.classify_pane_order("", ("%1", "%2")) == "first"
+
+    def test_unchanged_order_is_same(self):
+        assert ccm_canaries.classify_pane_order(
+            "%1,%2", ("%1", "%2")) == "same"
+
+    def test_same_ids_different_sequence_is_reorder(self):
+        assert ccm_canaries.classify_pane_order(
+            "%1,%2", ("%2", "%1")) == "reorder"
+
+    def test_added_pane_is_membership_not_reorder(self):
+        assert ccm_canaries.classify_pane_order(
+            "%1,%2", ("%1", "%2", "%3")) == "membership"
+
+    def test_removed_pane_is_membership_not_reorder(self):
+        assert ccm_canaries.classify_pane_order(
+            "%1,%2", ("%1",)) == "membership"
+
+    def test_server_restart_ids_read_as_membership(self):
+        """A restarted tmux server mints new pane ids, so nothing in
+        the old set survives. That must re-baseline quietly rather than
+        report a reorder that never happened."""
+        assert ccm_canaries.classify_pane_order(
+            "%1,%2", ("%17", "%18")) == "membership"
+
+
+class TestObservePaneOrder:
+    def _calls(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *a, **kw: seen.append(a) or "")
+        return seen
+
+    def test_unchanged_order_writes_nothing(self, monkeypatch):
+        # The steady state is every build cycle, so it must not cost a
+        # tmux write.
+        seen = self._calls(monkeypatch)
+        v = ccm_canaries.observe_pane_order(
+            "s:1", "proj", "/d", "%1,%2", ("%1", "%2"), 1000.0)
+        assert v == "same"
+        assert seen == []
+
+    def test_reorder_records_baseline_and_logs(self, monkeypatch, tmp_path):
+        seen = self._calls(monkeypatch)
+        log = tmp_path / "pane-order.log"
+        monkeypatch.setenv("CCM_PANE_ORDER_LOG", str(log))
+        v = ccm_canaries.observe_pane_order(
+            "s:1", "proj", "/d", "%1,%2", ("%2", "%1"), 1000.0)
+        assert v == "reorder"
+        assert any(a[0] == "set-option" for a in seen)
+        rec = json.loads(log.read_text().strip())
+        assert rec["before"] == ["%1", "%2"]
+        assert rec["after"] == ["%2", "%1"]
+
+    def test_membership_change_rebaselines_without_logging(
+            self, monkeypatch, tmp_path):
+        seen = self._calls(monkeypatch)
+        log = tmp_path / "pane-order.log"
+        monkeypatch.setenv("CCM_PANE_ORDER_LOG", str(log))
+        v = ccm_canaries.observe_pane_order(
+            "s:1", "proj", "/d", "%1,%2", ("%1", "%2", "%3"), 1000.0)
+        assert v == "membership"
+        assert any(a[0] == "set-option" for a in seen)
+        assert not log.exists()

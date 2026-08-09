@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- ccm records when a window's panes come back in a different order — what
+  happens after the machine sleeps or a client detaches and reattaches while
+  the tmux server stays up. `ccm doctor` reports the count for the last 24
+  hours and each event lands in `~/.local/share/ccm/state/pane-order.log` with
+  the order before and after. Detection is unaffected by a reorder (panes are
+  addressed by id, Claude is found through the process tree), so this is
+  observation only: ccm never moves a pane back, because a reorder and a
+  deliberate rearrangement are indistinguishable from the outside. Panes
+  opening or closing — including the fresh ids a restarted tmux server mints —
+  re-baseline quietly instead of being logged as reorders. The pane order rides
+  the bulk window query, so the observer costs no subprocess of its own.
+
 ## [0.10.0] - 2026-08-08
 
 ### Added
