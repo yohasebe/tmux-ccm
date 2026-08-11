@@ -52,6 +52,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107+**
+  (tested against v2.1.227 — see the badge at the top of this page)
 
 ## Installation
 

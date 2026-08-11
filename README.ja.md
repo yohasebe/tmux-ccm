@@ -52,6 +52,7 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107 以上**
+  （v2.1.227 で動作確認済み — ページ冒頭のバッジを参照）
 
 ## インストール
 
