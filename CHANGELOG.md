@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The status bar re-lays itself when the terminal is resized. Its layout is
+  baked from the width at render time, so a resize left it laid out for the
+  old width until the next periodic pass — entries clipped on a narrower
+  terminal, fewer entries than fit on a wider one. One resize gesture costs
+  one render, at the size the gesture ended on.
 - Declaring what the terminal draws now also stops the status bar reserving
   room for a glyph width it no longer has to guess at. At `2` the reservation
   was charged on top of a column count that already included it; at `1` the

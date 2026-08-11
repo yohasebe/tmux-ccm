@@ -137,6 +137,17 @@ if ! tmux show-hooks -g 2>/dev/null | grep "session-window-changed" | grep -q "i
     tmux set-hook -ga session-window-changed "run-shell -b '$CCM_BIN inject-status --fast 2>/dev/null || true'"
 fi
 
+# Re-lay the bar when the terminal changes width. The layout is baked
+# from the width at render time, so on resize it is simply wrong until
+# something re-renders — entries clipped on a narrower terminal, fewer
+# entries than fit on a wider one. See lib/on-resize.sh, which absorbs
+# the burst a drag produces so one resize gesture costs one render.
+# Same append-once guard as above: re-sourcing would otherwise stack a
+# second copy and render twice per event.
+if ! tmux show-hooks -g 2>/dev/null | grep "client-resized" | grep -q "on-resize.sh"; then
+    tmux set-hook -ga client-resized "run-shell -b '\"${CCM_ROOT}/lib/on-resize.sh\" 2>/dev/null || true'"
+fi
+
 # Auto-restore: load _autosave snapshot on tmux start
 # Controlled by @ccm-auto-restore: "on" or "off" (default)
 CCM_AUTO_RESTORE=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)

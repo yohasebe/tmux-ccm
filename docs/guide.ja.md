@@ -811,6 +811,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10`（秒） | session_info の pid 再利用チェックのドリフト許容秒数。`read_session_info` が `ps` snapshot を渡されたとき、Claude Code が記録した `startedAt` と live プロセスの etime 由来の起動時刻を照合する。許容を超える乖離は「pid が再利用された旧セッションの json」と判断して reject（呼び出し側は legacy fallback へ）。10 秒は通常のクロックドリフト・NTP 補正・fork から session_info 書き込みまでの数秒をカバーする値 |
 | `CCM_STATUS_INTERVAL` | `5`（秒） | tmux `status-interval` の目標値 — ステータスバーの再描画間隔。プラグインはロード時に、現在の設定がこの値より大きい場合のみ引き下げる（引き上げはしない）。shell の `export` ではなく `tmux set-environment -g` でプラグインのロード前に設定 — [ステータス更新間隔](#ステータス更新間隔)参照 |
 | `CCM_RECONCILE_INTERVAL` | `20`（秒） | 定期ステータス更新が**フル実行**する間隔。tmux は `#(ccm inject-status)` を `status-interval` ごとに起動し（秒表示の時計を出していれば毎秒）、フル実行は約24プロセスを要するため、その間の呼び出しはシェルの fork だけに抑えられる。状態変化はこれを待たない — フックが遷移のたびに即時更新を push する。ここで律速されるのはフックが発火しないもの（git ブランチ切替、新しいリスニングポート、stale-BUSY の窓跨ぎ）のみ。`CCM_BUSY_STALE_RELEASE_SEC` より小さく保つこと（その解放はイベントではなく閾値跨ぎで、reconciliation が走るまで誰も再評価しないため） |
+| `CCM_RESIZE_SETTLE` | `0.4`（秒） | 最後の `client-resized` イベントからステータスバーを再配置するまでの待ち時間。バーのレイアウトは描画時の端末幅で焼き込まれるため、リサイズ後は何かが再描画するまで古い幅のままになる。tmux はドラッグの 1 ステップごとにこのイベントを発火するので、この窓でまとめて 1 回だけ、ドラッグが終わったサイズで描画する。ドラッグ途中で再配置されてしまう場合は大きくする |
 
 ### チューニング例
 
