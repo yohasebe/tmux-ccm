@@ -25,8 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   eighteen, and counting the template left mode 1's layout short enough to
   clip its first entry.
 - Saving a tmux setting no longer deletes other settings whose name extends
-  it. `@ccm-status-line` and `@ccm-status-line-hide-shell` are separate
-  options, and writing the first removed the second from `~/.tmux.conf`.
+  it, from either the dashboard or the setup wizard. `@ccm-status-line` and
+  `@ccm-status-line-hide-shell` are separate options, and writing the first
+  removed the second from `~/.tmux.conf`.
+- `ccm init` reads the current status-bar mode from `~/.tmux.conf` again when
+  run outside tmux. It matched the option name as a substring, so a config
+  that also set `@ccm-status-line-position` reported the two values joined
+  together as the current mode.
 - A permission dialog dismissed with Esc no longer returns to PERMIT, which
   also blocked `ccm send` for that window.
 - Auto-exit no longer closes panes that run `claude` directly, with no shell

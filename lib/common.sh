@@ -126,6 +126,77 @@ ccm_check_deps() {
     fi
 }
 
+# Read the value of a tmux option from a config file.
+#
+# The option name must appear as a whole whitespace-delimited token, and
+# must be followed by a value: one option name can be a prefix of another
+# (`@ccm-status-line` and `@ccm-status-line-position`), and a substring
+# test would report the wrong setting's value — or, when several lines
+# match, splice the values of all of them into one string.
+_ccm_conf_option_value() {
+    local key="$1"
+    local conf="${2:-$HOME/.tmux.conf}"
+    [[ -f "$conf" ]] || return 0
+    awk -v k="$key" '
+        $1 ~ /^#/ { next }
+        { for (i = 1; i < NF; i++) if ($i == k) { print $NF; next } }
+    ' "$conf" | tail -1
+}
+
+# Drop every line of a config file that sets $key.
+#
+# Matches the option name as a whole token, for the same reason: a
+# substring delete removes the longer option while saving the shorter
+# one, silently, from the user's own config file — so an unrelated
+# change through the wizard makes a setting stop working.
+_ccm_conf_drop_key() {
+    local conf="$1"
+    local key="$2"
+    [[ -f "$conf" ]] || return 0
+    local tmp
+    tmp=$(mktemp "${TMPDIR:-/tmp}/ccm-conf.XXXXXX") || return 1
+    if awk -v k="$key" '
+            { for (i = 1; i <= NF; i++) if ($i == k) next }
+            { print }
+        ' "$conf" > "$tmp"; then
+        # Truncate in place rather than mv, so the file keeps its
+        # permissions and inode (mktemp would hand us 0600).
+        cat "$tmp" > "$conf"
+    fi
+    rm -f "$tmp"
+}
+
+# Write a setting to ~/.tmux.conf, placed BEFORE the ccm/TPM load lines
+# so the plugin sees it at startup.
+_ccm_save_tmux_conf() {
+    local setting="$1"
+    local conf="${2:-$HOME/.tmux.conf}"
+    local key
+    key=$(printf '%s\n' "$setting" | awk '{print $3}')
+    [[ -n "$key" ]] || return 1
+    _ccm_conf_drop_key "$conf" "$key"
+    local insert_line=""
+    local ccm_source
+    ccm_source=$(grep -n 'source-file.*ccm' "$conf" 2>/dev/null | head -1 | cut -d: -f1)
+    local tpm_run
+    tpm_run=$(grep -n '^run.*tpm' "$conf" 2>/dev/null | head -1 | cut -d: -f1)
+    if [[ -n "$ccm_source" && -n "$tpm_run" ]]; then
+        insert_line=$(( ccm_source < tpm_run ? ccm_source : tpm_run ))
+    elif [[ -n "$ccm_source" ]]; then
+        insert_line="$ccm_source"
+    elif [[ -n "$tpm_run" ]]; then
+        insert_line="$tpm_run"
+    fi
+    if [[ -n "$insert_line" ]]; then
+        sed -i.bak "${insert_line}i\\
+${setting}
+" "$conf" 2>/dev/null
+    else
+        echo "$setting" >> "$conf"
+    fi
+    rm -f "${conf}.bak" 2>/dev/null
+}
+
 # Interactive initial setup wizard
 # Works both inside and outside tmux (tmux-dependent steps show manual instructions)
 ccm_init() {
@@ -194,34 +265,6 @@ ccm_init() {
     fi
     echo ""
 
-    # Helper: write a setting to ~/.tmux.conf BEFORE ccm plugin loads
-    _ccm_save_tmux_conf() {
-        local setting="$1"
-        local key
-        key=$(echo "$setting" | awk '{print $3}')
-        sed -i.bak "/${key}/d" ~/.tmux.conf 2>/dev/null || true
-        local insert_line=""
-        local ccm_source
-        ccm_source=$(grep -n 'source-file.*ccm' ~/.tmux.conf 2>/dev/null | head -1 | cut -d: -f1)
-        local tpm_run
-        tpm_run=$(grep -n '^run.*tpm' ~/.tmux.conf 2>/dev/null | head -1 | cut -d: -f1)
-        if [[ -n "$ccm_source" && -n "$tpm_run" ]]; then
-            insert_line=$(( ccm_source < tpm_run ? ccm_source : tpm_run ))
-        elif [[ -n "$ccm_source" ]]; then
-            insert_line="$ccm_source"
-        elif [[ -n "$tpm_run" ]]; then
-            insert_line="$tpm_run"
-        fi
-        if [[ -n "$insert_line" ]]; then
-            sed -i.bak "${insert_line}i\\
-${setting}
-" ~/.tmux.conf 2>/dev/null
-        else
-            echo "$setting" >> ~/.tmux.conf
-        fi
-        rm -f ~/.tmux.conf.bak 2>/dev/null
-    }
-
     # Step 3: Auto-restore
     echo "  ${COLOR_BOLD}[3/4] Auto-restore on tmux start${COLOR_RESET}"
     echo "    Automatically load the last workspace when tmux starts."
@@ -246,13 +289,13 @@ ${setting}
     echo "    0 = Icon in status-right (minimal)"
     echo "    1 = Replace window list with ccm entries"
     echo "    2 = Dedicated status line with full details (default)"
-    local current_mode="2"
+    local current_mode
     if [[ $in_tmux -eq 1 ]]; then
         current_mode=$(tmux show-option -gqv @ccm-status-line 2>/dev/null)
-        current_mode="${current_mode:-2}"
-    elif grep -q '@ccm-status-line' ~/.tmux.conf 2>/dev/null; then
-        current_mode=$(grep '@ccm-status-line' ~/.tmux.conf | awk '{print $NF}')
+    else
+        current_mode=$(_ccm_conf_option_value '@ccm-status-line')
     fi
+    current_mode="${current_mode:-2}"
     echo "    Current: mode ${current_mode}"
     echo -n "    Choose mode [0/1/2] (Enter to keep current): "
     local mode_answer
