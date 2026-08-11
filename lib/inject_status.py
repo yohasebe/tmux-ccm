@@ -270,6 +270,38 @@ def scan_active_windows(projects, include_all=False):
     return [p for p in projects if p.state in ("BUSY", "PERMIT")]
 
 
+def hide_shell_enabled():
+    """True when the status bar should list only windows that host a
+    Claude session (`@ccm-status-line-hide-shell on`).
+
+    Off by default. The bar lists every project because that is what
+    makes it a project overview; on a machine with many registered
+    projects most of them are SHELL most of the time, and the few that
+    need attention get lost among them.
+
+    SHELL is the only state hidden. IDLE looks inactive but is not: the
+    session is alive, waiting for you, and it carries the `* elapsed`
+    marker that says a turn just finished — the single most useful
+    thing the bar shows. Dropping it would hide the moment the user
+    most wants to see.
+    """
+    return tmux_cmd(
+        "show-option", "-gqv", "@ccm-status-line-hide-shell") in (
+            "on", "1", "true", "yes")
+
+
+def apply_shell_filter(projects):
+    """Drop SHELL projects when the option is on.
+
+    Applied by the modes that list projects by name (1 and 2). Mode 0
+    renders one icon and already narrows to BUSY/PERMIT, so the option
+    has nothing to change there.
+    """
+    if not hide_shell_enabled():
+        return projects
+    return [p for p in projects if p.state != "SHELL"]
+
+
 def inject_status(force_fast=False):
     """Main inject-status logic.
 
@@ -473,7 +505,8 @@ def _inject_status_impl(force_fast=False):
     if mode == "1":
         # Mode 1: ccm-style window list in status-right (fit as many as possible)
         _cleanup_extra_lines()
-        all_projects = scan_active_windows(projects, include_all=True)
+        all_projects = apply_shell_filter(
+            scan_active_windows(projects, include_all=True))
 
         # Hide standard window list
         _touch_mode2_marker()
@@ -539,7 +572,8 @@ def _inject_status_impl(force_fast=False):
             ("set", "-g", "window-status-current-format", ""),
         )
 
-        all_projects = scan_active_windows(projects, include_all=True)
+        all_projects = apply_shell_filter(
+            scan_active_windows(projects, include_all=True))
         entries = build_detail_entries(all_projects, with_extras=True, current_win_target=current_win_target)
 
         # Visual palette for the dedicated mode-2 line(s). `BG`

@@ -548,3 +548,71 @@ class TestCJKWidthInLayout:
         # width: 8 entries of ~14 columns of name alone cannot fit
         # a single 100-column line.
         assert cjk_lines > 3 or cjk_lines >= ascii_lines
+
+
+class TestHideShellFilter:
+    """`@ccm-status-line-hide-shell` narrows the named-project modes to
+    windows that host a Claude session.
+
+    A machine with many registered projects has most of them at SHELL
+    most of the time, and the one that needs attention is lost among
+    them — 37 of 39 rows saying "nothing here" on the setup this was
+    written for.
+    """
+
+    def _projects(self):
+        return [
+            make_project("0:1", "1", "one", "BUSY"),
+            make_project("0:2", "2", "two", "IDLE"),
+            make_project("0:3", "3", "three", "SHELL"),
+            make_project("0:4", "4", "four", "PERMIT"),
+        ]
+
+    def _with_option(self, monkeypatch, value):
+        def fake(*args, **kw):
+            if args[:3] == ("show-option", "-gqv",
+                            "@ccm-status-line-hide-shell"):
+                return value
+            return ""
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake)
+
+    def test_default_keeps_every_project(self, monkeypatch):
+        """Off by default: the bar is a project overview, and narrowing
+        it without being asked would hide projects the user registered
+        on purpose."""
+        self._with_option(monkeypatch, "")
+        kept = inject_status.apply_shell_filter(self._projects())
+        assert [p.name for p in kept] == ["one", "two", "three", "four"]
+
+    def test_on_drops_only_shell(self, monkeypatch):
+        self._with_option(monkeypatch, "on")
+        kept = inject_status.apply_shell_filter(self._projects())
+        assert [p.name for p in kept] == ["one", "two", "four"]
+
+    def test_idle_survives_the_filter(self, monkeypatch):
+        """IDLE looks inactive and is not: the session is alive and
+        waiting, and it carries the `* elapsed` marker that says a turn
+        just finished. Hiding it would drop the moment the bar exists
+        to show."""
+        self._with_option(monkeypatch, "on")
+        kept = inject_status.apply_shell_filter(self._projects())
+        assert "two" in [p.name for p in kept]
+
+    @pytest.mark.parametrize("value", ["on", "1", "true", "yes"])
+    def test_accepts_the_usual_truthy_spellings(self, monkeypatch, value):
+        self._with_option(monkeypatch, value)
+        assert inject_status.hide_shell_enabled() is True
+
+    @pytest.mark.parametrize("value", ["", "off", "0", "no", "nonsense"])
+    def test_anything_else_is_off(self, monkeypatch, value):
+        """An unrecognised value must not silently hide projects — the
+        failure a user would notice last."""
+        self._with_option(monkeypatch, value)
+        assert inject_status.hide_shell_enabled() is False
+
+    def test_all_shell_yields_an_empty_list(self, monkeypatch):
+        """Both named-project modes already render an empty list as
+        'no projects'; the filter must be allowed to produce one."""
+        self._with_option(monkeypatch, "on")
+        only_shell = [make_project("0:1", "1", "a", "SHELL")]
+        assert inject_status.apply_shell_filter(only_shell) == []

@@ -220,10 +220,31 @@ set -g @ccm-status-line 2     # default
 | Value | Mode | Description |
 |-------|------|-------------|
 | `0` | Icon | Priority icon with window indices appended to status-right (most conservative — does not change tmux's existing chrome) |
-| `1` | Full | Replaces window list with ccm-style colored entries |
+| `1` | Full | Replaces the window list with ccm-style colored entries |
 | `2` | Dedicated line (default) | Adds dedicated status line(s) below the main bar with branch / port details for all projects |
 
 Mode 2 is the default. Mode 0 is the most conservative choice if you want to leave your existing tmux theme untouched.
+
+Mode 1 replaces tmux's window list entirely, so windows ccm does not manage
+disappear from it. Choose mode 0 or 2 if you keep ordinary tmux work in the
+same session — both leave the window list alone.
+
+#### Showing only running sessions
+
+With many registered projects, most are `SHELL` most of the time and the one
+that needs you is easy to miss. Modes 1 and 2 can list only the windows that
+host a Claude session:
+
+```tmux
+set -g @ccm-status-line-hide-shell on
+```
+
+`IDLE` projects stay visible — the session is alive and waiting, and that is
+where the `* elapsed` marker appears when a turn finishes. Only `SHELL` is
+hidden. Note that idle sessions auto-exit after `CCM_IDLE_EXIT_TIMEOUT`, so a
+project you leave alone will drop off the bar once its session ends; it
+returns when you attach and Claude restarts. The dashboard and `ccm status`
+always list every project.
 
 #### Mode 0 — Icon with indices
 

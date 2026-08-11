@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `@ccm-status-line-hide-shell on` lists only windows that host a Claude
+  session in status-bar modes 1 and 2. Off by default; `IDLE` projects stay
+  visible.
+
 ### Fixed
 - A permission dialog dismissed with Esc no longer returns to PERMIT, which
   also blocked `ccm send` for that window.
