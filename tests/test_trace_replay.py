@@ -23,7 +23,7 @@ Adding a new incident to the corpus:
      (e.g. session_end) so the fixture is deterministic.
   2. Add a probe table: (T, derive inputs at T, expected state).
      The JSONL / raw inputs are NOT in the trace — reconstruct them
-     from the incident's debug data and say so in the probe comment.
+     from the session's debug data and say so in the probe comment.
   3. Known-bad probes (the bug being investigated) get
      `xfail(strict=True)` with the DESIRED expectation: the test
      flips to an error the moment the fix lands, forcing the marker
@@ -63,10 +63,10 @@ def replay_at(events, now, jsonl_stop_reason, jsonl_age, raw,
     )
 
 
-class TestPermitLongTool20260610:
-    """monadic-chat incident, 2026-06-10 ~22:27 JST.
+class TestPermitLongTool:
+    """An approved permission whose tool then ran for minutes.
 
-    A `bundle exec rspec` run inside a docker container took 12+
+    A test-suite run inside a container took 12+
     minutes. The PreToolUse for it raised a permission request
     (events: pretool → permit_req → notify_permit), the user
     approved, and the tool ran — but Claude Code does NOT re-fire
@@ -74,9 +74,9 @@ class TestPermitLongTool20260610:
     stayed the newest events until the tool's posttool landed
     ~5 minutes later. Throughout that window the dashboard showed
     ⚠PERMIT (with the honest `(3m)` age suffix) for a session that
-    was actively executing — the user saw the contradiction
-    directly, with the preview pane streaming rspec output next to
-    a PERMIT badge.
+    was actively executing — the contradiction is visible on screen,
+    with the preview pane streaming the tool's output next to a
+    PERMIT badge.
 
     Neither promotion path in `classify_activity`'s permit branch
     fired:
@@ -89,57 +89,55 @@ class TestPermitLongTool20260610:
         (before the permission), and a long-running shell command
         writes nothing further until it completes.
 
-    Trace fixture: full real session, 1121 events, from the first
-    `prompt` (16:39) through three permit cycles, the bug window,
-    `stop`, `notify_idle`, a phantom `subagent`, to `session_end`
-    (22:43:23). Epochs below are verbatim from the trace.
+    Trace fixture: 1121 events, from the first `prompt` through three
+    permit cycles, the bug window, `stop`, `notify_idle`, a phantom
+    `subagent`, to `session_end`. Offsets below are seconds from the
+    fixture's synthetic epoch.
     """
 
-    EVENTS = load_trace("permit_long_tool_2026-06-10.events.jsonl")
+    EVENTS = load_trace("permit_long_tool.events.jsonl")
 
-    # Key timestamps (from the trace):
-    #   1781097801  pretool   (22:23:21)  ← the rspec call
-    #   1781097801  permit_req
-    #   1781097807  notify_permit
-    #   1781098121  posttool  (22:28:41)  ← rspec finished
-    #   1781098149  pretool   (22:29:09)  ← churn resumed
-    #   1781098213  stop      (22:30:13)
-    #   1781098273  notify_idle
-    #   1781098403  subagent  (22:33:23)  ← phantom (after idle)
-    #   1781099003  session_end
+    # Key points in the trace (epoch + seconds):
+    #   1000017061  pretool        ← the long tool's call
+    #   1000017061  permit_req
+    #   1000017067  notify_permit
+    #   1000017381  posttool       ← the tool finished
+    #   1000017409  pretool        ← churn resumed
+    #   1000017473  stop
+    #   1000017533  notify_idle
+    #   1000017663  subagent       ← phantom (after idle)
+    #   1000018263  session_end
 
     def test_mid_turn_churn_is_busy(self):
         """Steady pretool/posttool churn between permit cycles:
         plain BUSY. JSONL inputs reconstructed as 'fresh tool_use'
         (Claude was mid-turn calling tools every few seconds).
 
-        Probe placement note: the first draft of this probe sat at
-        22:10:00 and FAILED — it accidentally landed inside yet
-        another permit window (22:09:36 permit_req → 22:11:15
-        posttool) of the same shape as the headline incident. The
+        Probe placement note: the first draft of this probe FAILED — it accidentally landed
+        inside yet another permit window of the same shape as the headline incident. The
         trace contains at least four such windows; that density is
         itself evidence of how often the approved-permission gap
         occurs in real sessions."""
         state = replay_at(
-            self.EVENTS, now=1781097160,  # 22:12:40, latest=posttool
+            self.EVENTS, now=1000016420,  # latest=posttool
             jsonl_stop_reason="tool_use", jsonl_age=4, raw="IDLE",
         )
         assert state == "BUSY"
 
     def test_earlier_permit_cycle_resolves_via_posttool(self):
-        """The 22:12:51 permit cycle: once its posttool (22:14:52)
+        """An earlier permit cycle: once its posttool
         lands, the event tail is start-class again and the state
         returns to BUSY. This is the only mechanism that ends a
         permit window today — the probe documents it."""
         state = replay_at(
-            self.EVENTS, now=1781097300,  # 8s after that posttool
+            self.EVENTS, now=1000016560,  # 8s after that posttool
             jsonl_stop_reason="tool_use", jsonl_age=5, raw="IDLE",
         )
         assert state == "BUSY"
 
     def test_approved_permission_long_tool_is_busy_with_spinner_raw(self):
-        """THE BUG WINDOW, NOW FIXED (2026-06-11). T=22:26:40, 3.5 min
-        after the permission was approved, rspec still running.
+        """THE BUG WINDOW — 3.5 min after the permission was
+        approved, with the tool still running.
 
         The fix landed at the RAW layer, not here: `detect_pane_state`
         now returns raw=BUSY when an active-work spinner footer
@@ -153,13 +151,13 @@ class TestPermitLongTool20260610:
         the spinner-aware detector now produces for a long tool
         running under an approved permission.
 
-        Inputs verbatim from the incident except raw, which reflects
+        Inputs verbatim from the trace except raw, which reflects
         the post-fix detector output:
           - jsonl_stop_reason="tool_use", jsonl_age=199 (unchanged)
           - raw="BUSY": spinner present → detect_pane_state(BUSY).
         """
         state = replay_at(
-            self.EVENTS, now=1781098000,
+            self.EVENTS, now=1000017260,
             jsonl_stop_reason="tool_use", jsonl_age=199, raw="BUSY",
         )
         assert state == "BUSY"
@@ -177,37 +175,37 @@ class TestPermitLongTool20260610:
         classify_activity, this expectation changes and the move is
         forced to be deliberate."""
         state = replay_at(
-            self.EVENTS, now=1781098000,
+            self.EVENTS, now=1000017260,
             jsonl_stop_reason="tool_use", jsonl_age=199, raw="IDLE",
         )
         assert state == "PERMIT"
 
     def test_posttool_after_long_run_releases_to_busy(self):
-        """22:28:41 — the rspec posttool finally lands and the
+        """the rspec posttool finally lands and the
         permit window ends the only way it can today."""
         state = replay_at(
-            self.EVENTS, now=1781098130,
+            self.EVENTS, now=1000017390,
             jsonl_stop_reason="tool_use", jsonl_age=9, raw="IDLE",
         )
         assert state == "BUSY"
 
     def test_stop_with_terminal_stop_reason_is_idle(self):
-        """22:30:13 stop + JSONL end_turn → turn truly over."""
+        """stop + JSONL end_turn → turn truly over."""
         state = replay_at(
-            self.EVENTS, now=1781098240,
+            self.EVENTS, now=1000017500,
             jsonl_stop_reason="end_turn", jsonl_age=27, raw="IDLE",
         )
         assert state == "IDLE"
 
     def test_notify_idle_is_idle(self):
         state = replay_at(
-            self.EVENTS, now=1781098300,
+            self.EVENTS, now=1000017560,
             jsonl_stop_reason="end_turn", jsonl_age=87, raw="IDLE",
         )
         assert state == "IDLE"
 
     def test_phantom_subagent_after_idle_stays_idle(self):
-        """22:33:23 — a subagent event fired 2 minutes into idle
+        """a subagent event fired 2 minutes into idle
         (the documented phantom-subagent upstream quirk; see memory
         project_phantom_subagent.md). `_strip_phantom_subagents`
         must drop it because the preceding non-subagent event is a
@@ -215,14 +213,14 @@ class TestPermitLongTool20260610:
         the phantom logic against a REAL phantom, not a synthetic
         one."""
         state = replay_at(
-            self.EVENTS, now=1781098500,
+            self.EVENTS, now=1000017760,
             jsonl_stop_reason="end_turn", jsonl_age=287, raw="IDLE",
         )
         assert state == "IDLE"
 
     def test_session_end_with_pid_gone_is_shell(self):
         state = replay_at(
-            self.EVENTS, now=1781099100,
+            self.EVENTS, now=1000018360,
             jsonl_stop_reason="end_turn", jsonl_age=900, raw="SHELL",
             pid_present=False,
         )
@@ -235,7 +233,7 @@ class TestPermitLongTool20260610:
         (legacy fallback decides from the process tree) rather than
         committing SHELL while a live claude runs."""
         state = replay_at(
-            self.EVENTS, now=1781099050,
+            self.EVENTS, now=1000018310,
             jsonl_stop_reason="end_turn", jsonl_age=850, raw="IDLE",
             pid_present=True,
         )
@@ -243,7 +241,7 @@ class TestPermitLongTool20260610:
 
 
 class TestMenuWait20260611:
-    """ccm-dev incident-class, 2026-06-11 ~00:29 JST: an
+    """incident-class : an
     `AskUserQuestion` (interactive menu) was on screen waiting for
     the user to pick an option.
 
@@ -255,7 +253,7 @@ class TestMenuWait20260611:
         incident;
       - the JSONL latest assistant record has stop_reason=tool_use,
         ALSO exactly like the long-tool incident (measured live
-        2026-06-11 — the menu tool_use record predates the wait);
+ the menu tool_use record predates the wait);
       - raw is IDLE.
 
     So this trace is INDISTINGUISHABLE from TestPermitLongTool's bug
@@ -272,12 +270,12 @@ class TestMenuWait20260611:
     killed that hypothesis is what this fixture preserves.
     """
 
-    EVENTS = load_trace("menu_wait_2026-06-11.events.jsonl")
+    EVENTS = load_trace("menu_wait.events.jsonl")
 
     # Key timestamps (from the trace):
-    #   1781105372  pretool        (00:29:32)  ← AskUserQuestion call
-    #   1781105378  notify_permit  (00:29:38)
-    #   1781105455  posttool       (00:30:55)  ← user answered
+    #   1000000585  pretool  ← AskUserQuestion call
+    #   1000000591  notify_permit
+    #   1000000668  posttool  ← user answered
 
     def test_menu_wait_is_permit(self):
         """During the AskUserQuestion wait, with the exact signals
@@ -286,7 +284,7 @@ class TestMenuWait20260611:
         the permit event, raw IDLE), the answer must be PERMIT —
         the user really is being asked to choose."""
         state = replay_at(
-            self.EVENTS, now=1781105420,  # 00:30:20, mid-wait
+            self.EVENTS, now=1000000633,  # , mid-wait
             jsonl_stop_reason="tool_use", jsonl_age=48, raw="IDLE",
         )
         assert state == "PERMIT"
@@ -298,38 +296,38 @@ class TestMenuWait20260611:
         branch, THIS probe flips to BUSY and fails — which is the
         whole point of keeping both traces in the corpus."""
         state = replay_at(
-            self.EVENTS, now=1781105450,  # 00:30:50, 5s before answer
+            self.EVENTS, now=1000000663,  # , 5s before answer
             jsonl_stop_reason="tool_use", jsonl_age=78, raw="IDLE",
         )
         assert state == "PERMIT"
 
     def test_user_answer_releases_to_busy(self):
-        """00:30:55 the user picks an option → posttool lands →
+        """the user picks an option → posttool lands →
         event tail is start-class again → BUSY as the follow-up
         tools run."""
         state = replay_at(
-            self.EVENTS, now=1781105460,
+            self.EVENTS, now=1000000673,
             jsonl_stop_reason="tool_use", jsonl_age=5, raw="IDLE",
         )
         assert state == "BUSY"
 
 
 class TestRecapPhantomSubagent20260707:
-    """monadic-chat incident, 2026-07-07 ~21:43 JST (observed live
+    """incident (observed live
     during the hook-silence canary observe-first run).
 
     A real turn ran with tool use and permission prompts until
-    ~21:25, then the turn ended WITHOUT a Stop event (hook silence)
+    ~then the turn ended WITHOUT a Stop event (hook silence)
     and the session went idle — the `❯` composer visible, no spinner
     (raw=IDLE). The event tail's newest entry stayed a permit-class
-    event, so ccm showed a false PERMIT for ~15 min. Then at 21:40:53,
+    event, so ccm showed a false PERMIT for ~15 min. Then at ,
     when the user returned to the session, a recap `system/away_summary`
     JSONL record landed AND a phantom SubagentStart hook fired at the
     same instant. That lone subagent became the newest event → derive
     resolved BUSY → the dashboard stuck at BUSY while the pane sat
     plainly idle.
 
-    Unlike the 2026-07-04 jwriter phantom, this subagent is preceded
+    Unlike the phantom, this subagent is preceded
     by a permit sequence (not a rest marker), so neither the
     rest-marker phantom strip nor the all-subagent guard applies. The
     fix is the stale-BUSY-vs-idle-screen guard in map_activity_to_state:
@@ -338,16 +336,16 @@ class TestRecapPhantomSubagent20260707:
     resolves raw=IDLE → IDLE.
     """
 
-    EVENTS = load_trace("recap_phantom_subagent_2026-07-07.events.jsonl")
+    EVENTS = load_trace("recap_phantom_subagent.events.jsonl")
 
     def test_recap_phantom_subagent_stuck_busy_now_idle(self):
-        """T=21:43:47, 3 min after the recap phantom subagent. JSONL
-        real-activity frozen at 21:25:12 (jsonl_age=1115, past the
+        """3 min after the recap phantom subagent. JSONL
+        real-activity frozen at (jsonl_age=1115, past the
         600 s window), raw=IDLE (❯ visible, no spinner). derive must
         DEFER (None) so legacy commits IDLE — not the stuck BUSY the
         phantom subagent would otherwise force."""
         state = replay_at(
-            self.EVENTS, now=1783428227,
+            self.EVENTS, now=1000001228,
             jsonl_stop_reason="tool_use", jsonl_age=1115, raw="IDLE",
         )
         assert state is None  # → legacy reads raw=IDLE → IDLE
@@ -358,7 +356,7 @@ class TestRecapPhantomSubagent20260707:
         guard requires raw=IDLE, so this stays BUSY. Ensures the fix
         does not blind ccm to a real in-progress Task."""
         state = replay_at(
-            self.EVENTS, now=1783428227,
+            self.EVENTS, now=1000001228,
             jsonl_stop_reason="tool_use", jsonl_age=1115, raw="BUSY",
         )
         assert state == "BUSY"
@@ -369,7 +367,7 @@ class TestRecapPhantomSubagent20260707:
         raw=IDLE — jsonl_age is well inside the window so the guard
         never applies."""
         state = replay_at(
-            self.EVENTS, now=1783427701,
+            self.EVENTS, now=1000000702,
             jsonl_stop_reason="tool_use", jsonl_age=8, raw="IDLE",
         )
         assert state == "BUSY"

@@ -1,0 +1,12 @@
+{"ts":1000000000,"type":"permit_req"}
+{"ts":1000000006,"type":"notify_permit"}
+{"ts":1000000034,"type":"posttool"}
+{"ts":1000000055,"type":"pretool"}
+{"ts":1000000055,"type":"permit_req"}
+{"ts":1000000057,"type":"posttool"}
+{"ts":1000000072,"type":"pretool"}
+{"ts":1000000073,"type":"posttool"}
+{"ts":1000000105,"type":"pretool"}
+{"ts":1000000105,"type":"permit_req"}
+{"ts":1000000111,"type":"notify_permit"}
+{"ts":1000000694,"type":"subagent"}
