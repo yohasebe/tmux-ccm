@@ -246,6 +246,24 @@ project you leave alone will drop off the bar once its session ends; it
 returns when you attach and Claude restarts. The dashboard and `ccm status`
 always list every project.
 
+#### Placing mode 1's entries on the left
+
+Mode 1 writes into `status-right`, which tmux draws right-aligned, so the
+entries sit next to your clock and the highest-priority one is rightmost —
+that side survives when the bar runs out of room. To read them left to right
+instead:
+
+```tmux
+set -g @ccm-status-line-position left
+```
+
+The entries move to the far side of the bar, highest priority first, filling
+the space a blanked window list leaves empty. Nothing is written to
+`status-left`; the padding that moves them lives in `status-right`, so your
+theme's left segment is untouched. When the bar is too narrow to place them
+without sliding under that segment, ccm keeps the right-hand layout rather
+than clipping the entry you most need to see.
+
 #### Mode 0 — Icon with indices
 
 Appends a priority icon with window indices to your existing status-right. Your clock, battery, etc. are preserved. When active projects exist, window numbers are shown (e.g., `5: PERMIT ⚠`). When all are IDLE, a single `≡` icon is shown:

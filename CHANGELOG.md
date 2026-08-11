@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `@ccm-status-line-hide-shell on` lists only windows that host a Claude
   session in status-bar modes 1 and 2. Off by default; `IDLE` projects stay
   visible.
+- `@ccm-status-line-position left` places mode 1's entries on the far side of
+  the bar, highest priority first, instead of next to the clock. Default
+  `right`. `status-left` is not written to.
 
 ### Fixed
 - A permission dialog dismissed with Esc no longer returns to PERMIT, which

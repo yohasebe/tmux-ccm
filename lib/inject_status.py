@@ -290,6 +290,36 @@ def hide_shell_enabled():
             "on", "1", "true", "yes")
 
 
+def status_line_position():
+    """Where mode 1 puts its entries: "right" (default) or "left"."""
+    return ("left"
+            if tmux_cmd("show-option", "-gqv",
+                        "@ccm-status-line-position") == "left"
+            else "right")
+
+
+def status_left_width():
+    """Rendered width of `status-left`, or -1 when it cannot be measured.
+
+    Measured, not guessed: `status-left` is usually a format
+    (`#{USER}@#h`, session name, a theme's segments) whose source text
+    says nothing about how wide it draws. `#{T:...}` asks tmux to
+    expand it the same way it will at render time, and the style codes
+    are stripped afterwards because they occupy no columns.
+
+    -1 means "unknown" and the caller falls back to right placement
+    rather than guessing a padding that could push entries under the
+    left segment.
+    """
+    try:
+        expanded = tmux_cmd("display-message", "-p", "#{T:status-left}")
+    except Exception:
+        return -1
+    if not expanded:
+        return 0
+    return display_width(re.sub(r"#\[[^\]]*\]", "", expanded))
+
+
 def apply_shell_filter(projects):
     """Drop SHELL projects when the option is on.
 
@@ -545,8 +575,42 @@ def _inject_status_impl(force_fast=False):
                 selected.append(entry)
                 avail -= entry_width
 
-            # Reverse: low priority on left (clipped first), high priority on right (always visible)
-            selected.reverse()
+            # Placement. `status-right` draws as one right-aligned
+            # block, so where the entries land is decided by what
+            # follows them inside it.
+            #
+            # right (default): entries sit against the original
+            #   content, so the block ends at the screen edge and the
+            #   entries are the part nearest the clock. tmux clips a
+            #   too-wide block from the LEFT, so the order is reversed
+            #   — the lowest priority is what gets cut.
+            #
+            # left: padding between the entries and the original
+            #   widens the block until it reaches across the bar, which
+            #   pushes the entries to the far side. Reading order and
+            #   priority then agree, and the empty middle a blanked
+            #   window list leaves behind gets used.
+            #
+            # Left placement is only taken when the padding can be
+            # computed and is positive. Guessing it would risk sliding
+            # the entries under `status-left`, where tmux clips from the
+            # left and the HIGHEST priority is what disappears — the
+            # one failure this whole ordering exists to prevent.
+            pad = 0
+            if status_line_position() == "left":
+                left_w = status_left_width()
+                if left_w >= 0:
+                    # `avail` is what the width budget has left over.
+                    # Spending it as padding is what moves the block;
+                    # `left_w` and a small margin stay unspent so the
+                    # entries stop clear of the left segment.
+                    pad = avail - left_w - 2
+
+            if pad <= 0:
+                # Right placement, or left asked for but it does not
+                # fit — reversed so a miscalculation costs the least
+                # important entry.
+                selected.reverse()
 
             detail = ""
             for i, entry in enumerate(selected):
@@ -554,7 +618,11 @@ def _inject_status_impl(force_fast=False):
                     detail += " #[fg=#666666]│#[fg=#9E9E9E]"
                 detail += f" {entry}"
 
-            new_status = f"#[fg=#9E9E9E,bg=#3a3a3a]{detail} #[fg=#666666]│#[default]{original}{refresh}"
+            gap = " " * pad if pad > 0 else ""
+            new_status = (
+                f"#[fg=#9E9E9E,bg=#3a3a3a]{detail} "
+                f"#[fg=#666666]│#[default]{gap}{original}{refresh}"
+            )
 
         if new_status != prev_status:
             _write_cache(cache_file, new_status)

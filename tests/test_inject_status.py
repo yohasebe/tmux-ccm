@@ -616,3 +616,52 @@ class TestHideShellFilter:
         self._with_option(monkeypatch, "on")
         only_shell = [make_project("0:1", "1", "a", "SHELL")]
         assert inject_status.apply_shell_filter(only_shell) == []
+
+
+class TestStatusLinePosition:
+    """`@ccm-status-line-position left` moves mode 1's entries to the
+    far side of the bar.
+
+    `status-right` draws as one right-aligned block, so padding placed
+    after the entries widens the block until it reaches across the bar
+    and pushes the entries left. Nothing is written to `status-left`,
+    which stays the theme's to own.
+    """
+
+    def _opt(self, monkeypatch, position="", left_width="  host "):
+        def fake(*args, **kw):
+            if args[:3] == ("show-option", "-gqv",
+                            "@ccm-status-line-position"):
+                return position
+            if args[:3] == ("display-message", "-p", "#{T:status-left}"):
+                return left_width
+            return ""
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake)
+
+    def test_default_is_right(self, monkeypatch):
+        self._opt(monkeypatch, "")
+        assert inject_status.status_line_position() == "right"
+
+    def test_left_is_opt_in(self, monkeypatch):
+        self._opt(monkeypatch, "left")
+        assert inject_status.status_line_position() == "left"
+
+    def test_unrecognised_value_stays_right(self, monkeypatch):
+        """Anything but the exact word keeps the placement that clips
+        the least important entry first."""
+        self._opt(monkeypatch, "centre")
+        assert inject_status.status_line_position() == "right"
+
+    def test_status_left_width_is_measured_after_expansion(self, monkeypatch):
+        """`status-left` is a format; its source text says nothing
+        about rendered width. Style codes occupy no columns."""
+        self._opt(monkeypatch, left_width="#[fg=red] host #[default]")
+        assert inject_status.status_left_width() == len(" host ")
+
+    def test_status_left_width_counts_cjk_as_two_columns(self, monkeypatch):
+        self._opt(monkeypatch, left_width="日本")
+        assert inject_status.status_left_width() == 4
+
+    def test_status_left_width_of_empty_is_zero(self, monkeypatch):
+        self._opt(monkeypatch, left_width="")
+        assert inject_status.status_left_width() == 0
