@@ -140,7 +140,7 @@ def isolate_errors_log(tmp_path, monkeypatch):
     `Dashboard.__new__` scaffold in test_silent_exceptions.py was
     missing the `bg_visible` attribute, and the resulting
     AttributeError was logged to the real errors.log on every test
-    run, masquerading as a production dashboard bug (2026-06-07).
+    run, masquerading as a production dashboard bug.
     """
     import ccm_core
     monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG",

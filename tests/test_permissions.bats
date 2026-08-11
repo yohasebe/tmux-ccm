@@ -11,7 +11,7 @@
 # the entire plugin at tmux startup; a 644 hook script means Claude
 # Code cannot exec it and the hook never fires.
 #
-# Same incident class as the 2026-07 gem releases (engtagger#20 et
+# Same incident class as the 2026-07 gem releases (a project#20 et
 # al.), where Dropbox-normalized 0600 files were baked into published
 # gems. git-based distribution is structurally immune to the 0600
 # variant (git records only the exec bit), so the exec bit is the one

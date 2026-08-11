@@ -189,7 +189,7 @@ def signal_age_suffix(project_dir, state, session_id=None):
 # becomes visible in dashboard / statusline renderers. Hides the
 # marker during the first few seconds after a BUSY→IDLE transition.
 #
-# Why this exists (added 2026-05-13, ccm 0.3.x post-agent-view):
+# Why this exists (added, ccm 0.3.x post-agent-view):
 #   Multi-turn auto-loop commands — `/goal` is the canonical case,
 #   `/loop` and `/plan`-driven follow-ups have similar shape —
 #   execute as `BUSY → end_turn → (1-3 s IDLE gap) → auto-fired
@@ -198,7 +198,7 @@ def signal_age_suffix(project_dir, state, session_id=None):
 #   but the dashboard would otherwise render `* 1s` / `* 2s` markers
 #   for each gap — falsely implying the work just completed when
 #   the loop is still mid-flight. Verified empirically on
-#   2026-05-13 with `ccm debug trace` against a 3-turn `/goal`
+# with `ccm debug trace` against a 3-turn `/goal`
 #   condition: two ~2 s IDLE windows between turns, both surfaced
 #   the marker. See memory `project_goal_flicker_2026_05_13`.
 #

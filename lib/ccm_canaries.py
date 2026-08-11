@@ -373,7 +373,7 @@ def shell_cluster_warnings(projects) -> list:
 # Detects the upstream failure mode where a session's hook event log
 # stops updating while the conversation is demonstrably still active —
 # the #16047-class regression where hooks silently stop firing
-# mid-session (the 2026-07-04 jwriter incident: hooks silent through a
+# mid-session (hooks silent through a
 # whole real turn). When that happens ccm's precise event-log path goes
 # blind and detection falls back to the coarser raw+JSONL heuristics,
 # where false BUSY/IDLE become possible. Surfacing this tells the

@@ -603,8 +603,8 @@ class TestHookSilenceCanary:
 
     The signature it detects: fresh JSONL real-activity whose timestamp
     leads the newest hook event by a wide margin — real work the hook
-    log never recorded (#16047-class silence). Mirrors the 2026-07-04
-    jwriter incident where hooks went silent through a whole real turn.
+    log never recorded (#16047-class silence). Mirrors the
+    incident where hooks went silent through a whole real turn.
     """
 
     NOW = 1_000_000
@@ -695,7 +695,7 @@ class TestHookSilenceCanary:
         assert ccm_canaries.hook_silence_warnings(
             projects, enabled=True) == []
 
-    # ─── end-to-end wiring (jwriter incident replay) ───
+    # ─── end-to-end wiring (silence replay) ───
 
     def test_warnings_flag_silent_session(self, monkeypatch):
         now = self.NOW
@@ -764,7 +764,7 @@ class TestHookSilenceCanary:
             "ccm_signals.read_events_tail",
             lambda project_dir, session_id=None:
                 ({"ts": now - 1320, "type": "stop"},))
-        projects = [ccm_core.Project("0:1", "1", "wp2txt", "/tmp/w", "BUSY")]
+        projects = [ccm_core.Project("0:1", "1", "a project", "/tmp/w", "BUSY")]
         msgs = ccm_canaries.hook_silence_warnings(
             projects, enabled=True, now=now)
         assert msgs == [], "canary must not misfire on a same-cwd sidekick"

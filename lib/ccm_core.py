@@ -109,7 +109,7 @@ def tmux_batch(*commands):
     silent-exception log. This matters more for batches than for
     single commands — when ANY command in a `;`-chain is invalid,
     tmux aborts the REST of the chain too, so one bad value silently
-    drops every subsequent write. That is exactly how the 2026-07-11
+    drops every subsequent write. That is exactly how the
     frozen-status-bar incident stayed invisible for days: `set -g
     status 6` (above tmux's max of 5) was rejected and took all the
     status-format writes down with it, every second, with stderr

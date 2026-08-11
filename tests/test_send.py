@@ -93,7 +93,7 @@ class TestCmdSend:
         flag", and the line is SILENTLY dropped while surrounding
         M-Enters land — the receiver gets the message with every
         bullet line missing (mangled three real cross-project briefs
-        before diagnosis, 2026-07-10..14). The delivery-verification
+        before diagnosis,..14). The delivery-verification
         signature survived in non-bullet lines, so only a
         content-level comparison would have caught it."""
         self._patch_resolution(monkeypatch)
@@ -581,7 +581,7 @@ class TestCmdSend:
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls
 
     # A long body whose head has scrolled out of the composer. Observed
-    # 2026-07-30 against Kimi K3: a ~30-line brief rendered as
+    # against Kimi K3: a ~30-line brief rendered as
     # `↑ 24 more` with only the trailing lines on screen.
     _LONG_MSG = "\n".join(
         [f"opening line about the region-shade task, part {i}" for i in range(3)]
@@ -622,7 +622,7 @@ class TestCmdSend:
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls
 
     def test_start_premature_idle_refuses_without_false_sent(self, monkeypatch):
-        """Premature-IDLE bug (2026-06-24): the composer shows but the
+        """Premature-IDLE bug: the composer shows but the
         input handler eats the keystrokes, so the body never lands.
         Every capture returns only the placeholder. After retries the
         send must refuse (SystemExit) and must NOT commit the Enter —
@@ -710,7 +710,7 @@ class TestCmdSend:
 
 
 class TestDeliveryPaneResolution:
-    """Delivery-pane resolution (2026-07-16 ringi incident).
+    """Delivery-pane resolution (incident).
 
     Window state is a pane aggregation (PERMIT > BUSY > IDLE >
     SHELL), but `send-keys -t <window>` lands in the ACTIVE pane.
@@ -1056,7 +1056,7 @@ class TestSendSelfDeliveryGuard:
     into the caller's own composer, and the state gate would consult a
     state the caller itself is producing — a session is BUSY *because*
     it is running the command, so the gate reports BUSY and appears to
-    blame the target. That self-reference was reported (2026-07-26) as
+    blame the target. That self-reference was reported as
     "sending to the other agent says BUSY when it isn't". The guard
     refuses with an explanation instead of a state verdict."""
 
@@ -1204,7 +1204,7 @@ class TestSendPreTypeRecheck:
 
     def test_recheck_shell_refused(self, monkeypatch):
         """Claude exited between the gate and the send: the body
-        would be typed into a bare shell (ringi-incident class)."""
+        would be typed into a bare shell (incident class)."""
         calls = self._patch(monkeypatch, "SHELL")
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["blog", "hello"])

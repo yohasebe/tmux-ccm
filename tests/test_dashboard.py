@@ -89,7 +89,7 @@ class TestRenderSmoke:
         them — the garbage sticks. redrawwin() marks the window
         corrupted so the following refresh re-emits every cell,
         self-healing within one render tick (observed live
-        2026-07-03, dashboard over a streaming CJK response)."""
+, dashboard over a streaming CJK response)."""
         _stub_dashboard_environment(monkeypatch)
         for mode in ("dashboard", "tree", "menu"):
             d = Dashboard(initial_mode=mode)
@@ -858,7 +858,7 @@ class TestDoExitAllTargetsClaudePane:
     Escape + `/exit` to IT — never to the window target, which tmux
     routes to the window's ACTIVE pane. In a split window with a
     shell focused, sending to the window would inject `exit` into the
-    user's shell and kill the pane (the incident `auto_exit_idle`'s
+    user's shell and kill the pane (the shape `auto_exit_idle`'s
     find_claude_pid resolution already guards against)."""
 
     def _pane(self, pane_id, pid, active=False, ignored=False,

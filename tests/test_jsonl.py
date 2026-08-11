@@ -489,7 +489,7 @@ class TestJsonlTailStopReason:
         assistant turn, so NONE must promote to user_pending —
         otherwise running a slash command while idle falsely shows
         BUSY for ~10 min. This mirrors the exact real-world /model
-        sequence observed in jwriter (2026-07-02)."""
+        sequence observed."""
         f = self._setup_project(tmp_path, monkeypatch)
         now = time.time()
         write_jsonl(f, [
@@ -816,7 +816,7 @@ class TestJsonlEscInterruptRecord:
     mean an interrupted turn leaves no trace at all, which is why
     detection had to wait out an aging guard with an idle screen. It
     does leave a trace: a `user` record reading "[Request interrupted
-    by user…]" (measured 2026-08-05, 8 occurrences in one session).
+    by user…]" (measured, 8 occurrences in one session).
     Read correctly it is the missing terminal; read naively it is
     worse than nothing, because it is NEWER than the assistant turn it
     cut short and would promote to `user_pending`.
@@ -917,7 +917,7 @@ class TestJsonlEscInterruptRecord:
         kill it. Not hypothetical: a naive substring scan of the
         session that built this feature returned 41 hits for 7 real
         interrupts, all the extras being its own discussion of the
-        marker (independently hit by ringi, 2026-08-05)."""
+        marker (independently hit downstream)."""
         f = self._setup_project(tmp_path, monkeypatch)
         now = time.time()
         write_jsonl(f, [
@@ -933,7 +933,7 @@ class TestJsonlEscInterruptRecord:
     def test_bare_interrupt_variant_is_recognised(
             self, tmp_path, monkeypatch):
         """A third spelling, "[Request interrupted]", appears in
-        ringi's corpus of ~165. The trailing clause is the part that
+        a consumer's corpus of ~165. The trailing clause is the part that
         gets reworded, so it is left open while the anchoring is
         not."""
         f = self._setup_project(tmp_path, monkeypatch)

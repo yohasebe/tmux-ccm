@@ -274,7 +274,7 @@ class TestSnapshotLoad:
         that is a top-level array or scalar (json.load does not raise
         on those). The load must die with a readable message, not an
         AttributeError traceback from `data.get(...)`. Regression for
-        the adversarial-review finding 2026-06-11: the first cut of the
+        the adversarial-review finding: the first cut of the
         malformed-JSON guard checked `projects` but not `data` itself,
         so `[1,2,3]` still crashed."""
         orig_dir = ccm_core.CCM_SNAPSHOT_DIR

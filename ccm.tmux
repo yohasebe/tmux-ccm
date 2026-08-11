@@ -128,7 +128,7 @@ tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_BIN inject-statu
 #
 # Append-once guard: re-sourcing .tmux.conf (or reloading TPM) re-runs
 # this script, and a blind `-ga` stacks an identical hook per reload —
-# observed live 2026-07-11 with two copies firing a double --fast
+# observed live with two copies firing a double --fast
 # render on every switch. Match on the distinctive command substring
 # rather than the full string so an install whose path changed (e.g.
 # a symlinked plugin dir) still counts as "already registered" instead

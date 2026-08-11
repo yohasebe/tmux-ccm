@@ -104,7 +104,7 @@ _request_payload() {
 @test "notification is suppressed when the toggle is off, marker still written" {
     _request_payload | STUB_TOGGLE=off bash "$SCRIPT" kimi
     [[ ! -f "${SANDBOX}/notified.log" ]]
-    # ringi may consume markers independently of ccm's display, so
+    # a consumer may consume markers independently of ccm's display, so
     # the toggle silences ccm without starving other consumers.
     [[ -f "${ATTENTION_DIR}/%40.json" ]]
 }
@@ -117,7 +117,7 @@ _request_payload() {
 
 # ─── Grok Build (snake_case events, Notification-only permission) ───
 
-# Verbatim payload from grok 0.2.118 (measured 2026-08-05): event
+# Verbatim payload from grok 0.2.118 (measured): event
 # names are snake_case VALUES, there is no PermissionRequest event,
 # and the permission Notification carries no tool fields at all.
 _grok_notification() {
@@ -132,14 +132,14 @@ _grok_notification() {
 
 @test "grok: summary falls back to the payload message" {
     # Grok's permission Notification has no toolName/toolInput, and an
-    # empty summary is what ringi's watch face cannot use.
+    # empty summary is what a consumer's watch face cannot use.
     _grok_notification | bash "$SCRIPT" grok
     run jq -r '.summary' "${ATTENTION_DIR}/%40.json"
     [[ "$output" == "Tool permission requested" ]]
 }
 
 @test "grok: snake_case activity event resolves the wait" {
-    # `post_tool_use`, not `PostToolUse` — the casing that made ringi's
+    # `post_tool_use`, not `PostToolUse` — the casing that made a consumer's
     # PascalCase dispatch an accidental near-miss.
     _grok_notification | bash "$SCRIPT" grok
     printf '%s' '{"hookEventName":"post_tool_use","sessionId":"g-1"}' \

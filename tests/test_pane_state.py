@@ -55,7 +55,7 @@ class TestFindClaudePid:
 
     def test_finds_claude_when_pane_process_is_claude(self):
         """`tmux new-window "claude …"` gives the pane no shell, so the
-        pane pid IS claude. Measured 2026-08-08 with Claude Code
+        pane pid IS claude. Measured with Claude Code
         2.1.226: the child-only walk returned None here and the pane
         read as SHELL while a permission dialog was on screen."""
         ps = make_ps_lines((100, 50, 100, "claude"))
@@ -131,7 +131,7 @@ class TestDetectPaneState:
     def test_permit_when_pane_process_is_claude(self, mock_tmux):
         """The shape that exposed the bug: a direct-launch pane sitting
         on a permission dialog read as SHELL because the claude lookup
-        found nothing. Verified live 2026-08-08 with Claude Code
+        found nothing. Verified live with Claude Code
         2.1.226."""
         ps = make_ps_lines((100, 50, 100, "claude"), (300, 100, 100, "node"))
         mock_tmux.return_value = (
@@ -216,20 +216,20 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_busy_when_spinner_present_despite_visible_prompt(self, mock_tmux):
-        """Accept-edits long-tool fix (2026-06-11): in accept-edits
+        """Accept-edits long-tool fix: in accept-edits
         mode the `❯` composer stays on screen WHILE a tool runs, so a
         visible prompt alone is not idleness. When the active-work
         spinner footer (`… (elapsed · arrow Nk tokens)`) is also
         visible, the pane is BUSY. Without this, an approved
         permission left as the latest hook event produced a stuck
         PERMIT on the dashboard for an actively-executing session.
-        Verbatim shape from the tcse-dev incident."""
+        Verbatim shape from a real pane."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "ruby")
         )
         mock_tmux.return_value = (
             "⏺ Reading 1 file, running 3 shell commands…\n"
-            "✻ フェーズ7仕上げ中… (27m 26s · ↓ 28.5k tokens)\n"
+            "✻ 処理中… (27m 26s · ↓ 28.5k tokens)\n"
             "❯ \n"
             "  ~/code/tcse  main  Fable 5  ████░ 46%\n"
             "  ⏵⏵ accept edits on (shift+tab to cycle)"
@@ -242,7 +242,7 @@ class TestDetectPaneState:
         `k` suffix — "(1m 39s · ↓ 557 tokens)". A mandatory `k` in
         the pattern made every young turn's spinner invisible, so an
         accept-edits pane sat at false IDLE until the count crossed
-        1000 (observed 2026-07-22, wp2txt: a fresh turn streaming
+        1000 (observed, a project: a fresh turn streaming
         under session-long upstream hook silence had no other signal
         left to promote it). Verbatim shape from that incident."""
         ps = make_ps_lines(
@@ -264,7 +264,7 @@ class TestDetectPaneState:
         screen while a tool runs, raw fell to IDLE — taking with it the
         only promotion that rescues a resolved-but-unreported
         permission (`raw == "BUSY"` in ccm_activity). Observed
-        2026-07-30 on ccm-dev: a permission approved within ~6 s left
+ a permission approved within ~6 s left
         the dashboard showing `⚠ PERMIT` for the remaining ~110 s of a
         `bats` run. Verbatim shape from that incident."""
         ps = make_ps_lines(
@@ -322,7 +322,7 @@ class TestDetectPaneState:
         stopped generating to ask). detect_pane_state must return
         IDLE — the event-log permit event is what correctly surfaces
         it as PERMIT, NOT a false BUSY from the spinner path.
-        Measured live 2026-06-11: menu waits show no spinner."""
+        Measured live: menu waits show no spinner."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "python")
         )

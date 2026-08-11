@@ -1256,7 +1256,7 @@ def cmd_debug_trace(target_match, interval=0.3):
         # legacy fallback), not evaluate_rules alone. The trace used
         # to run only the legacy table, which silently observed a
         # different detection path than production — during the
-        # 2026-07-04 jwriter phantom-subagent incident it printed
+        # phantom-subagent incident it printed
         # "default → IDLE" while the live pipeline was resolving
         # derive=BUSY, misdirecting the investigation. Still
         # read-only: resolve_state_from_context has no side effects
@@ -1297,7 +1297,7 @@ def cmd_debug_trace(target_match, interval=0.3):
 # attention adapter. Each entry knows where the CLI's hook config
 # lives and how to render the managed block. Only measured
 # integrations belong here: Kimi's was verified live (kimi 0.31.1,
-# 2026-08-05 — PermissionRequest/PermissionResult fire, $TMUX_PANE is
+# — PermissionRequest/PermissionResult fire, $TMUX_PANE is
 # inherited, config loads at session start). Gemini / Grok Build have
 # hook systems but their permission-wait events are unverified;
 # Codex has no approval-time hook at all (openai/codex#11808).
@@ -1365,7 +1365,7 @@ def _grok_hook_path():
         "hooks", "ccm-sidekick-attention.json")
 
 
-# Grok Build's permission-wait signal (measured 2026-08-05, grok
+# Grok Build's permission-wait signal (measured, grok
 # 0.2.118): it has no PermissionRequest event — the wait arrives as
 # `Notification` with `notificationType: "permission_prompt"`. There
 # is no resolution event either, so the next activity event closes

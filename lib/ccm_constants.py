@@ -66,7 +66,7 @@ CCM_NOTIFY_MARKER_DIR = os.path.join(CCM_TMP_DIR, "notified")
 # CCM_IGNORE-style self-report bridge, keyed by the `$TMUX_PANE` the
 # hook process inherits. A marker is OVERWRITTEN with
 # `state: "resolved"` rather than deleted when the wait ends, so a
-# consumer (ringi) can tell "resolved" from "stale file"; ccm's reader
+# consumer can tell "resolved" from "stale file"; ccm's reader
 # is the garbage collector. Contract v1 fields:
 #   agent / state / id / cwd / ts  (required)
 #   session / summary / pane / tool / resolved_ts / expires (optional)
@@ -104,8 +104,8 @@ PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))
 # one. The release requires the CONJUNCTION of raw=IDLE (no spinner on
 # screen) and a frozen JSONL — neither alone is trusted, because a
 # single long silent tool freezes the JSONL too, and spinner detection
-# has broken before on upstream reworks (2026-03-26 the accept-edits
-# marker, 2026-05-29 the /model footer verb).
+# has broken before on upstream reworks (the accept-edits
+# marker, the /model footer verb).
 BUSY_STALE_RELEASE_SEC = int(
     os.environ.get("CCM_BUSY_STALE_RELEASE_SEC", "60"))
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))
@@ -135,7 +135,7 @@ JSONL_USER_PENDING = "user_pending"
 # fires no Stop hook on a user interrupt (documented upstream), which
 # is why detection long treated Esc as leaving no trace at all — but
 # it DOES write a transcript record saying so, and that record is the
-# only positive evidence the turn ended (measured 2026-08-05: 8
+# only positive evidence the turn ended (measured: 8
 # occurrences in one session). Treated as terminal so the existing
 # "terminal stop_reason newer than the latest event → release"
 # path in `ccm_activity` picks it up, instead of the session waiting
@@ -144,7 +144,7 @@ JSONL_INTERRUPTED = "interrupted"
 # Anchored to the WHOLE record text, with the trailing clause left
 # open. Three spellings are known — "[Request interrupted by user]",
 # "[Request interrupted by user for tool use]" and a rare bare
-# "[Request interrupted]" (the last from ringi's corpus of ~165) — so
+# "[Request interrupted]" (the last from a consumer's corpus of ~165) — so
 # the clause is exactly the detail that gets reworded and must not be
 # pinned. What must NOT be loose is the anchoring: a substring test
 # fires on any message that merely mentions the phrase, and a session
@@ -152,9 +152,9 @@ JSONL_INTERRUPTED = "interrupted"
 # the dangerous direction, since `ccm send` would deliver into a
 # working session and auto-exit could eventually kill it. Claude's
 # own note is the entire content of its record, so requiring that
-# separates it from every quotation of it. (Measured 2026-08-05: a
+# separates it from every quotation of it. (Measured: a
 # naive substring scan of this very session's transcript returned 41
-# hits for 7 real interrupts. ringi hit the same contamination.)
+# hits for 7 real interrupts. a consumer hit the same contamination.)
 JSONL_INTERRUPT_RE = re.compile(r"^\[Request interrupted[^\]]*\]$")
 # How long after the `claude` process starts a `raw=BUSY` reading
 # is treated as MCP-loading startup rather than real work, when no
@@ -171,7 +171,7 @@ STARTUP_GRACE_SEC = int(os.environ.get("CCM_STARTUP_GRACE_SEC", "60"))
 # the pane falsely reads BUSY (has children, no prompt visible).
 SLIVER_HEIGHT_THRESHOLD = int(os.environ.get("CCM_SLIVER_HEIGHT_THRESHOLD", "4"))
 # Attention-marker garbage collection. A `resolved` marker is kept
-# this long so a slow consumer (ringi's poll) can still see the
+# this long so a slow consumer (a consumer's poll) can still see the
 # resolution, then unlinked. A `waiting` marker is dropped past this
 # hard TTL even when nothing resolved it — the safety net for an
 # agent that died mid-wait without firing its resolution hook. Both
@@ -198,7 +198,7 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # Active-work spinner footer. Claude Code renders a status line of
 # the shape `<glyph> <verb>… (<elapsed> · <arrow> <N>k tokens)` ONLY
 # while it is actively generating or running a tool — e.g.
-#   "✻ フェーズ7仕上げ中… (27m 26s · ↓ 28.5k tokens)"
+#   "✻ 処理中… (27m 26s · ↓ 28.5k tokens)"
 #   "✶ Spelunking… (59s · ↑ 3.5k tokens)"
 # The animating glyph and the incrementing elapsed timer are what
 # the user sees "blinking". We match the structural tail — the
@@ -220,19 +220,19 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # signal that distinguishes "approved tool running" (spinner
 # present) from "menu / permission wait" (spinner absent — Claude
 # has stopped generating to ask) and "true idle" (spinner absent).
-# Empirically verified 2026-06-11: running panes show the spinner,
+# Empirically verified: running panes show the spinner,
 # AskUserQuestion menu waits do not. See memory
 # project_false_idle_long_tool.md.
 #
 # Elapsed forms: "59s", "2m 2s", or "3h 11m 16s". Token forms: "8.0k",
 # "8k", or — below 1000 — a bare count with NO k suffix ("557 tokens";
-# observed 2026-07-22, wp2txt: a fresh turn streamed for 1m39s showing
+# observed, a project: a fresh turn streamed for 1m39s showing
 # "(1m 39s · ↓ 557 tokens)" and the then-mandatory `k` made the
 # spinner invisible to raw detection, so an accept-edits pane sat at
 # false IDLE through the whole sub-1k window).
 #
-# The hour component is the same lesson a second time (observed
-# 2026-07-30, ccm-dev: a turn past the hour mark rendered
+# The hour component is the same lesson a second time: a turn past
+# the hour mark rendered
 # "(3h 11m 16s · ↓ 8.8k tokens)" and the minutes-only form stopped
 # matching, so the ONE piece of direct on-screen evidence that Claude
 # is working went dark for the rest of that turn). Each unit is
@@ -297,7 +297,7 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 # instead of "confirmation-modal".
 # The third alternative matches the deny option of a permission
 # prompt that has no separate "Esc to cancel · …" footer (observed
-# 2026-06-26 on a WebFetch permission raised by a background
+# on a WebFetch permission raised by a background
 # subagent: `Do you want to allow Claude to fetch this content?`
 # with the `(esc)` carried inline on `No, and tell Claude what to
 # do differently (esc)`). Two anchors keep this specific to a real
@@ -335,7 +335,7 @@ PATTERN_PERMIT_FOOTER = re.compile(
 # hour, `3h 11m old` over it, `2d 4h old` for a session resumed days
 # later, which `--continue` invites. Spelled as a repeated unit rather
 # than a fixed pair after the same mistake was found in
-# PATTERN_ACTIVE_SPINNER (2026-07-30): requiring `\d+h \d+m` silently
+# PATTERN_ACTIVE_SPINNER: requiring `\d+h \d+m` silently
 # excluded every session younger than an hour. Days are worth allowing
 # here even though the spinner ignores them — a single turn does not
 # span days, but a resumable session easily does.
@@ -560,7 +560,7 @@ EXTERNAL_AGENT_COMMANDS = frozenset({
 # Some CLIs are a launcher symlink pointing at a platform-suffixed
 # binary, and tmux reports the RESOLVED name (truncated): Grok Build's
 # `grok` resolves to `grok-macos-aarch64` and arrives as
-# `grok-macos-aarc` (measured 2026-08-05). Enumerating every
+# `grok-macos-aarc` (measured). Enumerating every
 # platform/arch spelling — and guessing tmux's truncation width — is
 # the fixed-shape mistake this project keeps paying for, so a matching
 # prefix stands in for the whole family. Prefixes must stay specific

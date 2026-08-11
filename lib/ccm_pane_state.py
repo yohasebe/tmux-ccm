@@ -61,7 +61,7 @@ def find_claude_pid(parent_pid, ps_lines):
     * the pane process *being* `claude` — what `tmux new-window
       "claude …"` creates, with no shell in between.
 
-    The second shape was missed until 2026-08-08: the walk only ever
+    The second shape was missed at first: the walk only ever
     looked for a child, so a pane whose own process is claude resolved
     to None and read as SHELL forever. `ccm debug trace` on a probe
     session hit this immediately (probes launch claude as the pane

@@ -133,7 +133,7 @@ class TestInjectStatusSmoke:
         lock. It is read-only on `@ccm_prev_state` (cached render), so
         it cannot cause the state flicker the lock guards against — and
         skipping it was the intermittent "status bar didn't switch on
-        dashboard select" bug (2026-06-30): a switch landing during a
+        dashboard select" bug: a switch landing during a
         periodic full-detection tick dropped the focus refresh, leaving
         the highlight stalled until the next tick. Pin that it runs the
         impl AND issues the redraw even with the lock held."""
@@ -193,7 +193,7 @@ class TestDashboardRefreshLoopSmoke:
         # own scaffold once lacked `bg_visible` after the bg-section
         # feature added that attribute, and the AttributeError was
         # silently logged — to the user's REAL errors.log — on every
-        # pytest run while the test kept passing. 2026-06-07.)
+        # pytest run while the test kept passing..)
         caught = []
         monkeypatch.setattr(
             "dashboard.log_caught_exception",
@@ -242,7 +242,7 @@ class TestDashboardRefreshLoopSmoke:
 class TestTmuxBatchFailureLogging:
     """`tmux_batch` chains commands with `;` — when tmux rejects ANY
     command in the chain, it aborts the rest, so one bad value can
-    silently drop every subsequent write. The 2026-07-11 frozen-status
+    silently drop every subsequent write. The frozen-status
     -bar incident (`set -g status 6` above tmux's max of 5) stayed
     invisible for days because the stderr was swallowed here. A
     non-zero exit must now land in the silent-exception log so the

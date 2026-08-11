@@ -292,7 +292,7 @@ def inject_status(force_fast=False):
     # status-interval 1, full detection ~250 ms) would otherwise drop
     # the focus refresh, leaving the highlight stalled until the next
     # tick. That was the intermittent "status bar didn't switch on
-    # dashboard select" bug (2026-06-30).
+    # dashboard select" bug.
     try:
         _inject_status_impl(force_fast=force_fast)
         if force_fast:
@@ -363,7 +363,7 @@ def _inject_status_impl(force_fast=False):
     # could pass the idle check for the same window and double-send
     # the Escape + `/exit` + Enter sequence — the late copy landing
     # in the post-exit shell pane, where the literal `exit` kills the
-    # user's shell (the incident shape documented in
+    # user's shell (the shape documented in
     # ccm_runtime.py's auto_exit_idle). They also cost several tmux
     # subprocesses per call, which contradicts the fast path's job:
     # a ~10 ms cached-state redraw on every hook fire / window switch.
@@ -600,7 +600,7 @@ def _inject_status_impl(force_fast=False):
             # (periodic tick, focus hook, manual run) failed the
             # same way, so the bar froze at the last good bake:
             # stale states, stale highlight, newly added projects
-            # missing entirely (2026-07-11 incident; the freeze
+            # missing entirely (incident; the freeze
             # looked like "the focus mechanism broke" but was the
             # whole bar). `_MODE2_MAX_SLOTS` still bounds the
             # cleanup range for slots left over from this bug's era.
@@ -672,7 +672,7 @@ _MODE2_MAX_SLOTS = 16
 # Hard ceiling on how many status LINES tmux will render. The
 # `status` option accepts on / off / 2..5 — passing anything above 5
 # fails with "unknown value: N" and, inside a `;`-chained batch,
-# takes every subsequent command down with it (the 2026-07-11
+# takes every subsequent command down with it (the
 # frozen-status-bar incident). Layout math must never ask for more
 # than this many total lines (main bar + gutter + entry lines).
 _TMUX_STATUS_MAX_LINES = 5

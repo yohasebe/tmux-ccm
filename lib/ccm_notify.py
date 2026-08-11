@@ -82,7 +82,7 @@ def notify(state, project, detail=""):
     # looking action ccm just took, and transparency about that must
     # not depend on the user having predicted the event and added it
     # to @ccm-notify. Without it an auto-exit reads as a crash or a
-    # mystery timeout (2026-07-11 monadic-chat report).
+    # mystery timeout (report).
     if state != "AUTOEXIT" and setting != "all" and state_lower not in setting:
         return
 

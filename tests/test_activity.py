@@ -274,7 +274,7 @@ class TestClassifyActivity:
         — before this, the permit path borrowed the start-class
         `JSONL_HOOK_GAP_TOLERANCE` window, so at 61 s the evidence was
         discarded and the resolved permit came back. Measured live on
-        2026-08-11 under Claude Code 2.1.227: IDLE for 60 s, then
+ under Claude Code 2.1.227: IDLE for 60 s, then
         PERMIT again, and it never released after that."""
         from ccm_activity import ACTIVITY_AT_REST
         from ccm_constants import JSONL_HOOK_GAP_TOLERANCE
@@ -362,7 +362,7 @@ class TestClassifyActivity:
         a turn whose prompt/pretool events precede it — a lone
         subagent means either a phantom fired outside any turn or
         hooks went silent mid-turn, and the event log is
-        untrustworthy either way. 2026-07-04 jwriter incident: hooks
+        untrustworthy either way. incident: hooks
         were silent for a whole real turn, then a single phantom
         subagent event at the recap moment held a false BUSY for the
         entire 10-minute staleness window because this guard —
@@ -432,8 +432,8 @@ class TestMapActivityToState:
         window → defer to legacy (None → IDLE). A genuinely working
         session shows a spinner (raw=BUSY), so raw=IDLE here means the
         event log is stale — a hook-silent turn end or a recap-moment
-        phantom SubagentStart holding a stuck BUSY (2026-07-07
-        monadic-chat incident)."""
+        phantom SubagentStart holding a stuck BUSY (the recap
+        incident)."""
         from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_STALE_RELEASE_SEC
         assert self._map(
             ACTIVITY_IN_PROGRESS, raw="IDLE",
@@ -504,7 +504,7 @@ class TestMapActivityToState:
         PERMIT_MAX_TIMEOUT defers to legacy (→ IDLE) instead of
         holding PERMIT forever.
 
-        This inverts the pre-2026-07-26 behaviour. PERMIT used to be
+        This inverts the pre-behaviour. PERMIT used to be
         excluded from the staleness guard because an idle screen was
         thought indistinguishable from an interactive choice menu
         awaiting a selection. Measurement killed that premise: a live
@@ -514,7 +514,7 @@ class TestMapActivityToState:
         raw=IDLE. What raw=IDLE actually means is a permission that
         was already resolved — typically Esc'd, which fires no Stop
         hook, so a permit event stays "latest" indefinitely
-        (2026-07-26 macos-config incident: `⚠ PERMIT` for 15+ minutes
+        (incident: `⚠ PERMIT` for 15+ minutes
         on an empty `❯` prompt)."""
         from ccm_activity import ACTIVITY_AWAITING_PERMIT
         assert self._map(
@@ -624,17 +624,17 @@ class TestDeriveStateFromEvents:
             pid_present=False, claude_pid_age=-1,
         ) == "SHELL"
 
-    # ─── 2026-07-04 jwriter incident replay ───
+    # ─── stuck-BUSY replay ───
 
     def test_lone_phantom_subagent_defers_to_legacy(self):
-        """Exact replay of the 2026-07-04 jwriter stuck-BUSY: hooks
+        """Replay of a stuck-BUSY shape: hooks
         silent through a real turn (last JSONL end_turn ~3 h old),
         then a single phantom SubagentStart fires at the recap
         moment. The lone fresh subagent event must NOT hold BUSY —
         derive defers (None) and legacy resolves from raw=IDLE."""
-        event_ts = 1783142525   # 14:22:05 phantom subagent
-        jsonl_ts = 1783132130   # 11:28:50 last real end_turn
-        for offset in (55, 265, 445):  # 14:23 / 14:26:30 / 14:29:30
+        event_ts = 1000010000   # phantom subagent
+        jsonl_ts = event_ts - 10395   # last real end_turn, ~3 h earlier
+        for offset in (55, 265, 445):  # 1 / 4.5 / 7.5 min later
             now = event_ts + offset
             assert ccm_activity.derive_state_from_events(
                 events=({"ts": event_ts, "type": "subagent"},),
@@ -644,7 +644,7 @@ class TestDeriveStateFromEvents:
             ) is None, f"stuck BUSY reproduced at +{offset}s"
 
     def test_esc_interrupt_stale_busy_releases(self):
-        """2026-07-23: Esc mid-tool fires no Stop hook, so the
+        """Esc mid-tool fires no Stop hook, so the
         start-class pretool event stays latest and the JSONL freezes
         at tool_use (non-terminal) with an idle screen. Past
         BUSY_STALE_RELEASE_SEC the in-progress claim is stale and
@@ -674,7 +674,7 @@ class TestDeriveStateFromEvents:
 
         Measured consequence: a cross-project `ccm send` was refused
         three times in a row against a session sitting at an empty
-        prompt (reported by ringi 2026-08-05)."""
+        prompt (reported downstream)."""
         now = 1800000000
         event_ts = now - 100          # prompt submitted
         for since_interrupt in (1, 5, 30):
@@ -709,7 +709,7 @@ class TestDeriveStateFromEvents:
         the condition was unsatisfiable and the session stayed BUSY
         forever. Legacy would have released it, but derive returning a
         state means legacy is never consulted. This is the shape of
-        the gc-gakkai incident (a slug rule that could not find the
+        the non-ASCII-path failure (a slug rule that could not find the
         file → indefinite false BUSY); closing it here makes the
         outcome independent of whether the transcript is findable.
 
@@ -797,8 +797,8 @@ class TestDeriveStateFromEvents:
     def _start_events(event_type, ts=100):
         """A start-class event as the log tail. `subagent` gets its
         turn's preceding `prompt` for context — a LONE subagent log
-        defers to legacy since the all-subagent guard (2026-07-04
-        jwriter phantom incident); with context it is legitimate
+        defers to legacy since the all-subagent guard (the lone
+        phantom incident); with context it is legitimate
         Task-tool work and still start-class."""
         if event_type == "subagent":
             return ({"ts": ts - 10, "type": "prompt"},
@@ -1387,7 +1387,7 @@ class TestDeriveStateFromEvents:
         when the permit event is fresher than the last JSONL terminal.
 
         This scenario (permit fresher than a prior end_turn, raw=BUSY)
-        is EXACTLY the 2026-06-30 monadic-chat false-PERMIT: a new
+        is EXACTLY the false-PERMIT shape: a new
         turn dispatched a subagent whose WebFetch raised a permit,
         the fetch ran for minutes (spinner → raw=BUSY), but the old
         'fresher permit ⇒ keep PERMIT' rule stuck the dashboard at
@@ -1449,7 +1449,7 @@ class TestDeriveStateFromEvents:
         ) == "BUSY"
 
     def test_permit_event_subagent_webfetch_raw_busy_no_jsonl_tool_use(self):
-        """2026-06-30 monadic-chat incident, distilled: a background
+        """2026-06-30 incident, distilled: a background
         subagent's WebFetch raised a permit and ran for minutes
         (spinner → raw=BUSY), but its tool_use record landed in the
         SUBAGENT's JSONL, so the main session's JSONL showed no fresh
@@ -1498,7 +1498,7 @@ class TestDeriveStateFromEvents:
         ) == "PERMIT"
 
     def test_permit_event_interactive_menu_case_returns_permit_immediately(self):
-        """User-reported scenario (2026-05-08): Claude rendered an
+        """User-reported scenario: Claude rendered an
         interactive choice menu as a permit-class hook. Latest
         event is notify_permit, JSONL last `tool_use` is from BEFORE
         the menu was rendered. Earlier versions held false BUSY for
@@ -1508,7 +1508,7 @@ class TestDeriveStateFromEvents:
         attention".
 
         `raw` reflects what the pane actually shows. A menu ON SCREEN
-        matches `PATTERN_PERMIT_FOOTER` (measured 2026-07-26:
+        matches `PATTERN_PERMIT_FOOTER` (measured:
         `Enter to select · ↑/↓ to navigate · n to add notes · Esc to
         cancel`), so it arrives as raw=PERMIT and is held at any age
         — that is the case a real waiting menu produces, and it is

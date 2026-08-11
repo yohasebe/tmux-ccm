@@ -57,7 +57,7 @@ class TestAttentionReader:
     """`_read_attention_markers` — surface live waits, reap the dead.
 
     ccm is the contract's designated garbage collector: writers
-    OVERWRITE to `resolved` and never delete, so a consumer (ringi)
+    OVERWRITE to `resolved` and never delete, so a consumer
     can tell "resolved" from "stale file". Deletion here is what
     keeps that promise from filling the directory forever."""
 
@@ -156,7 +156,7 @@ class TestAttentionReader:
         tmux report the launcher name (`2.1.221`), never `claude`. A
         fixture saying "claude" here would pass against a name compare
         that is false in every real environment — which is exactly how
-        this shipped broken (caught by Kimi's review, 2026-08-05)."""
+        this shipped broken (caught by Kimi's review)."""
         panes = PANES + [("0:2", "300", "%50", "2.1.221", "0", "46", "1")]
         ps_lines = make_ps_lines((300, 1, 300, "zsh"), (301, 300, 300, "claude"))
         path = _write_marker(attention_dir, pane="%50", agent="claude")

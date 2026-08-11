@@ -308,7 +308,7 @@ class TestAllowlistMembership:
 class TestPlatformSuffixedBinaries:
     """A launcher symlink can resolve to a platform-suffixed binary,
     and tmux reports the RESOLVED (truncated) name — Grok Build's
-    `grok` arrives as `grok-macos-aarc` (measured 2026-08-05,
+    `grok` arrives as `grok-macos-aarc` (measured,
     grok 0.2.118). Enumerating every platform/arch spelling, and
     guessing tmux's truncation width, is the fixed-shape mistake this
     project keeps paying for; a prefix stands in for the family."""

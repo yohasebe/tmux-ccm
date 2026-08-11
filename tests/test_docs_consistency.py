@@ -2,7 +2,7 @@
 
 These pin the parts of the README that are mechanically checkable
 against the code, so documentation drift fails the suite instead of
-waiting to be caught by a manual audit. The 2026-07-27 audit found
+waiting to be caught by a manual audit. The audit found
 three drifts at once (a missing subcommand, two missing display
 markers, and a stale copy of the setup-claude-md template); each was
 invisible until someone read both sides line by line.
@@ -210,7 +210,7 @@ def _send_flags():
 class TestSendFlags:
     """`ccm send`'s flags are the part of the CLI a user is most
     likely to need mid-task and least likely to find by guessing.
-    The 2026-07-27 audit found `--` — the only way to send a message
+    The audit found `--` — the only way to send a message
     beginning with a dash — documented in the guide but missing from
     both help outputs, which is precisely where someone whose message
     was just eaten as flags will look."""

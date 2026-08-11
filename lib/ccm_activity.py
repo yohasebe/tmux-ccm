@@ -125,7 +125,7 @@ def _jsonl_terminal_after_event(latest, jsonl_stop_reason, jsonl_age, now):
     still means that ten minutes later.
 
     Ageing the evidence out re-raised a PERMIT that was definitively
-    resolved — measured 2026-08-11 under Claude Code 2.1.227, where a
+    resolved — measured under Claude Code 2.1.227, where a
     dismissed dialog read IDLE for 60 s and then flipped back to PERMIT
     and stayed there, taking `ccm send` (which refuses to type into a
     PERMIT pane) down with it.
@@ -200,7 +200,7 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
     # the event log untrustworthy either way. Defer to legacy
     # (raw + JSONL): real subagent work still surfaces as BUSY via
     # the spinner/process-tree raw signal or fresh JSONL tool_use.
-    # 2026-07-04 jwriter incident: hooks were silent for a whole
+    # incident: hooks were silent for a whole
     # real turn, then a lone phantom subagent event at recap held a
     # false BUSY for the entire 10-minute staleness window. This
     # guard implements what _strip_phantom_subagents' all-subagent
@@ -264,7 +264,7 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
         #    notably a background subagent's WebFetch, whose tool_use
         #    lands in the SUBAGENT's JSONL, not the main session's, so
         #    the main JSONL showed no fresh tool_use while the fetch
-        #    ran for minutes (2026-06-30 monadic-chat incident).
+        #    ran for minutes (incident).
         if raw == "BUSY":
             return ACTIVITY_IN_PROGRESS, latest
         #
@@ -366,7 +366,7 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     # means the in-progress claim is stale: a turn that ended without a Stop event
     # (hook silence, so a start event stays "latest" forever), or a
     # recap-moment phantom SubagentStart fired when the user returned to
-    # an idle session (2026-07-07 monadic-chat incident: a recap phantom
+    # an idle session (incident: a recap phantom
     # subagent held a stuck BUSY, raw=IDLE throughout). Defer to legacy,
     # which reads raw=IDLE → IDLE.
     #
@@ -374,13 +374,13 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     # This used to be excluded on the grounds that permit-latest +
     # raw=IDLE + stale JSONL was indistinguishable from an interactive
     # choice menu whose `❯` selector matched the input prompt (the
-    # 2026-05-08 case), so an aging PERMIT risked a false IDLE on a
+    # case), so an aging PERMIT risked a false IDLE on a
     # menu still awaiting a selection. **That premise no longer holds,
-    # measured 2026-07-26**: a live choice menu renders the footer
+    # measured**: a live choice menu renders the footer
     # `Enter to select · ↑/↓ to navigate · n to add notes · Esc to
     # cancel`, which `PATTERN_PERMIT_FOOTER` matches through its
     # structural `Enter to \S… · …Esc to \w+` branch (the literal-verb
-    # pattern was pivoted to that shape after the 2026-05-29 `/model`
+    # pattern was pivoted to that shape after the `/model`
     # rename), so a displayed menu yields raw=PERMIT and never reaches
     # this guard — the `raw == "PERMIT"` override below re-commits it.
     # Verified against real captures of both states: menu on screen →
@@ -390,7 +390,7 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     # stick forever: a permission that WAS resolved (typically Esc'd,
     # which fires no Stop hook and writes no further assistant record,
     # so a permit-class event stays "latest" indefinitely) leaving an
-    # idle screen. 2026-07-26 macos-config incident: `⚠ PERMIT` shown
+    # idle screen. incident: `⚠ PERMIT` shown
     # for 15+ minutes on a pane sitting at an empty `❯` prompt. Aging
     # also makes the long-documented "PERMIT auto-clears after 10 min
     # as a safety net" true for the first time — `PERMIT_MAX_TIMEOUT`
@@ -430,7 +430,7 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     # event's own age answers the same question the JSONL age was
     # asked: has the screen been idle long enough to trust. Falling
     # back to it keeps the guard's shape while removing the
-    # indefinite-BUSY corner (the gc-gakkai failure class).
+    # indefinite-BUSY corner (the non-ASCII-path failure class).
     aging_age = jsonl_age
     if aging_age is None or aging_age < 0:
         aging_age = event_age if event_age is not None and event_age >= 0 else None

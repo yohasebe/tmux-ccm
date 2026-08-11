@@ -77,7 +77,7 @@ class TestClassifyPermitModal:
         """The age line carries whatever units it needs. Requiring a
         fixed `\\d+h \\d+m` pair excluded every session under the hour,
         and `--continue` also resumes ones days old. Found while fixing
-        the same mistake in PATTERN_ACTIVE_SPINNER (2026-07-30), where
+        the same mistake in PATTERN_ACTIVE_SPINNER, where
         an hours component silently stopped the match.
 
         The age line alone must classify: the recommended-summary line
@@ -140,7 +140,7 @@ class TestClassifyPermitModal:
 
     def test_ask_user_question_menu_footer_measured_2026_07_26(self):
         """Verbatim footer of a live `AskUserQuestion` choice menu,
-        captured from a real pane on 2026-07-26 (v2.1.220).
+        captured from a real pane on (v2.1.220).
 
         This one is load-bearing beyond classification: the PERMIT
         staleness guard in `ccm_activity.map_activity_to_state`
@@ -180,7 +180,7 @@ class TestClassifyPermitModal:
 
     def test_footerless_webfetch_permission_is_permission_request(self):
         """Footer-less WebFetch / web-content permission dialog
-        (observed 2026-06-26, raised by a background subagent). It
+        (observed, raised by a background subagent). It
         must classify as the DANGEROUS permission-request kind, not a
         safe confirmation-modal — `ccm send` warns the operator not
         to dismiss a permission prompt from another pane, and that
@@ -277,7 +277,7 @@ class TestPermitFooterPattern:
         would have silently dropped this footer — `ccm send` would
         then deliver keystrokes into the open picker and could
         accidentally confirm a model change. Verified empirically
-        2026-05-13 against Claude Code v2.1.144."""
+ against Claude Code v2.1.144."""
         assert self._matches(
             "Enter to confirm · d to set as default for new sessions · Esc to cancel"
         )
@@ -300,7 +300,7 @@ class TestPermitFooterPattern:
         assert self._matches("Enter to confirm | Esc to cancel")
 
     def test_footerless_permission_dialog_deny_option(self):
-        """Footer-less permission dialog (observed 2026-06-26 on a
+        """Footer-less permission dialog (observed on a
         WebFetch permission raised by a background subagent):
             Do you want to allow Claude to fetch this content?
             ❯ 1. Yes
@@ -460,7 +460,7 @@ class TestAgentsTUIDetection:
 
 class TestStaleReleaseWindows:
     """The BUSY and PERMIT stale-release windows were split apart so
-    they could be tuned independently (2026-07-27). The behaviour
+    they could be tuned independently. The behaviour
     tests around them are written boundary-relative — `W ± 1` — which
     correctly exercises the mechanism but adapts to whatever the
     constant says, so none of them would notice the BUSY window being

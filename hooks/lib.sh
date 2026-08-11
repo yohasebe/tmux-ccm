@@ -87,7 +87,7 @@ ccm_hook_init() {
     # its own session id, stamp `@ccm_prev_state` through the fast-path
     # spawn, and fire COMPLETED notifications for turns no Claude ran.
     # `workspaceRoot` is the discriminator: Grok sends it on every
-    # event, Claude Code sends it on none. (ringi adopted the same
+    # event, Claude Code sends it on none. (a downstream consumer adopted the same
     # test for the same exposure, their commit 9813d68.)
     if printf '%s' "$INPUT" | jq -e 'has("workspaceRoot")' >/dev/null 2>&1; then
         return 1

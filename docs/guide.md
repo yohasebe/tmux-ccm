@@ -191,7 +191,7 @@ ccm send blog "Summarize the last review cycle."
 ccm send research --file /tmp/brief.md
 
 # From a pipe — perfect for wiring up an MCP server (Gmail, GitHub, etc.)
-echo "Please investigate issue #42 in the parser repo" | ccm send fzf-workflow --stdin -y
+echo "Please investigate issue #42 in the parser repo" | ccm send parser --stdin -y
 
 # Multi-line body — \n is converted to Claude's "newline without submit" key,
 # so the body lands as a single multi-line prompt

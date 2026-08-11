@@ -242,12 +242,12 @@ def _project_slug(project_dir: str) -> str:
     `------2000` (one dash per CJK char, digits survive) and
     `test_project` becomes `test-project`. ccm used to replace only
     `/`, which silently missed the JSONL for any project whose path
-    contains non-ASCII (2026-07-13 gc-gakkai incident: with the JSONL
+    contains non-ASCII (incident: with the JSONL
     unresolvable, a trailing `stop` event could not be confirmed
     terminal, the pause-class branch stayed conservative, and the
     dashboard held a false BUSY indefinitely — the combined-stale
     release also needs a valid jsonl_age, so nothing ever expired it).
-    Rule verified 2026-07-13 against every existing slug directory in
+    Rule verified against every existing slug directory in
     ~/.claude/projects (ASCII paths are unaffected: `/` and `-` both
     map to `-`). Tilde is expanded but symlinks are NOT resolved
     (Claude Code records the cwd as-given).

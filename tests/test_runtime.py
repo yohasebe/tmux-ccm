@@ -189,7 +189,7 @@ class TestAutoExitIdle:
          long sessions Claude's shutdown can exceed the 0.5 s wait
          window; sending `clear` while Claude is still foreground
          delivers literal text into its input box and submits it as
-         an unintended user prompt (observed live 2026-05-31, and
+         an unintended user prompt (observed live, and
          retro-explains earlier "test" one-word injections).
       2. Every keystroke must be addressed to the Claude pane
          directly, not to the window's active pane. If the user
@@ -199,7 +199,7 @@ class TestAutoExitIdle:
          `Meta-/` (no-op completion) followed by the literal
          characters `exit` plus Enter, silently killing the user's
          shell pane some hours after they last touched it (reported
-         on the ccm-dev window itself, 2026-06-09).
+         on the sample-proj window itself).
 
     Coverage:
       - Happy path: shell foreground (`zsh`) → `clear` IS sent.
@@ -329,7 +329,7 @@ class TestAutoExitIdle:
         )
 
     def test_no_auto_exit_when_focused_window_unresolved(self):
-        """Safety guard (adversarial-review finding 2026-06-11): if
+        """Safety guard (adversarial-review finding): if
         `display-message` returns empty for the focused session/window
         (query failed / no client context), current_target would be
         ":" and protect no window — letting the focused Claude be
@@ -364,7 +364,7 @@ class TestAutoExitIdle:
         mock_autosave.assert_not_called()
 
     def test_shell_transition_and_autosave_gated_on_exit_success(self):
-        """Side-effect gating (adversarial-review finding 2026-06-11):
+        """Side-effect gating (adversarial-review finding):
         the SHELL state write and the autosave must fire ONLY when
         `/exit` actually completed (pane foreground back to a shell).
         On the race path (Claude still foreground) declaring SHELL
@@ -400,7 +400,7 @@ class TestAutoExitIdle:
         mock_autosave.assert_not_called()
 
     def test_send_keys_targets_claude_pane_not_active_pane(self):
-        """Pane targeting bug fix (2026-06-09): when the window's
+        """Pane targeting bug fix: when the window's
         active pane is NOT the Claude pane (e.g., user split off a
         shell pane for `ccm update` and left focus on it), every
         send-keys must address the Claude pane directly via
@@ -455,7 +455,7 @@ class TestAutoExitIdle:
         process and the pane closes, changing the window's layout —
         auto-exit reclaims an idle process, it does not close panes.
 
-        These panes were unreachable by accident until 2026-08-11:
+        These panes were unreachable by accident until this fix:
         the process walk only looked for a child, so they resolved to
         no-claude and the background-work guard read their versioned
         command name as live work. Teaching the walk about them
@@ -473,7 +473,7 @@ class TestAutoExitIdle:
         )
 
     def test_claude_pane_found_when_pane_current_command_is_version(self):
-        """Real-world regression (2026-06-09): on standard claude.ai
+        """Real-world regression: on standard claude.ai
         installs the binary lives at `.../versions/<X.Y.Z>/`, with
         `claude` as a symlink. macOS's `proc_pidinfo` reports the
         version basename as `#{pane_current_command}` (e.g.
@@ -501,7 +501,7 @@ class TestAutoExitBackgroundWorkGuard:
     """Auto-exit must leave a window alone while it hosts live
     background work, however long the Claude conversation has been
     idle. Cost asymmetry: wrongly exiting interrupts running work
-    (2026-07-11 monadic-chat incident — a sibling-pane batch job's
+    (incident — a sibling-pane batch job's
     window went quiet for 10 min and Claude was exited out from
     under an active project); wrongly keeping costs one idle Claude
     process. Two signals, either sufficient:
@@ -570,7 +570,7 @@ class TestAutoExitBackgroundWorkGuard:
         exiting Claude leaves the editor pane untouched — so the
         guard must not treat it as live work. Without this exemption
         a split-editor workflow silently disables auto-exit for
-        every window (observed 2026-07-17: three sessions idle 3-4
+        every window (observed: three sessions idle 3-4
         days with @ccm-idle-timeout 10 set, each with a parked nvim
         in the second pane)."""
         for editor in ("nvim", "vim", "emacs", "less"):
@@ -596,7 +596,7 @@ class TestAutoExitBackgroundWorkGuard:
 class TestAutoExitNotification:
     """A completed auto-exit must announce itself: an unannounced
     exit reads as a crash or a mystery timeout and sends the user
-    hunting for a cause (2026-07-11 monadic-chat report). Fired only
+    hunting for a cause (report). Fired only
     after the shell-foreground gate confirmed the exit landed."""
 
     def test_notify_fired_on_confirmed_exit(self):

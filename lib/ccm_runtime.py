@@ -111,7 +111,7 @@ def _window_has_background_work(panes_raw, ps_lines):
          on its own, and exiting Claude leaves the sibling pane
          untouched — so the exemption cannot interrupt anything.
          Without it, a split-editor workflow silently disables
-         auto-exit for every window (observed 2026-07-17: three
+         auto-exit for every window (observed: three
          sessions idle for 3-4 days with `@ccm-idle-timeout 10` set,
          each with a parked nvim in the second pane).
 
@@ -290,8 +290,7 @@ def auto_exit_idle(projects):
             # work must not have its Claude exited, no matter how
             # long the CONVERSATION has been idle. The cost asymmetry
             # decides this: wrongly exiting interrupts running work
-            # and surprises the user (2026-07-11 monadic-chat
-            # incident — a sibling-pane batch job's window went
+            # and surprises the user — a sibling-pane batch job's window went
             # quiet, the 10-min timer fired, and Claude was exited
             # out from under a project the user considered active),
             # while wrongly keeping costs one idle Claude process.
@@ -332,7 +331,7 @@ def auto_exit_idle(projects):
                 # so the shape has to be excluded here.
                 #
                 # Such panes were unreachable by accident until
-                # 2026-08-11: `find_claude_pid` only looked for a child,
+                #: `find_claude_pid` only looked for a child,
                 # so they resolved to None and the background-work guard
                 # above read their versioned command name as live work.
                 # Teaching the walk about them (3a1534b) removed that
@@ -383,7 +382,7 @@ def auto_exit_idle(projects):
                 # Tell the user WHAT happened and THAT nothing is
                 # lost. An unannounced exit reads as a crash or a
                 # mystery timeout and sends the user hunting for a
-                # cause (2026-07-11 monadic-chat report); one
+                # cause (report); one
                 # notification removes the entire investigation.
                 # Fired only here — after the shell-foreground gate
                 # confirmed the exit actually landed — so it can

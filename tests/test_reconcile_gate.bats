@@ -5,7 +5,7 @@
 # every second on a config with a seconds clock. A full pass spawns
 # ~24 processes; left ungated it made ccm a measurable share of a
 # laptop's load and a contributor to a kernel zone exhaustion panic
-# (2026-07-27). The gate keeps the seconds in between down to the
+#. The gate keeps the seconds in between down to the
 # shell itself, so these tests care as much about what does NOT run
 # as about the decision.
 

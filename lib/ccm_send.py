@@ -41,7 +41,7 @@ Delivery-pane resolution: the project state is a WINDOW-level
 aggregation across panes (PERMIT > BUSY > IDLE > SHELL), but
 `send-keys -t <session>:<idx>` delivers to the window's ACTIVE
 pane — which in a split window may be a plain shell sitting next
-to the Claude pane. 2026-07-16 ringi incident: a two-pane window
+to the Claude pane. incident: a two-pane window
 (Claude idle in pane A, active zsh in pane B) aggregated to IDLE,
 so a `ccm send --start` decided no launch was needed and typed the
 whole message into zsh. `_resolve_delivery_pane` closes the gap by
@@ -174,7 +174,7 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
 # visible (so detection reads IDLE) a moment BEFORE Claude's input
 # handler actually accepts keystrokes — during that window a
 # send-keys is silently eaten, the body never lands, yet ccm
-# printed "Sent". Confirmed 2026-06-24 (acceptability project):
+# printed "Sent". Confirmed (a project project):
 # target SHELL → --start → "Sent" shown but the input box held only
 # its placeholder, body zero; re-sending after IDLE settled
 # delivered the full text.
@@ -203,7 +203,7 @@ def _message_signature(message):
     Returns a tuple, and a match on ANY of them counts, because a
     composer holding a long body shows only part of it. Claude's grows
     upward and keeps the leading row; a body that outgrows the pane
-    scrolls instead and keeps the trailing row (observed 2026-07-30
+    scrolls instead and keeps the trailing row (observed
     against Kimi K3: a 30-line brief rendered as `↑ 24 more` with the
     head cut off). Checking one end only would report "did not land"
     for a message sitting right there, which on the --start path means
@@ -252,9 +252,9 @@ def _type_body(win_target, lines):
     M-Enters still landed. The receiver saw the message with all
     its bullet lines missing and a blank line where each had been.
     This mangled three real cross-project briefs before being
-    diagnosed (monadic-chat design replies 2026-07-10/11 arriving
-    with empty 設計/実装 sections; the ringi contract brief
-    2026-07-14 arriving with an empty slug section) — the delivery
+    diagnosed (design replies/11 arriving
+    with empty design/implementation sections; the contract brief
+ arriving with an empty slug section) — the delivery
     verification did not catch it because the signature it checks
     survived in the non-bullet lines."""
     for line_i, line in enumerate(lines):
@@ -269,7 +269,7 @@ def _type_body(win_target, lines):
 # target lands in the ACTIVE pane. In a split window those can
 # disagree: Claude idle in a side pane makes the window IDLE while
 # the active pane is a bare zsh — and the message would be typed
-# into the shell (2026-07-16 ringi incident: `ccm send --start` saw
+# into the shell (incident: `ccm send --start` saw
 # IDLE, skipped the launch, and flooded zsh with the body as shell
 # commands). Resolving the actual claude-hosting pane and targeting
 # it directly makes state and delivery refer to the same pane.
@@ -552,7 +552,7 @@ def cmd_send(args):
     # — a session is BUSY precisely because it is running this
     # command, so the gate reports BUSY and blames the target. That
     # self-reference reads as a spurious "the other agent is busy",
-    # which is how it was reported (2026-07-26). Refuse explicitly
+    # which is how it was reported. Refuse explicitly
     # instead: the honest answer is not a state verdict at all.
     #
     # `$TMUX_PANE` is set by tmux for any process started inside a
@@ -746,7 +746,7 @@ def cmd_send(args):
         )
     if rechecked == "SHELL" and not did_launch:
         # SHELL means no claude under the pane — the body would be
-        # typed into a bare shell (the 2026-07-16 ringi incident
+        # typed into a bare shell (the same shape
         # class). The --start path is exempt: it just launched Claude
         # and the wait loop confirmed IDLE a moment ago, so a raw
         # SHELL reading there is detection lag, not a dead session.

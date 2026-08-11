@@ -37,21 +37,21 @@ class TestBuildDetailEntriesActive:
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d, session_id=None: None)
         projects = [
-            make_project("0:2", "2", "ccm-dev", "SHELL"),
+            make_project("0:2", "2", "sample-proj", "SHELL"),
             make_project("1:2", "2", "sideproject", "BUSY"),
         ]
         entries = inject_status.build_detail_entries(
             projects, with_extras=True, current_win_target="1:2"
         )
         assert "bold" in entries[1] and "sideproject" in entries[1]
-        # ccm-dev must NOT be bold even though its index is also "2"
+        # sample-proj must NOT be bold even though its index is also "2"
         assert "bold" not in entries[0]
-        assert "ccm-dev" in entries[0]
+        assert "sample-proj" in entries[0]
 
     def test_no_match_no_bold(self):
         """If the current window is not a ccm project, nothing is bold."""
         projects = [
-            make_project("0:2", "2", "ccm-dev", "SHELL"),
+            make_project("0:2", "2", "sample-proj", "SHELL"),
             make_project("0:5", "5", "docs", "IDLE"),
         ]
         entries = inject_status.build_detail_entries(
@@ -64,13 +64,13 @@ class TestBuildDetailEntriesActive:
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d, session_id=None: None)
         projects = [
-            make_project("0:2", "2", "ccm-dev", "SHELL"),
+            make_project("0:2", "2", "sample-proj", "SHELL"),
             make_project("1:2", "2", "sideproject", "BUSY"),
         ]
         entries = inject_status.build_detail_entries(
             projects, with_extras=False, current_win_target="0:2"
         )
-        assert "bold" in entries[0] and "ccm-dev" in entries[0]
+        assert "bold" in entries[0] and "sample-proj" in entries[0]
         assert "bold" not in entries[1]
 
 
@@ -90,7 +90,7 @@ class TestStaleSignalSuffixInStatusBar:
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d, session_id=None: (ts - 480, "BUSY", ""))
         entries = inject_status.build_detail_entries(
-            [make_project("0:2", "2", "ccm-dev", "BUSY")],
+            [make_project("0:2", "2", "sample-proj", "BUSY")],
             with_extras=False, current_win_target="0:2",
         )
         assert "(8m)" in entries[0]
@@ -101,7 +101,7 @@ class TestStaleSignalSuffixInStatusBar:
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d, session_id=None: (ts - 120, "PERMIT", ""))
         entries = inject_status.build_detail_entries(
-            [make_project("0:2", "2", "ccm-dev", "PERMIT")],
+            [make_project("0:2", "2", "sample-proj", "PERMIT")],
             with_extras=True, current_win_target="0:2",
         )
         assert "(2m)" in entries[0]
@@ -114,7 +114,7 @@ class TestStaleSignalSuffixInStatusBar:
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d, session_id=None: (ts - 5, "BUSY", ""))
         entries = inject_status.build_detail_entries(
-            [make_project("0:2", "2", "ccm-dev", "BUSY")],
+            [make_project("0:2", "2", "sample-proj", "BUSY")],
             with_extras=False, current_win_target="0:2",
         )
         # No "(Ns)" / "(Nm)" pattern in the entry.
@@ -130,7 +130,7 @@ class TestStaleSignalSuffixInStatusBar:
                             lambda d, session_id=None: (ts - 600, "BUSY", ""))
         for state in ("IDLE", "SHELL", "DOWN"):
             entries = inject_status.build_detail_entries(
-                [make_project("0:2", "2", "ccm-dev", state)],
+                [make_project("0:2", "2", "sample-proj", state)],
                 with_extras=False, current_win_target="0:2",
             )
             assert "(10m)" not in entries[0], f"unexpected suffix for {state}"
@@ -143,7 +143,7 @@ class TestBgActiveSuffixInStatusBar:
     something claude spawned is still running"."""
 
     def _make(self, state, bg):
-        p = make_project("0:2", "2", "ccm-dev", state)
+        p = make_project("0:2", "2", "sample-proj", state)
         p.bg_active = bg
         return p
 
@@ -179,7 +179,7 @@ class TestPaneCountSuffixInStatusBar:
     """
 
     def _make(self, pane_count, state="IDLE"):
-        p = make_project("0:2", "2", "ccm-dev", state)
+        p = make_project("0:2", "2", "sample-proj", state)
         p.pane_count = pane_count
         return p
 
@@ -252,7 +252,7 @@ class TestFastPathSkipsMaintenanceSideEffects:
     tasks, both instances could pass the idle check for the same
     window and double-send the Escape + `/exit` + Enter sequence —
     the late copy landing in the post-exit shell pane, where the
-    literal `exit` kills the user's shell (the incident shape
+    literal `exit` kills the user's shell (the shape
     documented in ccm_runtime.auto_exit_idle). Those tasks also cost
     several tmux subprocesses per call, contradicting the fast
     path's ~10 ms redraw budget. So the fast path must skip
@@ -369,7 +369,7 @@ class TestMode2StatusLineCeiling:
     lines total. The mode-2 layout (1 main bar + 1 gutter + N entry
     lines) must therefore never ask for more than 3 entry lines.
 
-    Regression for the 2026-07-11 frozen-status-bar incident: with 27
+    Regression for the frozen-status-bar incident: with 27
     projects the layout computed 4 entry lines → `set -g status 6` →
     tmux rejected it ("unknown value: 6") and, because the whole
     mode-2 render is one `;`-chained batch, every status-format write
@@ -482,7 +482,7 @@ class TestCJKWidthInLayout:
     project names may legally be CJK (validate_name only strips
     shell metacharacters). len() undercounts them by half, which
     overestimates the remaining budget and overflows/wraps the bar
-    (2026-07-13 audit finding, sibling of the non-ASCII slug bug)."""
+    (audit finding, sibling of the non-ASCII slug bug)."""
 
     def test_mode2_cjk_names_reduce_entries_per_line(self, monkeypatch):
         """The same number of projects must yield MORE lines when
