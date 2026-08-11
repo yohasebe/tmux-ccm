@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The status bar measures the status-right it preserves as it renders, not as
+  it is written. A theme's `%T` and `%F` are four characters that draw as
+  eighteen, and counting the template left mode 1's layout short enough to
+  clip its first entry.
 - Saving a tmux setting no longer deletes other settings whose name extends
   it. `@ccm-status-line` and `@ccm-status-line-hide-shell` are separate
   options, and writing the first removed the second from `~/.tmux.conf`.

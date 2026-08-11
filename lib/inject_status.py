@@ -298,26 +298,52 @@ def status_line_position():
             else "right")
 
 
-def status_left_width():
-    """Rendered width of `status-left`, or -1 when it cannot be measured.
+def rendered_width(spec):
+    """Width of a tmux status spec as it will actually be drawn, or -1
+    when it cannot be measured.
 
-    Measured, not guessed: `status-left` is usually a format
-    (`#{USER}@#h`, session name, a theme's segments) whose source text
-    says nothing about how wide it draws. `#{T:...}` asks tmux to
-    expand it the same way it will at render time, and the style codes
-    are stripped afterwards because they occupy no columns.
+    Measured, not counted from the source text. A status spec is a
+    template, and the parts that vary are exactly the parts that are
+    wide: `%T` is two characters that draw as eight, `%F` two that draw
+    as ten, and a theme's `#{...}` segments expand to whatever they
+    hold right now. Counting the template undercounts the line, and a
+    line that measures short overflows when it is drawn.
 
-    -1 means "unknown" and the caller falls back to right placement
-    rather than guessing a padding that could push entries under the
-    left segment.
+    `#{T:...}` asks tmux to expand the spec the same way it will at
+    render time. Style codes are stripped afterwards because they
+    occupy no columns, and the result is measured in terminal columns
+    rather than characters so a CJK or double-width glyph counts twice.
     """
     try:
-        expanded = tmux_cmd("display-message", "-p", "#{T:status-left}")
+        expanded = tmux_cmd("display-message", "-p", spec)
     except Exception:
         return -1
     if not expanded:
         return 0
     return display_width(re.sub(r"#\[[^\]]*\]", "", expanded))
+
+
+def status_left_width():
+    """Rendered width of `status-left`, or -1 when unmeasurable.
+
+    -1 means "unknown" and the caller falls back to right placement
+    rather than guessing a padding that could push entries under the
+    left segment.
+    """
+    return rendered_width("#{T:status-left}")
+
+
+def original_status_right_width(original):
+    """Rendered width of the status-right ccm was asked to preserve.
+
+    Falls back to counting the template when the option cannot be
+    expanded, which is the old behaviour: short by however much the
+    variable parts expand, but better than refusing to render.
+    """
+    measured = rendered_width("#{T:@ccm-orig-status-right}")
+    if measured >= 0:
+        return measured
+    return display_width(strip_tmux_formats(original))
 
 
 def apply_shell_filter(projects):
@@ -556,7 +582,7 @@ def _inject_status_impl(force_fast=False):
                 term_width = int(tmux_cmd("display-message", "-p", "#{client_width}") or "120")
             except ValueError:
                 pass
-            orig_visible = len(strip_tmux_formats(original))
+            orig_visible = original_status_right_width(original)
             avail = term_width - orig_visible - 10  # margin for separators + refresh
 
             # Select entries by priority (highest first) until width is exhausted,

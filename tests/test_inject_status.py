@@ -665,3 +665,52 @@ class TestStatusLinePosition:
     def test_status_left_width_of_empty_is_zero(self, monkeypatch):
         self._opt(monkeypatch, left_width="")
         assert inject_status.status_left_width() == 0
+
+
+class TestRenderedWidth:
+    """Status specs are templates. What matters is how wide they draw,
+    and the parts that vary are exactly the parts that are wide: `%T`
+    is two characters that draw as eight, `%F` two that draw as ten,
+    and a theme's `#{...}` segments hold whatever they hold right now.
+
+    Counting the template instead of the rendering undercounted a real
+    theme's `status-right` by 14 columns. The padding that places
+    mode 1's entries on the left is derived from that number, so the
+    block overflowed by 2 and tmux clipped it from the left — taking
+    the first character of the highest-priority entry, the one the
+    placement exists to protect.
+    """
+
+    def _expansion(self, monkeypatch, value):
+        monkeypatch.setattr(inject_status, "tmux_cmd",
+                            lambda *a, **kw: value)
+
+    def test_measures_the_expansion_not_the_template(self, monkeypatch):
+        self._expansion(monkeypatch, "21:55:39")
+        assert inject_status.rendered_width("#{T:status-right}") == 8
+
+    def test_style_codes_occupy_no_columns(self, monkeypatch):
+        self._expansion(monkeypatch, "#[fg=red]ab#[default]cd")
+        assert inject_status.rendered_width("#{T:status-right}") == 4
+
+    def test_wide_glyphs_count_as_two_columns(self, monkeypatch):
+        self._expansion(monkeypatch, "日本")
+        assert inject_status.rendered_width("#{T:status-right}") == 4
+
+    def test_empty_spec_is_zero(self, monkeypatch):
+        self._expansion(monkeypatch, "")
+        assert inject_status.rendered_width("#{T:status-right}") == 0
+
+    def test_original_width_prefers_the_measurement(self, monkeypatch):
+        """A template of 4 characters that expands to 12 columns must
+        report 12 — the number the layout has to budget for."""
+        self._expansion(monkeypatch, "212 chars ok")   # 12 columns
+        assert inject_status.original_status_right_width("%T %F") == 12
+
+    def test_original_width_falls_back_when_unmeasurable(self, monkeypatch):
+        """Losing the measurement must not stop the bar rendering; the
+        template count is short but usable."""
+        def fake(*args, **kw):
+            raise RuntimeError("tmux unavailable")
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake)
+        assert inject_status.original_status_right_width("#[fg=red]abc") == 3
