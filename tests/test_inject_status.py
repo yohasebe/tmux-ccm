@@ -928,17 +928,29 @@ class TestAmbiguousWidthAllowance:
 
 
 class TestDeclaredAmbiguousWidth:
-    """`CCM_AMBIGUOUS_WIDTH` is a statement about the terminal, and
-    once it is made there is nothing left to hedge against.
+    """Declaring the terminal's glyph width is a statement, and once it
+    is made there is nothing left to hedge against.
 
     Reserving on top of a declared width charges twice. At `2` the
     glyph is counted two columns by `display_width` and then allowed a
     third. At `1` the layout keeps hedging against a case the user has
     ruled out, and in left placement that hedge is visible: 12 columns
     of empty space after `status-left` on a real theme.
+
+    The declaration must reach every parent that starts ccm. The bar
+    renders both from tmux's `#()` and from the hooks, which Claude
+    Code spawns with its own environment, so an environment variable
+    reaches one and not the other and the bar alternates between two
+    layouts. Hence the tmux option, which answers the same to whoever
+    asks.
     """
 
-    def test_unset_is_not_a_declaration(self, monkeypatch):
+    def _opt(self, monkeypatch, value):
+        monkeypatch.setattr(ccm_render.ccm_core, "tmux_cmd",
+                            lambda *a, **kw: value)
+
+    def test_unset_everywhere_is_not_a_declaration(self, monkeypatch):
+        self._opt(monkeypatch, "")
         monkeypatch.delenv("CCM_AMBIGUOUS_WIDTH", raising=False)
         assert ccm_render._resolve_ambiguous_width() == (1, False)
 
@@ -946,11 +958,11 @@ class TestDeclaredAmbiguousWidth:
             self, monkeypatch):
         """The whole point of the flag: `1` and unset produce the same
         column count and must not produce the same reservation."""
-        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", "1")
+        self._opt(monkeypatch, "1")
         assert ccm_render._resolve_ambiguous_width() == (1, True)
 
     def test_two_is_a_declaration(self, monkeypatch):
-        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", "2")
+        self._opt(monkeypatch, "2")
         assert ccm_render._resolve_ambiguous_width() == (2, True)
 
     @pytest.mark.parametrize("raw", ["5", "0", "banana", ""])
@@ -958,17 +970,59 @@ class TestDeclaredAmbiguousWidth:
             self, monkeypatch, raw):
         """An unusable value must fall back to hedging, not to trusting
         a number nobody meant."""
-        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", raw)
+        self._opt(monkeypatch, raw)
+        monkeypatch.delenv("CCM_AMBIGUOUS_WIDTH", raising=False)
         assert ccm_render._resolve_ambiguous_width() == (1, False)
 
+    def test_the_environment_still_answers_outside_tmux(self, monkeypatch):
+        """Running ccm with no tmux to ask leaves the variable as the
+        only way to say it."""
+        def no_tmux(*a, **kw):
+            raise RuntimeError("no server running")
+        monkeypatch.setattr(ccm_render.ccm_core, "tmux_cmd", no_tmux)
+        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", "2")
+        assert ccm_render._resolve_ambiguous_width() == (2, True)
+
+    def test_the_option_outranks_the_environment(self, monkeypatch):
+        """The option is what every parent can see; the variable is
+        whatever one of them happened to be started with."""
+        self._opt(monkeypatch, "2")
+        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", "1")
+        assert ccm_render._resolve_ambiguous_width() == (2, True)
+
+    def test_an_empty_option_falls_through_to_the_environment(
+            self, monkeypatch):
+        """An unset tmux option reads as the empty string, which says
+        nothing — it must not mask a variable that says something."""
+        self._opt(monkeypatch, "")
+        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", "1")
+        assert ccm_render._resolve_ambiguous_width() == (1, True)
+
+    def test_the_answer_is_resolved_once_per_process(self, monkeypatch):
+        """Every width measurement would otherwise be a tmux round
+        trip, and the hook-driven render is the path that is never
+        rate-limited."""
+        monkeypatch.setattr(ccm_render, "_AMBIGUOUS_STATE", None)
+        calls = []
+
+        def counting(*a, **kw):
+            calls.append(a)
+            return "1"
+        monkeypatch.setattr(ccm_render.ccm_core, "tmux_cmd", counting)
+        for _ in range(5):
+            ccm_render.display_width("●●●")
+        assert len(calls) == 1, f"asked tmux {len(calls)} times"
+
     def test_a_declaration_stops_the_reservation(self, monkeypatch):
-        monkeypatch.setattr(inject_status, "AMBIGUOUS_WIDTH_DECLARED", True)
+        monkeypatch.setattr(inject_status, "ambiguous_width_declared",
+                            lambda: True)
         assert inject_status._ambiguous_width_allowance("│●") == 0
 
     def test_a_declared_width_is_not_charged_twice(self, monkeypatch):
         """`_worst_case_width` is what layouts reserve. Once the width
         is declared it must be exactly what the text measures."""
-        monkeypatch.setattr(inject_status, "AMBIGUOUS_WIDTH_DECLARED", True)
+        monkeypatch.setattr(inject_status, "ambiguous_width_declared",
+                            lambda: True)
         text = " │ host ● "
         assert (inject_status._worst_case_width(text)
                 == inject_status.display_width(text))
@@ -976,7 +1030,8 @@ class TestDeclaredAmbiguousWidth:
     def test_declaring_the_width_closes_the_gap(self, monkeypatch):
         """End to end: on a terminal whose width is known to be narrow,
         the only space left after `status-left` is the intended gap."""
-        monkeypatch.setattr(inject_status, "AMBIGUOUS_WIDTH_DECLARED", True)
+        monkeypatch.setattr(inject_status, "ambiguous_width_declared",
+                            lambda: True)
         helper = TestMode1WidthBudget()
         left = f" {helper.BOX} host {helper.ICON} "
         right = helper._render(monkeypatch, n_projects=5, term_width=120,

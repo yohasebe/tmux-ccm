@@ -798,7 +798,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 |------|-----------|------|
 | `CCM_ATTENTION_WAITING_TTL_SEC` | `3600`（秒） | サイドキックの未応答マーカーを ccm が破棄するまでの時間。エージェントが解決せずに終了した場合に効く |
 | `CCM_ATTENTION_RESOLVED_GC_SEC` | `300`（秒） | 解決済みマーカーを回収するまでの保持時間。読み取りの遅い消費側でも見えるようにする |
-| `CCM_AMBIGUOUS_WIDTH` | `1` | East Asian Ambiguous 文字（IDLE アイコン `●`、SHELL アイコン `■` など）のターミナル列幅。CJK locale ターミナルで Ambiguous 文字が 2 列幅でレンダリングされる場合は `2` に設定すると、ダッシュボード / `ccm status` のカラム整列が崩れない。**設定すること自体が、ステータスバーに「予約をやめてよい」と伝える意味も持つ** — [曖昧幅グリフ](#曖昧幅グリフ)参照。モジュール読み込み時に評価されるため、変更後は inject-status / dashboard を再起動 |
+| `CCM_AMBIGUOUS_WIDTH` | `1` | East Asian Ambiguous 文字（IDLE アイコン `●`、SHELL アイコン `■` など）のターミナル列幅。CJK locale ターミナルで Ambiguous 文字が 2 列幅でレンダリングされる場合は `2` に設定すると、ダッシュボード / `ccm status` のカラム整列が崩れない。**`@ccm-ambiguous-width` の退避経路**（tmux の外で ccm を実行する場合用）。環境変数はバーを描画する 2 つの親の片方にしか届かないため、tmux オプションを優先すること — [曖昧幅グリフ](#曖昧幅グリフ)参照。プロセスごとに 1 回評価 |
 | `CCM_ERRORS_LOG_MAX_BYTES` | `1048576`（1 MB） | `$TMPDIR/ccm-$UID/errors.log`（silent-exception ログ）のサイズ上限。上限到達時はアクティブログを `errors.log.1` にローテーションし、新しいログを開始する（ディスク使用量は上限の約 2 倍）。`ccm errors` で表示、`ccm errors --clear` で削除 |
 | `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10`（秒） | session_info の pid 再利用チェックのドリフト許容秒数。`read_session_info` が `ps` snapshot を渡されたとき、Claude Code が記録した `startedAt` と live プロセスの etime 由来の起動時刻を照合する。許容を超える乖離は「pid が再利用された旧セッションの json」と判断して reject（呼び出し側は legacy fallback へ）。10 秒は通常のクロックドリフト・NTP 補正・fork から session_info 書き込みまでの数秒をカバーする値 |
 | `CCM_STATUS_INTERVAL` | `5`（秒） | tmux `status-interval` の目標値 — ステータスバーの再描画間隔。プラグインはロード時に、現在の設定がこの値より大きい場合のみ引き下げる（引き上げはしない）。shell の `export` ではなく `tmux set-environment -g` でプラグインのロード前に設定 — [ステータス更新間隔](#ステータス更新間隔)参照 |
@@ -863,13 +863,13 @@ tmux set-environment -g CCM_STATUS_INTERVAL 10   # 10秒ごとのポーリング
 端末の挙動が分かっているなら、それを伝えれば予約は止まります。
 
 ```bash
-tmux set-environment -g CCM_AMBIGUOUS_WIDTH 1   # 狭く描く（多くの非 CJK 端末）
-tmux set-environment -g CCM_AMBIGUOUS_WIDTH 2   # 広く描く（CJK locale の端末）
+tmux set -g @ccm-ambiguous-width 1   # 狭く描く（多くの非 CJK 端末）
+tmux set -g @ccm-ambiguous-width 2   # 広く描く（CJK locale の端末）
 ```
 
-shell の `export` ではなく `tmux set-environment -g` を使ってください。ステータスバーは tmux の `#()` から起動されるため、対話シェルではなく tmux の環境を見ます。反映にはステータスバー（または tmux サーバー）の再起動が必要です。
-
 `1` を設定することと未設定のままにすることは、グリフを 1 列として数える点では同じですが、意味が違います。未設定は「不明」で ccm は予約し、`1` は「狭い」で予約をやめます。
+
+環境変数 `CCM_AMBIGUOUS_WIDTH` ではなく tmux オプションを使ってください。環境変数は tmux の外で ccm を実行する場合の退避経路としてのみ残しています。ステータスバーは **2 つの異なる親**から描画されます — tmux の `#()` と、Claude Code が spawn するフックです。`tmux set-environment` で設定した値は前者にしか届かず、しかもフック経由の描画は rate-limit されない側なので、宣言はほとんど上書きされ、バーが 2 つのレイアウトの間で点滅します。tmux オプションは誰が尋ねても同じ値を返します。両方設定されている場合はオプションが優先されます。
 
 自分の端末がどちらか調べるには、罫線素片と普通の文字を並べて列が揃うか見てください。あるいは単に `1` を設定してみて、先頭エントリが 1 文字欠けるようなら `2` にしてください。
 

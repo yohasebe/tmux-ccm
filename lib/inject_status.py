@@ -24,7 +24,7 @@ from ccm_core import (
     tmux_cmd,
 )
 from ccm_notify import notify
-from ccm_render import (AMBIGUOUS_WIDTH_DECLARED, display_width,
+from ccm_render import (ambiguous_width_declared, display_width,
                         external_agent_label, signal_age_suffix)
 from ccm_runtime import (
     auto_exit_idle,
@@ -354,7 +354,7 @@ def _ambiguous_width_allowance(text):
     theme. The reservation is right while the width is unknown and
     wrong the moment it is known.
     """
-    if AMBIGUOUS_WIDTH_DECLARED:
+    if ambiguous_width_declared():
         return 0
     return sum(
         1 for c in text

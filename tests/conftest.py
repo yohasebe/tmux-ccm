@@ -85,6 +85,15 @@ def block_live_subprocess(request, monkeypatch):
         yield
         return
 
+    # `display_width` asks tmux once per process what the terminal
+    # makes of ambiguous-width glyphs. Seed that answer so measuring a
+    # string — which nearly every test does — is not a tmux round trip.
+    # Tests about the resolution itself stub `tmux_cmd` and call
+    # `_resolve_ambiguous_width` directly.
+    import ccm_render
+    monkeypatch.setattr(ccm_render, "_AMBIGUOUS_STATE", (1, False),
+                        raising=False)
+
     import subprocess
     real_run = subprocess.run
     real_popen = subprocess.Popen

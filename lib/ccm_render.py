@@ -51,18 +51,60 @@ import ccm_signals
 # that would otherwise reserve room for the case they cannot rule
 # out can stop reserving it. So "1" and "unset" mean different
 # things here even though they count the same — hence the flag.
-def _resolve_ambiguous_width() -> tuple[int, bool]:
-    raw = os.environ.get("CCM_AMBIGUOUS_WIDTH", "")
+#
+# `@ccm-ambiguous-width` is the primary source and the environment
+# variable the fallback, because ccm is started by parents with
+# different environments and they must agree. The status bar is
+# rendered both from tmux's `#()` and from the hooks, which Claude
+# Code spawns; `tmux set-environment` reaches only the first, and
+# the hook-driven path is the one that is never rate-limited. A
+# value that reaches one but not the other makes the bar alternate
+# between two layouts. A tmux option answers the same to whoever
+# asks. The variable stays for running ccm outside tmux, where
+# there is no option to read.
+def _declared_width(raw):
+    """The width `raw` states, or None when it states nothing."""
     try:
         v = int(raw)
-    except ValueError:
+    except (TypeError, ValueError):
+        return None
+    return v if v in (1, 2) else None
+
+
+def _resolve_ambiguous_width() -> tuple[int, bool]:
+    declared = None
+    try:
+        declared = _declared_width(
+            ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-ambiguous-width"))
+    except Exception:
+        declared = None
+    if declared is None:
+        declared = _declared_width(os.environ.get("CCM_AMBIGUOUS_WIDTH"))
+    if declared is None:
         return 1, False
-    if v in (1, 2):
-        return v, True
-    return 1, False
+    return declared, True
 
 
-_AMBIGUOUS_WIDTH, AMBIGUOUS_WIDTH_DECLARED = _resolve_ambiguous_width()
+# Resolved once per process, on first use rather than at import: the
+# lookup costs a tmux round trip, and the rate-limited status tick
+# exits before importing anything at all.
+_AMBIGUOUS_STATE = None
+
+
+def _ambiguous_state() -> tuple[int, bool]:
+    global _AMBIGUOUS_STATE
+    if _AMBIGUOUS_STATE is None:
+        _AMBIGUOUS_STATE = _resolve_ambiguous_width()
+    return _AMBIGUOUS_STATE
+
+
+def ambiguous_width_declared() -> bool:
+    """True when the user has said what their terminal draws.
+
+    Layouts that would otherwise reserve room for the wider case can
+    stop reserving it — see `inject_status._ambiguous_width_allowance`.
+    """
+    return _ambiguous_state()[1]
 
 
 def _char_width(c: str) -> int:
@@ -73,7 +115,7 @@ def _char_width(c: str) -> int:
     if eaw in ("W", "F"):
         return 2
     if eaw == "A":
-        return _AMBIGUOUS_WIDTH
+        return _ambiguous_state()[0]
     return 1
 
 

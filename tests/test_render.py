@@ -239,14 +239,15 @@ class TestDisplayWidth:
         # `●` (U+25CF, BLACK CIRCLE) is East Asian Ambiguous.
         # Default behavior: 1 column (non-CJK terminal convention).
         import ccm_render
-        with patch.object(ccm_render, "_AMBIGUOUS_WIDTH", 1):
+        with patch.object(ccm_render, "_AMBIGUOUS_STATE", (1, False)):
             assert ccm_render.display_width("●") == 1
 
     def test_ambiguous_two_columns_when_opted_in(self):
-        # CJK locale users set `CCM_AMBIGUOUS_WIDTH=2` to get the
-        # 2-column treatment that matches their terminal's rendering.
+        # CJK locale users declare 2 (via `@ccm-ambiguous-width` or
+        # `CCM_AMBIGUOUS_WIDTH`) to get the 2-column treatment that
+        # matches their terminal's rendering.
         import ccm_render
-        with patch.object(ccm_render, "_AMBIGUOUS_WIDTH", 2):
+        with patch.object(ccm_render, "_AMBIGUOUS_STATE", (2, True)):
             assert ccm_render.display_width("●") == 2
 
 

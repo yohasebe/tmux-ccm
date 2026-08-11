@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `@ccm-ambiguous-width 1|2` states what your terminal makes of glyphs whose
+  width Unicode leaves open — box drawing, geometric shapes, Nerd Font icons.
+  Saying so lets the status bar stop reserving room for the wider case, which
+  in mode 1's left placement is space you can see. `CCM_AMBIGUOUS_WIDTH`
+  remains for running ccm outside tmux, but an environment variable reaches
+  only one of the two parents that render the bar, so a declaration made that
+  way applies to some renders and not others.
 - `@ccm-status-line-hide-shell on` lists only windows that host a Claude
   session in status-bar modes 1 and 2. Off by default; `IDLE` projects stay
   visible.
@@ -16,9 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
-- Setting `CCM_AMBIGUOUS_WIDTH` now also stops the status bar reserving room
-  for a glyph width it no longer has to guess at. At `2` the reservation was
-  charged on top of a column count that already included it; at `1` the
+- Declaring what the terminal draws now also stops the status bar reserving
+  room for a glyph width it no longer has to guess at. At `2` the reservation
+  was charged on top of a column count that already included it; at `1` the
   layout went on hedging against a case the user had ruled out, leaving
   around 12 columns of empty space after `status-left` in left placement.
   Leaving it unset keeps the reservation, since the width is then unknown.
