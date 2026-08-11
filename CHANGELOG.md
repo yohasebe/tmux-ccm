@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- A permission dialog dismissed with Esc no longer returns as PERMIT a minute
+  later. Claude Code fires no hook when a modal is dismissed, so ccm releases
+  the state by reading the transcript: a terminal record written after the
+  permit event means that turn ended. The permit path was applying the
+  start-class freshness window to that evidence, so once the transcript record
+  aged past `JSONL_HOOK_GAP_TOLERANCE` the proof was discarded and the resolved
+  permit came back — and stayed, because nothing else releases it. The window
+  is load-bearing where it belongs (rejecting a recap phantom, whose hook is
+  new while its activity is old) but not here: whether a modal was resolved is
+  a fact about ordering, and it does not expire. Ordering still gates the
+  release, so a modal raised after the last terminal record is untouched, and a
+  dialog actually on screen is unaffected either way since the footer match
+  outranks this judgment. The stale state also blocked `ccm send`, which
+  refuses to type into a PERMIT pane.
+
+### Changed
+- Verified against Claude Code v2.1.227. All four detection patterns matched a
+  live pane unaltered, the permission footer came back unchanged from a real
+  dialog, and the slash-command menu — whose highlighting this release reworks
+  — still does not read as PERMIT.
+
 ### Added
 - ccm records when a window's panes come back in a different order — what
   happens after the machine sleeps or a client detaches and reattaches while

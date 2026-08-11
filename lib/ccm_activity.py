@@ -101,10 +101,43 @@ def _jsonl_terminal_fresher_than_event(latest, jsonl_stop_reason,
                                        jsonl_age, now):
     """Combines `_jsonl_fresher_than_event` with the terminal
     stop_reason check + the `JSONL_HOOK_GAP_TOLERANCE` window. Used
-    by the start-class and permit-class Esc-fallback paths."""
+    by the start-class path, where the window is load-bearing: it is
+    what rejects the recap phantom, a brand-new BUSY-class hook whose
+    real activity is minutes old."""
     if jsonl_stop_reason not in TERMINAL_STOP_REASONS:
         return False
     if jsonl_age > JSONL_HOOK_GAP_TOLERANCE:
+        return False
+    return _jsonl_fresher_than_event(latest, jsonl_age, now)
+
+
+def _jsonl_terminal_after_event(latest, jsonl_stop_reason, jsonl_age, now):
+    """Terminal stop_reason recorded after the latest event, with no
+    freshness window. Used by the permit-class release path.
+
+    The permit path asks a different question than the start-class
+    path, and the difference is why it must not borrow that path's
+    window. There the question is "is this hook genuine, or a recap
+    phantom?", which only fresh evidence can answer. Here the question
+    is "was the modal that raised this event ever resolved?", and the
+    transcript's answer does not expire: a terminal record written
+    after the permit event means Claude finished that turn, and it
+    still means that ten minutes later.
+
+    Ageing the evidence out re-raised a PERMIT that was definitively
+    resolved — measured 2026-08-11 under Claude Code 2.1.227, where a
+    dismissed dialog read IDLE for 60 s and then flipped back to PERMIT
+    and stayed there, taking `ccm send` (which refuses to type into a
+    PERMIT pane) down with it.
+
+    Ordering still carries the weight, so a re-raised modal is not
+    released: a newer permit event makes the old terminal record older
+    than the event, and the check fails. A modal that is genuinely on
+    screen cannot be hidden either — it leaves no terminal record while
+    it waits, and `raw=PERMIT` from the footer outranks this judgment
+    regardless.
+    """
+    if jsonl_stop_reason not in TERMINAL_STOP_REASONS:
         return False
     return _jsonl_fresher_than_event(latest, jsonl_age, now)
 
@@ -209,7 +242,7 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
         # ended with a terminal stop_reason fresher than the permit
         # event, the modal was Esc-dismissed cleanly and Claude
         # wrote a final assistant record — at rest.
-        if _jsonl_terminal_fresher_than_event(
+        if _jsonl_terminal_after_event(
                 latest, jsonl_stop_reason, jsonl_age, now):
             return ACTIVITY_AT_REST, latest
         # Auto-approved-tool promotion — only on POSITIVE evidence

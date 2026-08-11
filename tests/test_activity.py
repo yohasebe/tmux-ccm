@@ -268,6 +268,39 @@ class TestClassifyActivity:
         )
         assert a == ACTIVITY_AT_REST
 
+    def test_permit_release_survives_the_gap_tolerance_window(self):
+        """A dismissed modal stays dismissed. The terminal record is
+        ordered after the permit event, and that fact does not age out
+        — before this, the permit path borrowed the start-class
+        `JSONL_HOOK_GAP_TOLERANCE` window, so at 61 s the evidence was
+        discarded and the resolved permit came back. Measured live on
+        2026-08-11 under Claude Code 2.1.227: IDLE for 60 s, then
+        PERMIT again, and it never released after that."""
+        from ccm_activity import ACTIVITY_AT_REST
+        from ccm_constants import JSONL_HOOK_GAP_TOLERANCE
+        a, _e = self._classify(
+            events=({"ts": 100, "type": "permit_req"},),
+            jsonl_stop_reason="interrupted",
+            jsonl_age=JSONL_HOOK_GAP_TOLERANCE * 5,
+            raw="IDLE", now=100 + JSONL_HOOK_GAP_TOLERANCE * 6,
+        )
+        assert a == ACTIVITY_AT_REST
+
+    def test_permit_reraised_after_terminal_is_not_released(self):
+        """Ordering is what carries the release, so a modal raised
+        AFTER the last terminal record must still read as awaiting —
+        otherwise dropping the freshness window would swallow every
+        subsequent permission request in the session."""
+        from ccm_activity import ACTIVITY_AWAITING_PERMIT
+        # Terminal record at t=100 (jsonl_age 400), permit raised at
+        # t=450 (event_age 50) — the event is newer than the JSONL.
+        a, _e = self._classify(
+            events=({"ts": 450, "type": "permit_req"},),
+            jsonl_stop_reason="end_turn",
+            jsonl_age=400, raw="IDLE", now=500,
+        )
+        assert a == ACTIVITY_AWAITING_PERMIT
+
     def test_pretool_event_in_progress(self):
         from ccm_activity import ACTIVITY_IN_PROGRESS
         a, _e = self._classify(
