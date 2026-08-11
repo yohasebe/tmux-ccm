@@ -73,10 +73,10 @@ if [ -n "$found" ]; then
     cat >&2 <<MSG
 commit refused: staged changes name a real project.
 
-The repository carries deliverables and documentation. Cite an
-incident by its date and what went wrong, not by which project hit
-it — "hooks silent through a whole real
-turn" identifies it just as well.
+The repository carries deliverables, tests, and documentation.
+Describe the behaviour, not the session it turned up in: "hooks fell
+silent partway through a turn" tells a reader everything they need,
+and names nothing.
 $found
 
 Bypass with: git commit --no-verify
