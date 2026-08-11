@@ -885,8 +885,16 @@ def save_tmux_conf_setting(setting):
             with open(conf, encoding="utf-8") as f:
                 lines = f.readlines()
 
-        # Remove existing lines with this key
-        lines = [l for l in lines if key not in l]
+        # Remove existing lines that set this key.
+        #
+        # Whole-token match, not a substring: one option name can be a
+        # prefix of another (`@ccm-status-line` and
+        # `@ccm-status-line-hide-shell`), and a substring test deletes
+        # the longer setting while saving the shorter one — silently,
+        # from the user's own config file, so the setting simply stops
+        # working after an unrelated change.
+        key_re = re.compile(r"(?:^|\s)" + re.escape(key) + r"(?:\s|$)")
+        lines = [l for l in lines if not key_re.search(l)]
 
         # Find earliest ccm/TPM load line
         insert_at = len(lines)

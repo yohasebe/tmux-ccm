@@ -648,3 +648,60 @@ class TestHandleAdd:
         assert hit["v"] is False
 
 
+
+
+class TestSaveTmuxConfSetting:
+    """`save_tmux_conf_setting` replaces a setting in the user's own
+    `~/.tmux.conf`, so a mistake here edits a file ccm does not own."""
+
+    def _conf(self, tmp_path, monkeypatch, body):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        conf = tmp_path / ".tmux.conf"
+        conf.write_text(body, encoding="utf-8")
+        return conf
+
+    def test_replaces_the_same_key(self, tmp_path, monkeypatch):
+        conf = self._conf(tmp_path, monkeypatch,
+                          "set -g @ccm-status-line 1\n")
+        ccm_core.save_tmux_conf_setting("set -g @ccm-status-line 2")
+        text = conf.read_text(encoding="utf-8")
+        assert "set -g @ccm-status-line 2" in text
+        assert "set -g @ccm-status-line 1" not in text
+
+    def test_keeps_settings_whose_name_extends_this_one(
+            self, tmp_path, monkeypatch):
+        """One option name can be a prefix of another. A substring test
+        deletes the longer setting while saving the shorter one — from
+        the user's config, silently, so it just stops working after an
+        unrelated change."""
+        conf = self._conf(
+            tmp_path, monkeypatch,
+            "set -g @ccm-status-line 1\n"
+            "set -g @ccm-status-line-hide-shell on\n"
+            "set -g @ccm-status-line-position left\n")
+        ccm_core.save_tmux_conf_setting("set -g @ccm-status-line 2")
+        text = conf.read_text(encoding="utf-8")
+        assert "@ccm-status-line-hide-shell on" in text
+        assert "@ccm-status-line-position left" in text
+
+    def test_saving_the_longer_name_leaves_the_shorter_one(
+            self, tmp_path, monkeypatch):
+        conf = self._conf(
+            tmp_path, monkeypatch,
+            "set -g @ccm-status-line 1\n"
+            "set -g @ccm-status-line-hide-shell off\n")
+        ccm_core.save_tmux_conf_setting(
+            "set -g @ccm-status-line-hide-shell on")
+        text = conf.read_text(encoding="utf-8")
+        assert "set -g @ccm-status-line 1" in text
+        assert "@ccm-status-line-hide-shell on" in text
+        assert "@ccm-status-line-hide-shell off" not in text
+
+    def test_leaves_unrelated_settings_alone(self, tmp_path, monkeypatch):
+        conf = self._conf(tmp_path, monkeypatch,
+                          "set -g @ccm-notify permit\n"
+                          "set -g status-interval 1\n")
+        ccm_core.save_tmux_conf_setting("set -g @ccm-status-line 2")
+        text = conf.read_text(encoding="utf-8")
+        assert "@ccm-notify permit" in text
+        assert "status-interval 1" in text

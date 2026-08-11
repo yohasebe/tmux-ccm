@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- Saving a tmux setting no longer deletes other settings whose name extends
+  it. `@ccm-status-line` and `@ccm-status-line-hide-shell` are separate
+  options, and writing the first removed the second from `~/.tmux.conf`.
 - A permission dialog dismissed with Esc no longer returns to PERMIT, which
   also blocked `ccm send` for that window.
 - Auto-exit no longer closes panes that run `claude` directly, with no shell
