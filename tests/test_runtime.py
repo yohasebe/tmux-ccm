@@ -449,6 +449,29 @@ class TestAutoExitIdle:
             f"{send_calls}. Should defer to the next polling cycle."
         )
 
+    def test_pane_that_is_claude_itself_is_never_exited(self):
+        """`tmux new-window "claude …"` leaves no shell under the pane,
+        so the pane pid IS claude. Exiting it ends the pane's only
+        process and the pane closes, changing the window's layout —
+        auto-exit reclaims an idle process, it does not close panes.
+
+        These panes were unreachable by accident until 2026-08-11:
+        the process walk only looked for a child, so they resolved to
+        no-claude and the background-work guard read their versioned
+        command name as live work. Teaching the walk about them
+        removed that cover, so the exclusion is explicit now."""
+        # pane pid 1000 is itself `claude` — no shell in between.
+        ps_output = "1000 999 1000 claude 00:05:00\n"
+        send_calls = self._run(
+            "claude",
+            panes_listing="0\t1000",
+            ps_output=ps_output,
+        )
+        assert send_calls == [], (
+            f"auto-exit targeted a pane whose own process is claude: "
+            f"{send_calls}. Exiting it would close the pane."
+        )
+
     def test_claude_pane_found_when_pane_current_command_is_version(self):
         """Real-world regression (2026-06-09): on standard claude.ai
         installs the binary lives at `.../versions/<X.Y.Z>/`, with

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Auto-exit never targets a pane whose own process is `claude` — the shape
+  `tmux new-window "claude …"` produces, with no shell underneath. Exiting
+  Claude there ends the pane's only process, so the pane closes and the
+  window's layout changes, where a ccm-launched pane keeps its shell and simply
+  reads SHELL afterwards. Auto-exit reclaims an idle process; it does not close
+  panes. These panes were unreachable by accident until the process walk
+  learned about them in this release, which removed the cover and made the
+  exclusion worth stating outright.
 - A permission dialog dismissed with Esc no longer returns as PERMIT a minute
   later. Claude Code fires no hook when a modal is dismissed, so ccm releases
   the state by reading the transcript: a terminal record written after the

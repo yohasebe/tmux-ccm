@@ -317,9 +317,30 @@ def auto_exit_idle(projects):
                 # point of ignore is that ccm keeps its hands off it.
                 if len(parts) >= 4 and parts[3] and parts[3] != "0":
                     continue
-                if ccm_pane_state.find_claude_pid(parts[1], ps_lines):
-                    claude_pane = f"{win_target}.{parts[0]}"
-                    break
+                claude_pid = ccm_pane_state.find_claude_pid(
+                    parts[1], ps_lines)
+                if not claude_pid:
+                    continue
+                # Never target a pane whose OWN process is Claude —
+                # the shape `tmux new-window "claude …"` produces,
+                # with no shell underneath. Exiting Claude there ends
+                # the pane's only process, so the pane closes and the
+                # window's layout changes; a ccm-launched pane keeps
+                # its shell and simply reads SHELL afterwards. Auto-exit
+                # exists to reclaim an idle process, not to close panes,
+                # and the difference is invisible from the state model,
+                # so the shape has to be excluded here.
+                #
+                # Such panes were unreachable by accident until
+                # 2026-08-11: `find_claude_pid` only looked for a child,
+                # so they resolved to None and the background-work guard
+                # above read their versioned command name as live work.
+                # Teaching the walk about them (3a1534b) removed that
+                # accidental cover, which is what makes this explicit.
+                if str(claude_pid) == str(parts[1]):
+                    continue
+                claude_pane = f"{win_target}.{parts[0]}"
+                break
             if not claude_pane:
                 # No pane currently hosts a Claude process — the
                 # window may be transitioning, Claude was already
