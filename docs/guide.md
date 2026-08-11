@@ -145,6 +145,14 @@ If you find yourself reaching for `/` right after opening the dashboard, bind `@
 set -g @ccm-key-search "/"   # prefix + / → dashboard opens in filter mode
 ```
 
+Check the key is free before you take it — `prefix + /` is tmux-copycat's search, for one:
+
+```bash
+tmux list-keys -T prefix | grep -w '/'
+```
+
+Prefix keys are a namespace shared with every other plugin you run, and a second binding silently replaces the first. The symptom is that some other plugin's key stops working, which is hard to trace back to a line you added elsewhere. This applies to `@ccm-key-tree`, `@ccm-key-menu`, and `@ccm-key-dashboard` equally.
+
 You can also run `ccm search` (or `ccm dashboard --search`) from a shell or another tmux binding for the same effect. This is handy when you have many projects — type a few characters to jump straight to the one you want, instead of hunting through the full list.
 
 ### Prefix-less dashboard hotkey
@@ -870,7 +878,7 @@ tmux set -g @ccm-ambiguous-width 2   # drawn wide (CJK locale terminals)
 
 Setting `1` is not the same as leaving it unset even though both count a glyph as one column. Unset means "unknown", and ccm hedges; `1` means "narrow", and it stops.
 
-The change takes effect from the next render, not the current one: each render resolves the answer once and keeps it, so a bar already on screen was drawn with the previous value. Wait a tick before judging whether it worked.
+The change takes effect from the next render, not the current one: each render resolves the answer once and keeps it, so a bar already on screen was drawn with the previous value. Wait a tick before judging whether it worked — and longer after `source-file`, which drops the bar back to your theme's own `status-right` until ccm re-injects, up to `CCM_RECONCILE_INTERVAL` later. What you see right after a reload is not the new setting failing; it is ccm not having drawn yet.
 
 Use the tmux option rather than the `CCM_AMBIGUOUS_WIDTH` environment variable, which is kept only for running ccm outside tmux. The status bar is rendered by two different parents — tmux's `#()` and the hooks, which Claude Code spawns — and an environment variable set with `tmux set-environment` reaches the first but not the second. Since the hook-driven render is the one that is never rate-limited, a declaration made that way is mostly overruled, and the bar alternates between two layouts. A tmux option answers the same to whoever asks. If both are set, the option wins.
 
