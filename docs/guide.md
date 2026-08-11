@@ -870,6 +870,8 @@ tmux set -g @ccm-ambiguous-width 2   # drawn wide (CJK locale terminals)
 
 Setting `1` is not the same as leaving it unset even though both count a glyph as one column. Unset means "unknown", and ccm hedges; `1` means "narrow", and it stops.
 
+The change takes effect from the next render, not the current one: each render resolves the answer once and keeps it, so a bar already on screen was drawn with the previous value. Wait a tick before judging whether it worked.
+
 Use the tmux option rather than the `CCM_AMBIGUOUS_WIDTH` environment variable, which is kept only for running ccm outside tmux. The status bar is rendered by two different parents — tmux's `#()` and the hooks, which Claude Code spawns — and an environment variable set with `tmux set-environment` reaches the first but not the second. Since the hook-driven render is the one that is never rate-limited, a declaration made that way is mostly overruled, and the bar alternates between two layouts. A tmux option answers the same to whoever asks. If both are set, the option wins.
 
 To find out which your terminal does, put a box drawing character next to a plain one and see whether the columns line up — or simply set `1`, and if the first entry loses a character, set `2` instead.
