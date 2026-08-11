@@ -300,6 +300,30 @@ The `* <elapsed>` marker clears when:
 
 Configure with `set -g @ccm-status-line` in your `~/.tmux.conf`. See the [README Status Bar section](../README.md#status-bar) for configuration details and screenshots.
 
+### Narrowing and placing the list
+
+Two options change what modes 1 and 2 show and where mode 1 puts it. Both are
+off by default and documented with examples in the
+[README Status Bar section](../README.md#status-bar).
+
+`@ccm-status-line-hide-shell on` drops SHELL projects, leaving only windows
+that host a Claude session. On a machine with many registered projects most of
+them are SHELL most of the time, and the one needing attention is easy to
+miss. IDLE stays: the session is alive and waiting, and that is where the
+`* elapsed` marker appears when a turn finishes.
+
+Worth knowing: idle sessions auto-exit after `CCM_IDLE_EXIT_TIMEOUT`, so a
+project you leave alone drops off the bar when its session ends, and returns
+when you attach and Claude restarts. The dashboard and `ccm status` always
+list every project.
+
+`@ccm-status-line-position left` moves mode 1's entries to the far side of the
+bar, highest priority first, filling the space the blanked window list leaves
+empty. It writes nothing to `status-left` — the padding that moves them lives
+in `status-right`. When the bar is too narrow it keeps the right-hand layout,
+because sliding the entries under `status-left` would have tmux clip the
+highest-priority one first.
+
 ### Mode 0 — Single icon
 
 Appends one icon to your existing status-right. The icon shows the highest-priority state:
@@ -507,6 +531,32 @@ ccm reset my-project      # clears hook signals, event log, and cached state opt
 ```
 
 `ccm reset` does not touch the conversation, snapshots, or the running `claude` process — it only wipes the ephemeral runtime artefacts that detection reads. The next scan re-resolves state from scratch. For ordinary "Claude is hung" situations, `/exit` inside the pane is still the right answer.
+
+### Detection has gone quiet (hook-silence canary)
+
+Claude Code sometimes stops firing hooks partway through a session. ccm's
+precise detection depends on them, so when they stop it falls back to coarser
+signals and states can lag or stick. The cause is upstream, not ccm, but from
+the outside the two look identical.
+
+An opt-in canary reports the difference:
+
+```tmux
+set -g @ccm-hook-silence on
+```
+
+It warns in `ccm status`, `ccm doctor` and the dashboard footer when a
+session's transcript shows recent activity that its hook log never recorded —
+work that happened with the hooks asleep. Off by default: a threshold tuned
+wrong can only mislead someone who asked to watch it.
+
+Thresholds are `CCM_HOOK_SILENCE_FRESH` (how recent the transcript activity
+must be, default 90 s) and `CCM_HOOK_SILENCE_GAP` (how far the hook log must
+lag it, default 120 s). Each firing is also appended to
+`~/.local/share/ccm/state/hook-silence.log`, rate-limited per project, and
+`ccm doctor` reports the count.
+
+Restarting the affected Claude session restores the hooks.
 
 ### Every project frozen at the same state
 
@@ -720,6 +770,10 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_SHELL_CLUSTER_COUNT` | `3` | How many SHELL transitions within the window triggers the silent-exit canary (anthropics/claude-code#48069) |
 | `CCM_SHELL_CLUSTER_WINDOW` | `600` (seconds) | Time window for counting SHELL transitions |
 | `CCM_ERRORS_BURST_THRESHOLD` | `20` | How many `errors.log` records within the burst window triggers the silent-fail-loop canary. A poll-cycle bug (e.g. an exception fired by every `inject_status` refresh) accumulates roughly 30 records/min, so this threshold reliably distinguishes a runaway loop from one-off noise |
+| `CCM_HOOK_SILENCE_FRESH` | `90` (seconds) | Opt-in hook-silence canary: how recent a session's transcript activity must be before a lagging hook log counts as silence |
+| `CCM_HOOK_SILENCE_GAP` | `120` (seconds) | How far the hook log must lag that activity before the canary fires |
+| `CCM_HOOK_SILENCE_LOG_INTERVAL` | `600` (seconds) | Minimum gap between logged firings for one project, so a long episode reads as a few lines rather than hundreds |
+| `CCM_HOOK_SILENCE_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap on the firing log before it rotates |
 | `CCM_ERRORS_BURST_WINDOW` | `300` (seconds) | Time window for counting silent-fail records |
 
 ### Debug tracing
@@ -727,6 +781,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CCM_DEBUG_TRACE` | (unset) | Path to a JSONL trace file. When set, every slow-path detection scan (`inject-status`, dashboard, `ccm status`) appends a record with the full `DetectionContext`, matched rule, and resolved state. See [Detection-behaviour debugging](#detection-behaviour-debugging). Remember to set it via `tmux set-environment -g`, not shell `export`, so the tmux-spawned subprocesses see it |
+| `CCM_SEND_TRACE` | (unset) | When truthy, appends every `tmux send-keys` call `ccm send` makes to `$CCM_TMP_DIR/send-trace.log`, for diagnosing a delivery a recipient says never arrived |
 | `CCM_TRACE_MAX_BYTES` | `104857600` (100 MB) | Size cap for the `CCM_DEBUG_TRACE` log. Once exceeded, a single `{"event":"trace_cap_reached", ...}` sentinel is written and subsequent appends are skipped, so a forgotten trace cannot fill the disk |
 | `CCM_TRACE_ONLY_DIFF` | (unset) | When set to a truthy value, restricts `CCM_DEBUG_TRACE` writes to rows where the legacy and event-log derivations disagree. Lets long-running traces stay small. No effect when `CCM_USE_EVENT_LOG=off` (no event-log state to diff against) |
 | `CCM_USE_EVENT_LOG` | `auto` | `auto` (default) commits the event-log state when [`derive_state_from_events`](../lib/ccm_activity.py) returns a non-`None` answer; otherwise legacy `DETECTION_RULES` (in [`lib/ccm_rules.py`](../lib/ccm_rules.py)) takes over. `off` (or `0` / `no` / `false`) is the diagnostic kill-switch — legacy-only, no event-log read. Anything else resolves to `auto` |
@@ -742,6 +797,8 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `CCM_ATTENTION_WAITING_TTL_SEC` | `3600` (seconds) | How long a sidekick's unanswered attention marker survives before ccm drops it, for the case where the agent exits without resolving it |
+| `CCM_ATTENTION_RESOLVED_GC_SEC` | `300` (seconds) | How long a resolved marker is kept before collection, so a slow consumer still sees it |
 | `CCM_AMBIGUOUS_WIDTH` | `1` | Terminal column count for East Asian Ambiguous characters (e.g. the IDLE icon `●`, SHELL icon `■`). Set to `2` on CJK locale terminals where Ambiguous chars render as 2 columns, so dashboard / `ccm status` columns stay aligned. Read at module load — restart inject-status / dashboard to pick up a change |
 | `CCM_ERRORS_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap for `$TMPDIR/ccm-$UID/errors.log` (the silent-exception log). At the cap, the active log rotates to `errors.log.1` and a fresh log starts (total disk use ~2 × cap). View with `ccm errors`; clear with `ccm errors --clear` |
 | `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10` (seconds) | Drift tolerance for the session_info pid-reuse check. When `read_session_info` is given a `ps` snapshot, it cross-checks Claude Code's recorded `startedAt` against the live process's etime-derived start time; a discrepancy beyond this tolerance means the json file is from a recycled pid's prior session and is rejected (caller falls through to legacy detection). 10 s comfortably covers normal clock drift / NTP corrections / the few-second gap between fork and Claude writing session_info |

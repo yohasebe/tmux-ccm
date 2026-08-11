@@ -301,6 +301,29 @@ Claude Code が処理を完了すると、ccm は:
 
 `~/.tmux.conf` で `set -g @ccm-status-line` を設定します。設定の詳細とスクリーンショットは[READMEのステータスバーセクション](../README.ja.md#ステータスバー)を参照してください。
 
+### 一覧を絞る・配置を変える
+
+モード 1 と 2 が何を表示するか、モード 1 がそれをどこに置くかを変える 2 つの
+オプションがあります。どちらも既定は off で、例つきの説明は
+[README のステータスバー節](../README.ja.md#ステータスバー)にあります。
+
+`@ccm-status-line-hide-shell on` は SHELL のプロジェクトを除き、Claude
+セッションが動いているウィンドウだけを残します。登録プロジェクトが多いと大半は
+常に SHELL で、対応が必要な 1 件が埋もれるためです。IDLE は残ります。セッションは
+生きて入力を待っており、ターンが終わったときに `* elapsed` マーカーが出るのも
+この状態だからです。
+
+注意点として、アイドルセッションは `CCM_IDLE_EXIT_TIMEOUT` 後に自動終了するので、
+放置したプロジェクトはセッション終了とともにバーから消え、アタッチして Claude が
+再起動すると戻ります。ダッシュボードと `ccm status` は常に全プロジェクトを表示
+します。
+
+`@ccm-status-line-position left` はモード 1 のエントリをバーの左側へ移し、最優先を
+先頭にします。ウィンドウリストを消して空いた場所が埋まります。`status-left` には
+一切書き込みません——押し出しに使う余白は `status-right` 内にあります。バーが狭い
+ときは右寄せの配置を維持します。エントリが `status-left` の下に潜り込むと、tmux が
+最優先のものから切り捨てるためです。
+
 ### モード0 — アイコン表示
 
 既存の status-right にアイコン 1 つを追加。時計やバッテリー表示はそのまま保持されます。全プロジェクトのうち最優先の状態を表示：
@@ -508,6 +531,31 @@ ccm reset my-project      # フックシグナル、event log、キャッシュ�
 ```
 
 `ccm reset` は会話履歴・スナップショット・実行中の `claude` プロセスには触りません — 検出が読む ephemeral な runtime artefact だけを wipe します。次のスキャンで一から再解決されます。通常の「Claude が固まった」状況では `/exit` をペイン内で入力するのが筋です。
+
+### 検出が反応しなくなった（hook 沈黙カナリア）
+
+Claude Code はセッションの途中でフックの発火を止めることがあります。ccm の精密な
+検出はフックに依存しているため、止まると粗い信号にフォールバックし、状態の反映が
+遅れたり固まったりします。原因は upstream 側で ccm ではありませんが、外から見ると
+両者は区別がつきません。
+
+opt-in のカナリアがその違いを報告します:
+
+```tmux
+set -g @ccm-hook-silence on
+```
+
+セッションの transcript には最近の活動があるのに、フックのログがそれを記録して
+いない場合——つまりフックが眠っている間に進んだ作業がある場合——に、`ccm status`・
+`ccm doctor`・ダッシュボードのフッターで警告します。既定は off です。閾値の調整を
+誤っても、監視を自分から選んだ人しか誤解しないためです。
+
+閾値は `CCM_HOOK_SILENCE_FRESH`（transcript の活動がどれだけ新しければよいか、
+既定 90 秒）と `CCM_HOOK_SILENCE_GAP`（フックログがどれだけ遅れていれば警告するか、
+既定 120 秒）です。発火のたびに `~/.local/share/ccm/state/hook-silence.log` へ
+1 行記録され（プロジェクトごとにレート制限）、`ccm doctor` が件数を表示します。
+
+該当セッションの Claude を再起動すればフックは復帰します。
 
 ### 全プロジェクトが同じ状態で固まる
 
@@ -721,6 +769,10 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_SHELL_CLUSTER_COUNT` | `3` | silent-exit カナリア (anthropics/claude-code#48069) を発動させる SHELL 遷移回数 |
 | `CCM_SHELL_CLUSTER_WINDOW` | `600`（秒） | SHELL 遷移カウントの時間窓 |
 | `CCM_ERRORS_BURST_THRESHOLD` | `20` | silent-fail-loop カナリアを発動させる `errors.log` 記録数。poll-cycle バグ (`inject_status` の refresh ごとに例外発生など) は約 30 records/min を記録するため、ランナウェイループと単発ノイズを確実に区別できる閾値 |
+| `CCM_HOOK_SILENCE_FRESH` | `90`（秒） | opt-in の hook 沈黙カナリア: セッションの transcript の活動がこれより新しいときに、遅れたフックログを沈黙とみなす |
+| `CCM_HOOK_SILENCE_GAP` | `120`（秒） | フックログがその活動からこれ以上遅れていたらカナリアが発火する |
+| `CCM_HOOK_SILENCE_LOG_INTERVAL` | `600`（秒） | 1 プロジェクトあたりの記録間隔の下限。長い沈黙が数百行でなく数行として読める |
+| `CCM_HOOK_SILENCE_LOG_MAX_BYTES` | `1048576`（1 MB） | 発火ログのローテーション上限 |
 | `CCM_ERRORS_BURST_WINDOW` | `300`（秒） | silent-fail 記録カウントの時間窓 |
 
 ### デバッグトレース
@@ -728,6 +780,7 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | 変数 | デフォルト | 用途 |
 |------|-----------|------|
 | `CCM_DEBUG_TRACE` | (未設定) | JSONL トレースファイルのパス。設定すると slow-path 検出スキャン (`inject-status`、dashboard、`ccm status`) が各スキャンで `DetectionContext` 全体 + マッチルール + 解決された state を 1 行追記する。[状態検出の挙動デバッグ](#状態検出の挙動デバッグ) 参照。tmux 起動後の設定は `tmux set-environment -g CCM_DEBUG_TRACE <path>` で行う（シェルの `export` では tmux サブプロセスに届かない） |
+| `CCM_SEND_TRACE` | (未設定) | 真値のとき、`ccm send` が行う `tmux send-keys` を全て `$CCM_TMP_DIR/send-trace.log` に追記する。「届いていない」と言われた配送の切り分け用 |
 | `CCM_TRACE_MAX_BYTES` | `104857600`（100 MB） | `CCM_DEBUG_TRACE` ログファイルのサイズ上限。超過時は `{"event":"trace_cap_reached", ...}` の sentinel 行を 1 回だけ書いて以降の追記を停止し、解除忘れでディスクを食い尽くすのを防ぐ |
 | `CCM_TRACE_ONLY_DIFF` | (未設定) | truthy 値を設定すると、`CCM_DEBUG_TRACE` の書き込みを「legacy と event-log の判定が食い違った行」のみに絞る。長時間トレースを小さく保てる。`CCM_USE_EVENT_LOG=off` 時は無効（diff 対象がない） |
 | `CCM_USE_EVENT_LOG` | `auto` | `auto`（デフォルト）は [`derive_state_from_events`](../lib/ccm_activity.py) が non-`None` を返したらその結果を採用、それ以外は legacy `DETECTION_RULES`（[`lib/ccm_rules.py`](../lib/ccm_rules.py)）にフォールバック。`off`（または `0` / `no` / `false`）は診断用キルスイッチで legacy 単独動作（event log の読み取りも行わない）。それ以外の値は `auto` に解決される |
@@ -743,6 +796,8 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 
 | 変数 | デフォルト | 用途 |
 |------|-----------|------|
+| `CCM_ATTENTION_WAITING_TTL_SEC` | `3600`（秒） | サイドキックの未応答マーカーを ccm が破棄するまでの時間。エージェントが解決せずに終了した場合に効く |
+| `CCM_ATTENTION_RESOLVED_GC_SEC` | `300`（秒） | 解決済みマーカーを回収するまでの保持時間。読み取りの遅い消費側でも見えるようにする |
 | `CCM_AMBIGUOUS_WIDTH` | `1` | East Asian Ambiguous 文字（IDLE アイコン `●`、SHELL アイコン `■` など）のターミナル列幅。CJK locale ターミナルで Ambiguous 文字が 2 列幅でレンダリングされる場合は `2` に設定すると、ダッシュボード / `ccm status` のカラム整列が崩れない。モジュール読み込み時に評価されるため、変更後は inject-status / dashboard を再起動 |
 | `CCM_ERRORS_LOG_MAX_BYTES` | `1048576`（1 MB） | `$TMPDIR/ccm-$UID/errors.log`（silent-exception ログ）のサイズ上限。上限到達時はアクティブログを `errors.log.1` にローテーションし、新しいログを開始する（ディスク使用量は上限の約 2 倍）。`ccm errors` で表示、`ccm errors --clear` で削除 |
 | `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10`（秒） | session_info の pid 再利用チェックのドリフト許容秒数。`read_session_info` が `ps` snapshot を渡されたとき、Claude Code が記録した `startedAt` と live プロセスの etime 由来の起動時刻を照合する。許容を超える乖離は「pid が再利用された旧セッションの json」と判断して reject（呼び出し側は legacy fallback へ）。10 秒は通常のクロックドリフト・NTP 補正・fork から session_info 書き込みまでの数秒をカバーする値 |

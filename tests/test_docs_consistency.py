@@ -266,3 +266,116 @@ class TestUninstall:
             f"{name}: detaching from Claude Code must precede removing the "
             "plugin from ~/.tmux.conf"
         )
+
+
+# ─── Options and environment variables ───
+
+#: Knobs that exist for ccm's own plumbing rather than for a user to
+#: turn. Each entry says why, because "it is internal" is the excuse
+#: that lets a real knob slip through unnoticed.
+UNDOCUMENTED_KNOBS_OK = {
+    # Runtime signalling between the hooks and the status bar. Written
+    # and cleared by ccm within a poll cycle; setting it by hand does
+    # nothing lasting.
+    "@ccm-permit-pending",
+    # Pins state for screenshots and the demo recorder, bypassing
+    # detection entirely. Documenting it would advertise a way to make
+    # the bar lie.
+    "@ccm-mock-state",
+    "CCM_MOCK_STATE",
+    # Path overrides that exist so tests can redirect ccm's runtime
+    # files. The user-facing directories (CCM_TMP_DIR, CCM_DATA_DIR)
+    # are documented; these are the seams beneath them.
+    "CCM_HOOK_DIR",
+    # Test seam for the Grok sidekick installer, which otherwise writes
+    # into the real ~/.grok.
+    "CCM_GROK_HOME",
+}
+
+
+def _lib_sources():
+    return sorted((REPO / "lib").glob("*.py"))
+
+
+def _implemented_tmux_options():
+    """Every `@ccm-…` global option the code reads."""
+    found = set()
+    for path in _lib_sources():
+        found |= set(re.findall(r"@ccm-[a-z0-9-]+",
+                                path.read_text(encoding="utf-8")))
+    return found
+
+
+def _implemented_env_vars():
+    """Every `CCM_…` variable the code reads from the environment.
+
+    Scoped to `os.environ` reads on purpose: that is what makes a name
+    a knob someone can set. Names that merely appear in a string or a
+    constant are not something a user can turn.
+    """
+    found = set()
+    pattern = re.compile(r"os\.environ(?:\.get)?[\(\[]\"(CCM_[A-Z0-9_]+)\"")
+    for path in _lib_sources():
+        found |= set(pattern.findall(path.read_text(encoding="utf-8")))
+    return found
+
+
+def _documentation_text():
+    return "\n".join(
+        (REPO / name).read_text(encoding="utf-8")
+        for name in ("README.md", "README.ja.md",
+                     "docs/guide.md", "docs/guide.ja.md")
+    )
+
+
+class TestKnobsAreDocumented:
+    """A knob nobody documented is a knob nobody can use.
+
+    Options and environment variables have a single source of truth in
+    the code, so the drift is mechanically checkable — unlike prose.
+    The check exists because features kept landing in the README while
+    the guide, where the tuning tables live, was left behind; one
+    opt-in canary went several releases with no mention anywhere.
+    """
+
+    def test_every_tmux_option_appears_in_the_docs(self):
+        docs = _documentation_text()
+        missing = sorted(
+            opt for opt in _implemented_tmux_options()
+            if opt not in UNDOCUMENTED_KNOBS_OK and opt not in docs
+        )
+        assert not missing, (
+            "tmux options read by the code but absent from README/guide: "
+            f"{missing}. Document them, or add them to "
+            "UNDOCUMENTED_KNOBS_OK with the reason."
+        )
+
+    def test_every_environment_variable_appears_in_the_docs(self):
+        docs = _documentation_text()
+        missing = sorted(
+            var for var in _implemented_env_vars()
+            if var not in UNDOCUMENTED_KNOBS_OK and var not in docs
+        )
+        assert not missing, (
+            "environment variables read by the code but absent from "
+            f"README/guide: {missing}. Document them, or add them to "
+            "UNDOCUMENTED_KNOBS_OK with the reason."
+        )
+
+    def test_the_scan_finds_the_knobs_it_is_meant_to(self):
+        """Positive control. Without it, a scan that silently matched
+        nothing would pass both checks above and report perfect
+        documentation coverage of an empty set."""
+        assert "@ccm-status-line" in _implemented_tmux_options()
+        assert "CCM_IDLE_EXIT_TIMEOUT" in _implemented_env_vars()
+
+    def test_exemptions_are_still_real(self):
+        """An exemption for a knob that no longer exists is stale
+        permission to skip something. Fails when one is removed from
+        the code but left in the list."""
+        known = _implemented_tmux_options() | _implemented_env_vars()
+        stale = sorted(k for k in UNDOCUMENTED_KNOBS_OK if k not in known)
+        assert not stale, (
+            f"UNDOCUMENTED_KNOBS_OK lists knobs the code no longer reads: "
+            f"{stale}"
+        )
