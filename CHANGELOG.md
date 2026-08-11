@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- Setting `CCM_AMBIGUOUS_WIDTH` now also stops the status bar reserving room
+  for a glyph width it no longer has to guess at. At `2` the reservation was
+  charged on top of a column count that already included it; at `1` the
+  layout went on hedging against a case the user had ruled out, leaving
+  around 12 columns of empty space after `status-left` in left placement.
+  Leaving it unset keeps the reservation, since the width is then unknown.
 - Mode 1's left-placed entries no longer sit in the middle of the bar. The
   width budget kept a flat margin from when the parts around it were
   approximate, and once those parts were measured exactly the same slack was

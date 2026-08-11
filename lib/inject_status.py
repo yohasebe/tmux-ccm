@@ -24,7 +24,8 @@ from ccm_core import (
     tmux_cmd,
 )
 from ccm_notify import notify
-from ccm_render import display_width, external_agent_label, signal_age_suffix
+from ccm_render import (AMBIGUOUS_WIDTH_DECLARED, display_width,
+                        external_agent_label, signal_age_suffix)
 from ccm_runtime import (
     auto_exit_idle,
     periodic_autosave,
@@ -340,8 +341,21 @@ def _ambiguous_width_allowance(text):
     puts there.
 
     Returns the count of such characters, i.e. what the text costs if
-    every one of them draws double.
+    every one of them draws double — and nothing at all once
+    `CCM_AMBIGUOUS_WIDTH` has been set, because then the user has told
+    ccm what their terminal does and `display_width` already counts it.
+    Reserving on top of a declared width charges twice: at `2` the
+    glyph is counted two columns and then allowed a third, and at `1`
+    the layout goes on hedging against a case the user has ruled out.
+
+    On a terminal that draws these narrow, the hedge is not free. In
+    left placement the columns nobody used stay on screen as a band of
+    empty space after `status-left` — measured at 12 columns on a real
+    theme. The reservation is right while the width is unknown and
+    wrong the moment it is known.
     """
+    if AMBIGUOUS_WIDTH_DECLARED:
+        return 0
     return sum(
         1 for c in text
         if unicodedata.east_asian_width(c) == "A"

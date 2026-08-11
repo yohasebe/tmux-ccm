@@ -45,16 +45,24 @@ import ccm_signals
 # `wcwidth` package, which the plugin deliberately avoids. Read at
 # module load; restart inject-status / dashboard to pick up a
 # changed value.
-def _resolve_ambiguous_width() -> int:
-    raw = os.environ.get("CCM_AMBIGUOUS_WIDTH", "1")
+#
+# Setting it is also a statement that the user knows what their
+# terminal does, which is worth more than the value alone: layouts
+# that would otherwise reserve room for the case they cannot rule
+# out can stop reserving it. So "1" and "unset" mean different
+# things here even though they count the same — hence the flag.
+def _resolve_ambiguous_width() -> tuple[int, bool]:
+    raw = os.environ.get("CCM_AMBIGUOUS_WIDTH", "")
     try:
         v = int(raw)
     except ValueError:
-        return 1
-    return 2 if v == 2 else 1
+        return 1, False
+    if v in (1, 2):
+        return v, True
+    return 1, False
 
 
-_AMBIGUOUS_WIDTH = _resolve_ambiguous_width()
+_AMBIGUOUS_WIDTH, AMBIGUOUS_WIDTH_DECLARED = _resolve_ambiguous_width()
 
 
 def _char_width(c: str) -> int:

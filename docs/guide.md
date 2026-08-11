@@ -799,7 +799,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 |----------|---------|---------|
 | `CCM_ATTENTION_WAITING_TTL_SEC` | `3600` (seconds) | How long a sidekick's unanswered attention marker survives before ccm drops it, for the case where the agent exits without resolving it |
 | `CCM_ATTENTION_RESOLVED_GC_SEC` | `300` (seconds) | How long a resolved marker is kept before collection, so a slow consumer still sees it |
-| `CCM_AMBIGUOUS_WIDTH` | `1` | Terminal column count for East Asian Ambiguous characters (e.g. the IDLE icon `●`, SHELL icon `■`). Set to `2` on CJK locale terminals where Ambiguous chars render as 2 columns, so dashboard / `ccm status` columns stay aligned. Read at module load — restart inject-status / dashboard to pick up a change |
+| `CCM_AMBIGUOUS_WIDTH` | `1` | Terminal column count for East Asian Ambiguous characters (e.g. the IDLE icon `●`, SHELL icon `■`). Set to `2` on CJK locale terminals where Ambiguous chars render as 2 columns, so dashboard / `ccm status` columns stay aligned. **Setting it also tells the status bar to stop reserving room for the case it cannot rule out** — see [Ambiguous glyph width](#ambiguous-glyph-width). Read at module load — restart inject-status / dashboard to pick up a change |
 | `CCM_ERRORS_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap for `$TMPDIR/ccm-$UID/errors.log` (the silent-exception log). At the cap, the active log rotates to `errors.log.1` and a fresh log starts (total disk use ~2 × cap). View with `ccm errors`; clear with `ccm errors --clear` |
 | `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10` (seconds) | Drift tolerance for the session_info pid-reuse check. When `read_session_info` is given a `ps` snapshot, it cross-checks Claude Code's recorded `startedAt` against the live process's etime-derived start time; a discrepancy beyond this tolerance means the json file is from a recycled pid's prior session and is rejected (caller falls through to legacy detection). 10 s comfortably covers normal clock drift / NTP corrections / the few-second gap between fork and Claude writing session_info |
 | `CCM_STATUS_INTERVAL` | `5` (seconds) | Target tmux `status-interval` — how often the status bar re-renders. On plugin load, ccm lowers `status-interval` to this value if your current setting is higher (it never raises it). Set via `tmux set-environment -g` before the plugin loads, not shell `export` — see [Status refresh interval](#status-refresh-interval) |
@@ -852,6 +852,27 @@ tmux set-environment -g CCM_STATUS_INTERVAL 10   # poll every 10 seconds instead
 ```
 
 Lower values increase CPU usage slightly.
+
+### Ambiguous glyph width
+
+Box drawing characters, geometric shapes, and every Nerd Font icon draw one column or two depending on the terminal and its font. Unicode calls them "Ambiguous" and does not say which; private use characters cannot say at all, since the codepoint carries no width and only the font knows.
+
+Not knowing is expensive in mode 1's left placement. tmux positions `status-right` counting these as one column, so if the terminal draws them as two, `status-left` runs past where tmux placed it and paints over the first entry — the highest-priority one, which is exactly what left placement exists to show. So by default ccm reserves room for the worse case.
+
+On a terminal that draws them narrow, that reservation is never used, and in left placement the unused columns stay on screen as empty space after `status-left` — around 12 columns with a theme that uses such glyphs freely.
+
+If you know what your terminal does, say so and the reservation stops:
+
+```bash
+tmux set-environment -g CCM_AMBIGUOUS_WIDTH 1   # drawn narrow (most non-CJK terminals)
+tmux set-environment -g CCM_AMBIGUOUS_WIDTH 2   # drawn wide (CJK locale terminals)
+```
+
+Use `tmux set-environment -g`, not a shell `export`: the status bar runs from tmux's `#()`, which sees tmux's environment rather than your interactive shell's. Restart the status bar (or your tmux server) to pick up the change.
+
+Setting `1` is not the same as leaving it unset even though both count a glyph as one column. Unset means "unknown", and ccm hedges; `1` means "narrow", and it stops.
+
+To find out which your terminal does, put a box drawing character next to a plain one and see whether the columns line up — or simply set `1`, and if the first entry loses a character, set `2` instead.
 
 ### Debugging
 

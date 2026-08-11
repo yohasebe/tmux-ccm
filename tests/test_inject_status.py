@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import inject_status
 import ccm_core
+import ccm_render
 import ccm_signals
 
 
@@ -924,3 +925,64 @@ class TestAmbiguousWidthAllowance:
         monkeypatch.setattr(inject_status, "tmux_cmd",
                             lambda *a, **kw: " host ")
         assert inject_status.status_left_width() == 6
+
+
+class TestDeclaredAmbiguousWidth:
+    """`CCM_AMBIGUOUS_WIDTH` is a statement about the terminal, and
+    once it is made there is nothing left to hedge against.
+
+    Reserving on top of a declared width charges twice. At `2` the
+    glyph is counted two columns by `display_width` and then allowed a
+    third. At `1` the layout keeps hedging against a case the user has
+    ruled out, and in left placement that hedge is visible: 12 columns
+    of empty space after `status-left` on a real theme.
+    """
+
+    def test_unset_is_not_a_declaration(self, monkeypatch):
+        monkeypatch.delenv("CCM_AMBIGUOUS_WIDTH", raising=False)
+        assert ccm_render._resolve_ambiguous_width() == (1, False)
+
+    def test_one_counts_the_same_as_unset_but_is_a_declaration(
+            self, monkeypatch):
+        """The whole point of the flag: `1` and unset produce the same
+        column count and must not produce the same reservation."""
+        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", "1")
+        assert ccm_render._resolve_ambiguous_width() == (1, True)
+
+    def test_two_is_a_declaration(self, monkeypatch):
+        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", "2")
+        assert ccm_render._resolve_ambiguous_width() == (2, True)
+
+    @pytest.mark.parametrize("raw", ["5", "0", "banana", ""])
+    def test_a_value_that_says_nothing_is_not_a_declaration(
+            self, monkeypatch, raw):
+        """An unusable value must fall back to hedging, not to trusting
+        a number nobody meant."""
+        monkeypatch.setenv("CCM_AMBIGUOUS_WIDTH", raw)
+        assert ccm_render._resolve_ambiguous_width() == (1, False)
+
+    def test_a_declaration_stops_the_reservation(self, monkeypatch):
+        monkeypatch.setattr(inject_status, "AMBIGUOUS_WIDTH_DECLARED", True)
+        assert inject_status._ambiguous_width_allowance("│●") == 0
+
+    def test_a_declared_width_is_not_charged_twice(self, monkeypatch):
+        """`_worst_case_width` is what layouts reserve. Once the width
+        is declared it must be exactly what the text measures."""
+        monkeypatch.setattr(inject_status, "AMBIGUOUS_WIDTH_DECLARED", True)
+        text = " │ host ● "
+        assert (inject_status._worst_case_width(text)
+                == inject_status.display_width(text))
+
+    def test_declaring_the_width_closes_the_gap(self, monkeypatch):
+        """End to end: on a terminal whose width is known to be narrow,
+        the only space left after `status-left` is the intended gap."""
+        monkeypatch.setattr(inject_status, "AMBIGUOUS_WIDTH_DECLARED", True)
+        helper = TestMode1WidthBudget()
+        left = f" {helper.BOX} host {helper.ICON} "
+        right = helper._render(monkeypatch, n_projects=5, term_width=120,
+                               status_left=left)
+        gap = (120 - helper._drawn_width(right, 1)
+               - helper._left_width(left, 1))
+        assert gap == inject_status.LEFT_PLACEMENT_GAP, (
+            f"{gap} columns after status-left although the terminal's "
+            f"width was declared; the layout is still hedging")
