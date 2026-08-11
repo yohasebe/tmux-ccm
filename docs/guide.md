@@ -518,26 +518,6 @@ ccm errors
 
 Each line is a previously-swallowed exception with timestamp, scope, and traceback. An empty log (`No silent-caught errors logged.`) means the cycle is healthy. If entries keep accumulating, the most recent traceback identifies the failing call site. `ccm errors --clear` removes both the active log and the rotated `errors.log.1`.
 
-### Panes came back in a different order
-
-After the machine sleeps, or a client detaches and reattaches, the panes inside a window sometimes come back swapped — the pane you keep on the left is suddenly on the right. ccm keeps working through it: panes are addressed by id and Claude is found by walking the process tree, so neither detection nor `ccm send` depends on position. What changes is the arrangement you built.
-
-ccm records these reorders so you can see whether it is happening and how often:
-
-```bash
-ccm doctor          # "pane reorders  N in last 24h"
-```
-
-Each event is one line in `~/.local/share/ccm/state/pane-order.log` with the before and after pane order, rate-limited to one record per project per minute.
-
-ccm does not put the panes back. A reorder and a deliberate rearrangement look identical from the outside, so restoring automatically would mean overruling you on the occasions you moved a pane yourself. Panes opening or closing — including the fresh pane ids a restarted tmux server mints — are not recorded as reorders; only the same panes in a different sequence.
-
-To fix the arrangement, swap them back yourself:
-
-```bash
-tmux swap-pane -s %40 -t %1 -d
-```
-
 ## Using with Agent Teams
 
 ccm works alongside Claude Code's [Agent Teams](https://code.claude.com/docs/en/agent-teams). The two operate at different levels and complement each other:

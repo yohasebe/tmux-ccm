@@ -903,14 +903,6 @@ def cmd_doctor():
         row(OK, "cluster-SHELL transitions",
             f"none in last {ccm_canaries.SHELL_CLUSTER_WINDOW // 60} min")
 
-    # Pane reorders are recorded, never corrected — see the observer's
-    # note in ccm_canaries. Reported as OK either way: a window whose
-    # panes moved still works, so this is evidence for the user to
-    # judge, not a fault to fix.
-    reorders = ccm_canaries.pane_reorder_count()
-    row(OK, "pane reorders",
-        f"{reorders} in last 24h" if reorders else "none in last 24h")
-
     # Hook-silence canary is opt-in (observe-first). Report its state
     # so `ccm doctor` explains why it is or isn't watching, then list
     # any live suspects (empty unless opted in).
