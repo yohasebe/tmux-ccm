@@ -299,9 +299,9 @@ def status_line_position():
             else "right")
 
 
-def rendered_width(spec):
-    """Width of a tmux status spec as it will actually be drawn, or -1
-    when it cannot be measured.
+def reserved_width(spec):
+    """Columns to reserve for a tmux status spec, or -1 when it cannot
+    be measured.
 
     Measured, not counted from the source text. A status spec is a
     template, and the parts that vary are exactly the parts that are
@@ -314,6 +314,11 @@ def rendered_width(spec):
     render time. Style codes are stripped afterwards because they
     occupy no columns, and the result is measured in terminal columns
     rather than characters so a CJK or double-width glyph counts twice.
+
+    What comes back is the worst case rather than the measurement, for
+    the reason given on `_worst_case_width`. Both segments the layout
+    has to fit around are reserved the same way: an allowance on one
+    and not the other is how a budget silently goes short.
     """
     try:
         expanded = tmux_cmd("display-message", "-p", spec)
@@ -321,7 +326,7 @@ def rendered_width(spec):
         return -1
     if not expanded:
         return 0
-    return display_width(re.sub(r"#\[[^\]]*\]", "", expanded))
+    return _worst_case_width(expanded)
 
 
 def _ambiguous_width_allowance(text):
@@ -343,42 +348,64 @@ def _ambiguous_width_allowance(text):
     )
 
 
-def status_left_width():
-    """Width to reserve for `status-left`, or -1 when unmeasurable.
+# The plain text of mode 1's list structure. The width budget is
+# measured from these strings and the list is drawn from them, so the
+# accounting cannot drift away from the rendering. The bar is a box
+# drawing character, which is ambiguous-width like the state icons —
+# reserving its plain width alone left the block a column short per
+# separator.
+ENTRY_LEAD = " "          # before the first entry
+ENTRY_SEPARATOR = " │ "   # between entries
+LIST_END = " │"           # closes the list, before the preserved content
 
-    Deliberately the worst case, not the measurement. tmux positions
-    `status-right` using its own width accounting, and if the terminal
-    draws `status-left` wider than that, the left segment paints over
-    where `status-right` starts. Left placement puts the
-    highest-priority entry exactly there.
+# Columns left between `status-left` and the entries in left placement.
+# With the rest of the budget measured rather than guessed, this is the
+# whole of the visible gap on a terminal that draws ambiguous glyphs
+# wide. One that draws them narrow leaves the unspent reservations here
+# as well, which shows as more space rather than as a clipped entry.
+LEFT_PLACEMENT_GAP = 2
+
+
+def _worst_case_width(text):
+    """Columns `text` may occupy: what it measures, plus what its
+    ambiguous-width glyphs may take beyond that.
+
+    Deliberately the worst case. tmux positions `status-right` using
+    its own width accounting, in which an ambiguous glyph is one
+    column; if the terminal draws it as two, the segments grow past
+    where tmux placed them and overlap. Left placement puts the
+    highest-priority entry exactly at that seam.
 
     The two errors are not symmetric. Reserving too much moves the
     entries a few columns right, which nobody notices. Reserving too
     little takes characters off the entry the placement exists to
-    protect. So an ambiguous-width glyph is charged two columns here
-    even though it usually draws one.
+    protect.
+    """
+    plain = re.sub(r"#\[[^\]]*\]", "", text)
+    return display_width(plain) + _ambiguous_width_allowance(plain)
+
+
+def status_left_width():
+    """Columns to reserve for `status-left`, or -1 when unmeasurable.
 
     -1 means "unknown" and the caller falls back to right placement
     rather than guessing.
     """
-    expanded = tmux_cmd("display-message", "-p", "#{T:status-left}")
-    if not expanded:
-        return 0
-    plain = re.sub(r"#\[[^\]]*\]", "", expanded)
-    return display_width(plain) + _ambiguous_width_allowance(plain)
+    return reserved_width("#{T:status-left}")
 
 
 def original_status_right_width(original):
-    """Rendered width of the status-right ccm was asked to preserve.
+    """Columns to reserve for the status-right ccm was asked to
+    preserve.
 
     Falls back to counting the template when the option cannot be
     expanded, which is the old behaviour: short by however much the
     variable parts expand, but better than refusing to render.
     """
-    measured = rendered_width("#{T:@ccm-orig-status-right}")
+    measured = reserved_width("#{T:@ccm-orig-status-right}")
     if measured >= 0:
         return measured
-    return display_width(strip_tmux_formats(original))
+    return _worst_case_width(strip_tmux_formats(original))
 
 
 def apply_shell_filter(projects):
@@ -618,7 +645,18 @@ def _inject_status_impl(force_fast=False):
             except ValueError:
                 pass
             orig_visible = original_status_right_width(original)
-            avail = term_width - orig_visible - 10  # margin for separators + refresh
+            # What the block spends outside the entries, measured from
+            # the very strings it will draw rather than guessed at: the
+            # separator that closes the list, and the content being
+            # preserved. The refresh suffix is a `#()` whose command
+            # prints nothing, so it draws no columns.
+            #
+            # This was a flat 10 while the parts around it were
+            # approximate. Now that both segments are reserved for
+            # their worst case, the same slack is being kept twice, and
+            # it shows: on a wide bar the entries were pushed 20
+            # columns clear of `status-left`.
+            avail = term_width - orig_visible - _worst_case_width(LIST_END)
 
             # Select entries by priority (highest first) until width is exhausted,
             # then reverse so high-priority items appear on the right (visible in right-aligned status-right)
@@ -630,13 +668,20 @@ def _inject_status_impl(force_fast=False):
                 # counts one, overestimating the remaining budget and
                 # overflowing the line (project names may legally be
                 # CJK — validate_name only strips shell metacharacters).
-                # +3 covers the separator and its spaces. The
-                # allowance covers the state icon and any other
+                # What placing this entry costs beyond the entry
+                # itself: a leading space for the first, ` │ ` for
+                # every one after it. Charging 3 to all of them
+                # reserved two columns nobody drew — and charging the
+                # separator its plain width reserved one column too
+                # few, because that bar is an ambiguous-width glyph
+                # like the icons inside the entries.
+                #
+                # The allowance covers the state icon and any other
                 # ambiguous-width glyph in the entry, which may draw
-                # double — same asymmetry as status-left: a few
-                # columns of slack costs nothing, a shortfall clips
-                # the entry this ordering exists to protect.
-                entry_width = (display_width(stripped) + 3
+                # double — same asymmetry as `_worst_case_width`.
+                lead = ENTRY_SEPARATOR if selected else ENTRY_LEAD
+                entry_width = (display_width(stripped)
+                               + _worst_case_width(lead)
                                + _ambiguous_width_allowance(stripped))
                 if selected and (avail - entry_width) < 0:
                     break
@@ -670,9 +715,9 @@ def _inject_status_impl(force_fast=False):
                 if left_w >= 0:
                     # `avail` is what the width budget has left over.
                     # Spending it as padding is what moves the block;
-                    # `left_w` and a small margin stay unspent so the
-                    # entries stop clear of the left segment.
-                    pad = avail - left_w - 2
+                    # `left_w` stays unspent, and so does the gap that
+                    # keeps the entries clear of the left segment.
+                    pad = avail - left_w - LEFT_PLACEMENT_GAP
 
             if pad <= 0:
                 # Right placement, or left asked for but it does not
@@ -680,16 +725,20 @@ def _inject_status_impl(force_fast=False):
                 # important entry.
                 selected.reverse()
 
+            # Drawn from the same strings the budget was measured
+            # from, with the separator's colour wrapped around its bar.
+            def _styled(sep):
+                return sep.replace("│", "#[fg=#666666]│#[fg=#9E9E9E]")
+
             detail = ""
             for i, entry in enumerate(selected):
-                if i > 0:
-                    detail += " #[fg=#666666]│#[fg=#9E9E9E]"
-                detail += f" {entry}"
+                detail += _styled(ENTRY_SEPARATOR if i else ENTRY_LEAD)
+                detail += entry
 
             gap = " " * pad if pad > 0 else ""
             new_status = (
-                f"#[fg=#9E9E9E,bg=#3a3a3a]{detail} "
-                f"#[fg=#666666]│#[default]{gap}{original}{refresh}"
+                f"#[fg=#9E9E9E,bg=#3a3a3a]{detail}"
+                f"{_styled(LIST_END)}#[default]{gap}{original}{refresh}"
             )
 
         if new_status != prev_status:

@@ -1,6 +1,7 @@
 """Tests for inject_status.py — pure helpers that do not need a tmux server."""
 
 import os
+import re
 import sys
 
 import pytest
@@ -667,7 +668,7 @@ class TestStatusLinePosition:
         assert inject_status.status_left_width() == 0
 
 
-class TestRenderedWidth:
+class TestReservedWidth:
     """Status specs are templates. What matters is how wide they draw,
     and the parts that vary are exactly the parts that are wide: `%T`
     is two characters that draw as eight, `%F` two that draw as ten,
@@ -687,19 +688,19 @@ class TestRenderedWidth:
 
     def test_measures_the_expansion_not_the_template(self, monkeypatch):
         self._expansion(monkeypatch, "21:55:39")
-        assert inject_status.rendered_width("#{T:status-right}") == 8
+        assert inject_status.reserved_width("#{T:status-right}") == 8
 
     def test_style_codes_occupy_no_columns(self, monkeypatch):
         self._expansion(monkeypatch, "#[fg=red]ab#[default]cd")
-        assert inject_status.rendered_width("#{T:status-right}") == 4
+        assert inject_status.reserved_width("#{T:status-right}") == 4
 
     def test_wide_glyphs_count_as_two_columns(self, monkeypatch):
         self._expansion(monkeypatch, "日本")
-        assert inject_status.rendered_width("#{T:status-right}") == 4
+        assert inject_status.reserved_width("#{T:status-right}") == 4
 
     def test_empty_spec_is_zero(self, monkeypatch):
         self._expansion(monkeypatch, "")
-        assert inject_status.rendered_width("#{T:status-right}") == 0
+        assert inject_status.reserved_width("#{T:status-right}") == 0
 
     def test_original_width_prefers_the_measurement(self, monkeypatch):
         """A template of 4 characters that expands to 12 columns must
@@ -714,6 +715,173 @@ class TestRenderedWidth:
             raise RuntimeError("tmux unavailable")
         monkeypatch.setattr(inject_status, "tmux_cmd", fake)
         assert inject_status.original_status_right_width("#[fg=red]abc") == 3
+
+
+class TestMode1WidthBudget:
+    """What mode 1 writes has to end up the width of the bar.
+
+    The pieces were each checked on their own while the total was
+    never asserted, and the total is what the user sees. It went wrong
+    in both directions: short by 2 and the first entry was clipped,
+    long by 20 and a band of empty space opened after `status-left`.
+
+    So these tests measure the rendered result against the terminal
+    width, not the arithmetic against itself.
+    """
+
+    ICON = "●"     # ● — Ambiguous, the state icon on every entry
+    BOX = "│"      # │ — Ambiguous, common in themes
+
+    def _render(self, monkeypatch, n_projects=4, term_width=120,
+                status_left=" host ", orig_right=" 21:55:39 ",
+                position="left"):
+        """Drive the mode-1 layout and return the `status-right` it
+        wrote, or None if it wrote none."""
+        written = []
+        projects = [
+            make_project(f"0:{i}", str(i), f"proj-{i:02d}", "IDLE")
+            for i in range(1, n_projects + 1)
+        ]
+
+        def fake_tmux_cmd(*args, **kwargs):
+            if args[:2] == ("display-message", "-p"):
+                spec = args[2] if len(args) > 2 else ""
+                if "#{client_width}" in spec:
+                    return str(term_width)
+                if "status-left" in spec:
+                    return status_left
+                if "orig-status-right" in spec:
+                    return orig_right
+                return "0:1"
+            if args[0] in ("show-option", "show"):
+                if "@ccm-status-line" in args:
+                    return "1"
+                if "@ccm-status-line-position" in args:
+                    return position
+                if "@ccm-orig-status-right" in args:
+                    return orig_right
+                return ""
+            if args[:3] == ("set", "-g", "status-right"):
+                written.append(args[3])
+            return ""
+
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake_tmux_cmd)
+        monkeypatch.setattr(inject_status, "tmux_batch", lambda *cmds: None)
+        monkeypatch.setattr(inject_status, "build_project_list",
+                            lambda fast=False: projects)
+        monkeypatch.setattr(inject_status, "scan_active_windows",
+                            lambda p, include_all=False: p)
+        monkeypatch.setattr(inject_status, "detect_external_status_change",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "sanitize_orig_status",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "periodic_autosave", lambda: None)
+        monkeypatch.setattr(inject_status, "auto_exit_idle", lambda p: None)
+        monkeypatch.setattr(inject_status, "update_window_names",
+                            lambda p: None)
+        monkeypatch.setattr(inject_status, "notify", lambda *a, **k: None)
+        monkeypatch.setattr(inject_status, "signal_age_suffix",
+                            lambda d, s, session_id=None: "")
+        monkeypatch.setattr(inject_status, "_write_cache",
+                            lambda *a, **k: None)
+        monkeypatch.setattr(inject_status, "_extend_status_right_length",
+                            lambda *a, **k: None)
+        monkeypatch.setattr(
+            inject_status, "read_project_notify_marker", lambda d: 0.0,
+            raising=False)
+        inject_status._inject_status_impl(force_fast=True)
+        return written[-1] if written else None
+
+    def _drawn_width(self, status_right, ambiguous=1):
+        """Columns the written status-right occupies on screen.
+
+        `ambiguous` is what the terminal makes of an ambiguous-width
+        glyph — the thing nobody can know in advance, so both answers
+        are checked.
+        """
+        text = re.sub(r"#\([^)]*\)", "", status_right)   # #() prints nothing
+        text = re.sub(r"#\[[^\]]*\]", "", text)
+        extra = 0
+        if ambiguous == 2:
+            extra = inject_status._ambiguous_width_allowance(text)
+        return inject_status.display_width(text) + extra
+
+    def _left_width(self, status_left, ambiguous=1):
+        extra = 0
+        if ambiguous == 2:
+            extra = inject_status._ambiguous_width_allowance(status_left)
+        return inject_status.display_width(status_left) + extra
+
+    @pytest.mark.parametrize("ambiguous", [1, 2])
+    def test_the_bar_is_never_overdrawn(self, monkeypatch, ambiguous):
+        """status-right is right-aligned, so anything wider than the
+        space left over by status-left gets clipped — and in left
+        placement tmux clips the highest-priority entry."""
+        left = f" {self.BOX} host {self.ICON} "
+        right = self._render(monkeypatch, n_projects=5, term_width=120,
+                             status_left=left)
+        assert right is not None
+        total = (self._drawn_width(right, ambiguous)
+                 + self._left_width(left, ambiguous))
+        assert total <= 120, (
+            f"the bar draws {total} columns of 120 with ambiguous "
+            f"glyphs at {ambiguous} — status-left overlaps the entries")
+
+    def test_the_gap_after_status_left_stays_small(self, monkeypatch):
+        """The reason to reserve the worst case is to avoid a clipped
+        entry, not to push the entries into the middle of the bar. On
+        a terminal that draws ambiguous glyphs wide — the case the
+        reservation is for — what is left over is the intended gap."""
+        left = f" {self.BOX} host {self.ICON} "
+        right = self._render(monkeypatch, n_projects=5, term_width=120,
+                             status_left=left)
+        gap = 120 - self._drawn_width(right, 2) - self._left_width(left, 2)
+        assert gap == inject_status.LEFT_PLACEMENT_GAP, (
+            f"{gap} columns of empty space after status-left, not the "
+            f"{inject_status.LEFT_PLACEMENT_GAP} intended; something in "
+            f"the budget is reserved twice or not at all")
+
+    def test_entries_are_not_charged_for_a_separator_they_do_not_get(
+            self, monkeypatch):
+        """The first entry is drawn as ` entry`, the rest as ` │ entry`.
+        Charging every entry for the separator loses two columns."""
+        one = self._render(monkeypatch, n_projects=1, term_width=120,
+                           position="right")
+        assert one is not None
+        text = re.sub(r"#\[[^\]]*\]", "",
+                      re.sub(r"#\([^)]*\)", "", one))
+        assert text.startswith(inject_status.ENTRY_LEAD + "proj-01"), text
+
+    def test_the_list_is_drawn_from_the_strings_it_was_budgeted_from(
+            self, monkeypatch):
+        """The budget measures `ENTRY_SEPARATOR` and `LIST_END`; if the
+        rendering stopped using them the numbers would go on adding up
+        while the bar drew something else."""
+        two = self._render(monkeypatch, n_projects=2, term_width=120,
+                           position="right")
+        text = re.sub(r"#\[[^\]]*\]", "",
+                      re.sub(r"#\([^)]*\)", "", two))
+        assert text.startswith(inject_status.ENTRY_LEAD), text
+        assert inject_status.ENTRY_SEPARATOR in text, text
+        assert inject_status.LIST_END in text, text
+        # One bar between the two entries, one closing the list. Each
+        # is charged for in the budget, so an extra one drawn here
+        # would be a column nobody reserved.
+        assert text.count("│") == 2, text
+
+    def test_a_narrow_bar_still_places_entries_on_the_right(
+            self, monkeypatch):
+        """When the padding cannot be afforded, left placement is
+        abandoned rather than guessed at — the entries go back to the
+        clock end, where a miscalculation costs the least important
+        one."""
+        right = self._render(monkeypatch, n_projects=6, term_width=40,
+                             status_left=" a very wide status left here ")
+        assert right is not None
+        text = re.sub(r"#\[[^\]]*\]", "",
+                      re.sub(r"#\([^)]*\)", "", right))
+        assert "  " not in text.strip(), (
+            "padding was inserted although there was no room for it")
 
 
 class TestAmbiguousWidthAllowance:

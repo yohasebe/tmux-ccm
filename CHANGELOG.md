@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- Mode 1's left-placed entries no longer sit in the middle of the bar. The
+  width budget kept a flat margin from when the parts around it were
+  approximate, and once those parts were measured exactly the same slack was
+  being reserved twice — up to 20 columns of empty space after `status-left`.
+  Every part of the budget is now measured from the strings it draws.
 - The status bar reserves room for glyphs whose width the terminal decides —
   box drawing, geometric shapes, and Nerd Font icons all draw one column or
   two, and Unicode does not say which. A theme using them could paint over
