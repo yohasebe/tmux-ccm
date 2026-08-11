@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 
 # Add lib dir to path for ccm_core import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -323,14 +324,48 @@ def rendered_width(spec):
     return display_width(re.sub(r"#\[[^\]]*\]", "", expanded))
 
 
+def _ambiguous_width_allowance(text):
+    """Extra columns `text` may occupy beyond what it measures.
+
+    East Asian Width "Ambiguous" characters — box drawing, geometric
+    shapes, and every Nerd Font glyph in the private use area — draw
+    one column or two depending on the terminal and its font, and
+    Unicode does not say which. Private use characters cannot say at
+    all: the codepoint carries no width, only whatever glyph the font
+    puts there.
+
+    Returns the count of such characters, i.e. what the text costs if
+    every one of them draws double.
+    """
+    return sum(
+        1 for c in text
+        if unicodedata.east_asian_width(c) == "A"
+    )
+
+
 def status_left_width():
-    """Rendered width of `status-left`, or -1 when unmeasurable.
+    """Width to reserve for `status-left`, or -1 when unmeasurable.
+
+    Deliberately the worst case, not the measurement. tmux positions
+    `status-right` using its own width accounting, and if the terminal
+    draws `status-left` wider than that, the left segment paints over
+    where `status-right` starts. Left placement puts the
+    highest-priority entry exactly there.
+
+    The two errors are not symmetric. Reserving too much moves the
+    entries a few columns right, which nobody notices. Reserving too
+    little takes characters off the entry the placement exists to
+    protect. So an ambiguous-width glyph is charged two columns here
+    even though it usually draws one.
 
     -1 means "unknown" and the caller falls back to right placement
-    rather than guessing a padding that could push entries under the
-    left segment.
+    rather than guessing.
     """
-    return rendered_width("#{T:status-left}")
+    expanded = tmux_cmd("display-message", "-p", "#{T:status-left}")
+    if not expanded:
+        return 0
+    plain = re.sub(r"#\[[^\]]*\]", "", expanded)
+    return display_width(plain) + _ambiguous_width_allowance(plain)
 
 
 def original_status_right_width(original):
@@ -595,7 +630,14 @@ def _inject_status_impl(force_fast=False):
                 # counts one, overestimating the remaining budget and
                 # overflowing the line (project names may legally be
                 # CJK — validate_name only strips shell metacharacters).
-                entry_width = display_width(stripped) + 3  # separator + spaces
+                # +3 covers the separator and its spaces. The
+                # allowance covers the state icon and any other
+                # ambiguous-width glyph in the entry, which may draw
+                # double — same asymmetry as status-left: a few
+                # columns of slack costs nothing, a shortfall clips
+                # the entry this ordering exists to protect.
+                entry_width = (display_width(stripped) + 3
+                               + _ambiguous_width_allowance(stripped))
                 if selected and (avail - entry_width) < 0:
                     break
                 selected.append(entry)

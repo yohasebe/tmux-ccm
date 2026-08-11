@@ -714,3 +714,45 @@ class TestRenderedWidth:
             raise RuntimeError("tmux unavailable")
         monkeypatch.setattr(inject_status, "tmux_cmd", fake)
         assert inject_status.original_status_right_width("#[fg=red]abc") == 3
+
+
+class TestAmbiguousWidthAllowance:
+    """East Asian Width "Ambiguous" glyphs draw one column or two
+    depending on the terminal and its font, and Unicode does not say
+    which. Every Nerd Font glyph lives in the private use area, where
+    the codepoint carries no width at all.
+
+    The layout cannot know, so it reserves for the worse case. The two
+    errors are not symmetric: a few reserved columns move the entries
+    right, which nobody notices, while a shortfall lets the left
+    segment paint over the highest-priority entry — the one left
+    placement exists to protect.
+    """
+
+    def test_ascii_needs_no_allowance(self):
+        assert inject_status._ambiguous_width_allowance("plain text") == 0
+
+    def test_box_drawing_and_shapes_are_charged(self):
+        # │ U+2502 and ● U+25CF are both Ambiguous.
+        assert inject_status._ambiguous_width_allowance("│●") == 2
+
+    def test_private_use_glyphs_are_charged(self):
+        """Nerd Font icons. Unicode reports these as Ambiguous, and the
+        actual width is whatever the font decided."""
+        assert inject_status._ambiguous_width_allowance("") == 2
+
+    def test_wide_characters_are_not_double_charged(self):
+        """CJK is unambiguously two columns; `display_width` already
+        counts it correctly, so adding an allowance would reserve four."""
+        assert inject_status._ambiguous_width_allowance("日本") == 0
+
+    def test_status_left_reserves_more_than_it_measures(self, monkeypatch):
+        monkeypatch.setattr(inject_status, "tmux_cmd",
+                            lambda *a, **kw: " │ host │ ")
+        # 10 columns measured, 2 ambiguous glyphs → 12 reserved.
+        assert inject_status.status_left_width() == 12
+
+    def test_status_left_of_plain_text_is_just_its_width(self, monkeypatch):
+        monkeypatch.setattr(inject_status, "tmux_cmd",
+                            lambda *a, **kw: " host ")
+        assert inject_status.status_left_width() == 6

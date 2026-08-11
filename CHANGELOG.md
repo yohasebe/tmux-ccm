@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The status bar reserves room for glyphs whose width the terminal decides —
+  box drawing, geometric shapes, and Nerd Font icons all draw one column or
+  two, and Unicode does not say which. A theme using them could paint over
+  the first entry of the left-placed list.
 - The status bar measures the status-right it preserves as it renders, not as
   it is written. A theme's `%T` and `%F` are four characters that draw as
   eighteen, and counting the template left mode 1's layout short enough to
