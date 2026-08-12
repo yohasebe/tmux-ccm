@@ -735,7 +735,7 @@ class TestMode1WidthBudget:
 
     def _render(self, monkeypatch, n_projects=4, term_width=120,
                 status_left=" host ", orig_right=" 21:55:39 ",
-                position="left"):
+                position="left", length_calls=None):
         """Drive the mode-1 layout and return the `status-right` it
         wrote, or None if it wrote none."""
         written = []
@@ -785,8 +785,10 @@ class TestMode1WidthBudget:
                             lambda d, s, session_id=None: "")
         monkeypatch.setattr(inject_status, "_write_cache",
                             lambda *a, **k: None)
-        monkeypatch.setattr(inject_status, "_extend_status_right_length",
-                            lambda *a, **k: None)
+        monkeypatch.setattr(
+            inject_status, "_extend_status_right_length",
+            lambda *a, **k: None if length_calls is None
+            else length_calls.append(k))
         monkeypatch.setattr(
             inject_status, "read_project_notify_marker", lambda d: 0.0,
             raising=False)
@@ -827,6 +829,22 @@ class TestMode1WidthBudget:
         assert total <= 120, (
             f"the bar draws {total} columns of 120 with ambiguous "
             f"glyphs at {ambiguous} — status-left overlaps the entries")
+
+    def test_the_length_cap_admits_the_whole_block(self, monkeypatch):
+        """tmux clips whatever exceeds `status-right-length` from the
+        LEFT — the highest-priority entry in left placement. Left
+        placement pads the block out to reach across the bar, so a cap
+        derived from the theme's own length is unrelated to how wide
+        the block now is."""
+        caps = []
+        left = f" {self.BOX} host {self.ICON} "
+        self._render(monkeypatch, n_projects=5, term_width=200,
+                     status_left=left, length_calls=caps)
+        assert caps, "the length was never set"
+        assert caps[-1].get("minimum") == 200, (
+            f"cap floor is {caps[-1].get('minimum')}, not the terminal "
+            f"width — a theme with a short status-right-length would "
+            f"have the leading entries clipped")
 
     def test_the_gap_after_status_left_stays_small(self, monkeypatch):
         """The reason to reserve the worst case is to avoid a clipped

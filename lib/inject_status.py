@@ -758,7 +758,13 @@ def _inject_status_impl(force_fast=False):
         if new_status != prev_status:
             _write_cache(cache_file, new_status)
             tmux_cmd("set", "-g", "status-right", new_status)
-            _extend_status_right_length(original, factor=2, minimum=120)
+            # The block can be as wide as the bar — left placement
+            # pads it out on purpose — and tmux clips whatever
+            # exceeds `status-right-length` from the LEFT, which is
+            # the highest-priority entry. The floor is therefore the
+            # terminal, not a constant.
+            _extend_status_right_length(original, factor=2,
+                                        minimum=term_width)
 
     elif mode == "2":
         # Mode 2: dedicated status line(s)

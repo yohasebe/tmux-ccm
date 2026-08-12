@@ -220,6 +220,17 @@ class TestManagedHooksOnlyWarning:
         assert ccm_canaries.disable_all_hooks_warning() != ""
 
 
+def _project(name, directory):
+    """Build the production `Project`, not a stand-in.
+
+    A local stand-in only has the fields the test author remembered,
+    so a scan reading the wrong attribute name still passes here while
+    doing nothing at all in production.
+    """
+    return ccm_core.Project(win_target="main:1", win_idx="1", name=name,
+                            directory=directory, state="IDLE")
+
+
 class TestSettingsScanScope:
     """These canaries used to read one file and report a bare tick.
 
@@ -229,11 +240,6 @@ class TestSettingsScanScope:
     being read the one place the deployment it warns about would never
     put it.
     """
-
-    class _Project:
-        def __init__(self, name, directory):
-            self.name = name
-            self.directory = directory
 
     def _isolate(self, monkeypatch, tmp_path):
         """Point every file the scan reads at an empty tmp location,
@@ -247,7 +253,7 @@ class TestSettingsScanScope:
         directory = tmp_path / "workspace"
         (directory / ".claude").mkdir(parents=True, exist_ok=True)
         (directory / ".claude" / filename).write_text(body)
-        return self._Project("demo", str(directory))
+        return _project("demo", str(directory))
 
     def test_a_project_setting_is_found(self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)
@@ -286,7 +292,7 @@ class TestSettingsScanScope:
             self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)
         assert ccm_canaries.disable_all_hooks_warning(
-            [self._Project("demo", "")]) == ""
+            [_project("demo", "")]) == ""
 
     def test_nothing_set_anywhere_stays_quiet(self, tmp_path, monkeypatch):
         self._isolate(monkeypatch, tmp_path)

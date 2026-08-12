@@ -185,7 +185,7 @@ def _settings_sources(projects=None):
            MANAGED_SETTINGS_FILES.get(sys.platform, MANAGED_SETTINGS_DEFAULT))
     yield ("user settings", CLAUDE_SETTINGS_FILE)
     for project in projects or []:
-        directory = os.path.expanduser(getattr(project, "directory", "") or "")
+        directory = os.path.expanduser(getattr(project, "dir", "") or "")
         if not directory:
             continue
         name = getattr(project, "name", "") or "?"
