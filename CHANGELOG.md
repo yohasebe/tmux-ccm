@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- ccm records the sessions it closes itself, in
+  `$CCM_DATA_DIR/state/auto-exit.log`. Claude Code reports an auto-exit the
+  same way it reports a person typing `/exit`, so nothing else can tell the
+  two apart afterwards; the record carries the session id so it joins with
+  whatever else watched that session end. `ccm doctor` shows the count.
 - `@ccm-ambiguous-width 1|2` states what your terminal makes of glyphs whose
   width Unicode leaves open — box drawing, geometric shapes, Nerd Font icons.
   Saying so lets the status bar stop reserving room for the wider case, which
@@ -23,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The `disableAllHooks` and `allowManagedHooksOnly` canaries read the
+  administrator's settings and each project's settings, not only the user's
+  own file, and name which one carries the flag. `allowManagedHooksOnly` is
+  documented as an administrator setting, so the single file being read was
+  the one place the deployment it warns about would never put it — and a
+  canary reporting a bare tick from a scan too narrow to see the problem is
+  worse than no canary.
+- `stat` in the config-writer tests no longer assumes BSD flags, which failed
+  the Linux CI job.
 - The status bar re-lays itself when the terminal is resized. Its layout is
   baked from the width at render time, so a resize left it laid out for the
   old width until the next periodic pass — entries clipped on a narrower

@@ -26,6 +26,7 @@ callsites here). Public callers import directly from
 
 import json
 import os
+import sys
 import time
 
 import ccm_core  # late-bound for tmux_cmd
@@ -149,17 +150,67 @@ def errors_log_burst_warning() -> str:
 
 CLAUDE_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")
 
+# Where an administrator's settings live. Claude Code reads one of
+# these depending on the platform, and it outranks everything the user
+# writes — which is exactly why `allowManagedHooksOnly` is usually
+# found here rather than in the user's own file.
+MANAGED_SETTINGS_FILES = {
+    "darwin": "/Library/Application Support/ClaudeCode/managed-settings.json",
+    "win32": r"C:\ProgramData\ClaudeCode\managed-settings.json",
+}
+MANAGED_SETTINGS_DEFAULT = "/etc/claude-code/managed-settings.json"
 
-def _read_claude_settings():
+
+def _read_settings_file(path):
     try:
-        with open(CLAUDE_SETTINGS_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
 
-def disable_all_hooks_warning() -> str:
+def _read_claude_settings():
+    return _read_settings_file(CLAUDE_SETTINGS_FILE)
+
+
+def _settings_sources(projects=None):
+    """Every settings file that can turn ccm's hooks off, with a label
+    naming where each one came from.
+
+    Ordered as Claude Code resolves them, administrator first, so the
+    first file carrying a flag is the one that decides.
+
+    A canary that reads one file and reports a bare tick is worse than
+    no canary: the tick is produced by a scan that ran correctly, so it
+    is believed. `allowManagedHooksOnly` in particular is documented as
+    an administrator setting, meaning the single file this used to read
+    was the one place the deployment it warns about would never put it.
+    """
+    yield ("managed settings",
+           MANAGED_SETTINGS_FILES.get(sys.platform, MANAGED_SETTINGS_DEFAULT))
+    yield ("user settings", CLAUDE_SETTINGS_FILE)
+    for project in projects or []:
+        directory = os.path.expanduser(getattr(project, "directory", "") or "")
+        if not directory:
+            continue
+        name = getattr(project, "name", "") or "?"
+        yield (f"{name}'s settings",
+               os.path.join(directory, ".claude", "settings.json"))
+        yield (f"{name}'s local settings",
+               os.path.join(directory, ".claude", "settings.local.json"))
+
+
+def _flag_source(flag, projects=None) -> str:
+    """Label of the first settings file setting `flag` true, else ""."""
+    for label, path in _settings_sources(projects):
+        data = _read_settings_file(path)
+        if data and data.get(flag) is True:
+            return label
+    return ""
+
+
+def disable_all_hooks_warning(projects=None) -> str:
     """Return a warning string if `disableAllHooks: true` is set in
     ~/.claude/settings.json, otherwise "".
 
@@ -168,34 +219,31 @@ def disable_all_hooks_warning() -> str:
     no error. Same class of silent failure as the hooks.log bloat
     canary.
 
-    Scope: only the user-level file `~/.claude/settings.json` is
-    checked. Project-scope settings (`<project>/.claude/settings.json`)
-    and enterprise managed settings (e.g.
-    `/Library/Application Support/ClaudeCode/managed-settings.json`
-    on macOS) are NOT inspected. The setting is also valid in those
-    locations, so a managed-policy or per-project disable will not
-    surface a warning here. Adding cross-scope checks would require
-    walking Claude Code's full settings precedence chain, which is
-    out of scope for this canary.
+    Scope: administrator settings, the user's own file, and the
+    settings of every project passed in. Pass `projects` to include
+    the per-project files — without them only the first two are read,
+    which is what the callers that have no project list get.
+
+    What stays out of reach is a session started with an explicit
+    `--permission-mode` or a settings file belonging to a directory
+    ccm does not manage. Those cannot be enumerated from here.
     """
-    data = _read_claude_settings()
-    if not data:
-        return ""
-    if data.get("disableAllHooks") is True:
+    source = _flag_source("disableAllHooks", projects)
+    if source:
         return (
-            "Claude Code `disableAllHooks: true` is set in "
-            "~/.claude/settings.json — this disables ALL hooks AND any "
-            "custom `statusLine` command. ccm state detection falls "
-            "back to JSONL polling and process tree only, and any "
-            "embedded statusLine you configured will stop rendering. "
-            "Remove the setting to restore real-time hook signals."
+            f"Claude Code `disableAllHooks: true` is set in {source} — "
+            "this disables ALL hooks AND any custom `statusLine` "
+            "command. ccm state detection falls back to JSONL polling "
+            "and process tree only, and any embedded statusLine you "
+            "configured will stop rendering. Remove the setting to "
+            "restore real-time hook signals."
         )
     return ""
 
 
-def managed_hooks_only_warning() -> str:
+def managed_hooks_only_warning(projects=None) -> str:
     """Return a warning string if `allowManagedHooksOnly: true` is set
-    in ~/.claude/settings.json, otherwise "".
+    in any settings file that applies, otherwise "".
 
     Per Claude Code's docs, when this is set in *managed* settings,
     every user-scope hook (which is exactly where ccm installs all
@@ -203,31 +251,17 @@ def managed_hooks_only_warning() -> str:
     The result looks identical to a broken Claude Code install from
     ccm's perspective: no hooks fire, ever.
 
-    Scope (important caveat): only the user-level file
-    `~/.claude/settings.json` is checked. The setting is most
-    commonly placed in an enterprise-managed settings file (e.g.
-    `/Library/Application Support/ClaudeCode/managed-settings.json`
-    on macOS), which is the actual deployment scenario this flag
-    targets. ccm does NOT walk Claude Code's settings precedence
-    chain — that path varies by OS and is not stably documented.
-
-    This canary therefore catches:
-      - a user who set the flag in their own file by mistake or test
-      - a managed file symlinked to the user-scope path
-    But it does NOT catch the typical enterprise deployment where
-    the flag lives in a separate managed file. Users in managed
-    enterprise environments should not expect a warning here even
-    when ccm hooks are silently disabled.
+    The administrator's file is read first, which is where this flag
+    is meant to live — the deployment this canary exists for is
+    exactly the one it used to be unable to see.
     """
-    data = _read_claude_settings()
-    if not data:
-        return ""
-    if data.get("allowManagedHooksOnly") is True:
+    source = _flag_source("allowManagedHooksOnly", projects)
+    if source:
         return (
-            "Claude Code `allowManagedHooksOnly: true` is set — all "
-            "user-scope hooks (including every ccm hook) are blocked. "
-            "Remove the setting or move ccm hooks to managed scope to "
-            "restore real-time signals."
+            f"Claude Code `allowManagedHooksOnly: true` is set in "
+            f"{source} — all user-scope hooks (including every ccm "
+            "hook) are blocked. Remove the setting or move ccm hooks "
+            "to managed scope to restore real-time signals."
         )
     return ""
 

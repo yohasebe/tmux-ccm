@@ -38,6 +38,7 @@ import ccm_commands
 import ccm_detection
 import ccm_jsonl
 import ccm_pane_state
+import ccm_runtime
 import ccm_render
 import ccm_rules
 import ccm_signals
@@ -885,16 +886,22 @@ def cmd_doctor():
         row(OK, "hooks.log size", "(absent)")
     else:
         row(OK, "hooks.log size", f"{log_size / (1024*1024):.1f} MB")
-    dah = ccm_canaries.disable_all_hooks_warning()
+    projects = ccm_core.build_project_list(fast=False)
+    # Say which files were read, not just that nothing was found. A
+    # bare "not set" is a claim about everywhere, and this scan covers
+    # the administrator's file, the user's own, and the settings of
+    # each managed project — but not a session started with an
+    # explicit `--permission-mode`.
+    scanned = "not set (managed, user and per-project settings)"
+    dah = ccm_canaries.disable_all_hooks_warning(projects)
     row(WARN if dah else OK,
         "disableAllHooks",
-        dah or "not set")
-    mho = ccm_canaries.managed_hooks_only_warning()
+        dah or scanned)
+    mho = ccm_canaries.managed_hooks_only_warning(projects)
     row(WARN if mho else OK,
         "allowManagedHooksOnly",
-        mho or "not set")
+        mho or scanned)
 
-    projects = ccm_core.build_project_list(fast=False)
     cluster_msgs = ccm_canaries.shell_cluster_warnings(projects)
     if cluster_msgs:
         for msg in cluster_msgs:
@@ -926,6 +933,18 @@ def cmd_doctor():
     else:
         row(OK, "hook-silence",
             "off (opt in with `tmux set -g @ccm-hook-silence on`)")
+
+    # Claude Code reports an auto-exit the same way it reports a person
+    # typing `/exit`, so this log is the only place the difference is
+    # recorded. Surfaced here because the question it answers — "has
+    # something been closing my sessions?" — is asked of ccm.
+    exited = ccm_runtime.auto_exit_log_count()
+    if exited:
+        row(OK, "auto-exit log",
+            f"{exited} session(s) closed by ccm — inspect "
+            f"{ccm_runtime.auto_exit_log_path()}")
+    else:
+        row(OK, "auto-exit log", "no sessions closed by ccm")
 
     section(f"Active projects ({len(projects)})")
     if not projects:

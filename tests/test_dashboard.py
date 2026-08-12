@@ -46,8 +46,8 @@ def _stub_dashboard_environment(monkeypatch):
     monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
     monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
     monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
-    monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda: "")
-    monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda: "")
+    monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda *a, **kw: "")
+    monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda *a, **kw: "")
     monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
     monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
     monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
@@ -477,9 +477,9 @@ class TestRenderSmoke:
         monkeypatch.setattr("dashboard.hooks_log_warning",
                             lambda: "hooks.log too big — clear it")
         monkeypatch.setattr("dashboard.disable_all_hooks_warning",
-                            lambda: "disableAllHooks set")
+                            lambda *a, **kw: "disableAllHooks set")
         monkeypatch.setattr("dashboard.managed_hooks_only_warning",
-                            lambda: "managed hooks only")
+                            lambda *a, **kw: "managed hooks only")
         monkeypatch.setattr("dashboard.shell_cluster_warnings",
                             lambda p: ["alpha: silent exit cluster"])
 

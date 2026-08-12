@@ -328,9 +328,9 @@ class TestPrintStatus:
         # focuses on per-project rendering.
         monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: "")
         monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning",
-                            lambda: "")
+                            lambda *a, **kw: "")
         monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
-                            lambda: "")
+                            lambda *a, **kw: "")
         monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
                             lambda projects_arg: [])
         monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",
@@ -645,9 +645,9 @@ class TestPrintStatusColumnAlignment:
                             lambda fast=False: projects)
         monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: "")
         monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning",
-                            lambda: "")
+                            lambda *a, **kw: "")
         monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
-                            lambda: "")
+                            lambda *a, **kw: "")
         monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
                             lambda projects_arg: [])
         monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",

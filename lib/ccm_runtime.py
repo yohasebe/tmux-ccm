@@ -25,6 +25,7 @@ module unchanged. `ccm_detection._set_win_state` and
 modules directly.
 """
 
+import json
 import os
 import time
 
@@ -167,6 +168,72 @@ def _window_has_background_work(panes_raw, ps_lines):
     return False
 
 
+AUTO_EXIT_LOG_MAX_BYTES = int(
+    os.environ.get("CCM_AUTO_EXIT_LOG_MAX_BYTES", str(1024 * 1024))
+)
+
+
+def auto_exit_log_path() -> str:
+    """Where auto-exit records go. Resolved at call time so tests (and
+    users) can redirect it without reload tricks."""
+    return os.environ.get(
+        "CCM_AUTO_EXIT_LOG",
+        os.path.join(ccm_core.CCM_DATA_DIR, "state", "auto-exit.log"),
+    )
+
+
+def _log_auto_exit(project_name, session_id, idle_timeout, now) -> None:
+    """Record that ccm — not the user — ended this session.
+
+    A desktop notification tells whoever is looking at the screen. It
+    tells nobody afterwards, and "who ended this session?" is asked
+    afterwards or not at all: Claude Code reports an auto-exit as
+    `SessionEnd` with reason `prompt_input_exit`, which is the same
+    value a person typing `/exit` produces. Without a record on this
+    side the question has no answer anywhere, and a neighbouring tool
+    reading eight of those in a row concluded the sessions were
+    crashing.
+
+    The session id is what makes the record joinable to whatever else
+    watched the same session end.
+
+    Best-effort throughout: a session was just closed cleanly, and
+    failing to write about it must not turn that into an error.
+    Rotation mirrors the other evidence logs — at one record per
+    auto-exit the cap is decades away and exists only so a
+    pathological loop cannot eat disk.
+    """
+    try:
+        path = auto_exit_log_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            if os.path.getsize(path) >= AUTO_EXIT_LOG_MAX_BYTES:
+                os.replace(path, path + ".1")
+        except OSError:
+            pass  # no log yet, or nothing to rotate
+        record = {
+            "ts": int(now),
+            "project": project_name,
+            "session": session_id or "",
+            "idle": int(idle_timeout),
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass
+
+
+def auto_exit_log_count() -> int:
+    """Records in the active log (rotated `.1` not counted). `ccm
+    doctor` shows this so "has ccm been closing my sessions?" is one
+    command away. Returns 0 when the log is absent or unreadable."""
+    try:
+        with open(auto_exit_log_path(), encoding="utf-8") as f:
+            return sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+
+
 def auto_exit_idle(projects):
     """Send `/exit` to ccm windows that have been IDLE longer than the
     configured timeout (`@ccm-idle-timeout` minutes; default
@@ -210,16 +277,17 @@ def auto_exit_idle(projects):
 
     activity_raw = ccm_core.tmux_cmd(
         "list-windows", "-a", "-F",
-        "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}"
+        "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t#{@ccm_session_id}"
     )
     if not activity_raw:
         return
 
     for line in activity_raw.split("\n"):
         parts = line.split("\t")
-        while len(parts) < 5:
+        while len(parts) < 6:
             parts.append("")
-        win_target, project, prev_state, completed_at_str, win_activity_str = parts[:5]
+        (win_target, project, prev_state, completed_at_str,
+         win_activity_str, session_id) = parts[:6]
 
         if not project or prev_state != "IDLE":
             continue
@@ -391,6 +459,9 @@ def auto_exit_idle(projects):
                     "AUTOEXIT", project,
                     detail=f"{idle_timeout // 60}m",
                 )
+                # Written after the same gate as the notification, so
+                # the log can never claim an exit that did not land.
+                _log_auto_exit(project, session_id, idle_timeout, now)
 
 
 # ─── Autosave ───

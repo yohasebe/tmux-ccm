@@ -130,9 +130,9 @@ class TestCmdDoctor:
         monkeypatch.setattr(ccm_canaries, "hooks_log_size",
                             lambda: 1024 * 1024 if not hooks_log_warning else -1)
         monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning",
-                            lambda: disable_warning)
+                            lambda *a, **kw: disable_warning)
         monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
-                            lambda: managed_warning)
+                            lambda *a, **kw: managed_warning)
         monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
                             lambda p: list(cluster_warnings))
         monkeypatch.setattr(ccm_core, "build_project_list",

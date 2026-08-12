@@ -109,9 +109,9 @@ class TestPrintStatusExternalAgent:
                             lambda fast=False: projects)
         monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: "")
         monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning",
-                            lambda: "")
+                            lambda *a, **kw: "")
         monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
-                            lambda: "")
+                            lambda *a, **kw: "")
         monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
                             lambda projects_arg: [])
         monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",
@@ -219,9 +219,9 @@ class TestDashboardExternalAgent:
         monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
         monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
         monkeypatch.setattr("dashboard.disable_all_hooks_warning",
-                            lambda: "")
+                            lambda *a, **kw: "")
         monkeypatch.setattr("dashboard.managed_hooks_only_warning",
-                            lambda: "")
+                            lambda *a, **kw: "")
         monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
         monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
         monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")

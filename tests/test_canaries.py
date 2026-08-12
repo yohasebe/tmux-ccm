@@ -169,7 +169,9 @@ class TestDisableAllHooksWarning:
         monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         msg = ccm_canaries.disable_all_hooks_warning()
         assert "disableAllHooks" in msg
-        assert "settings.json" in msg
+        # Names which file it came from, because the reader has more
+        # than one place to go and look.
+        assert "user settings" in msg
         # disableAllHooks also kills the custom statusLine. The
         # warning must tell the user so they can correlate a missing
         # embedded statusLine with this flag.
@@ -216,6 +218,87 @@ class TestManagedHooksOnlyWarning:
         monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_canaries.managed_hooks_only_warning() != ""
         assert ccm_canaries.disable_all_hooks_warning() != ""
+
+
+class TestSettingsScanScope:
+    """These canaries used to read one file and report a bare tick.
+
+    The tick is the dangerous part: it is produced by a scan that ran
+    correctly, so it is believed. `allowManagedHooksOnly` is
+    documented as an administrator setting, which made the single file
+    being read the one place the deployment it warns about would never
+    put it.
+    """
+
+    class _Project:
+        def __init__(self, name, directory):
+            self.name = name
+            self.directory = directory
+
+    def _isolate(self, monkeypatch, tmp_path):
+        """Point every file the scan reads at an empty tmp location,
+        so the machine running the tests cannot decide the result."""
+        absent = str(tmp_path / "absent.json")
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", absent)
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES", {})
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", absent)
+
+    def _project_with(self, tmp_path, filename, body):
+        directory = tmp_path / "workspace"
+        (directory / ".claude").mkdir(parents=True, exist_ok=True)
+        (directory / ".claude" / filename).write_text(body)
+        return self._Project("demo", str(directory))
+
+    def test_a_project_setting_is_found(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        project = self._project_with(
+            tmp_path, "settings.json", '{"disableAllHooks": true}')
+        msg = ccm_canaries.disable_all_hooks_warning([project])
+        assert "disableAllHooks" in msg
+        assert "demo" in msg, msg
+
+    def test_a_local_project_setting_is_found(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        project = self._project_with(
+            tmp_path, "settings.local.json", '{"disableAllHooks": true}')
+        assert ccm_canaries.disable_all_hooks_warning([project]) != ""
+
+    def test_administrator_settings_are_read(self, tmp_path, monkeypatch):
+        """The scenario `allowManagedHooksOnly` exists for."""
+        self._isolate(monkeypatch, tmp_path)
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text('{"allowManagedHooksOnly": true}')
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT",
+                            str(managed))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES",
+                            {sys.platform: str(managed)})
+        msg = ccm_canaries.managed_hooks_only_warning()
+        assert "managed settings" in msg, msg
+
+    def test_projects_are_optional(self, tmp_path, monkeypatch):
+        """Callers without a project list still get the two files that
+        need no context, rather than an error."""
+        self._isolate(monkeypatch, tmp_path)
+        assert ccm_canaries.disable_all_hooks_warning() == ""
+        assert ccm_canaries.managed_hooks_only_warning() == ""
+
+    def test_a_project_without_a_directory_is_skipped(
+            self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        assert ccm_canaries.disable_all_hooks_warning(
+            [self._Project("demo", "")]) == ""
+
+    def test_nothing_set_anywhere_stays_quiet(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        project = self._project_with(tmp_path, "settings.json", "{}")
+        assert ccm_canaries.disable_all_hooks_warning([project]) == ""
+
+    def test_a_project_file_that_is_not_json_is_skipped(
+            self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        project = self._project_with(tmp_path, "settings.json", "not json")
+        assert ccm_canaries.disable_all_hooks_warning([project]) == ""
+
 
 class TestShellClusterDetection:
     """Unit tests for the cluster-SHELL-transition canary that

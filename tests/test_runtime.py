@@ -5,6 +5,7 @@ break without anyone noticing, so the regression coverage here
 focuses on `actually called the underlying function` rather than
 just `did not raise`."""
 
+import json
 import os
 from unittest.mock import patch, MagicMock
 
@@ -215,6 +216,11 @@ class TestAutoExitIdle:
     # a shell whose child is `claude`. Format: `<idx>\t<pane_pid>`.
     DEFAULT_PANES_LISTING = "0\t1000"
 
+    # Stands in for the session id ccm caches on the window.
+    SESSION_ID = "0123abcd-0000-0000-0000-000000000000"
+    # The example project name this fixture listing carries.
+    PROJECT_NAME = "blog"
+
     # `ps_snapshot()` returns the raw stdout string from
     # `ps -eo pid,ppid,pgid,comm,etime`. ccm_runtime splits it into
     # lines via `.strip().split("\n")`; tests therefore mock the
@@ -229,7 +235,8 @@ class TestAutoExitIdle:
     )
 
     @staticmethod
-    def _build_tmux_side_effect(post_exit_cmd, panes_listing):
+    def _build_tmux_side_effect(post_exit_cmd, panes_listing,
+                               self_session_id=SESSION_ID):
         """Wire `tmux_cmd` so it returns the right value for each
         query auto_exit_idle makes during a single past-timeout pass.
 
@@ -262,7 +269,8 @@ class TestAutoExitIdle:
                 # Single ccm window at main:1 (NOT main:0 → not focused),
                 # IDLE for 9999 s (well past the 600 s default timeout).
                 old = "1"
-                return f"main:1\tblog\tIDLE\t{old}\t{old}"
+                return (f"main:1\tblog\tIDLE\t{old}\t{old}\t"
+                        f"{self_session_id}")
             return ""
         return side_effect
 
@@ -654,3 +662,72 @@ class TestNotifyAutoExitGating:
         # sanity: the bypass is AUTOEXIT-only; BUSY stays gated by
         # the setting list.
         assert self._notify("permit,completed", state="BUSY") == []
+
+
+class TestAutoExitEvidenceLog:
+    """A desktop notification tells whoever is looking at the screen.
+    It tells nobody afterwards.
+
+    Claude Code reports an auto-exit as `SessionEnd` with reason
+    `prompt_input_exit` — the same value a person typing `/exit`
+    produces. So the only place the difference can be recorded is
+    here, and without it the question has no answer anywhere: a
+    neighbouring tool read eight such endings in a row and concluded
+    the sessions were crashing.
+    """
+
+    def _isolate(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CCM_AUTO_EXIT_LOG",
+                           str(tmp_path / "state" / "auto-exit.log"))
+
+    def _records(self):
+        try:
+            with open(ccm_runtime.auto_exit_log_path(), encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except OSError:
+            return []
+
+    def test_a_confirmed_exit_is_recorded(self, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)
+        TestAutoExitIdle()._run("zsh")
+        records = self._records()
+        assert len(records) == 1, records
+        assert records[0]["project"] == TestAutoExitIdle.PROJECT_NAME
+
+    def test_the_record_carries_the_session_id(self, monkeypatch, tmp_path):
+        """The join key. Whatever else watched the session end knows it
+        by this id and by nothing else ccm has."""
+        self._isolate(monkeypatch, tmp_path)
+        TestAutoExitIdle()._run("zsh")
+        assert self._records()[0]["session"] == TestAutoExitIdle.SESSION_ID
+
+    def test_an_exit_that_did_not_land_is_not_recorded(
+            self, monkeypatch, tmp_path):
+        """Same gate as the notification: the log must never claim an
+        exit that did not happen."""
+        self._isolate(monkeypatch, tmp_path)
+        TestAutoExitIdle()._run("claude")
+        assert self._records() == []
+
+    def test_the_count_matches_what_was_written(self, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)
+        assert ccm_runtime.auto_exit_log_count() == 0
+        TestAutoExitIdle()._run("zsh")
+        assert ccm_runtime.auto_exit_log_count() == 1
+
+    def test_an_unwritable_log_does_not_break_the_exit(
+            self, monkeypatch, tmp_path):
+        """The session was closed cleanly; failing to write about it
+        must not turn that into an error."""
+        monkeypatch.setenv("CCM_AUTO_EXIT_LOG", "/proc/nonexistent/x.log")
+        TestAutoExitIdle()._run("zsh")   # must not raise
+
+    def test_the_log_rotates_at_the_cap(self, monkeypatch, tmp_path):
+        log = tmp_path / "state" / "auto-exit.log"
+        log.parent.mkdir(parents=True)
+        log.write_text("x" * 64)
+        monkeypatch.setenv("CCM_AUTO_EXIT_LOG", str(log))
+        monkeypatch.setattr(ccm_runtime, "AUTO_EXIT_LOG_MAX_BYTES", 32)
+        ccm_runtime._log_auto_exit("demo", "abc", 600, 1)
+        assert (tmp_path / "state" / "auto-exit.log.1").exists()
+        assert len(self._records()) == 1
