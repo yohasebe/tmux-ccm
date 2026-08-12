@@ -180,12 +180,6 @@ def _settings_sources(projects=None):
 
     Ordered as Claude Code resolves them, administrator first, so the
     first file carrying a flag is the one that decides.
-
-    A canary that reads one file and reports a bare tick is worse than
-    no canary: the tick is produced by a scan that ran correctly, so it
-    is believed. `allowManagedHooksOnly` in particular is documented as
-    an administrator setting, meaning the single file this used to read
-    was the one place the deployment it warns about would never put it.
     """
     yield ("managed settings",
            MANAGED_SETTINGS_FILES.get(sys.platform, MANAGED_SETTINGS_DEFAULT))

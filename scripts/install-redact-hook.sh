@@ -37,11 +37,14 @@ set -uo pipefail
 command -v tmux >/dev/null 2>&1 || exit 0
 tmux info >/dev/null 2>&1 || exit 0   # no server → nothing to compare against
 
-# Names to skip, one per line, in a file git never tracks. Some project
-# names are ordinary English ("review", "personal") and would fire on
-# every other commit; listing them here keeps the check quiet without
-# writing a single real name into the repository. Starts empty — add a
-# name the first time a false positive annoys you.
+# Names to skip, one per line, in a file git never tracks. A project
+# name can be an ordinary English word that the repository uses as
+# prose, and flagging those would fire on every other commit; listing
+# them there keeps the check quiet without writing a single real name
+# into the repository. Starts empty — add a name the first time a
+# false positive annoys you.
+#
+# Examples of such words belong in that file, not in this one.
 ignore_file="$(git rev-parse --git-dir)/ccm-redact-ignore"
 
 names=$(tmux list-windows -a -F '#{@ccm_project}' 2>/dev/null | sort -u)
@@ -59,11 +62,8 @@ while IFS= read -r name; do
     # Word-boundary match: a short project name can be a substring of
     # an ordinary word, and a plain grep would fire on every one.
     #
-    # URLs are stripped before matching. A path segment of somebody
-    # else's site is not a local name, and leaving them in means the
-    # check cries wolf on any commit that touches a link — which is
-    # how a check ends up switched off, or its subject ends up in the
-    # ignore file.
+    # URLs are stripped first: a path segment of somebody else's site
+    # is not a local name.
     hits=$(git diff --cached -U0 -- $staged \
            | grep -nE "^\+" \
            | grep -vE "^\+\+\+" \

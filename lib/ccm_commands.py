@@ -887,11 +887,9 @@ def cmd_doctor():
     else:
         row(OK, "hooks.log size", f"{log_size / (1024*1024):.1f} MB")
     projects = ccm_core.build_project_list(fast=False)
-    # Say which files were read, not just that nothing was found. A
-    # bare "not set" is a claim about everywhere, and this scan covers
-    # the administrator's file, the user's own, and the settings of
-    # each managed project — but not a session started with an
-    # explicit `--permission-mode`.
+    # Name the scope: a bare "not set" reads as a claim about
+    # everywhere, and a session started with an explicit
+    # `--permission-mode` is out of reach.
     scanned = "not set (managed, user and per-project settings)"
     dah = ccm_canaries.disable_all_hooks_warning(projects)
     row(WARN if dah else OK,
@@ -934,10 +932,6 @@ def cmd_doctor():
         row(OK, "hook-silence",
             "off (opt in with `tmux set -g @ccm-hook-silence on`)")
 
-    # Claude Code reports an auto-exit the same way it reports a person
-    # typing `/exit`, so this log is the only place the difference is
-    # recorded. Surfaced here because the question it answers — "has
-    # something been closing my sessions?" — is asked of ccm.
     exited = ccm_runtime.auto_exit_log_count()
     if exited:
         row(OK, "auto-exit log",

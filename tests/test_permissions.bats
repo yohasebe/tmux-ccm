@@ -2,20 +2,18 @@
 # Regression guard for executable bits in the GIT INDEX.
 #
 # ccm is distributed via git/TPM, so what users receive is decided by
-# `git ls-files -s` modes — NOT by local filesystem permissions. This
-# matters because the development checkout lives under Dropbox, which
-# can normalize local permissions to 0600: a newly added hook/script
-# whose +x was forgotten before `git add` gets recorded as 100644 and
-# silently ships broken (the local checkout keeps working, so nothing
-# surfaces until a TPM user hits it). A 644 `ccm.tmux` would disable
-# the entire plugin at tmux startup; a 644 hook script means Claude
-# Code cannot exec it and the hook never fires.
+# `git ls-files -s` modes — NOT by local filesystem permissions. A
+# file-syncing client can normalize a working copy's modes, and some
+# editors create files without the exec bit; either way a newly added
+# hook or script whose +x was lost before `git add` is recorded as
+# 100644 and ships broken. Nothing surfaces locally — the checkout
+# keeps whatever mode it has, so the failure belongs entirely to
+# whoever installs from git. A 644 `ccm.tmux` disables the whole
+# plugin at tmux startup; a 644 hook script means Claude Code cannot
+# exec it and the hook never fires.
 #
-# Same incident class as the 2026-07 gem releases (a project#20 et
-# al.), where Dropbox-normalized 0600 files were baked into published
-# gems. git-based distribution is structurally immune to the 0600
-# variant (git records only the exec bit), so the exec bit is the one
-# thing left to guard — and the index is the only place to check it.
+# git records only the exec bit, which makes it the one thing worth
+# guarding here — and the index is the only place it can be checked.
 
 CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 

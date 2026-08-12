@@ -218,7 +218,7 @@ class Dashboard:
         # Fetch bg sessions synchronously on initial paint when the
         # section is visible, so the user doesn't see "Background
         # sessions (0)" flicker into the actual list 300 ms later.
-        # Cheap on a non-Dropbox path (~/.claude is local) — a single
+        # Cheap on a local path (~/.claude is not synced) — a single
         # roster.json read plus N state.json reads where N is small.
         if self.bg_visible:
             self.bg_sessions = self._fetch_bg_sessions()

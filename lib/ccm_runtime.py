@@ -183,25 +183,16 @@ def auto_exit_log_path() -> str:
 
 
 def _log_auto_exit(project_name, session_id, idle_timeout, now) -> None:
-    """Record that ccm — not the user — ended this session.
+    """Record that ccm, not the user, ended this session.
 
-    A desktop notification tells whoever is looking at the screen. It
-    tells nobody afterwards, and "who ended this session?" is asked
-    afterwards or not at all: Claude Code reports an auto-exit as
-    `SessionEnd` with reason `prompt_input_exit`, which is the same
-    value a person typing `/exit` produces. Without a record on this
-    side the question has no answer anywhere, and a neighbouring tool
-    reading eight of those in a row concluded the sessions were
-    crashing.
+    Claude Code reports an auto-exit as `SessionEnd` with reason
+    `prompt_input_exit` — the same value a user typing `/exit`
+    produces — so this log is the only thing that tells them apart
+    afterwards. The session id makes the record joinable with whatever
+    else observed the session ending.
 
-    The session id is what makes the record joinable to whatever else
-    watched the same session end.
-
-    Best-effort throughout: a session was just closed cleanly, and
-    failing to write about it must not turn that into an error.
-    Rotation mirrors the other evidence logs — at one record per
-    auto-exit the cap is decades away and exists only so a
-    pathological loop cannot eat disk.
+    Best-effort: failing to write must not turn a clean exit into an
+    error. Rotates at the size cap like the other evidence logs.
     """
     try:
         path = auto_exit_log_path()

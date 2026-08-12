@@ -8,18 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- ccm records the sessions it closes itself, in
-  `$CCM_DATA_DIR/state/auto-exit.log`. Claude Code reports an auto-exit the
-  same way it reports a person typing `/exit`, so nothing else can tell the
-  two apart afterwards; the record carries the session id so it joins with
-  whatever else watched that session end. `ccm doctor` shows the count.
-- `@ccm-ambiguous-width 1|2` states what your terminal makes of glyphs whose
-  width Unicode leaves open — box drawing, geometric shapes, Nerd Font icons.
-  Saying so lets the status bar stop reserving room for the wider case, which
-  in mode 1's left placement is space you can see. `CCM_AMBIGUOUS_WIDTH`
-  remains for running ccm outside tmux, but an environment variable reaches
-  only one of the two parents that render the bar, so a declaration made that
-  way applies to some renders and not others.
+- Auto-exits are recorded in `$CCM_DATA_DIR/state/auto-exit.log` (timestamp,
+  project, session id, idle seconds). `ccm doctor` shows the count.
+- `@ccm-ambiguous-width 1|2` declares how your terminal draws glyphs whose
+  width Unicode leaves open, so the status bar stops reserving room for the
+  wider case. `CCM_AMBIGUOUS_WIDTH` remains as a fallback for running ccm
+  outside tmux; the option wins when both are set.
 - `@ccm-status-line-hide-shell on` lists only windows that host a Claude
   session in status-bar modes 1 and 2. Off by default; `IDLE` projects stay
   visible.
@@ -29,17 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - The example project name used across the README, guide and tests is a
-  synthetic one. It had been a name that also exists on the author's machine,
-  and the check meant to catch exactly that had the name in its ignore list —
-  listed as an ordinary English word, which it is, but it was also being used
-  as an example project name, which is the thing the check is for.
+  synthetic one.
 - The `disableAllHooks` and `allowManagedHooksOnly` canaries read the
-  administrator's settings and each project's settings, not only the user's
-  own file, and name which one carries the flag. `allowManagedHooksOnly` is
-  documented as an administrator setting, so the single file being read was
-  the one place the deployment it warns about would never put it — and a
-  canary reporting a bare tick from a scan too narrow to see the problem is
-  worse than no canary.
+  administrator's settings and each project's settings as well as the user's
+  own file, and name which one carries the flag.
 - `stat` in the config-writer tests no longer assumes BSD flags, which failed
   the Linux CI job.
 - The status bar re-lays itself when the terminal is resized. Its layout is

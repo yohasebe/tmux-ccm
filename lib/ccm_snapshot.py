@@ -123,7 +123,7 @@ def cmd_snapshot_load(name=""):
     name = _sanitize_snapshot_name(name)
     file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
     # Open directly rather than exists-then-open: the file can vanish
-    # between the two calls (concurrent delete, Dropbox sync), and a
+    # between the two calls (concurrent delete, a sync client), and a
     # malformed snapshot (truncated write, hand-edit) must die with a
     # message instead of a traceback.
     try:
@@ -233,7 +233,7 @@ def cmd_snapshot_delete(name=""):
     name = _sanitize_snapshot_name(name)
     file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
     # unlink directly rather than exists-then-unlink — the file can
-    # vanish between the two calls (concurrent delete, Dropbox sync).
+    # vanish between the two calls (concurrent delete, a sync client).
     try:
         os.unlink(file_path)
     except FileNotFoundError:

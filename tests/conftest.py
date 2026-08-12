@@ -72,13 +72,9 @@ def pytest_configure(config):
 def isolate_runtime_state(tmp_path, monkeypatch):
     """Keep tests out of the user's real runtime data directory.
 
-    The auto-exit evidence log is written by `auto_exit_idle`, which
-    several tests drive end to end. Without this, every one of those
-    runs appended to `~/.local/share/ccm/state/auto-exit.log` — the
-    file whose whole purpose is to answer "did ccm close this
-    session?", filled with sessions that never existed. Same reason
-    the subprocess guard below exists: the suite must not reach the
-    machine it happens to run on.
+    Several tests drive `auto_exit_idle` end to end, which appends to
+    the auto-exit evidence log. Same reason as the subprocess guard
+    below: the suite must not reach the machine it runs on.
     """
     monkeypatch.setenv("CCM_AUTO_EXIT_LOG",
                        str(tmp_path / "state" / "auto-exit.log"))
