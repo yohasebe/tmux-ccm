@@ -1613,6 +1613,15 @@ class Dashboard:
         if choice.lower() == "u":
             ok = self._run_cmd(stdscr, cmd_unregister, p.name)
         elif choice.lower() == "d":
+            # One more step than unregister gets, because this one
+            # cannot be undone: the window closes and the session in
+            # it ends. The menu route already confirms; a single
+            # keypress being the harsher of the two paths was the
+            # wrong way around.
+            confirm = self._prompt(
+                stdscr, f"Close {p.name}'s window and its session? [y/N]: ")
+            if not confirm or confirm.lower() != "y":
+                return
             ok = self._run_cmd(stdscr, cmd_remove, p.name)
         else:
             return
@@ -1620,12 +1629,13 @@ class Dashboard:
             self._trigger_rebuild()
 
     def _do_menu_removal(self, stdscr, action):
-        """Unregister or delete a project named at the prompt.
+        """Unregister, delete, or ignore-toggle a project named at
+        the prompt.
 
-        Reached from the menu, which has no selection of its own. The
-        dashboard's `r` is the quicker route once you know it exists,
-        and the message says so — the menu's job here is to make the
-        operation findable at all.
+        Reached from the menu, which has no selection of its own —
+        its job is to make the operation findable at all. The
+        dashboard list is the quicker route once you know it exists,
+        and the not-found message points there.
         """
         verb = {"unregister": "Unregister", "delete": "Delete",
                 "ignore": "Ignore or unignore"}[action]
@@ -1634,7 +1644,10 @@ class Dashboard:
             return
         known = {p.name for p in self.projects}
         if name not in known:
-            self._show_message(stdscr, f"No such project: {name}", 2)
+            self._show_message(
+                stdscr,
+                f"No such project: {name}"
+                f"  (tip: select it in the list and press r or i)", 2)
             return
         if action == "ignore":
             target = next(p for p in self.projects if p.name == name)

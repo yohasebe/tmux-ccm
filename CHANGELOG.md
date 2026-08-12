@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- Deleting a project from the dashboard asks for confirmation. It closes the
+  window and ends the session in it, yet cost a single keypress while the
+  menu route confirmed — the harsher path was the cheaper one.
 - The dashboard menu (`m` / `?`) lists unregistering, deleting and ignoring a
   project. Adding one was listed there; the ways back out were reachable only
   behind `r`, which the help line rendered as "remove".

@@ -1062,14 +1062,39 @@ class TestDoRemove:
         assert calls == {"unregister": ["alpha"], "remove": []}
         assert rebuilds == ["rebuild"]
 
-    def test_delete_choice(self, monkeypatch):
+    def test_delete_choice_confirms_then_removes(self, monkeypatch):
+        """Delete closes a window and ends its session, so it costs
+        one more keypress than unregister — the menu route already
+        confirmed, and the single-key route being the harsher of the
+        two was the wrong way around."""
         calls = self._cmds(monkeypatch)
         d, messages, rebuilds, _ = _interaction_dash(
-            monkeypatch, [_one_project()], prompt_answers=["d"])
+            monkeypatch, [_one_project()], prompt_answers=["d", "y"])
         d._do_remove(_make_mock_stdscr())
 
         assert calls == {"unregister": [], "remove": ["alpha"]}
         assert rebuilds == ["rebuild"]
+
+    @pytest.mark.parametrize("second", ["", "n", "x", None])
+    def test_delete_declined_at_confirmation_is_noop(
+            self, monkeypatch, second):
+        calls = self._cmds(monkeypatch)
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["d", second])
+        d._do_remove(_make_mock_stdscr())
+
+        assert calls == {"unregister": [], "remove": []}
+        assert rebuilds == []
+
+    def test_unregister_needs_no_second_confirmation(self, monkeypatch):
+        """Unregister keeps the window and the session; symmetric
+        friction with delete would teach users to confirm blindly."""
+        calls = self._cmds(monkeypatch)
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["u", None])
+        d._do_remove(_make_mock_stdscr())
+
+        assert calls == {"unregister": ["alpha"], "remove": []}
 
     @pytest.mark.parametrize("answer", ["", "x", None])
     def test_unconfirmed_choice_is_noop(self, monkeypatch, answer):
@@ -1296,21 +1321,59 @@ class TestEveryKeyAndOperationIsFindable:
     these tests are here so the class of oversight cannot come back.
     """
 
-    def test_every_handled_key_is_offered_in_the_help_line(self):
+    def test_every_handled_letter_key_is_offered_in_the_help_line(self):
+        """Scope: lowercase letter keys, which is what `ord("x")`
+        extraction can see. `/`, `?`, arrows and Enter are outside it
+        and are asserted onto the help line individually below.
+        """
         import re
         handled = set(re.findall(r'ord\("([a-z])"\)',
                                  _method_source("_handle_key")))
+        # The extraction itself has a failure mode: refactor the key
+        # handling into a dispatch table and findall returns nothing,
+        # leaving an empty `missing` and a test that checks nothing
+        # while staying green. The floor turns that into a failure.
+        assert len(handled) >= 10, (
+            f"only {len(handled)} letter keys extracted from "
+            f"_handle_key — the ord(...) pattern no longer matches how "
+            f"keys are handled, so this test has stopped seeing them; "
+            f"update the extraction to the new dispatch shape")
         block = _list_literal("help_items", " " * 12)
-        missing = {k for k in handled
-                   if not re.search(rf"\[[^\]]*{k}[^\]]*\]", block)}
+        # A key counts as offered only when a bracket names it: `[r]`
+        # alone, a `/`-separated alternative (`[m/?]`), or a two-letter
+        # vi pair (`jk` in `[↑↓/jk]`). Substring matching would let
+        # `[Enter]` vouch for e, n, t and r; key names longer than a
+        # pair stay excluded for the same reason.
+        offered = set()
+        for inner in re.findall(r"\[([^\]]+)\]", block):
+            for alt in inner.split("/"):
+                if len(alt) == 1:
+                    offered.add(alt)
+                elif len(alt) == 2 and alt.isalpha() and alt.islower():
+                    offered.update(alt)
+        missing = handled - offered
         assert not missing, (
             f"keys handled by the dashboard but absent from the help "
             f"line: {sorted(missing)} — a key nobody is told about is "
             f"a feature nobody finds")
 
-    def test_the_menu_offers_every_way_to_stop_managing_a_project(self):
+    def test_the_non_letter_keys_are_offered_too(self):
+        """The letter scan above cannot see these; name them one by
+        one so the help line cannot quietly drop them."""
+        block = _list_literal("help_items", " " * 12)
+        for token in ("[↑↓/jk]", "[Enter]", "[/]", "[m/?]"):
+            assert token in block, (
+                f"help line no longer offers {token}")
+
+    def test_the_menu_offers_the_known_ways_to_stop_managing_a_project(
+            self):
         """Adding a project is in the menu; the ways back out have to
-        be as well, or removal reads as unsupported."""
+        be as well, or removal reads as unsupported.
+
+        An enumeration, not a discovery: if a new way to stop managing
+        a project is added, add it here — the test cannot find it on
+        its own.
+        """
         import re
         block = _list_literal(r"self\.menu_items", " " * 8)
         actions = set(re.findall(r'"([a-z_]+)"\s*\)', block))
