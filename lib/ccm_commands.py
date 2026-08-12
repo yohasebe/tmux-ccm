@@ -890,15 +890,17 @@ def cmd_doctor():
     # Name the scope: a bare "not set" reads as a claim about
     # everywhere, and a session started with an explicit
     # `--permission-mode` is out of reach.
-    scanned = "not set (managed, user and per-project settings)"
     dah = ccm_canaries.disable_all_hooks_warning(projects)
     row(WARN if dah else OK,
         "disableAllHooks",
-        dah or scanned)
-    mho = ccm_canaries.managed_hooks_only_warning(projects)
+        dah or "not set (managed, user and per-project settings)")
+    # This one is read from the administrator's file alone, because
+    # that is the only place Claude Code honours it. Saying otherwise
+    # would claim a scope the check does not have.
+    mho = ccm_canaries.managed_hooks_only_warning()
     row(WARN if mho else OK,
         "allowManagedHooksOnly",
-        mho or scanned)
+        mho or "not set (managed settings)")
 
     cluster_msgs = ccm_canaries.shell_cluster_warnings(projects)
     if cluster_msgs:
