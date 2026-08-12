@@ -52,7 +52,7 @@ class TestJsonlFreshness:
         ccm_jsonl._jsonl_activity_cache.clear()
 
     def test_slug_simple(self):
-        assert ccm_jsonl._project_slug("/Users/yo/code/foo") == "-Users-yo-code-foo"
+        assert ccm_jsonl._project_slug("/Users/ann/code/foo") == "-Users-ann-code-foo"
 
     def test_slug_with_tilde(self):
         # ~ should expand; trailing slash and structure preserved
@@ -75,14 +75,14 @@ class TestJsonlFreshness:
         ) == "-Users-example------2000---AB"
 
     def test_slug_underscore_becomes_dash(self):
-        # Verified against a real slug: code/test_project →
-        # ...-code-test-project in ~/.claude/projects.
+        # Underscores are replaced too, not just path separators —
+        # `~/.claude/projects` slugs confirm it.
         assert ccm_jsonl._project_slug(
-            "/Users/yo/code/test_project") == "-Users-yo-code-test-project"
+            "/Users/ann/code/test_project") == "-Users-ann-code-test-project"
 
     def test_slug_dots_and_spaces_become_dashes(self):
         assert ccm_jsonl._project_slug(
-            "/Users/yo/my proj/v1.2") == "-Users-yo-my-proj-v1-2"
+            "/Users/ann/my proj/v1.2") == "-Users-ann-my-proj-v1-2"
 
     def test_age_minus_one_when_no_dir(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))

@@ -37,15 +37,15 @@ set -uo pipefail
 command -v tmux >/dev/null 2>&1 || exit 0
 tmux info >/dev/null 2>&1 || exit 0   # no server → nothing to compare against
 
-# Names to skip, one per line, in a file git never tracks. A project
-# name can be an ordinary English word that the repository uses as
-# prose, and flagging those would fire on every other commit; listing
-# them there keeps the check quiet without writing a single real name
-# into the repository. Starts empty — add a name the first time a
-# false positive annoys you.
+# Names to skip, one per line. A project name can be an ordinary
+# English word the repository uses as prose, and flagging those would
+# fire on every other commit. Starts empty — add a name the first time
+# a false positive annoys you.
 #
-# Examples of such words belong in that file, not in this one.
-ignore_file="$(git rev-parse --git-dir)/ccm-redact-ignore"
+# The file lives outside the repository, not under .git/: it is itself
+# a list of real project names, and anything inside the working tree
+# travels with a copy of it. Examples belong in that file, not here.
+ignore_file="${XDG_DATA_HOME:-$HOME/.local/share}/ccm/redact-ignore"
 
 names=$(tmux list-windows -a -F '#{@ccm_project}' 2>/dev/null | sort -u)
 [ -n "$names" ] || exit 0
@@ -95,12 +95,20 @@ HOOK
 
 chmod +x "$hook"
 
-ignore_file="$repo_root/.git/ccm-redact-ignore"
+ignore_file="${XDG_DATA_HOME:-$HOME/.local/share}/ccm/redact-ignore"
+mkdir -p "$(dirname "$ignore_file")"
+legacy="$repo_root/.git/ccm-redact-ignore"
+if [ -e "$legacy" ] && [ ! -e "$ignore_file" ]; then
+    mv "$legacy" "$ignore_file"
+    echo "moved:     $legacy -> $ignore_file"
+elif [ -e "$legacy" ]; then
+    echo "note:      $legacy is superseded by $ignore_file; remove it" >&2
+fi
 if [ ! -e "$ignore_file" ]; then
     cat > "$ignore_file" <<'IGNORE'
 # Project names the pre-commit redact hook should not flag, one per line.
 # Some project names are ordinary English words and would fire constantly.
-# This file lives under .git/, so nothing here is ever published.
+# Kept outside any repository: this list is itself a list of real names.
 IGNORE
     echo "created:   $ignore_file (empty)"
 fi

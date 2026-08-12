@@ -67,7 +67,7 @@ class TestNoPersonalIdentifiers:
         so the placeholder forms stay allowed and only concrete ones
         fail."""
         concrete = re.compile(
-            r"(?:/Users|/home)/(?!alice\b|bob\b|u\b|user\b|example\b|x\b|yo\b)"
+            r"(?:/Users|/home)/(?!alice\b|ann\b|bob\b|u\b|user\b|example\b|x\b)"
             r"[a-z][\w.-]{2,}"
             r"|~/Library/CloudStorage"
         )
