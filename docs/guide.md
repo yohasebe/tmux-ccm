@@ -816,6 +816,8 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_AUTO_EXIT_LOG` | `$CCM_DATA_DIR/state/auto-exit.log` | Where ccm records the sessions it closed itself. Claude Code reports an auto-exit as `SessionEnd` with reason `prompt_input_exit`, which is exactly what a person typing `/exit` produces — so this file is the only place the two can be told apart afterwards. One JSON record per exit: timestamp, project, session id, idle seconds. `ccm doctor` shows the count |
 | `CCM_AUTO_EXIT_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap for the auto-exit log; at the cap it rotates to `auto-exit.log.1`. One record per auto-exit puts the cap decades away — it exists so a pathological loop cannot fill the disk |
 
+**Reaching every reader.** ccm runs from three places with different environments: tmux's `#()`, the hooks Claude Code spawns, and your own shell. A variable set only in your shell is read by `ccm status` and the dashboard but not by the status bar, so the same window can be described two ways at once. Put anything that changes how state is computed or drawn into tmux's environment (`tmux set-environment -g NAME value`, then restart the bar) rather than a shell profile — or, where a tmux option exists for it, use that instead.
+
 ### Tuning examples
 
 ```bash

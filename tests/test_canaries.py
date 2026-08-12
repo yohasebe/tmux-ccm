@@ -203,18 +203,40 @@ class TestManagedHooksOnlyWarning:
         monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_canaries.managed_hooks_only_warning() == ""
 
-    def test_setting_true_returns_warning(self, tmp_path, monkeypatch):
-        f = tmp_path / "settings.json"
-        f.write_text('{"allowManagedHooksOnly": true}')
-        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
+    def _managed(self, monkeypatch, path):
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(path))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES",
+                            {sys.platform: str(path)})
+
+    def test_setting_true_in_managed_returns_warning(self, tmp_path,
+                                                     monkeypatch):
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text('{"allowManagedHooksOnly": true}')
+        self._managed(monkeypatch, managed)
         msg = ccm_canaries.managed_hooks_only_warning()
         assert "allowManagedHooksOnly" in msg
         assert "user-scope hooks" in msg
 
-    def test_independent_from_disable_all_hooks(self, tmp_path, monkeypatch):
-        """Both canaries can fire independently or together."""
+    def test_the_same_key_in_the_users_own_file_is_not_a_warning(
+            self, tmp_path, monkeypatch):
+        """Claude Code documents this as a managed setting, so a copy
+        in the user's file does nothing. Warning about it would send
+        the reader to delete a line that was never in effect while
+        their hooks go on working."""
+        self._managed(monkeypatch, tmp_path / "absent.json")
         f = tmp_path / "settings.json"
-        f.write_text('{"allowManagedHooksOnly": true, "disableAllHooks": true}')
+        f.write_text('{"allowManagedHooksOnly": true}')
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
+        assert ccm_canaries.managed_hooks_only_warning() == ""
+
+    def test_independent_from_disable_all_hooks(self, tmp_path, monkeypatch):
+        """Both canaries can fire independently or together — but each
+        only where its own flag has effect."""
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text('{"allowManagedHooksOnly": true}')
+        self._managed(monkeypatch, managed)
+        f = tmp_path / "settings.json"
+        f.write_text('{"disableAllHooks": true}')
         monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(f))
         assert ccm_canaries.managed_hooks_only_warning() != ""
         assert ccm_canaries.disable_all_hooks_warning() != ""
@@ -280,6 +302,33 @@ class TestSettingsScanScope:
                             {sys.platform: str(managed)})
         msg = ccm_canaries.managed_hooks_only_warning()
         assert "managed settings" in msg, msg
+
+    def test_the_user_file_is_reported_last(self, tmp_path, monkeypatch):
+        """Claude Code resolves the user's own file last, so when two
+        files carry the flag the other one decides. Getting the order
+        wrong still fires the warning — it just sends the reader to
+        the file that is being overridden."""
+        self._isolate(monkeypatch, tmp_path)
+        user = tmp_path / "user-settings.json"
+        user.write_text('{"disableAllHooks": true}')
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(user))
+        project = self._project_with(
+            tmp_path, "settings.json", '{"disableAllHooks": true}')
+        msg = ccm_canaries.disable_all_hooks_warning([project])
+        assert "demo" in msg, msg
+        assert "user settings" not in msg, msg
+
+    def test_a_projects_local_file_outranks_its_shared_one(
+            self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        directory = tmp_path / "workspace"
+        (directory / ".claude").mkdir(parents=True, exist_ok=True)
+        for name in ("settings.json", "settings.local.json"):
+            (directory / ".claude" / name).write_text(
+                '{"disableAllHooks": true}')
+        msg = ccm_canaries.disable_all_hooks_warning(
+            [_project("demo", str(directory))])
+        assert "local settings" in msg, msg
 
     def test_projects_are_optional(self, tmp_path, monkeypatch):
         """Callers without a project list still get the two files that

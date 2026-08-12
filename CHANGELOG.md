@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The settings canaries resolve files in the order Claude Code does, so the
+  file they name is the one deciding. `allowManagedHooksOnly` is reported only
+  from the administrator's settings, where it has effect.
 - The example project name used across the README, guide and tests is a
   synthetic one.
 - The `disableAllHooks` and `allowManagedHooksOnly` canaries read the

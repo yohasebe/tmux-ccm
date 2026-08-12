@@ -815,6 +815,8 @@ ccmはいくつかのチューニング用環境変数を公開しています�
 | `CCM_AUTO_EXIT_LOG` | `$CCM_DATA_DIR/state/auto-exit.log` | ccm 自身が終了させたセッションの記録先。Claude Code は auto-exit を `SessionEnd` の reason `prompt_input_exit` として報告するが、これは人間が `/exit` を打った場合とまったく同じ値なので、両者を事後に区別できるのはこのファイルだけ。1 回の終了につき JSON 1 行（時刻・プロジェクト・session id・idle 秒）。`ccm doctor` が件数を表示 |
 | `CCM_AUTO_EXIT_LOG_MAX_BYTES` | `1048576`（1 MB） | auto-exit ログのサイズ上限。到達時は `auto-exit.log.1` にローテーション。1 終了につき 1 行なので上限到達は事実上ありえず、暴走ループがディスクを埋めないための保険 |
 
+**すべての読み手に届けること。** ccm は環境の異なる 3 か所から起動されます — tmux の `#()`、Claude Code が spawn するフック、そしてあなたのシェルです。シェルだけで設定した変数は `ccm status` とダッシュボードには読まれますがステータスバーには届かず、同じウィンドウが 2 通りに説明されることになります。状態の計算や描画に影響する値は、シェルの設定ファイルではなく tmux の環境（`tmux set-environment -g NAME value` のあとバーを再起動）に置いてください。tmux オプションが用意されているものは、そちらを使う方が確実です。
+
 ### チューニング例
 
 ```bash

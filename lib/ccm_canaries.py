@@ -170,29 +170,28 @@ def _read_settings_file(path):
     return data if isinstance(data, dict) else None
 
 
-def _read_claude_settings():
-    return _read_settings_file(CLAUDE_SETTINGS_FILE)
-
-
 def _settings_sources(projects=None):
     """Every settings file that can turn ccm's hooks off, with a label
     naming where each one came from.
 
-    Ordered as Claude Code resolves them, administrator first, so the
-    first file carrying a flag is the one that decides.
+    Ordered as Claude Code resolves them — administrator first, the
+    user's own file last — so the first file carrying a flag is the
+    one that decides. Getting this order wrong does not change whether
+    a warning fires, but it names the wrong file when more than one
+    carries the flag, and the name is the whole point of saying it.
     """
     yield ("managed settings",
            MANAGED_SETTINGS_FILES.get(sys.platform, MANAGED_SETTINGS_DEFAULT))
-    yield ("user settings", CLAUDE_SETTINGS_FILE)
     for project in projects or []:
         directory = os.path.expanduser(getattr(project, "dir", "") or "")
         if not directory:
             continue
         name = getattr(project, "name", "") or "?"
-        yield (f"{name}'s settings",
-               os.path.join(directory, ".claude", "settings.json"))
         yield (f"{name}'s local settings",
                os.path.join(directory, ".claude", "settings.local.json"))
+        yield (f"{name}'s settings",
+               os.path.join(directory, ".claude", "settings.json"))
+    yield ("user settings", CLAUDE_SETTINGS_FILE)
 
 
 def _flag_source(flag, projects=None) -> str:
@@ -245,12 +244,15 @@ def managed_hooks_only_warning(projects=None) -> str:
     The result looks identical to a broken Claude Code install from
     ccm's perspective: no hooks fire, ever.
 
-    The administrator's file is read first, which is where this flag
-    is meant to live — the deployment this canary exists for is
-    exactly the one it used to be unable to see.
+    Only the administrator's file counts. Claude Code documents this
+    as a managed setting, so the same key in a project's or the user's
+    own file is ignored — warning about one would send the reader to
+    delete a line that was never doing anything, while their hooks go
+    on working. `projects` is accepted for a uniform signature.
     """
-    source = _flag_source("allowManagedHooksOnly", projects)
-    if source:
+    del projects  # deliberately not scanned; see above
+    source = _flag_source("allowManagedHooksOnly")
+    if source == "managed settings":
         return (
             f"Claude Code `allowManagedHooksOnly: true` is set in "
             f"{source} — all user-scope hooks (including every ccm "
