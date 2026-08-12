@@ -19,6 +19,12 @@ pip install pytest
 brew install bats-core   # or: apt-get install bats
 ```
 
+## Keeping local detail out
+
+The repository carries the tool, its tests and its documentation. Paths, addresses and the names of whatever else you happen to have open belong to your machine, not to it — in the diff and in the commit message alike.
+
+Local git hooks enforce this; they are not part of the repository, so install them once per clone from your own copy. Nothing about your environment is written down here.
+
 ## Running tests
 
 ```bash
