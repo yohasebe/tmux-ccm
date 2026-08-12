@@ -1639,7 +1639,18 @@ class Dashboard:
         """
         verb = {"unregister": "Unregister", "delete": "Delete",
                 "ignore": "Ignore or unignore"}[action]
-        name = self._prompt(stdscr, f"{verb} which project? ")
+        # The list's selection survives into menu mode, so a plain
+        # Enter targets it — typing a name the dashboard is already
+        # pointing at would be busywork. Esc still cancels; with no
+        # usable selection an empty answer cancels as before.
+        default = ""
+        if 0 <= self.selected < len(self.projects):
+            default = self.projects[self.selected].name
+        suffix = f" [{default}]" if default else ""
+        name = self._prompt(stdscr, f"{verb} which project{suffix}? ")
+        if name is None:
+            return
+        name = name.strip() or default
         if not name:
             return
         known = {p.name for p in self.projects}

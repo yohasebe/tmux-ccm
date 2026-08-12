@@ -1311,6 +1311,73 @@ def _list_literal(name, closing_indent):
     return m.group(1)
 
 
+class TestDoMenuRemoval:
+    """The menu route asks for a name because the menu has no
+    selection of its own — but the list's selection survives into
+    menu mode, so a plain Enter targets it rather than making the
+    user retype what the dashboard is already pointing at."""
+
+    def _cmds(self, monkeypatch):
+        calls = {"unregister": [], "remove": [], "ignore": []}
+        monkeypatch.setattr(
+            "dashboard.cmd_unregister",
+            lambda name: calls["unregister"].append(name))
+        monkeypatch.setattr(
+            "dashboard.cmd_remove",
+            lambda name: calls["remove"].append(name))
+        monkeypatch.setattr(
+            "dashboard.cmd_ignore",
+            lambda name: calls["ignore"].append(name))
+        return calls
+
+    def test_plain_enter_targets_the_selected_project(self, monkeypatch):
+        calls = self._cmds(monkeypatch)
+        d, _, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=[""])
+        d._do_menu_removal(_make_mock_stdscr(), "unregister")
+        assert calls["unregister"] == ["alpha"]
+        assert rebuilds == ["rebuild"]
+
+    def test_escape_cancels_despite_the_default(self, monkeypatch):
+        calls = self._cmds(monkeypatch)
+        d, _, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=[None])
+        d._do_menu_removal(_make_mock_stdscr(), "unregister")
+        assert calls == {"unregister": [], "remove": [], "ignore": []}
+        assert rebuilds == []
+
+    def test_a_typed_name_overrides_the_selection(self, monkeypatch):
+        calls = self._cmds(monkeypatch)
+        projects = [_one_project(), _one_project("beta", "0:2")]
+        d, _, _, _ = _interaction_dash(
+            monkeypatch, projects, prompt_answers=["beta"])
+        d._do_menu_removal(_make_mock_stdscr(), "unregister")
+        assert calls["unregister"] == ["beta"]
+
+    def test_menu_delete_still_confirms(self, monkeypatch):
+        """The default fills in the name, not the consent."""
+        calls = self._cmds(monkeypatch)
+        d, _, _, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["", "y"])
+        d._do_menu_removal(_make_mock_stdscr(), "delete")
+        assert calls["remove"] == ["alpha"]
+
+    def test_menu_delete_declined_is_noop(self, monkeypatch):
+        calls = self._cmds(monkeypatch)
+        d, _, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["", "n"])
+        d._do_menu_removal(_make_mock_stdscr(), "delete")
+        assert calls["remove"] == []
+        assert rebuilds == []
+
+    def test_unknown_name_points_at_the_faster_route(self, monkeypatch):
+        self._cmds(monkeypatch)
+        d, messages, _, _ = _interaction_dash(
+            monkeypatch, [_one_project()], prompt_answers=["nosuch"])
+        d._do_menu_removal(_make_mock_stdscr(), "unregister")
+        assert messages and "press r" in messages[0]
+
+
 class TestEveryKeyAndOperationIsFindable:
     """What the dashboard can do has to be visible before you press
     anything.
