@@ -371,3 +371,46 @@ class TestRecapPhantomSubagent20260707:
             jsonl_stop_reason="tool_use", jsonl_age=8, raw="IDLE",
         )
         assert state == "BUSY"
+
+
+class TestFixturesAreSynthetic:
+    """Replay fixtures carry an event sequence and nothing else.
+
+    Absolute timestamps would tie the corpus to one machine's clock and
+    extra fields would let a replay depend on something the detection
+    path is not being asked about. Fixtures are normalised to a fixed
+    epoch with their intervals preserved.
+    """
+
+    SYNTHETIC_EPOCH = 1000000000
+
+    def _paths(self):
+        return sorted(
+            os.path.join(TRACES_DIR, f) for f in os.listdir(TRACES_DIR)
+            if f.endswith(".jsonl")
+        )
+
+    def test_fixtures_exist(self):
+        assert self._paths(), "no replay fixtures found"
+
+    def test_fixtures_start_at_the_synthetic_epoch(self):
+        for path in self._paths():
+            with open(path, encoding="utf-8") as f:
+                stamps = [json.loads(l)["ts"] for l in f if l.strip()]
+            assert stamps, f"{path}: no records"
+            assert min(stamps) == self.SYNTHETIC_EPOCH, (
+                f"{path}: starts at {min(stamps)}, not {self.SYNTHETIC_EPOCH} "
+                f"— re-normalise so the fixture carries intervals, not a clock"
+            )
+
+    def test_fixtures_carry_only_timestamp_and_type(self):
+        for path in self._paths():
+            with open(path, encoding="utf-8") as f:
+                for i, line in enumerate(f, 1):
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    assert set(record) == {"ts", "type"}, (
+                        f"{path}:{i}: unexpected fields {sorted(record)} — a "
+                        f"replay fixture carries the event sequence only"
+                    )
