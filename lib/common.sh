@@ -137,6 +137,9 @@ _ccm_conf_option_value() {
     local key="$1"
     local conf="${2:-$HOME/.tmux.conf}"
     [[ -f "$conf" ]] || return 0
+    # `$NF` is the value only while the line ends with it, which is
+    # what ccm writes. A hand-added trailing comment would be read
+    # as the value.
     awk -v k="$key" '
         $1 ~ /^#/ { next }
         { for (i = 1; i < NF; i++) if ($i == k) { print $NF; next } }

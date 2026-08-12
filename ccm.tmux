@@ -144,6 +144,9 @@ fi
 # the burst a drag produces so one resize gesture costs one render.
 # Same append-once guard as above: re-sourcing would otherwise stack a
 # second copy and render twice per event.
+# Matching on the script name cuts both ways: a hook of the user's
+# own that happens to mention it counts as ours, and ccm stays
+# unregistered.
 if ! tmux show-hooks -g 2>/dev/null | grep "client-resized" | grep -q "on-resize.sh"; then
     tmux set-hook -ga client-resized "run-shell -b '\"${CCM_ROOT}/lib/on-resize.sh\" 2>/dev/null || true'"
 fi
