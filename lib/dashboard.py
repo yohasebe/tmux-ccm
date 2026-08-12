@@ -1160,7 +1160,7 @@ class Dashboard:
             help_items = [
                 "[↑↓/jk] select", "[Enter] attach", "[/] search",
                 "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
-                "[r]emove", "[i]gnore", "e[x]it all", "[s]ave", "[t]ree",
+                "[r]emove…", "[i]gnore", "e[x]it all", "[s]ave", "[t]ree",
                 "[b]g sessions", "[w]atch sidekicks", "[m/?] menu",
                 "[q] quit",
             ]
@@ -1599,7 +1599,15 @@ class Dashboard:
 
     def _do_remove(self, stdscr):
         p = self.projects[self.selected]
-        choice = self._prompt(stdscr, f"Remove '{p.name}'? [u]nregister / [d]elete / Esc: ")
+        # `ignore` is deliberately NOT an option here. It is a
+        # reversible state, and putting it beside an irreversible
+        # delete invites the confirmation for one to be pressed on
+        # the way to the other. Naming it keeps it findable without
+        # mixing the two.
+        choice = self._prompt(
+            stdscr,
+            f"Remove '{p.name}'? [u]nregister (keep window) / "
+            f"[d]elete (close it) / Esc  ")
         if not choice:
             return
         if choice.lower() == "u":
@@ -1609,6 +1617,42 @@ class Dashboard:
         else:
             return
         if ok:
+            self._trigger_rebuild()
+
+    def _do_menu_removal(self, stdscr, action):
+        """Unregister or delete a project named at the prompt.
+
+        Reached from the menu, which has no selection of its own. The
+        dashboard's `r` is the quicker route once you know it exists,
+        and the message says so — the menu's job here is to make the
+        operation findable at all.
+        """
+        verb = {"unregister": "Unregister", "delete": "Delete",
+                "ignore": "Ignore or unignore"}[action]
+        name = self._prompt(stdscr, f"{verb} which project? ")
+        if not name:
+            return
+        known = {p.name for p in self.projects}
+        if name not in known:
+            self._show_message(stdscr, f"No such project: {name}", 2)
+            return
+        if action == "ignore":
+            target = next(p for p in self.projects if p.name == name)
+            ok = self._run_cmd(
+                stdscr,
+                cmd_unignore if getattr(target, "ignored_panes", 0)
+                else cmd_ignore,
+                name)
+        elif action == "unregister":
+            ok = self._run_cmd(stdscr, cmd_unregister, name)
+        else:
+            confirm = self._prompt(
+                stdscr, f"Close {name}'s window and its session? [y/N]: ")
+            if not confirm or confirm.lower() != "y":
+                return
+            ok = self._run_cmd(stdscr, cmd_remove, name)
+        if ok:
+            self.mode = "dashboard"
             self._trigger_rebuild()
 
     def _do_ignore_toggle(self, stdscr):
@@ -2520,6 +2564,16 @@ class Dashboard:
 
         self.menu_items = [
             ("Add project", "add"),
+            # Removal belongs here too. The menu is where a reader
+            # finds out WHAT ccm can do, and leaving these out made
+            # unregistering look unsupported — the dashboard offers
+            # both, but only behind `r`, which says only "remove".
+            ("Unregister project (keep window)", "unregister"),
+            ("Delete project (close window)", "delete"),
+            # Listed beside them so the reversible option is found by
+            # anyone looking for a way out, without sharing a
+            # confirmation prompt with the irreversible one.
+            ("Ignore / unignore project (hide from ccm)", "ignore"),
             ("Save snapshot", "save"),
             ("Load snapshot", "load"),
             ("", ""),  # separator
@@ -2601,6 +2655,9 @@ class Dashboard:
             _, action = self.menu_items[self.menu_selected]
             if action == "add":
                 self._do_add(stdscr)
+                self._build_menu()
+            elif action in ("unregister", "delete", "ignore"):
+                self._do_menu_removal(stdscr, action)
                 self._build_menu()
             elif action == "save":
                 self._do_save(stdscr)

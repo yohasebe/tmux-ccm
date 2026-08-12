@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The dashboard menu (`m` / `?`) lists unregistering, deleting and ignoring a
+  project. Adding one was listed there; the ways back out were reachable only
+  behind `r`, which the help line rendered as "remove".
 - The settings canaries resolve files in the order Claude Code does, so the
   file they name is the one deciding. `allowManagedHooksOnly` is reported only
   from the administrator's settings, where it has effect.

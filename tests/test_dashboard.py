@@ -1255,3 +1255,66 @@ class TestDoSearch:
 
         assert action == "attached"
         assert attached == [1]
+
+
+def _dashboard_source():
+    import inspect
+    return inspect.getsource(dashboard)
+
+
+def _method_source(name):
+    import ast, inspect
+    src = inspect.getsource(dashboard)
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(src, node)
+    raise AssertionError(f"{name} not found")
+
+
+def _list_literal(name, closing_indent):
+    """Source text of a list literal, to its closing bracket.
+
+    Matched to the bracket at a known indent rather than the first
+    `]` — the first one belongs to `"[↑↓/jk] select"`, and stopping
+    there made this check report every key as missing.
+    """
+    import re
+    m = re.search(rf"{name} = \[(.*?)\n{closing_indent}\]",
+                  _dashboard_source(), re.S)
+    assert m, f"{name} literal not found"
+    return m.group(1)
+
+
+class TestEveryKeyAndOperationIsFindable:
+    """What the dashboard can do has to be visible before you press
+    anything.
+
+    Unregistering a project was reachable only behind `r`, which the
+    footer rendered as "remove" and the menu did not mention at all,
+    so the operation read as unsupported. The instance is easy to fix;
+    these tests are here so the class of oversight cannot come back.
+    """
+
+    def test_every_handled_key_is_offered_in_the_help_line(self):
+        import re
+        handled = set(re.findall(r'ord\("([a-z])"\)',
+                                 _method_source("_handle_key")))
+        block = _list_literal("help_items", " " * 12)
+        missing = {k for k in handled
+                   if not re.search(rf"\[[^\]]*{k}[^\]]*\]", block)}
+        assert not missing, (
+            f"keys handled by the dashboard but absent from the help "
+            f"line: {sorted(missing)} — a key nobody is told about is "
+            f"a feature nobody finds")
+
+    def test_the_menu_offers_every_way_to_stop_managing_a_project(self):
+        """Adding a project is in the menu; the ways back out have to
+        be as well, or removal reads as unsupported."""
+        import re
+        block = _list_literal(r"self\.menu_items", " " * 8)
+        actions = set(re.findall(r'"([a-z_]+)"\s*\)', block))
+        for action in ("add", "unregister", "delete", "ignore"):
+            assert action in actions, (
+                f"the menu does not offer '{action}' — the menu is where "
+                f"a reader learns what ccm can do")

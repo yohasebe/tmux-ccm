@@ -336,7 +336,7 @@ Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named
 | `a` | Add new project |
 | `n` | Rename selected project |
 | `g` | Register existing window |
-| `r` | Remove — choose [u]nregister (keep window) or [d]elete |
+| `r` | Remove — choose [u]nregister (keep window) or [d]elete (close it). Also in the menu |
 | `i` | Toggle ignore — hide/restore the project (see [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore)) |
 | `x` | Exit all idle Claude Code sessions |
 | `/` | Search projects |

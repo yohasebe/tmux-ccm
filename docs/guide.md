@@ -125,7 +125,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `a` | Add | Register a new project directory |
 | `n` | Rename | Change the selected project's name |
 | `g` | Register | Tag an existing tmux window as a ccm project |
-| `r` | Remove | Choose [u]nregister (keep window) or [d]elete (kill window) |
+| `r` | Remove | Choose [u]nregister (keep window) or [d]elete (kill window). Listed in the menu (`m` / `?`) too |
 | `i` | Ignore | Toggle CCM_IGNORE on the selected project (hide/restore it — see "Running a second model" below) |
 | `x` | Exit all | Exit all idle Claude Code sessions to free resources |
 | `/` | Filter | Live incremental search: type to narrow, `↑↓`/`C-p`/`C-n` to select, `Enter` to attach, `C-u` to clear, `Esc` to cancel. Unicode-safe — Japanese project names match on Japanese substrings |
