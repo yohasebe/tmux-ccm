@@ -18,6 +18,13 @@ teardown() {
     rm -rf "$MOCK_DIR"
 }
 
+# File mode in octal. GNU coreutils and BSD spell this differently and
+# each rejects the other's flag, so ask GNU first and fall back — the
+# suite runs on both Linux and macOS.
+file_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
 write_conf() {
     cat > "$CONF" <<'EOF'
 set -g mouse on
@@ -83,7 +90,7 @@ EOF
     chmod 644 "$CONF"
     _ccm_save_tmux_conf "set -g @ccm-status-line 2" "$CONF"
 
-    run stat -f '%Lp' "$CONF"
+    run file_mode "$CONF"
     [[ "$output" == "644" ]] || { echo "permissions became $output"; return 1; }
 }
 
