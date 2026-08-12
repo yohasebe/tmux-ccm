@@ -804,39 +804,39 @@ class TestDispatcherPassthrough:
 
     @patch("ccm_send.cmd_send")
     def test_send_with_file_flag_passes_through(self, mock_send):
-        ccm_core.dispatch(["send", "blog", "--file", "/tmp/m.txt"])
-        mock_send.assert_called_once_with(["blog", "--file", "/tmp/m.txt"])
+        ccm_core.dispatch(["send", "demo", "--file", "/tmp/m.txt"])
+        mock_send.assert_called_once_with(["demo", "--file", "/tmp/m.txt"])
 
     @patch("ccm_send.cmd_send")
     def test_send_with_yes_flag_passes_through(self, mock_send):
-        ccm_core.dispatch(["send", "blog", "msg", "-y"])
-        mock_send.assert_called_once_with(["blog", "msg", "-y"])
+        ccm_core.dispatch(["send", "demo", "msg", "-y"])
+        mock_send.assert_called_once_with(["demo", "msg", "-y"])
 
     @patch("ccm_send.cmd_send")
     def test_send_with_force_flag_passes_through(self, mock_send):
-        ccm_core.dispatch(["send", "blog", "--force", "queued msg"])
-        mock_send.assert_called_once_with(["blog", "--force", "queued msg"])
+        ccm_core.dispatch(["send", "demo", "--force", "queued msg"])
+        mock_send.assert_called_once_with(["demo", "--force", "queued msg"])
 
     @patch("ccm_send.cmd_send")
     def test_send_preserves_double_dash_separator(self, mock_send):
         # `--` lets users send messages that start with `-`
-        ccm_core.dispatch(["send", "blog", "--", "--literal-flag-as-message"])
+        ccm_core.dispatch(["send", "demo", "--", "--literal-flag-as-message"])
         mock_send.assert_called_once_with(
-            ["blog", "--", "--literal-flag-as-message"]
+            ["demo", "--", "--literal-flag-as-message"]
         )
 
     @patch("ccm_commands.cmd_capture")
     def test_capture_with_leading_copy_flag(self, mock_capture):
-        # `ccm capture --copy blog` — flag BEFORE positional. The
+        # `ccm capture --copy demo` — flag BEFORE positional. The
         # original bug: argparse rejected `--copy` because it was
         # not a defined subparser flag.
-        ccm_core.dispatch(["capture", "--copy", "blog"])
-        mock_capture.assert_called_once_with(["--copy", "blog"])
+        ccm_core.dispatch(["capture", "--copy", "demo"])
+        mock_capture.assert_called_once_with(["--copy", "demo"])
 
     @patch("ccm_commands.cmd_capture")
     def test_capture_with_trailing_copy_flag(self, mock_capture):
-        ccm_core.dispatch(["capture", "blog", "--copy"])
-        mock_capture.assert_called_once_with(["blog", "--copy"])
+        ccm_core.dispatch(["capture", "demo", "--copy"])
+        mock_capture.assert_called_once_with(["demo", "--copy"])
 
     @patch("ccm_commands.cmd_stop")
     def test_stop_all_reaches_handler(self, mock_stop):
@@ -851,8 +851,8 @@ class TestDispatcherPassthrough:
     @patch("ccm_commands.cmd_stop")
     def test_stop_name_reaches_handler(self, mock_stop):
         # Existing `ccm stop <name>` behaviour is unchanged.
-        ccm_core.dispatch(["stop", "blog"])
-        mock_stop.assert_called_once_with("blog")
+        ccm_core.dispatch(["stop", "demo"])
+        mock_stop.assert_called_once_with("demo")
 
     @patch("ccm_commands.cmd_stop")
     def test_stop_without_args_reaches_handler(self, mock_stop):
@@ -887,7 +887,7 @@ class TestDispatcherPassthrough:
         # `attach` is not a passthrough — argparse should still
         # reject unknown flags, not silently pass them through.
         with pytest.raises(SystemExit):
-            ccm_core.dispatch(["attach", "blog", "--bogus-flag"])
+            ccm_core.dispatch(["attach", "demo", "--bogus-flag"])
         mock_attach.assert_not_called()
 
     def test_send_help_prints_usage(self, capsys):
@@ -1353,9 +1353,9 @@ class TestCmdDebugTrace:
         assert "alpha-two (main:2)" in err
 
     def test_substring_match_on_dir_basename(self, monkeypatch, capsys):
-        rows = "main:1\tproj-x\t/code/blog-engine"
+        rows = "main:1\tproj-x\t/code/demo-engine"
         _, err = self._run_one_tick(monkeypatch, capsys,
-                                    rows=rows, needle="blog")
+                                    rows=rows, needle="demo")
         assert "proj-x (main:1)" in err
 
     def test_tick_line_contains_context_columns(self, monkeypatch,

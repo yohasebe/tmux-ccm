@@ -1198,8 +1198,8 @@ def _passthrough_argparse_config(p):
     """Marker configurer: the subcommand bypasses argparse and
     receives raw `argv[1:]` as `rest`. The handler does its own
     flag parsing — necessary for commands that allow flags
-    intermixed with positionals (`ccm capture --copy blog` is as
-    valid as `ccm capture blog --copy`), which `nargs="*"` and
+    intermixed with positionals (`ccm capture --copy demo` is as
+    valid as `ccm capture demo --copy`), which `nargs="*"` and
     `nargs=REMAINDER` both reject. The dispatcher detects this
     configurer by identity and skips `parse_args`."""
     p.add_argument("rest", nargs="*")
@@ -1300,7 +1300,7 @@ def _build_parser():
 
 def dispatch(argv):
     """Run a ccm subcommand. `argv` is the args after the program
-    name (e.g. `["send", "blog", "--file", "msg.txt"]`)."""
+    name (e.g. `["send", "demo", "--file", "msg.txt"]`)."""
     import argparse
     if argv and argv[0] in _PASSTHROUGH_COMMANDS:
         cmd = argv[0]

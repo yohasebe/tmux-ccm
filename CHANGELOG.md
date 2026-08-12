@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The example project name used across the README, guide and tests is a
+  synthetic one. It had been a name that also exists on the author's machine,
+  and the check meant to catch exactly that had the name in its ignore list —
+  listed as an ordinary English word, which it is, but it was also being used
+  as an example project name, which is the thing the check is for.
 - The `disableAllHooks` and `allowManagedHooksOnly` canaries read the
   administrator's settings and each project's settings, not only the user's
   own file, and name which one carries the flag. `allowManagedHooksOnly` is

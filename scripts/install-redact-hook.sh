@@ -58,9 +58,16 @@ while IFS= read -r name; do
     fi
     # Word-boundary match: a short project name can be a substring of
     # an ordinary word, and a plain grep would fire on every one.
+    #
+    # URLs are stripped before matching. A path segment of somebody
+    # else's site is not a local name, and leaving them in means the
+    # check cries wolf on any commit that touches a link — which is
+    # how a check ends up switched off, or its subject ends up in the
+    # ignore file.
     hits=$(git diff --cached -U0 -- $staged \
            | grep -nE "^\+" \
            | grep -vE "^\+\+\+" \
+           | sed -E 's#https?://[^ )"'"'"']*##g' \
            | grep -E "(^|[^A-Za-z0-9_-])${name}([^A-Za-z0-9_-]|$)" || true)
     if [ -n "$hits" ]; then
         found="${found}

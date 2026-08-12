@@ -194,7 +194,7 @@ prefix 経由の binding と同じ `display-popup` 呼び出しを通るので�
 
 ```bash
 # 位置引数のシンプルな送信（TTY なら確認プロンプトあり）
-ccm send blog "前回のレビュー結果をまとめてください"
+ccm send demo "前回のレビュー結果をまとめてください"
 
 # ファイルから
 ccm send research --file /tmp/brief.md
@@ -207,7 +207,7 @@ echo "parser リポジトリの Issue #42 の調査をお願いします" | ccm 
 printf 'context:\nbug: 120 行目で NPE\nplease fix' | ccm send api-server --stdin -y
 
 # 送信せずプロンプトに入力だけ(ユーザーがターゲットペインで続きを書く)
-ccm send blog --no-enter "TODO: "
+ccm send demo --no-enter "TODO: "
 ```
 
 ### 状態に応じた動作

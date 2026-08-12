@@ -16,7 +16,7 @@ import ccm_send
 class TestCmdSend:
     """Unit tests for `ccm send` — the cross-project prompt injector."""
 
-    def _make_project(self, name="blog", state="IDLE", win_target="0:5"):
+    def _make_project(self, name="demo", state="IDLE", win_target="0:5"):
         return ccm_core.Project(
             win_target=win_target,
             win_idx=win_target.split(":")[1],
@@ -56,7 +56,7 @@ class TestCmdSend:
     def test_basic_send(self, monkeypatch):
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         calls = self._tmux_calls(mock_tmux)
         # Cancel any stuck mode
         assert ("send-keys", "-t", "0:5", "-X", "cancel") in calls
@@ -70,18 +70,18 @@ class TestCmdSend:
         assert enter_i > literal_i
 
     def test_send_concatenates_multiple_positional_args(self, monkeypatch):
-        """`ccm send blog hello world` joins the remaining argv into a
+        """`ccm send demo hello world` joins the remaining argv into a
         single message, matching how the shell passes unquoted words."""
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "hello", "world"])
+            ccm_send.cmd_send(["demo", "hello", "world"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hello world") in calls
 
     def test_send_no_enter(self, monkeypatch):
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--no-enter", "hi"])
+            ccm_send.cmd_send(["demo", "--no-enter", "hi"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
         assert ("send-keys", "-t", "0:5", "Enter") not in calls
@@ -99,7 +99,7 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch)
         message = "header\n- bullet one\n- bullet two\n--flag-like"
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", message])
+            ccm_send.cmd_send(["demo", message])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "- bullet one") in calls
         assert ("send-keys", "-t", "0:5", "-l", "--", "- bullet two") in calls
@@ -114,7 +114,7 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch)
         message = "line1\nline2\nline3"
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", message])
+            ccm_send.cmd_send(["demo", message])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "line1") in calls
         assert ("send-keys", "-t", "0:5", "-l", "--", "line2") in calls
@@ -134,7 +134,7 @@ class TestCmdSend:
         f = tmp_path / "msg.txt"
         f.write_text("from file")
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--file", str(f)])
+            ccm_send.cmd_send(["demo", "--file", str(f)])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "from file") in calls
 
@@ -143,7 +143,7 @@ class TestCmdSend:
         monkeypatch.setattr("sys.stdin", io.StringIO("piped"))
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--stdin"])
+            ccm_send.cmd_send(["demo", "--stdin"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "piped") in calls
 
@@ -152,14 +152,14 @@ class TestCmdSend:
         monkeypatch.setattr("sys.stdin", io.StringIO("piped2"))
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "-"])
+            ccm_send.cmd_send(["demo", "-"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "piped2") in calls
 
     def test_send_stdin_from_tty_skips_confirmation(self, monkeypatch):
         """Regression guard for the silent-cancel bug:
 
-        A TTY user running `ccm send blog --stdin` and typing a
+        A TTY user running `ccm send demo --stdin` and typing a
         message terminated by Ctrl-D consumes stdin. The confirmation
         prompt's `input()` call would then raise EOFError because
         stdin is exhausted, and the `except EOFError` branch would
@@ -184,7 +184,7 @@ class TestCmdSend:
         monkeypatch.setattr("builtins.input", _fail_input)
 
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--stdin"])
+            ccm_send.cmd_send(["demo", "--stdin"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "typed body") in calls
         assert ("send-keys", "-t", "0:5", "Enter") in calls
@@ -193,7 +193,7 @@ class TestCmdSend:
         """`--` makes subsequent args positional even if they start with `-`."""
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--", "--force-looking-message"])
+            ccm_send.cmd_send(["demo", "--", "--force-looking-message"])
         calls = self._tmux_calls(mock_tmux)
         assert (
             "send-keys", "-t", "0:5", "-l", "--", "--force-looking-message"
@@ -327,7 +327,7 @@ class TestCmdSend:
         )
         with patch("ccm_core.tmux_cmd", return_value=resume_tail), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         err = capsys.readouterr().err
         # Refusal must expose classification + guidance + pane tail so
         # a caller (human or another Claude) can relay the situation
@@ -344,7 +344,7 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch, project=project)
         with patch("ccm_core.tmux_cmd", return_value=""), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "--force", "hello"])
+            ccm_send.cmd_send(["demo", "--force", "hello"])
 
     def test_send_permit_refusal_classifies_permission_dialog(
         self, monkeypatch, capsys,
@@ -361,7 +361,7 @@ class TestCmdSend:
         )
         with patch("ccm_core.tmux_cmd", return_value=perm_tail), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         err = capsys.readouterr().err
         assert "Classification: permission-request" in err
         assert "DANGEROUS" in err or "dangerous" in err
@@ -383,7 +383,7 @@ class TestCmdSend:
         )
         with patch("ccm_core.tmux_cmd", return_value=tui_tail), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         err = capsys.readouterr().err
         assert "claude agents" in err
         assert "send refused" in err.lower() or "refused" in err.lower()
@@ -399,19 +399,19 @@ class TestCmdSend:
         tui_tail = "enter to open · space to reply · ? for shortcuts"
         with patch("ccm_core.tmux_cmd", return_value=tui_tail), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "--force", "hello"])
+            ccm_send.cmd_send(["demo", "--force", "hello"])
 
     def test_send_busy_rejected_without_force(self, monkeypatch):
         project = self._make_project(state="BUSY")
         self._patch_resolution(monkeypatch, project=project)
         with patch("ccm_core.tmux_cmd", return_value=""), pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
 
     def test_send_busy_allowed_with_force(self, monkeypatch):
         project = self._make_project(state="BUSY")
         self._patch_resolution(monkeypatch, project=project)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--force", "hello"])
+            ccm_send.cmd_send(["demo", "--force", "hello"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hello") in calls
 
@@ -419,7 +419,7 @@ class TestCmdSend:
         project = self._make_project(state="SHELL")
         self._patch_resolution(monkeypatch, project=project)
         with patch("ccm_core.tmux_cmd", return_value=""), pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
 
     def _patch_start_polling(self, monkeypatch, initial, after_start):
         """Make `build_project_list` return `initial` on the first
@@ -439,7 +439,7 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch, project=initial)
         self._patch_start_polling(monkeypatch, initial, after_start)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--start", "hello"])
+            ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         # Claude launch command appears before the message payload.
         # The call tuple is ("send-keys", "-t", target, CLAUDE_CMD, "Enter").
@@ -468,7 +468,7 @@ class TestCmdSend:
         # Force timeout to one poll so the test is fast.
         monkeypatch.setattr(ccm_send, "START_WAIT_SEC", 0)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "--start", "hello"])
+            ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         # The literal message must NOT have been sent.
         literal_sent = any(
@@ -486,7 +486,7 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch, project=initial)
         self._patch_start_polling(monkeypatch, initial, permit)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "--start", "hello"])
+            ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         literal_sent = any(
             c == ("send-keys", "-t", "0:5", "-l", "--", "hello") for c in calls
@@ -516,7 +516,7 @@ class TestCmdSend:
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         monkeypatch.setattr("time.sleep", lambda _s: None)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--start", "hello"])
+            ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hello") in calls
 
@@ -524,7 +524,7 @@ class TestCmdSend:
         project = self._make_project(state="IDLE")
         self._patch_resolution(monkeypatch, project=project)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "hi"])
+            ccm_send.cmd_send(["demo", "hi"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
 
@@ -562,7 +562,7 @@ class TestCmdSend:
         raised = False
         with patch("ccm_core.tmux_cmd", side_effect=tmux_side_effect):
             try:
-                ccm_send.cmd_send(["blog", "--start", "--yes", message])
+                ccm_send.cmd_send(["demo", "--start", "--yes", message])
             except SystemExit:
                 raised = True
         return send_calls, raised
@@ -669,7 +669,7 @@ class TestCmdSend:
         # capture-pane would return empty (no body), but a short
         # message skips verification entirely, so no refusal.
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "--start", "--yes", "hi"])
+            ccm_send.cmd_send(["demo", "--start", "--yes", "hi"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
         assert ("send-keys", "-t", "0:5", "Enter") in calls
@@ -693,7 +693,7 @@ class TestCmdSend:
     def test_send_empty_message_rejected(self, monkeypatch):
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value=""), pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "   "])
+            ccm_send.cmd_send(["demo", "   "])
 
     def test_send_dual_source_rejected(self, monkeypatch, tmp_path):
         """Positional message + --file is an error (exactly one source)."""
@@ -701,12 +701,12 @@ class TestCmdSend:
         f = tmp_path / "m.txt"
         f.write_text("from file")
         with patch("ccm_core.tmux_cmd", return_value=""), pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "positional", "--file", str(f)])
+            ccm_send.cmd_send(["demo", "positional", "--file", str(f)])
 
     def test_send_unknown_flag_rejected(self, monkeypatch):
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value=""), pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "--nope", "hi"])
+            ccm_send.cmd_send(["demo", "--nope", "hi"])
 
 
 class TestDeliveryPaneResolution:
@@ -736,8 +736,8 @@ class TestDeliveryPaneResolution:
 
     def _make_project(self, state="IDLE"):
         return ccm_core.Project(
-            win_target="0:5", win_idx="5", name="blog",
-            directory="/tmp/blog", state=state,
+            win_target="0:5", win_idx="5", name="demo",
+            directory="/tmp/demo", state=state,
         )
 
     def _patch_resolution(self, monkeypatch, project, ps_text):
@@ -774,7 +774,7 @@ class TestDeliveryPaneResolution:
         self._patch_resolution(monkeypatch, project, self._PS_WITH_CLAUDE)
         stub, calls = self._tmux_stub(self._PANES_CLAUDE_INACTIVE)
         with patch("ccm_core.tmux_cmd", side_effect=stub):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         assert ("send-keys", "-t", "%51", "-l", "--", "hello") in calls
         assert ("send-keys", "-t", "%51", "Enter") in calls
         # Nothing typed at the window target (active zsh pane).
@@ -798,7 +798,7 @@ class TestDeliveryPaneResolution:
         monkeypatch.setattr("time.sleep", lambda _s: None)
         stub, calls = self._tmux_stub(self._PANES_CLAUDE_INACTIVE)
         with patch("ccm_core.tmux_cmd", side_effect=stub):
-            ccm_send.cmd_send(["blog", "--start", "hi"])
+            ccm_send.cmd_send(["demo", "--start", "hi"])
         assert ("send-keys", "-t", "%72",
                 ccm_constants.CLAUDE_CMD, "Enter") in calls
         assert ("send-keys", "-t", "%72", "-l", "--", "hi") in calls
@@ -813,7 +813,7 @@ class TestDeliveryPaneResolution:
         stub, calls = self._tmux_stub(panes)
         with patch("ccm_core.tmux_cmd", side_effect=stub), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "--start", "hi"])
+            ccm_send.cmd_send(["demo", "--start", "hi"])
         assert not any(
             c[0] == "send-keys" and ccm_constants.CLAUDE_CMD in c
             for c in calls
@@ -831,7 +831,7 @@ class TestDeliveryPaneResolution:
         panes = "%72\t81413\t1\tclaude\n%51\t12077\t0\tzsh"
         stub, calls = self._tmux_stub(panes)
         with patch("ccm_core.tmux_cmd", side_effect=stub):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         assert ("send-keys", "-t", "%72", "-l", "--", "hello") in calls
 
     def test_multiple_claude_panes_ambiguous_refused(self, monkeypatch):
@@ -853,7 +853,7 @@ class TestDeliveryPaneResolution:
         stub, calls = self._tmux_stub(panes)
         with patch("ccm_core.tmux_cmd", side_effect=stub), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         assert not any(
             c[0] == "send-keys" and c[3:] == ("-l", "--", "hello")
             for c in calls
@@ -883,7 +883,7 @@ class TestDeliveryPaneResolution:
         )
         with patch("ccm_core.tmux_cmd", side_effect=stub), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         msg = capsys.readouterr().err
         assert "CCM_IGNORE" in msg
         assert "sidekick" in msg
@@ -909,7 +909,7 @@ class TestDeliveryPaneResolution:
             "%51\t12077\t0\tclaude\t"
         )
         with patch("ccm_core.tmux_cmd", side_effect=stub):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         assert ("send-keys", "-t", "%51", "-l", "--", "hello") in calls
         assert not any(
             c[0] == "send-keys" and c[2] == "%72" for c in calls
@@ -922,7 +922,7 @@ class TestDeliveryPaneResolution:
         project = self._make_project(state="IDLE")
         self._patch_resolution(monkeypatch, project, self._PS_NO_CLAUDE)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         calls = [tuple(c.args) for c in mock_tmux.call_args_list]
         assert ("send-keys", "-t", "0:5", "-l", "--", "hello") in calls
 
@@ -943,8 +943,8 @@ class TestSendTrace:
     def _patch_resolution(self, monkeypatch, project=None, session="0"):
         if project is None:
             project = ccm_core.Project(
-                win_target="0:5", win_idx="5", name="blog",
-                directory="/tmp/blog", state="IDLE",
+                win_target="0:5", win_idx="5", name="demo",
+                directory="/tmp/demo", state="IDLE",
             )
         monkeypatch.setattr(ccm_core, "get_session", lambda: session)
         monkeypatch.setattr(
@@ -971,7 +971,7 @@ class TestSendTrace:
         monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value=""):
-            ccm_send.cmd_send(["blog", "hello\nworld"])
+            ccm_send.cmd_send(["demo", "hello\nworld"])
         assert not (tmp_path / "send-trace.log").exists()
 
     def test_trace_on_records_each_send_keys_call(self, monkeypatch, tmp_path):
@@ -988,7 +988,7 @@ class TestSendTrace:
         monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value=""):
-            ccm_send.cmd_send(["blog", "line1\nline2"])
+            ccm_send.cmd_send(["demo", "line1\nline2"])
         log = (tmp_path / "send-trace.log").read_text().splitlines()
         labels = [row.split("\t")[2] for row in log]
         assert "pre-cancel" in labels
@@ -1009,7 +1009,7 @@ class TestSendTrace:
         self._patch_resolution(monkeypatch)
         payload = "  indented 【test】 日本語"
         with patch("ccm_core.tmux_cmd", return_value=""):
-            ccm_send.cmd_send(["blog", payload])
+            ccm_send.cmd_send(["demo", payload])
         log = (tmp_path / "send-trace.log").read_text()
         # The line row should contain repr() of (`-l`, payload) tuple.
         assert repr(payload) in log
@@ -1025,7 +1025,7 @@ class TestSendTrace:
         monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
         self._patch_resolution(monkeypatch)
         with patch("ccm_core.tmux_cmd", return_value=""):
-            ccm_send.cmd_send(["blog", "hi"])
+            ccm_send.cmd_send(["demo", "hi"])
         assert not (tmp_path / "send-trace.log").exists()
 
     def test_trace_write_failure_does_not_block_send(self, monkeypatch, tmp_path):
@@ -1042,7 +1042,7 @@ class TestSendTrace:
         self._patch_resolution(monkeypatch)
         # The send itself must still complete (no exception).
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
-            ccm_send.cmd_send(["blog", "hi"])
+            ccm_send.cmd_send(["demo", "hi"])
         # Specifically: the literal send-keys still fired despite
         # the trace write failures.
         calls = [tuple(c.args) for c in mock_tmux.call_args_list]
@@ -1062,12 +1062,12 @@ class TestSendSelfDeliveryGuard:
 
     def _patch(self, monkeypatch, delivery_pane, caller_pane):
         project = ccm_core.Project(
-            win_target="0:5", win_idx="5", name="blog",
-            directory="/tmp/blog", state="BUSY",
+            win_target="0:5", win_idx="5", name="demo",
+            directory="/tmp/demo", state="BUSY",
         )
         monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
         monkeypatch.setattr(ccm_core, "find_window",
-                            lambda s, n: "5" if n == "blog" else None)
+                            lambda s, n: "5" if n == "demo" else None)
         monkeypatch.setattr(ccm_core, "build_project_list",
                             lambda fast=False: [project])
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
@@ -1087,7 +1087,7 @@ class TestSendSelfDeliveryGuard:
     def test_sending_to_own_pane_is_refused(self, monkeypatch, capsys):
         calls = self._patch(monkeypatch, delivery_pane="%1", caller_pane="%1")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         err = capsys.readouterr().err
         assert "IS this pane" in err
         assert not any("-l" in c for c in calls), \
@@ -1100,11 +1100,11 @@ class TestSendSelfDeliveryGuard:
         otherwise the state verdict misdirects."""
         self._patch(monkeypatch, delivery_pane="%1", caller_pane="%1")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         err = capsys.readouterr().err
         assert "your own" in err and "BUSY" in err
         # And it points at the route that does work for a second agent.
-        assert "ccm capture blog" in err
+        assert "ccm capture demo" in err
 
     def test_different_pane_in_same_window_still_sends(self, monkeypatch):
         """Only the caller's OWN pane is refused. A sidekick pane
@@ -1112,7 +1112,7 @@ class TestSendSelfDeliveryGuard:
         path and must keep working."""
         calls = self._patch(monkeypatch, delivery_pane="%1",
                             caller_pane="%41")
-        ccm_send.cmd_send(["blog", "--force", "hello"])
+        ccm_send.cmd_send(["demo", "--force", "hello"])
         assert any(c[:3] == ("send-keys", "-t", "%1") and "-l" in c
                    for c in calls)
 
@@ -1122,7 +1122,7 @@ class TestSendSelfDeliveryGuard:
         block anything."""
         calls = self._patch(monkeypatch, delivery_pane="%1",
                             caller_pane=None)
-        ccm_send.cmd_send(["blog", "--force", "hello"])
+        ccm_send.cmd_send(["demo", "--force", "hello"])
         assert any(c[:3] == ("send-keys", "-t", "%1") and "-l" in c
                    for c in calls)
 
@@ -1149,8 +1149,8 @@ class TestSendPreTypeRecheck:
         and the pre-type re-check sees `recheck_state`. Returns the
         list of tmux_cmd call args."""
         project = ccm_core.Project(
-            win_target="0:5", win_idx="5", name="blog",
-            directory="/tmp/blog", state=project_state,
+            win_target="0:5", win_idx="5", name="demo",
+            directory="/tmp/demo", state=project_state,
         )
         monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
         monkeypatch.setattr(
@@ -1190,7 +1190,7 @@ class TestSendPreTypeRecheck:
         calls = self._patch(monkeypatch, "PERMIT", interactive=True)
         monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         assert not self._literal_sent(calls), \
             "body typed into a PERMIT dialog after confirmation"
         assert "PERMIT" in capsys.readouterr().err
@@ -1199,7 +1199,7 @@ class TestSendPreTypeRecheck:
         """--force overrides BUSY, never PERMIT — also on re-check."""
         calls = self._patch(monkeypatch, "PERMIT")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "--force", "hello"])
+            ccm_send.cmd_send(["demo", "--force", "hello"])
         assert not self._literal_sent(calls)
 
     def test_recheck_shell_refused(self, monkeypatch):
@@ -1207,7 +1207,7 @@ class TestSendPreTypeRecheck:
         would be typed into a bare shell (incident class)."""
         calls = self._patch(monkeypatch, "SHELL")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         assert not self._literal_sent(calls)
 
     def test_recheck_shell_after_start_launch_allowed(self, monkeypatch):
@@ -1220,7 +1220,7 @@ class TestSendPreTypeRecheck:
                             pane_command="zsh", pane_claude=False)
         monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
                             lambda *a, **k: "IDLE")
-        ccm_send.cmd_send(["blog", "--start", "hi"])
+        ccm_send.cmd_send(["demo", "--start", "hi"])
         assert self._literal_sent(calls, "hi")
 
     def test_recheck_busy_refused_without_force(self, monkeypatch):
@@ -1228,19 +1228,19 @@ class TestSendPreTypeRecheck:
         same policy as the initial gate: refuse without --force."""
         calls = self._patch(monkeypatch, "BUSY")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["blog", "hello"])
+            ccm_send.cmd_send(["demo", "hello"])
         assert not self._literal_sent(calls)
 
     def test_recheck_busy_sends_with_force(self, monkeypatch):
         calls = self._patch(monkeypatch, "BUSY")
-        ccm_send.cmd_send(["blog", "--force", "hello"])
+        ccm_send.cmd_send(["demo", "--force", "hello"])
         assert self._literal_sent(calls)
 
     def test_recheck_idle_proceeds(self, monkeypatch):
         """Sanity: when the re-check agrees with the gate, the send
         goes through unchanged."""
         calls = self._patch(monkeypatch, "IDLE")
-        ccm_send.cmd_send(["blog", "hello"])
+        ccm_send.cmd_send(["demo", "hello"])
         assert self._literal_sent(calls)
 
     def test_recheck_unresolvable_fails_open(self, monkeypatch):
@@ -1248,7 +1248,7 @@ class TestSendPreTypeRecheck:
         must not break sends that worked before the guard existed —
         matching the delivery-pane resolution fallback."""
         calls = self._patch(monkeypatch, None)
-        ccm_send.cmd_send(["blog", "hello"])
+        ccm_send.cmd_send(["demo", "hello"])
         # Delivery resolution also fell back to the window target.
         assert any(
             c[:3] == ("send-keys", "-t", "0:5") and "-l" in c

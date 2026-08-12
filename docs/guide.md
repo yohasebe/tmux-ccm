@@ -193,7 +193,7 @@ Open with `prefix + T`. Shows the full tmux hierarchy:
 
 ```bash
 # Simple positional message (confirmed interactively if run from a TTY)
-ccm send blog "Summarize the last review cycle."
+ccm send demo "Summarize the last review cycle."
 
 # From a file
 ccm send research --file /tmp/brief.md
@@ -206,7 +206,7 @@ echo "Please investigate issue #42 in the parser repo" | ccm send parser --stdin
 printf 'context:\nbug: NPE on line 120\nplease fix' | ccm send api-server --stdin -y
 
 # Type text without submitting (user finishes editing in the target pane)
-ccm send blog --no-enter "TODO: "
+ccm send demo --no-enter "TODO: "
 ```
 
 ### State policy

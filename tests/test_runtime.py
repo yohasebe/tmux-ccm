@@ -54,14 +54,14 @@ class TestUpdateWindowNames:
         return renames
 
     def test_renames_stale_name_to_state_icon(self):
-        projects = [self._project("main:1", "blog", "/tmp/blog", "BUSY")]
-        listing = "main:1\tblog\told-name\t/tmp/blog"
+        projects = [self._project("main:1", "demo", "/tmp/demo", "BUSY")]
+        listing = "main:1\tdemo\told-name\t/tmp/demo"
         renames = self._run(projects, listing)
-        assert renames == [("rename-window", "-t", "main:1", "◉ blog")]
+        assert renames == [("rename-window", "-t", "main:1", "◉ demo")]
 
     def test_noop_when_name_already_matches(self):
-        projects = [self._project("main:1", "blog", "/tmp/blog", "IDLE")]
-        listing = "main:1\tblog\t● blog\t/tmp/blog"
+        projects = [self._project("main:1", "demo", "/tmp/demo", "IDLE")]
+        listing = "main:1\tdemo\t● demo\t/tmp/demo"
         assert self._run(projects, listing) == []
 
     def test_same_dir_second_window_inherits_sibling_state(self):
@@ -69,14 +69,14 @@ class TestUpdateWindowNames:
         `projects` (seen_dirs dedup), but the second window must NOT
         be rewritten to the IDLE icon — it mirrors the sibling's
         state instead."""
-        projects = [self._project("main:1", "blog", "/tmp/shared", "BUSY")]
+        projects = [self._project("main:1", "demo", "/tmp/shared", "BUSY")]
         listing = (
-            "main:1\tblog\t◉ blog\t/tmp/shared\n"
-            "main:2\tblog2\t● blog2\t/tmp/shared"
+            "main:1\tdemo\t◉ demo\t/tmp/shared\n"
+            "main:2\tdemo2\t● demo2\t/tmp/shared"
         )
         renames = self._run(projects, listing)
         assert renames == [
-            ("rename-window", "-t", "main:2", "◉ blog2")
+            ("rename-window", "-t", "main:2", "◉ demo2")
         ], (
             "second same-dir window must inherit the tracked sibling's "
             "state, not be overwritten with the IDLE icon"
@@ -86,32 +86,32 @@ class TestUpdateWindowNames:
         """The @ccm_dir tag and the project dir may differ textually
         (symlinked path); canonical_dir must align them the same way
         build_project_list's dedup key does."""
-        projects = [self._project("main:1", "blog", "/tmp/shared", "PERMIT")]
+        projects = [self._project("main:1", "demo", "/tmp/shared", "PERMIT")]
         # /tmp vs /private/tmp style divergence (macOS /tmp symlink)
         import os
         linked = os.path.realpath("/tmp/shared")
         listing = (
-            f"main:1\tblog\t⚠ blog\t/tmp/shared\n"
-            f"main:2\tblog2\t● blog2\t{linked}"
+            f"main:1\tdemo\t⚠ demo\t/tmp/shared\n"
+            f"main:2\tdemo2\t● demo2\t{linked}"
         )
         renames = self._run(projects, listing)
-        assert renames == [("rename-window", "-t", "main:2", "⚠ blog2")]
+        assert renames == [("rename-window", "-t", "main:2", "⚠ demo2")]
 
     def test_untracked_window_without_sibling_is_skipped(self):
         """A tagged window absent from `projects` with no same-dir
         sibling (e.g. tagged mid-cycle) keeps its current name rather
         than being stamped with a wrong IDLE icon; the next poll
         picks it up."""
-        projects = [self._project("main:1", "blog", "/tmp/blog", "IDLE")]
+        projects = [self._project("main:1", "demo", "/tmp/demo", "IDLE")]
         listing = (
-            "main:1\tblog\t● blog\t/tmp/blog\n"
+            "main:1\tdemo\t● demo\t/tmp/demo\n"
             "main:2\tfresh\tfresh\t/tmp/elsewhere"
         )
         assert self._run(projects, listing) == []
 
     def test_untracked_window_with_empty_dir_is_skipped(self):
         """No @ccm_dir tag → no dir fallback possible → skip."""
-        projects = [self._project("main:1", "blog", "/tmp/blog", "IDLE")]
+        projects = [self._project("main:1", "demo", "/tmp/demo", "IDLE")]
         listing = "main:2\tghost\t● ghost\t"
         assert self._run(projects, listing) == []
 
@@ -219,7 +219,7 @@ class TestAutoExitIdle:
     # Stands in for the session id ccm caches on the window.
     SESSION_ID = "0123abcd-0000-0000-0000-000000000000"
     # The example project name this fixture listing carries.
-    PROJECT_NAME = "blog"
+    PROJECT_NAME = "demo"
 
     # `ps_snapshot()` returns the raw stdout string from
     # `ps -eo pid,ppid,pgid,comm,etime`. ccm_runtime splits it into
@@ -269,7 +269,7 @@ class TestAutoExitIdle:
                 # Single ccm window at main:1 (NOT main:0 → not focused),
                 # IDLE for 9999 s (well past the 600 s default timeout).
                 old = "1"
-                return (f"main:1\tblog\tIDLE\t{old}\t{old}\t"
+                return (f"main:1\tdemo\tIDLE\t{old}\t{old}\t"
                         f"{self_session_id}")
             return ""
         return side_effect
@@ -350,7 +350,7 @@ class TestAutoExitIdle:
             if args[:2] == ("display-message", "-p"):
                 return ""  # focused session/window unresolved
             if args[0] == "list-windows":
-                return "main:1\tblog\tIDLE\t1\t1"
+                return "main:1\tdemo\tIDLE\t1\t1"
             if args[0] == "list-panes":
                 return self.DEFAULT_PANES_LISTING
             if args and args[0] == "send-keys":
@@ -614,7 +614,7 @@ class TestAutoExitNotification:
         mock_notify.notify.assert_called_once()
         args, kwargs = mock_notify.notify.call_args
         assert args[0] == "AUTOEXIT"
-        assert args[1] == "blog"          # project name from listing
+        assert args[1] == "demo"          # project name from listing
         assert "m" in kwargs.get("detail", "")  # "10m" etc.
 
     def test_no_notify_when_exit_did_not_complete(self):
