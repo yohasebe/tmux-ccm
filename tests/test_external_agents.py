@@ -131,9 +131,12 @@ class TestPrintStatusExternalAgent:
         assert "⚙kimi" in _strip_ansi(row)
         assert _strip_ansi(row).index("⚙kimi") > row.index("sidekick")
 
-    def test_shell_row_gets_note_and_stays_shell(self, monkeypatch, capsys):
+    def test_shell_row_stays_shell_and_is_marked_once(
+            self, monkeypatch, capsys):
         """A kimi-only window is SHELL (no claude) — the state is not
-        faked — with a `(kimi)` note attached to the STATUS cell."""
+        faked — and the `⚙kimi` badge beside the name is the ONE place
+        the agent is named. A `(kimi)` note in the STATUS cell used to
+        say it a second time on the same row."""
         projects = [_make_project("kimionly", "SHELL",
                                   pane_count=1,
                                   external_agents=("kimi",))]
@@ -141,9 +144,8 @@ class TestPrintStatusExternalAgent:
         row = next(l for l in out.splitlines() if "kimionly" in l)
         plain = _strip_ansi(row)
         assert "SHELL" in plain
-        assert "(kimi)" in plain
-        # Note belongs to the STATUS cell: it precedes the name.
-        assert plain.index("(kimi)") < plain.index("kimionly")
+        assert "⚙kimi" in plain
+        assert "(kimi)" not in plain
 
     def test_note_widens_status_column_consistently(
             self, monkeypatch, capsys):
@@ -188,12 +190,12 @@ class TestBuildDetailEntriesExternalAgent:
         entries = self._entries([p], True, monkeypatch)
         assert "⚙kimi" in entries[0]
 
-    def test_mode2_shell_note_after_icon(self, monkeypatch):
+    def test_mode2_shell_row_is_marked_once(self, monkeypatch):
         p = _make_project("kimionly", "SHELL", external_agents=("kimi",))
         entries = self._entries([p], True, monkeypatch)
         assert "■" in entries[0]
-        assert "(kimi)" in entries[0]
-        assert entries[0].index("(kimi)") > entries[0].index("■")
+        assert "⚙kimi" in entries[0]
+        assert "(kimi)" not in entries[0]
 
     def test_mode1_unchanged(self, monkeypatch):
         p = _make_project("sidekick", "IDLE", external_agents=("kimi",))
@@ -253,14 +255,70 @@ class TestDashboardExternalAgent:
         texts = self._render_texts(monkeypatch, projects)
         assert "⚙kimi" in texts
 
-    def test_shell_row_note_after_state(self, monkeypatch):
+    def test_shell_row_is_marked_once(self, monkeypatch):
         projects = [_make_project("kimionly", "SHELL",
                                   external_agents=("kimi",))]
         texts = self._render_texts(monkeypatch, projects)
-        assert " (kimi)" in texts
-        # State cell still renders plain SHELL — not faked.
-        assert any(t.strip().endswith("SHELL") or "SHELL" in t
-                   for t in texts)
+        # The badge names the agent; the state cell stays plain SHELL
+        # (not faked) and does not repeat the name.
+        assert any("⚙kimi" in t for t in texts)
+        assert " (kimi)" not in texts
+        assert any("SHELL" in t for t in texts)
+
+    def _render_calls(self, monkeypatch, projects):
+        """Like _render_texts but keeps the (x, text) of each draw, so
+        column positions can be compared across renders."""
+        from unittest.mock import MagicMock
+        from dashboard import Dashboard
+        calls = []
+        monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
+        monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
+        monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
+        monkeypatch.setattr("dashboard.disable_all_hooks_warning",
+                            lambda *a, **kw: "")
+        monkeypatch.setattr("dashboard.managed_hooks_only_warning",
+                            lambda *a, **kw: "")
+        monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
+        monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
+        monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
+        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
+        monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
+        monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
+        monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
+                            lambda d, session_id=None: None)
+        import curses as _curses
+        monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
+        monkeypatch.setattr(
+            Dashboard, "_addstr",
+            lambda self, stdscr, y, x, text, attr=0, max_col=0:
+                calls.append((x, text)))
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = projects
+        stdscr = MagicMock()
+        stdscr.getmaxyx.return_value = (40, 200)
+        d.render(stdscr)
+        return calls
+
+    def test_columns_do_not_move_when_an_agent_is_discovered(
+            self, monkeypatch):
+        """The first paint happens before the full detection pass has
+        found external agents; the note used to arrive with that pass,
+        widen the state column, and shove every name sideways in front
+        of the user. Column positions must not depend on what agents
+        are present."""
+        def name_x(projects):
+            calls = self._render_calls(monkeypatch, projects)
+            return next(x for x, t in calls if "alpha" in t)
+
+        without = name_x([_make_project("alpha", "SHELL")])
+        with_agent = name_x([_make_project("alpha", "SHELL",
+                                           external_agents=("kimi",))])
+        assert without == with_agent, (
+            f"name column moved from x={without} to x={with_agent} "
+            f"when an external agent appeared — the layout jumps in "
+            f"front of the user as detection catches up")
 
     def test_no_badge_for_claude_only(self, monkeypatch):
         projects = [_make_project("plain", "IDLE")]

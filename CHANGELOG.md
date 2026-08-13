@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- A window hosting an external agent is marked once, by the `⚙name` badge
+  beside the project name. SHELL rows also repeated it as a `(name)` note in
+  the state column, and fitting the note widened that column — which happened
+  a beat after the dashboard opened, when full detection caught up, shifting
+  every row sideways. Column positions no longer depend on what agents are
+  present.
 - Deleting a project from the dashboard asks for confirmation. It closes the
   window and ends the session in it, yet cost a single keypress while the
   menu route confirmed — the harsher path was the cheaper one.

@@ -364,24 +364,11 @@ def print_status():
         print(f"\033[33m⚠ {silence_msg}\033[0m")
     print()
 
-    # External-agent note for SHELL rows: the window has no claude
-    # but hosts an external agent CLI pane. STATUS stays SHELL (its
-    # meaning — "no claude here" — must not be faked) and a dim
-    # `(name)` note says what IS running. The note widens the
-    # STATUS column for the whole table only when at least one row
-    # carries it, so columns stay aligned without perturbing the
-    # layout of badge-free setups (byte-identical to before).
-    shell_notes = {}
-    for p in projects:
-        if p.state == "SHELL":
-            label = external_agent_label(p)
-            if label:
-                shell_notes[p.win_target] = label
-    note_w = max(
-        (display_width(f"({label})") for label in shell_notes.values()),
-        default=0,
-    )
-    status_w = 12 + (note_w + 1 if note_w else 0)
+    # A SHELL row hosting an external agent says so once, with the
+    # `⚙name` badge beside the project name. It used to say it twice —
+    # a `(name)` note in this column repeated the badge, and widening
+    # the column to fit it shifted every other row's layout.
+    status_w = 12
 
     print(f"{C_BOLD}{'STATUS':<{status_w}} {'PROJECT':<20} {'MODE':<8} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
     print(f"{'------':<{status_w}} {'-------':<20} {'----':<8} {'------':<16} {'-----':<12} {'---------'}")
@@ -397,18 +384,12 @@ def print_status():
             p.dir, p.state, session_id=p.cached_session_id or "")
         if p.bg_active:
             suffix += " (bg)"
-        # SHELL-row external-agent note (see the header block above).
-        # Lives in the STATUS cell so `■ SHELL (kimi)` reads as one
-        # statement: no claude, but this is here.
-        note = shell_notes.get(p.win_target, "")
         # Pad the STATUS column by VISIBLE width (pad_to_width), not by
         # len(): the per-state colour codes differ in length (256-colour
         # `\033[38;5;209m` is 11 chars vs `\033[1;33m` at 7), so the old
         # `22 + len(suffix)` format spec put the PROJECT column at a
         # different offset for BUSY/SHELL vs PERMIT/IDLE/DOWN rows.
         status_text = f"{icon} {p.state}{suffix}"
-        if note:
-            status_text += f" ({note})"
         if display_width(status_text) > status_w:
             # pad_to_width passes overlong content through unchanged,
             # so a stale-signal row (`⚠ PERMIT (12m)` = 14 cols) would
@@ -416,11 +397,7 @@ def print_status():
             # instead of truncating it mid-number (`(1` reads as a
             # wrong age); the icon/colour still flags the state, and
             # only PERMIT can overflow (BUSY + suffix fits exactly).
-            # The SHELL note is never dropped: status_w was widened
-            # to fit it, and note-less states are 8 cols at most.
             status_text = f"{icon} {p.state}"
-            if note:
-                status_text += f" ({note})"
         status_field = (
             f"{color}{pad_to_width(status_text, status_w)}"
             f"{C_RESET}"

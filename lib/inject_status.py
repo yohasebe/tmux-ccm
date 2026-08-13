@@ -198,12 +198,9 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # a state. The label is the shared one from ccm_render so the
         # badge text matches `ccm status` / the dashboard exactly.
         ext_label = external_agent_label(p)
-        # SHELL-row external-agent note (mode 2 only): STATUS stays
-        # SHELL — it means "no claude here" — and `(name)` after the
-        # icon says what IS running. Uses the shared post slot; stale
-        # (BUSY/PERMIT) and bg (IDLE) can never co-fire with SHELL.
-        if with_extras and not post and p.state == "SHELL" and ext_label:
-            post = f"({ext_label})"
+        # A SHELL row with an external agent is marked once, by the
+        # `⚙name` badge. A `(name)` note in the post slot used to
+        # repeat it on the same entry.
 
         def _render_pane_marker(name_color):
             """`[N]` with brackets dim and N cyan, returning to

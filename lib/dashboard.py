@@ -839,24 +839,12 @@ class Dashboard:
 
                 # Calculate column widths for alignment
                 max_idx_w = max((len(p.win_idx) for p in projects), default=1) + 1  # "#N"
-                max_state_w = 8  # "● PERMIT" = 8
-
-                # External-agent note for SHELL rows: the window has
-                # no claude but hosts an external agent CLI pane.
-                # STATUS stays SHELL (its meaning — "no claude here"
-                # — must not be faked) and a dim `(name)` note is
-                # appended after the state text. The state column
-                # widens to fit the longest note, shifting COL_NAME
-                # right only when a note is actually present.
-                shell_ext_notes = {}
-                for p in projects:
-                    if p.state == "SHELL":
-                        lbl = external_agent_label(p)
-                        if lbl:
-                            shell_ext_notes[p.win_target] = f"({lbl})"
-                if shell_ext_notes:
-                    max_state_w += 1 + max(
-                        display_width(n) for n in shell_ext_notes.values())
+                # "● PERMIT" = 8. Deliberately constant: the first
+                # paint happens before the full detection pass has
+                # found external agents, and anything row-dependent
+                # here arrives late, widens the column, and shoves
+                # every name sideways in front of the user.
+                max_state_w = 8
 
                 # Fixed column positions for idx / state / name
                 # only. Each row's annotation cluster ([N] /
@@ -999,10 +987,6 @@ class Dashboard:
                     # SHELL-row external-agent note `(name)`: dim,
                     # right after the 8-col state cell (see the
                     # max_state_w widening above).
-                    ext_note = shell_ext_notes.get(p.win_target, "")
-                    if ext_note:
-                        self._addstr(stdscr, y, COL_STATE + 8, f" {ext_note}",
-                                     curses.color_pair(C_DIM))
 
                     # Project name
                     self._addstr(stdscr, y, COL_NAME, p.name, curses.A_BOLD)
