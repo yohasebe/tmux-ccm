@@ -534,7 +534,7 @@ class TestCmdSend:
 
     # A message long enough to clear `_DELIVERY_SIG_MIN_LEN` so the
     # verification path actually engages (short messages skip it).
-    _VERIFY_MSG = "delegate the region-shade implementation task"
+    _VERIFY_MSG = "delegate the queued implementation task"
 
     def _run_start_with_captures(self, monkeypatch, message, capture_responses):
         """Drive a SHELL + --start send where `build_project_list`
@@ -589,11 +589,11 @@ class TestCmdSend:
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls
 
     # A long body whose head has scrolled out of the composer. Observed
-    # against Kimi K3: a ~30-line brief rendered as
+    # against a sidekick TUI: a ~30-line message rendered as
     # `↑ 24 more` with only the trailing lines on screen.
     _LONG_MSG = "\n".join(
-        [f"opening line about the region-shade task, part {i}" for i in range(3)]
-        + [f"middle line {i} of the same brief" for i in range(20)]
+        [f"opening line of the queued message, part {i}" for i in range(3)]
+        + [f"middle line {i} of the same message" for i in range(20)]
         + ["closing instruction: reply with ccm send when done"]
     )
 
@@ -624,7 +624,7 @@ class TestCmdSend:
         send_calls, raised = self._run_start_with_captures(
             monkeypatch, self._LONG_MSG,
             capture_responses=[
-                "❯ opening line about the region-shade task, part 0"],
+                "❯ opening line of the queued message, part 0"],
         )
         assert not raised, "a visible head must satisfy verification"
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls

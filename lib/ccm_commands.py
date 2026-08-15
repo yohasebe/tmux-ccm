@@ -1325,7 +1325,7 @@ def cmd_debug_trace(target_match, interval=0.3):
 # Registry of sidekick CLIs whose own hook system can run ccm's
 # attention adapter. Each entry knows where the CLI's hook config
 # lives and how to render the managed block. Only measured
-# integrations belong here: Kimi's was verified live (kimi 0.31.1,
+# integrations belong here: Kimi Code's is verified (0.31.x,
 # — PermissionRequest/PermissionResult fire, $TMUX_PANE is
 # inherited, config loads at session start). Gemini / Grok Build have
 # hook systems but their permission-wait events are unverified;

@@ -155,8 +155,7 @@ class TestAttentionReader:
         `pane_current_command`: the versioned-install symlink makes
         tmux report the launcher name (`2.1.221`), never `claude`. A
         fixture saying "claude" here would pass against a name compare
-        that is false in every real environment — which is exactly how
-        this shipped broken (caught by Kimi's review)."""
+        that is false in every real environment."""
         panes = PANES + [("0:2", "300", "%50", "2.1.221", "0", "46", "1")]
         ps_lines = make_ps_lines((300, 1, 300, "zsh"), (301, 300, 300, "claude"))
         path = _write_marker(attention_dir, pane="%50", agent="claude")
