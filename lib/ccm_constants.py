@@ -202,7 +202,10 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # a message into a draft the user is still writing. Claude-only on
 # purpose — it is the one TUI ccm tracks; sidekick TUIs are never
 # pattern-matched (see EXTERNAL_AGENT_COMMANDS).
-PATTERN_COMPOSER_DRAFT = re.compile(rf"^[{_PROMPT_CHARS}]\s*\S")
+# `\s+`, not `\s*`: the composer always renders a space after the
+# prompt glyph, and requiring it keeps the doubled-glyph mode line of
+# older builds (`❯❯ accept edits on`) from reading as a draft.
+PATTERN_COMPOSER_DRAFT = re.compile(rf"^[{_PROMPT_CHARS}]\s+\S")
 
 # Active-work spinner footer. Claude Code renders a status line of
 # the shape `<glyph> <verb>… (<elapsed> · <arrow> <N>k tokens)` ONLY

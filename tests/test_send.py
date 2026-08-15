@@ -1308,6 +1308,15 @@ class TestComposerDraftGuard:
     def _literal_sent(calls):
         return any("-l" in c for c in calls if c[0] == "send-keys")
 
+    def test_doubled_glyph_mode_line_is_not_a_draft(self):
+        """Older builds render the accept-edits mode as `❯❯ …` at line
+        start. The prompt glyph doubled is a mode line, not a draft —
+        the composer always puts a space after its single glyph."""
+        import ccm_constants
+        assert not ccm_constants.PATTERN_COMPOSER_DRAFT.match(
+            "❯❯ accept edits on")
+        assert ccm_constants.PATTERN_COMPOSER_DRAFT.match("❯ a draft")
+
     def test_draft_refuses_and_never_types(self, monkeypatch, capsys):
         calls = self._patch(monkeypatch, "❯ half-typed thought\n")
         with pytest.raises(SystemExit):
