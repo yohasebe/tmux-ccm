@@ -313,11 +313,23 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 # footer'd permission dialogs are already matched by the
 # "Esc to cancel · …" alternative above, so requiring `(esc)` here
 # costs nothing for them and only tightens the footer-less case.
+# The deny option of a footer-less permission dialog, shared by the
+# footer match and the modal classifier so the two cannot drift
+# apart. A numbered line, optionally carrying the selection cursor
+# (arrowing onto the deny line rewrites it as `❯ 3. Deny (esc)`,
+# which must not flip the match off — nor fall through to
+# PATTERN_INPUT_PROMPT and read as an idle prompt), starting with a
+# negative word and ending in the inline `(esc)`. `Decline` is
+# unobserved — cheap insurance, not a measurement.
+_DENY_OPTION_LINE = (
+    r"(?:❯\s*)?\d+\.\s*(?:No\b|Deny\b|Decline\b)[^\n]*\(esc\)"
+)
+
 PATTERN_PERMIT_FOOTER = re.compile(
     r"^\s*(?:"
     r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
     r"|Enter to \S[^\n]*?\s*(?:·|\|)\s*[^\n]*?\bEsc to \w+"
-    r"|\d+\.\s*(?:No\b|Deny\b|Decline\b)[^\n]*\(esc\)"
+    r"|" + _DENY_OPTION_LINE +
     r")",
     re.MULTILINE,
 )
@@ -359,7 +371,7 @@ PATTERN_PERMISSION_DIALOG = re.compile(
     # from another pane. The trailing `(esc)` is required for the
     # same reason as in PATTERN_PERMIT_FOOTER — it keeps prose that
     # merely quotes the option text from mis-classifying.
-    r"|\d+\.\s*(?:No\b|Deny\b|Decline\b)[^\n]*\(esc\)"
+    r"|" + _DENY_OPTION_LINE
 )
 PATTERN_MODEL_PICKER = re.compile(
     r"Switch between Claude models"
@@ -380,7 +392,7 @@ _PERMIT_GUIDANCE = {
         "  - Esc           → Cancel resume (session won't start)"
     ),
     "permission-request": (
-        "Permission dialog for a tool invocation (DANGEROUS —\n"
+        "Permission dialog (DANGEROUS —\n"
         "do NOT attempt to dismiss from another pane).\n"
         "User action required: switch to the target pane and\n"
         "respond to the prompt yourself. ccm refuses to send\n"

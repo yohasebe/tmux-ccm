@@ -336,6 +336,27 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
+    def test_cursor_on_deny_line_is_permit_not_idle(self, mock_tmux):
+        """With the cursor on the deny option, the line begins with
+        `❯` — which PATTERN_INPUT_PROMPT also matches. The footer
+        check runs first on the pane tail, so the open dialog must
+        win over the idle-prompt reading. Before the cursor prefix
+        was allowed, this exact screen read as IDLE while a
+        permission dialog was open (and `ccm send` would type into
+        it)."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude")
+        )
+        mock_tmux.return_value = (
+            "Claude in Chrome wants to navigate on www.example.org\n"
+            " 1. Allow\n"
+            "  2. Allow all actions on www.example.org for this session\n"
+            "❯ 3. Deny (esc)"
+        )
+        assert ccm_pane_state.detect_pane_state(
+            "100", "%0", ps, "99999") == "PERMIT"
+
+    @patch("ccm_core.tmux_cmd")
     def test_spinner_string_in_response_body_does_not_false_busy(self, mock_tmux):
         """Defensive: the only realistic false-positive is a response
         that literally quotes the spinner footer format (e.g. a

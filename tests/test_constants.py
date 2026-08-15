@@ -197,6 +197,21 @@ class TestClassifyPermitModal:
         assert cat == "permission-request"
         assert "DANGEROUS" in guidance or "dangerous" in guidance
 
+    def test_browser_dialog_is_a_permission_request(self):
+        """The Claude-in-Chrome dialog carries no `Do you want to …`
+        question, so the deny line alone carries its classification —
+        and the classifier uses its own regex object. The shared
+        constant keeps the two in lockstep; this pins it with the full
+        dialog, cursor included."""
+        text = (
+            "Claude in Chrome wants to navigate on www.example.org\n"
+            "❯ 1. Allow\n"
+            "  2. Allow all actions on www.example.org for this session\n"
+            "  3. Deny (esc)"
+        )
+        cat, guidance = ccm_constants.classify_permit_modal(text)
+        assert cat == "permission-request"
+
     def test_confirmation_modal_footer_only(self):
         """No content signature matches but footer is the confirm
         shape — classify as a generic confirmation-modal (not unknown).
@@ -342,6 +357,19 @@ class TestPermitFooterPattern:
         """Same class: any negative-word deny label with the inline
         `(esc)` is the signal, before upstream renames it again."""
         assert self._matches("  2. Decline (esc)")
+
+    def test_cursor_on_the_deny_line_still_matches(self):
+        """Arrowing onto the deny option rewrites the line as
+        `❯ 3. Deny (esc)`. Without the optional cursor prefix the
+        footer match dropped out at exactly that moment — and the line
+        fell through to PATTERN_INPUT_PROMPT, reading as an idle
+        prompt while the dialog was open. Review finding."""
+        assert self._matches("❯ 3. Deny (esc)")
+        assert self._matches("❯ 2. No, and tell Claude what to do differently (esc)")
+
+    def test_cursor_on_an_accept_line_does_not_match(self):
+        assert not self._matches("❯ 1. Allow")
+        assert not self._matches("❯ 1. Yes")
 
     def test_negative_word_needs_its_own_boundary(self):
         """`Note …` and `Denying …` must not ride on the No/Deny

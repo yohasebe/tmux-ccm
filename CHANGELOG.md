@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- Arrowing onto a footer-less dialog's deny option no longer drops the
+  detection. The cursor rewrites the line as `❯ 3. Deny (esc)`, which the
+  match rejected and the idle-prompt pattern then claimed — an open
+  permission dialog reading as idle. The deny-line shape is also a single
+  definition shared by the footer match and the modal classifier, so the two
+  cannot drift apart.
 - The Claude-in-Chrome permission dialog is recognised without hooks. Its
   deny line is `Deny (esc)`, and the footer-less dialog match had fixed the
   deny label to another dialog's wording — so with hooks silent this dialog
