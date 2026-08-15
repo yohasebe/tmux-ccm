@@ -298,9 +298,12 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 # The third alternative matches the deny option of a permission
 # prompt that has no separate "Esc to cancel · …" footer (observed
 # on a WebFetch permission raised by a background
-# subagent: `Do you want to allow Claude to fetch this content?`
-# with the `(esc)` carried inline on `No, and tell Claude what to
-# do differently (esc)`). Two anchors keep this specific to a real
+# subagent, and again on the Claude-in-Chrome navigation dialog,
+# whose deny line is just `Deny (esc)`). The deny label varies by
+# dialog, so it is matched as a negative word (`No,` / `Deny` /
+# `Decline`) rather than any one wording — fixing the exact string
+# is how the browser dialog was missed.
+# Two anchors keep this specific to a real
 # dialog: the leading `\d+\.` (an actual numbered option line) AND
 # a trailing inline `(esc)`. The `(esc)` is what disambiguates the
 # live dialog from PROSE that merely quotes the option text — e.g.
@@ -314,7 +317,7 @@ PATTERN_PERMIT_FOOTER = re.compile(
     r"^\s*(?:"
     r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
     r"|Enter to \S[^\n]*?\s*(?:·|\|)\s*[^\n]*?\bEsc to \w+"
-    r"|\d+\.\s*No,\s*and tell Claude what to do differently[^\n]*\(esc\)"
+    r"|\d+\.\s*(?:No\b|Deny\b|Decline\b)[^\n]*\(esc\)"
     r")",
     re.MULTILINE,
 )
@@ -356,7 +359,7 @@ PATTERN_PERMISSION_DIALOG = re.compile(
     # from another pane. The trailing `(esc)` is required for the
     # same reason as in PATTERN_PERMIT_FOOTER — it keeps prose that
     # merely quotes the option text from mis-classifying.
-    r"|\d+\.\s*No,\s*and tell Claude what to do differently[^\n]*\(esc\)"
+    r"|\d+\.\s*(?:No\b|Deny\b|Decline\b)[^\n]*\(esc\)"
 )
 PATTERN_MODEL_PICKER = re.compile(
     r"Switch between Claude models"

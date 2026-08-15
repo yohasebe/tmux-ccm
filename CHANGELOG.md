@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The Claude-in-Chrome permission dialog is recognised without hooks. Its
+  deny line is `Deny (esc)`, and the footer-less dialog match had fixed the
+  deny label to another dialog's wording — so with hooks silent this dialog
+  would have read as working or idle. The label is matched as a negative word
+  now, and the dialog classifies as a permission request for `ccm send`'s
+  warning.
 - The instant status-bar update no longer trusts a working directory alone.
   Hooks are user-scope, so a Claude Desktop or VS Code session opened on the
   same directory as a managed project fires them too, and could paint the

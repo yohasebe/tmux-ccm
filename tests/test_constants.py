@@ -324,6 +324,31 @@ class TestPermitFooterPattern:
         assert self._matches("2. No, and tell Claude what to do differently (esc)")
         assert self._matches("   4.  No,  and tell Claude what to do differently  (esc)")
 
+    def test_browser_dialog_deny_option(self):
+        """The Claude-in-Chrome navigation dialog is footer-less and
+        its deny line is just `Deny (esc)`:
+            Claude in Chrome wants to navigate on www.example.org
+            ❯ 1. Allow
+              2. Allow all actions on www.example.org for this session
+              3. Deny (esc)
+        The old alternative fixed the deny label to one dialog's
+        wording, so this one read as no-match — hook path only, and
+        BUSY/IDLE whenever hooks are silent. Verified against the live
+        dialog. The label is matched as a negative word, not a
+        wording."""
+        assert self._matches("  3. Deny (esc)")
+
+    def test_decline_label_also_matches(self):
+        """Same class: any negative-word deny label with the inline
+        `(esc)` is the signal, before upstream renames it again."""
+        assert self._matches("  2. Decline (esc)")
+
+    def test_negative_word_needs_its_own_boundary(self):
+        """`Note …` and `Denying …` must not ride on the No/Deny
+        prefixes."""
+        assert not self._matches("  3. Note the setting (esc)")
+        assert not self._matches("  3. Denying access (esc)")
+
     def test_deny_option_without_inline_esc_not_matched(self):
         """A numbered deny line WITHOUT the inline `(esc)` does not
         match this alternative — a footer-less dialog always carries
