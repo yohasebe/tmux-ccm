@@ -241,6 +241,33 @@ _wait_for_stub_log() {
     [[ ! -s "$CCM_STUB_LOG" ]]
 }
 
+@test "write_signal: foreign session id leaves the window untouched" {
+    # Hooks are user-scope: a Claude Desktop / VS Code session opened
+    # on the same directory fires them too. The window's cached
+    # session id disagreeing with the firing session means the prompt
+    # is not in this window — no state write, no push, no
+    # notification. (2.1.233 made Notification hooks fire under
+    # Desktop/VS Code, turning this from theoretical into routine.)
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\tother-session-uuid\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "/x/test-project"
+    sleep 0.5
+    [[ ! -s "$CCM_STUB_LOG" ]]
+    # The signal file itself IS written — keyed by the firing session,
+    # which no tmux reader resolves to.
+    [[ -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "write_signal: matching session id still updates the window" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t%s\n' "$KEY" \
+        > "${MOCK_STATE_DIR}/windows"
+    ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    _wait_for_stub_log
+    grep -q -- "inject-status --fast" "$CCM_STUB_LOG"
+}
+
 # ─── hook_event_name() helper ───
 
 @test "hook_event_name: extracts from JSON payload" {

@@ -273,12 +273,24 @@ ccm_write_signal() {
     # Find the window whose @ccm_dir matches this cwd. The listing
     # also carries @ccm_prev_state so the push below can fire only on
     # a real transition — same subprocess, no extra cost.
-    local win_target project prev_state
+    local win_target project prev_state cached_sid
     local win_info
-    win_info=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}' 2>/dev/null \
-        | awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3"\t"$4; exit}')
+    win_info=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_session_id}' 2>/dev/null \
+        | awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3"\t"$4"\t"$5; exit}')
     if [[ -n "$win_info" ]]; then
-        IFS=$'\t' read -r win_target project prev_state <<< "$win_info"
+        IFS=$'\t' read -r win_target project prev_state cached_sid <<< "$win_info"
+        # cwd alone does not prove the event came from this window's
+        # own claude: hooks are user-scope, so a Claude Desktop or
+        # VS Code session opened on the same directory fires them
+        # too, and would paint the tmux window PERMIT for a prompt
+        # that is not in it. The cached session id is the
+        # discriminator; empty means a fresh session not yet
+        # resolved, which must still get its update. The signal
+        # file above is already written — keyed by the firing
+        # session, so no tmux reader ever resolves to it.
+        if [[ -n "$cached_sid" && -n "$key" && "$cached_sid" != "$key" ]]; then
+            return 0
+        fi
         # Update state option
         tmux set-option -wt "$win_target" @ccm_prev_state "$state" 2>/dev/null
         # Update window name icon for instant status bar change

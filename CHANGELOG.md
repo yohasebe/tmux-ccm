@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- The instant status-bar update no longer trusts a working directory alone.
+  Hooks are user-scope, so a Claude Desktop or VS Code session opened on the
+  same directory as a managed project fires them too, and could paint the
+  window PERMIT for a prompt that is not in it. The window's cached session
+  id now has to agree before the fast path writes state or notifies.
 - A window hosting an external agent is marked once, by the `⚙name` badge
   beside the project name. SHELL rows also repeated it as a `(name)` note in
   the state column, and fitting the note widened that column — which happened
