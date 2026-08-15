@@ -3,7 +3,7 @@
      font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
      role="img" aria-labelledby="title desc">
   <title id="title">ccm and a second agent CLI in one window</title>
-  <desc id="desc">Inside one ccm window: the Claude Code pane is tracked, and its state badge also appears on the window. A split pane running another agent CLI is not tracked — ccm shows only a presence badge for it. Between the two panes, two arrows show the relay: the other agent reports to claude with ccm send, and claude types into its pane with tmux send-keys after checking it with ccm capture.</desc>
+  <desc id="desc">Inside one ccm window: the Claude Code pane is tracked, and its state badge also appears on the window. A split pane running another agent CLI is not tracked — ccm shows only a presence badge for it. Between the two panes, two arrows show the relay: the other agent reports to claude with ccm send, and claude messages it back with ccm sidekick-send after checking it with ccm capture.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 11 9" markerWidth="11" markerHeight="9"
@@ -40,9 +40,11 @@
       a gear for the presence badge.
 
       On green: mental-model reserves emerald (#059669) for the word `tmux`.
-      It is used that way here too — and deliberately NOT as an edge colour.
-      Colouring one relay arrow green would give the same hue two different
-      jobs across a pair of figures meant to read as one. The two arrows
+      This figure names no tmux word (the down arrow is `ccm
+      sidekick-send`), so the hue's only possible job here would be an
+      edge colour — which is deliberately not done either: colouring one
+      relay arrow green would give the same hue two different jobs
+      across a pair of figures meant to read as one. The two arrows
       share the standard edge grey and are told apart by adjacent labels,
       which is what makes the pair legible at a glance.
     */
@@ -63,7 +65,6 @@
     .lbl          { fill: #475569; font-size: 13px; }
     .lbl-key      { fill: #475569; font-size: 13px; font-weight: 700; }
     .dim          { fill: #64748b; font-size: 12px; }
-    .accent-tmux  { fill: #059669; font-weight: 700; }                     /* emerald — tmux */
     .accent-ccm   { fill: #7c3aed; font-weight: 700; }                     /* violet — ccm's own verbs */
     /* Same dark-mode lift as mental-model, and for the same reason: the
        medium grey reads on a white page but sinks into GitHub's dark
@@ -111,7 +112,7 @@
   <text class="dim" x="158" y="234" text-anchor="end" dominant-baseline="central">state-gated</text>
 
   <path class="edge" d="M230,184 V262" marker-end="url(#arrow)"/>
-  <text class="lbl" x="242" y="216" dominant-baseline="central"><tspan class="accent-tmux">tmux</tspan> send-keys</text>
+  <text class="lbl" x="242" y="216" dominant-baseline="central"><tspan class="accent-ccm">ccm sidekick-send</tspan></text>
   <text class="dim" x="242" y="234" dominant-baseline="central">after <tspan class="accent-ccm">ccm capture</tspan></text>
 
   <!-- ── untracked pane ─────────────────────────────────────────────── -->

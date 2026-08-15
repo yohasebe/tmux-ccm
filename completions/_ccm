@@ -24,6 +24,7 @@ _ccm() {
         'stop:Stop project window(s)'
         'bg:External Claude Code agent-view sessions'
         'send:Send a prompt to another project'
+        'sidekick-send:Send a prompt to the sidekick agent CLI in this window'
         'menu:Interactive menu'
         'init:Interactive setup wizard'
         'setup-hooks:Install Claude Code hooks for improved state detection'

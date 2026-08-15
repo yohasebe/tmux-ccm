@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `ccm sidekick-send "<message>"` delivers a prompt to the sidekick agent
+  CLI in a split pane of the caller's own window — the relay lane
+  `ccm send` deliberately never takes. The target is resolved from tmux
+  metadata only (the single pane running a known external-agent CLI
+  whose working directory belongs to the project); zero or multiple
+  candidates refuse, a sidekick caller is refused (the reverse lane is
+  `ccm send <project>`), and the pane identity is re-checked right
+  before typing. The send types literally, waits out the peer's
+  composer-settle pause before Enter, then captures the pane and exits
+  non-zero when no message fragment appears. The guide and the
+  `setup-claude-md` template now teach this command instead of the hand
+  `tmux send-keys` procedure.
 - Auto-exits are recorded in `$CCM_DATA_DIR/state/auto-exit.log` (timestamp,
   project, session id, idle seconds). `ccm doctor` shows the count.
 - `@ccm-ambiguous-width 1|2` declares how your terminal draws glyphs whose

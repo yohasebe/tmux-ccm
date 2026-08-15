@@ -671,27 +671,28 @@ Use the following commands to discover, inspect, and coordinate other projects:
   of what its own sidekick is doing. Two senders typing into one
   composer interleave into a single garbled prompt.
 
-  `ccm send` only targets Claude panes, so the sidekick in YOUR window
-  is reached with tmux directly — check it is at its prompt with
-  `ccm capture <this project>` first, then:
-
-      tmux send-keys -t <pane> -l -- "<message>"
-      sleep 0.3
-      tmux send-keys -t <pane> Enter
-
-  `-l` sends the text literally; without it a word like `Enter` inside
-  your message becomes that keystroke. The pause is not cosmetic: with
-  no gap the peer's TUI can still be digesting the text when `Enter`
-  lands and take it as a newline rather than a submit, leaving the body
-  in its composer. Then `ccm capture` again and read its input box —
-  **empty means sent; your text still sitting there means it was not.**
-  Visible text is proof of failure, not proof of delivery.
-
   Other flags: `--no-enter` (type without submitting), `-y` / `--yes`
   (skip the interactive confirmation), `--` (end of flag parsing, for
   messages that start with `-`). Confirmation is auto-skipped when
   stdin or stdout is not a TTY, so `echo "..." | ccm send <name> --stdin`
   works from shell pipelines and MCP server hooks.
+
+  `ccm send` only targets Claude panes, so the sidekick in YOUR window
+  is reached with `ccm sidekick-send "<message>"` instead — run it from
+  a pane of this window. It finds the sidekick pane itself (a known
+  external agent CLI whose working directory belongs to this project),
+  refuses when there is no sidekick or more than one, re-checks the
+  pane right before typing, waits for the peer's composer to settle
+  before sending Enter, and captures the pane afterwards to confirm
+  the text landed — a non-zero exit means it could not confirm, so
+  treat that as "not delivered" and check with `ccm capture <this
+  project>`.
+
+  The pause the command takes before Enter is load-bearing, and worth
+  knowing about if you ever type into a foreign TUI by hand: with no
+  gap the peer can still be digesting the text when Enter lands and
+  take it as a newline rather than a submit, leaving the body in its
+  composer looking exactly like a message that went through.
 <!-- ccm:end -->
 SECTION
 }

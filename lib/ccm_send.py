@@ -48,6 +48,14 @@ whole message into zsh. `_resolve_delivery_pane` closes the gap by
 locating the pane that actually hosts the claude process and
 targeting keystrokes (and captures) at that pane id instead of the
 window.
+
+The companion `ccm sidekick-send` (bottom of this file) delivers to a
+NON-Claude sidekick pane of the caller's own window instead. There is
+no state to gate on (ccm deliberately tracks no state for an external
+agent), so its safety story is identity: it finds the sidekick pane
+from tmux metadata, refuses every ambiguity, and confirms delivery by
+capture. Both commands share the typing helpers (`_type_body`,
+`_send_keys`) so the literal-send details exist exactly once.
 """
 
 import os
@@ -59,6 +67,7 @@ from ccm_constants import (
     CLAUDE_CMD,
     PATTERN_COMPOSER_DRAFT,
     SHELL_FOREGROUND_COMMANDS,
+    external_agent_name,
 )
 from ccm_pane_state import detect_pane_state, enumerate_window_panes
 
@@ -877,3 +886,273 @@ def cmd_send(args):
         _trace_record(pane_target, "send-end", (f"project={project_name}",))
 
     ccm_core.ccm_info(f"Sent to {project_name}")
+
+
+# ─── ccm sidekick-send ───
+# Delivers a prompt to the sidekick agent CLI (Kimi, Codex, …) in a
+# split pane of the CALLER'S window. `ccm send` deliberately never
+# reaches a sidekick — it only targets tracked Claude panes — so this
+# is the other lane of the relay. What it enforces that the manual
+# `tmux send-keys` procedure could only ask for:
+#
+#   - identity: the target is found from tmux metadata — the single
+#     pane in the caller's own window whose foreground command is a
+#     known external agent (EXTERNAL_AGENT_COMMANDS), with a working
+#     directory inside this project. A mis-targeted send cannot
+#     happen silently.
+#   - procedure: literal `-l --` typing, the settle pause before the
+#     committing Enter, and a post-send capture confirming a fragment
+#     of the message actually landed.
+#
+# What it deliberately does NOT do is read the sidekick's SCREEN
+# state: ccm tracks no state for a non-Claude pane, and matching
+# another TUI's prompt text would inherit every vendor's redesign.
+# Readiness stays the caller's judgment (`ccm capture` first).
+
+_SIDEKICK_SEND_USAGE = (
+    "Usage: ccm sidekick-send <message> "
+    "[--file path] [--stdin|-] [--no-enter]\n"
+    "       ccm sidekick-send -- <message starting with a dash>\n"
+    "Delivers to the sidekick agent CLI in a split pane of THIS window."
+)
+
+# Pause between the typed body and the committing Enter. A peer TUI
+# still digesting the inserted text when Enter arrives can take it as
+# a newline instead of a submit; the body then sits in the composer
+# unsent, looking exactly like a delivered message. Measured against
+# Kimi K3: no gap fails every time, 0.3 s submits. Claude Code's own
+# composer tolerates a zero gap, which is why `ccm send` needs none.
+_SIDEKICK_SUBMIT_SETTLE_SEC = 0.3
+
+# Post-send confirmation polls the pane for a message fragment.
+# Presence can pass spuriously when the same text was already on
+# screen (resending an identical message) — accepted: the check
+# exists to catch text that never arrived, not to prove ordering.
+_SIDEKICK_VERIFY_TIMEOUT_SEC = 2.0
+_SIDEKICK_VERIFY_POLL_SEC = 0.5
+
+
+def _resolve_sidekick_pane(caller_pane):
+    """Return `(pane_id, agent_name)` of THE sidekick pane in the
+    caller's window, refusing (ccm_die) on every ambiguity.
+
+    Identity comes from tmux metadata only — the pane's foreground
+    command against `external_agent_name`, and its working directory
+    against the project directory. The sidekick's screen is never
+    read."""
+    fmt = "#{window_id}\t#{pane_current_command}\t#{pane_current_path}"
+    info = (ccm_core.tmux_cmd(
+        "display-message", "-p", "-t", caller_pane, fmt) or "").strip()
+    parts = info.split("\t")
+    if len(parts) < 3 or not parts[0]:
+        ccm_core.ccm_die(
+            f"Cannot identify the caller's window from {caller_pane} — "
+            "is $TMUX_PANE stale? Run `ccm sidekick-send` from a live "
+            "pane of the project window."
+        )
+    win_id, caller_cmd, caller_cwd = parts[0], parts[1], parts[2]
+
+    agent = external_agent_name(caller_cmd)
+    if agent:
+        ccm_core.ccm_die(
+            f"This pane IS the sidekick ({agent}) — refusing the "
+            "reverse lane. To reach the window's Claude session, use "
+            "`ccm send <project>`."
+        )
+
+    out = ccm_core.tmux_cmd(
+        "list-panes", "-t", win_id, "-F",
+        "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}") or ""
+    sidekicks = []
+    for line in out.splitlines():
+        f = line.split("\t")
+        if len(f) < 3:
+            continue
+        name = external_agent_name(f[1])
+        if name and f[0] != caller_pane:
+            sidekicks.append((f[0], name, f[2]))
+
+    if not sidekicks:
+        ccm_core.ccm_die(
+            "No sidekick pane in this window — no pane is running a "
+            "known external agent CLI.\n"
+            "  Start the sidekick in a split pane of this window first. "
+            "To message another project's Claude session, use "
+            "`ccm send <project>`."
+        )
+    if len(sidekicks) > 1:
+        listing = ", ".join(f"{pid} ({name})" for pid, name, _ in sidekicks)
+        ccm_core.ccm_die(
+            f"{len(sidekicks)} sidekick panes in this window "
+            f"({listing}) — the target is ambiguous, refusing.\n"
+            "  Keep exactly one sidekick pane in the window, or type "
+            "into it by hand with tmux if you really run several."
+        )
+
+    pane_id, agent_name, pane_cwd = sidekicks[0]
+
+    # The pane must belong to THIS project. The window's @ccm_dir tag
+    # is the registered identity; fall back to the caller pane's own
+    # cwd when the window is untagged. No reference at all fails
+    # closed — the point of the check is that a mis-targeted send
+    # cannot happen silently.
+    ref = (ccm_core.tmux_cmd(
+        "show-option", "-w", "-t", win_id, "-qv", "@ccm_dir") or "").strip()
+    ref = ref or caller_cwd
+    if not ref:
+        ccm_core.ccm_die(
+            "Cannot establish this window's project directory (no "
+            "@ccm_dir tag and the caller's cwd is unreadable) — "
+            "refusing rather than guessing at the target."
+        )
+    ref_c = ccm_core.canonical_dir(ref)
+    pane_c = ccm_core.canonical_dir(pane_cwd)
+    if pane_c != ref_c and not pane_c.startswith(ref_c + os.sep):
+        ccm_core.ccm_die(
+            f"The sidekick pane {pane_id} runs in {pane_cwd}, outside "
+            f"this project ({ref}) — refusing: the pane does not "
+            "belong to this window's project."
+        )
+    return pane_id, agent_name
+
+
+def cmd_sidekick_send(args):
+    """Send a prompt to the sidekick agent CLI in the caller's window.
+
+    Usage:
+      ccm sidekick-send <message>            Send literal message + Enter
+      ccm sidekick-send --file <path>        Read message from a file
+      ccm sidekick-send --stdin              Read message from stdin
+      ccm sidekick-send --no-enter <msg>     Send without submitting
+      ccm sidekick-send -- "--literal"       `--` ends flag parsing
+    """
+    if any(a in ("-h", "--help") for a in args):
+        print(_SIDEKICK_SEND_USAGE)
+        return
+    positional_parts = []
+    message_file = None
+    use_stdin = False
+    no_enter = False
+
+    stop_flags = False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if not stop_flags and arg == "--":
+            stop_flags = True
+            i += 1
+            continue
+        if not stop_flags and arg.startswith("-") and arg != "-":
+            if arg == "--file":
+                i += 1
+                if i >= len(args):
+                    ccm_core.ccm_die("--file requires a path argument")
+                message_file = args[i]
+            elif arg == "--stdin":
+                use_stdin = True
+            elif arg == "--no-enter":
+                no_enter = True
+            else:
+                ccm_core.ccm_die(
+                    f"Unknown flag: {arg}\n{_SIDEKICK_SEND_USAGE}")
+        else:
+            if arg == "-":  # conventional stdin alias
+                use_stdin = True
+            else:
+                positional_parts.append(arg)
+        i += 1
+
+    # Resolve message source (exactly one of the three), mirroring
+    # cmd_send's conventions.
+    positional_message = " ".join(positional_parts) if positional_parts else None
+    source_count = sum(x is not None and x is not False for x in
+                       (positional_message, message_file, use_stdin or None))
+    if source_count == 0:
+        ccm_core.ccm_die("No message provided (positional, --file, or --stdin)")
+    if source_count > 1:
+        ccm_core.ccm_die(
+            "Provide exactly one of: positional message, --file, or --stdin"
+        )
+    if message_file:
+        try:
+            with open(message_file, encoding="utf-8") as f:
+                message = f.read()
+        except OSError as e:
+            ccm_core.ccm_die(f"Failed to read message file: {e}")
+    elif use_stdin:
+        message = sys.stdin.read()
+    else:
+        message = positional_message
+    if not message.strip() and not no_enter:
+        ccm_core.ccm_die(
+            "Empty message (use --no-enter to send only Enter suppression)"
+        )
+
+    caller_pane = os.environ.get("TMUX_PANE", "")
+    if not caller_pane:
+        ccm_core.ccm_die(
+            "ccm sidekick-send must run inside tmux ($TMUX_PANE is "
+            "unset) — it delivers to the sidekick pane of the caller's "
+            "own window."
+        )
+
+    pane_id, agent = _resolve_sidekick_pane(caller_pane)
+
+    # TOCTOU: re-resolve immediately before typing. The pane found a
+    # moment ago may have exited or been replaced while the message
+    # was being read (a slow --file, a human at the keys) — typing
+    # into its successor would be the mis-send this command exists to
+    # prevent.
+    again = _resolve_sidekick_pane(caller_pane)
+    if again != (pane_id, agent):
+        ccm_core.ccm_die(
+            f"The sidekick pane changed while preparing the send "
+            f"({pane_id} → {again[0]}) — refusing. Retry the command."
+        )
+
+    # Defensively exit any tmux mode on the target pane, then type
+    # the body literally (shared helpers — see cmd_send).
+    _send_keys(pane_id, "-X", "cancel", label="sidekick-pre-cancel")
+    lines = message.split("\n")
+    if _trace_enabled():
+        _trace_record(pane_id, "sidekick-send-start",
+                      (f"agent={agent}", f"lines={len(lines)}",
+                       f"bytes={len(message)}"))
+    _type_body(pane_id, lines)
+
+    if not no_enter:
+        # The settle pause is load-bearing — see the constant's note.
+        time.sleep(_SIDEKICK_SUBMIT_SETTLE_SEC)
+        _send_keys(pane_id, "Enter", label="sidekick-submit")
+
+    # Post-send delivery confirmation: a fragment of the message must
+    # be visible in the pane (in the composer for --no-enter, in the
+    # conversation echo after Enter). Absence means the text never
+    # arrived — report failure honestly instead of a false "Sent".
+    signature = _message_signature(message)
+    if signature is None:
+        ccm_core.ccm_info(
+            f"Sent to sidekick {agent} ({pane_id}) — message too short "
+            "to auto-verify; confirm with `ccm capture`."
+        )
+        return
+    deadline = time.time() + _SIDEKICK_VERIFY_TIMEOUT_SEC
+    while True:
+        if _body_landed(pane_id, signature):
+            break
+        if time.time() >= deadline:
+            if _trace_enabled():
+                _trace_record(pane_id, "sidekick-send-unverified",
+                              (f"agent={agent}",))
+            ccm_core.ccm_die(
+                f"Delivery to the sidekick ({agent}, {pane_id}) could "
+                "not be confirmed: no fragment of the message appeared "
+                "in the pane after sending.\n"
+                "  The send may have been eaten (a TUI still digesting "
+                "the text, or a dialog open over the composer). Check "
+                "the pane with `ccm capture`, then resend."
+            )
+        time.sleep(_SIDEKICK_VERIFY_POLL_SEC)
+    if _trace_enabled():
+        _trace_record(pane_id, "sidekick-send-end", (f"agent={agent}",))
+    ccm_core.ccm_info(f"Sent to sidekick {agent} ({pane_id})")

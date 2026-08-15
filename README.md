@@ -370,6 +370,7 @@ ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
                                   flags: --file --stdin --no-enter --force --start -y --
+ccm sidekick-send <msg> [flags]   Send a prompt to the sidekick agent CLI in this window
 ccm bg list                       List external Claude Code agent-view sessions (read-only)
 ccm init                          Interactive setup wizard (hooks, restore, status bar)
 ccm setup-hooks                   Install Claude Code hooks (improved state detection)

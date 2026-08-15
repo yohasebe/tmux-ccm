@@ -366,6 +366,7 @@ ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
 ccm send <name> <msg> [flags]     他プロジェクトのClaude Codeセッションにプロンプト送信
                                   flags: --file --stdin --no-enter --force --start -y --
+ccm sidekick-send <msg> [flags]   このウィンドウ内のサイドキック（別エージェントCLI）にプロンプト送信
 ccm bg list                       外部の Claude Code agent-view セッション一覧（読み取り専用）
 ccm init                          対話型セットアップウィザード（フック・復元・ステータスバー）
 ccm setup-hooks                   Claude Codeフックをインストール（検出精度向上）
