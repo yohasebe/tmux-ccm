@@ -589,7 +589,7 @@ class TestCmdSend:
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls
 
     # A long body whose head has scrolled out of the composer. Observed
-    # against a sidekick TUI: a ~30-line message rendered as
+    # against Kimi K3: a ~30-line message rendered as
     # `↑ 24 more` with only the trailing lines on screen.
     _LONG_MSG = "\n".join(
         [f"opening line of the queued message, part {i}" for i in range(3)]

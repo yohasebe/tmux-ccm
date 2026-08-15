@@ -218,8 +218,8 @@ def _message_signature(message):
     composer holding a long body shows only part of it. Claude's grows
     upward and keeps the leading row; a body that outgrows the pane
     scrolls instead and keeps the trailing row (observed
-    against a sidekick TUI: a 30-line message rendered as `↑ 24 more`
-    with the head cut off). Checking one end only would report "did not land"
+    against Kimi K3: a 30-line message rendered as `↑ 24 more` with the
+    head cut off). Checking one end only would report "did not land"
     for a message sitting right there, which on the --start path means
     re-typing a body that already arrived and then refusing the send.
     So take a candidate from each end."""
@@ -1005,7 +1005,7 @@ _SIDEKICK_SEND_USAGE = (
 # still digesting the inserted text when Enter arrives can take it as
 # a newline instead of a submit; the body then sits in the composer
 # unsent, looking exactly like a delivered message. Measured against
-# a sidekick TUI: no gap fails every time, 0.3 s submits. Claude Code's own
+# Kimi K3: no gap fails every time, 0.3 s submits. Claude Code's own
 # composer tolerates a zero gap, which is why `ccm send` needs none.
 _SIDEKICK_SUBMIT_SETTLE_SEC = 0.3
 

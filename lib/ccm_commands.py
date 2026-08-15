@@ -1325,11 +1325,12 @@ def cmd_debug_trace(target_match, interval=0.3):
 # Registry of sidekick CLIs whose own hook system can run ccm's
 # attention adapter. Each entry knows where the CLI's hook config
 # lives and how to render the managed block. Only measured
-# integrations belong here: Kimi Code's is verified (0.31.x,
+# integrations belong here: Kimi Code's is verified (0.31.1,
 # — PermissionRequest/PermissionResult fire, $TMUX_PANE is
-# inherited, config loads at session start). Gemini / Grok Build have
-# hook systems but their permission-wait events are unverified;
-# Codex has no approval-time hook at all (openai/codex#11808).
+# inherited, config loads at session start). Grok Build is verified
+# too, through its Notification event. Gemini has a hook system but
+# its permission-wait event is unverified; Codex has no
+# approval-time hook at all (openai/codex#11808).
 _SIDEKICK_BLOCK_BEGIN = "# ccm:sidekick-attention begin (managed by ccm)"
 _SIDEKICK_BLOCK_END = "# ccm:sidekick-attention end"
 

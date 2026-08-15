@@ -23,10 +23,9 @@ import ccm_spool
 # pre-commit hook's email-shaped-string check misfires on
 # `@word.word` in an added line (the diff's own "+" prefix plays the
 # local part). Same fixture, same semantics.
-_fixture = pytest.fixture
 
 
-@_fixture
+@pytest.fixture
 def spool_root(tmp_path, monkeypatch):
     root = str(tmp_path / "spool")
     monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", root)
