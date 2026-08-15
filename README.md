@@ -36,7 +36,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - **Git Integration** — Per-project git branch with dirty-state indicator
 - **Port Detection** — Listening ports per project
 - **Snapshots** — Save and restore your project layout
-- **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe, BUSY-queueable)
+- **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe), and queues for later delivery (store-and-forward) when the target is busy
 - **Permission-Mode Visibility** — each project's Claude Code permission mode (manual / accept / plan / auto / bypass) shown in `ccm status` and the dashboard, so "this project never asks for permission" is never a mystery
 - **Sidekick Support** — run a second agent CLI beside Claude in a split pane; ccm keeps it out of its own tracking and shows that it is there. See [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore) and [Relaying with a second agent CLI](docs/guide.md#relaying-with-a-second-agent-cli)
 - **Auto-start** — Claude Code auto-launches when you attach to a project where it's not yet running
@@ -369,8 +369,9 @@ ccm snapshot save|load|list|delete  Manage snapshots
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
-                                  flags: --file --stdin --no-enter --force --start -y --
+                                  flags: --file --stdin --no-enter --now --force --start -y --
 ccm sidekick-send <msg> [flags]   Send a prompt to the sidekick agent CLI in this window
+ccm spool list|cancel …           Inspect / withdraw queued (store-and-forward) messages
 ccm bg list                       List external Claude Code agent-view sessions (read-only)
 ccm init                          Interactive setup wizard (hooks, restore, status bar)
 ccm setup-hooks                   Install Claude Code hooks (improved state detection)

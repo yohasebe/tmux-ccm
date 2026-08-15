@@ -23,6 +23,7 @@ from ccm_core import (
     tmux_batch,
     tmux_cmd,
 )
+import ccm_spool
 from ccm_notify import notify
 from ccm_render import (ambiguous_width_declared, display_width,
                         external_agent_label, signal_age_suffix)
@@ -605,6 +606,15 @@ def _inject_status_impl(force_fast=False):
 
         # Periodic autosave
         periodic_autosave()
+
+        # Spool drain: deliver messages `ccm send` queued while the
+        # target was undeliverable. One driver only (this periodic
+        # full pass, under the flock) in v1 — hook-driven delivery is
+        # a latency optimisation deferred to v1.1. Must run BEFORE
+        # auto-exit: a session with a pending message is about to be
+        # used, and delivering it flips the session to BUSY, which
+        # auto-exit then leaves alone.
+        ccm_spool.reconcile_spools(projects)
 
         # Auto-exit idle sessions
         auto_exit_idle(projects)

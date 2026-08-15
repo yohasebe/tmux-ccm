@@ -282,7 +282,7 @@ class TestCmdSend:
         fake_tmux = self._patch_same_dir_second_window(monkeypatch, "PERMIT")
         with patch("ccm_core.tmux_cmd", side_effect=fake_tmux), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["dup", "hello"])
+            ccm_send.cmd_send(["dup", "--now", "hello"])
         err = capsys.readouterr().err
         assert "dup is in PERMIT state" in err
 
@@ -300,7 +300,7 @@ class TestCmdSend:
         fake_tmux = self._patch_same_dir_second_window(monkeypatch, "SHELL")
         with patch("ccm_core.tmux_cmd", side_effect=fake_tmux), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["dup", "hello"])
+            ccm_send.cmd_send(["dup", "--now", "hello"])
         err = capsys.readouterr().err
         assert "dup is in SHELL state" in err
 
@@ -316,7 +316,9 @@ class TestCmdSend:
     # --- state gating ---
 
     def test_send_permit_rejected(self, monkeypatch, capsys):
-        """PERMIT state is a hard guard — refuse unconditionally."""
+        """PERMIT state is a hard guard — refuse unconditionally.
+        (Via --now: by default the message is spooled instead; the
+        queued default is covered in tests/test_spool.py.)"""
         project = self._make_project(state="PERMIT")
         self._patch_resolution(monkeypatch, project=project)
         # capture-pane returns the session-resume modal content
@@ -327,7 +329,7 @@ class TestCmdSend:
         )
         with patch("ccm_core.tmux_cmd", return_value=resume_tail), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         err = capsys.readouterr().err
         # Refusal must expose classification + guidance + pane tail so
         # a caller (human or another Claude) can relay the situation
@@ -344,7 +346,7 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch, project=project)
         with patch("ccm_core.tmux_cmd", return_value=""), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "--force", "hello"])
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
 
     def test_send_permit_refusal_classifies_permission_dialog(
         self, monkeypatch, capsys,
@@ -361,7 +363,7 @@ class TestCmdSend:
         )
         with patch("ccm_core.tmux_cmd", return_value=perm_tail), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         err = capsys.readouterr().err
         assert "Classification: permission-request" in err
         assert "DANGEROUS" in err or "dangerous" in err
@@ -383,7 +385,7 @@ class TestCmdSend:
         )
         with patch("ccm_core.tmux_cmd", return_value=tui_tail), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         err = capsys.readouterr().err
         assert "claude agents" in err
         assert "send refused" in err.lower() or "refused" in err.lower()
@@ -399,13 +401,13 @@ class TestCmdSend:
         tui_tail = "enter to open · space to reply · ? for shortcuts"
         with patch("ccm_core.tmux_cmd", return_value=tui_tail), \
                 pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "--force", "hello"])
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
 
     def test_send_busy_rejected_without_force(self, monkeypatch):
         project = self._make_project(state="BUSY")
         self._patch_resolution(monkeypatch, project=project)
         with patch("ccm_core.tmux_cmd", return_value=""), pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
 
     def test_send_busy_allowed_with_force(self, monkeypatch):
         project = self._make_project(state="BUSY")
@@ -419,7 +421,7 @@ class TestCmdSend:
         project = self._make_project(state="SHELL")
         self._patch_resolution(monkeypatch, project=project)
         with patch("ccm_core.tmux_cmd", return_value=""), pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
 
     def _patch_start_polling(self, monkeypatch, initial, after_start):
         """Make `build_project_list` return `initial` on the first
@@ -1196,7 +1198,7 @@ class TestSendPreTypeRecheck:
         calls = self._patch(monkeypatch, "PERMIT", interactive=True)
         monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls), \
             "body typed into a PERMIT dialog after confirmation"
         assert "PERMIT" in capsys.readouterr().err
@@ -1205,7 +1207,7 @@ class TestSendPreTypeRecheck:
         """--force overrides BUSY, never PERMIT — also on re-check."""
         calls = self._patch(monkeypatch, "PERMIT")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "--force", "hello"])
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
         assert not self._literal_sent(calls)
 
     def test_recheck_shell_refused(self, monkeypatch):
@@ -1213,7 +1215,7 @@ class TestSendPreTypeRecheck:
         would be typed into a bare shell (incident class)."""
         calls = self._patch(monkeypatch, "SHELL")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
 
     def test_recheck_shell_after_start_launch_allowed(self, monkeypatch):
@@ -1234,7 +1236,7 @@ class TestSendPreTypeRecheck:
         same policy as the initial gate: refuse without --force."""
         calls = self._patch(monkeypatch, "BUSY")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
 
     def test_recheck_busy_sends_with_force(self, monkeypatch):
@@ -1268,7 +1270,11 @@ class TestComposerDraftGuard:
     holding text also satisfies), so `cmd_send` reads the composer
     line itself immediately before typing and refuses while a draft
     is present. Without it, the message merges into the user's
-    in-progress text and the committing Enter submits the mix."""
+    in-progress text and the committing Enter submits the mix.
+
+    These tests drive the refusal through `--now`; with the default
+    spool behaviour the same draft queues the message instead
+    (covered in tests/test_spool.py)."""
 
     def _patch(self, monkeypatch, capture, project_state="IDLE"):
         """Stub the gate to `project_state` and every capture-pane
@@ -1320,7 +1326,7 @@ class TestComposerDraftGuard:
     def test_draft_refuses_and_never_types(self, monkeypatch, capsys):
         calls = self._patch(monkeypatch, "❯ half-typed thought\n")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls), \
             "body typed over a half-typed draft"
         err = capsys.readouterr().err
@@ -1337,7 +1343,7 @@ class TestComposerDraftGuard:
             "❯ \n"
             "  /tmp/demo  main  ·  ctx 42%\n",
         )
-        ccm_send.cmd_send(["demo", "hello"])
+        ccm_send.cmd_send(["demo", "--now", "hello"])
         assert self._literal_sent(calls)
 
     def test_unreadable_composer_fails_open(self, monkeypatch):
@@ -1346,7 +1352,7 @@ class TestComposerDraftGuard:
         `_recheck_delivery_state` makes. Pinned so a future
         tightening is a deliberate choice, not a side effect."""
         calls = self._patch(monkeypatch, "")
-        ccm_send.cmd_send(["demo", "hello"])
+        ccm_send.cmd_send(["demo", "--now", "hello"])
         assert self._literal_sent(calls)
 
     def test_draft_found_via_alternate_screen(self, monkeypatch):
@@ -1359,7 +1365,7 @@ class TestComposerDraftGuard:
             return ""
         calls = self._patch(monkeypatch, capture)
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
 
     def test_multiline_draft_detected_from_first_row(self, monkeypatch,
@@ -1369,7 +1375,7 @@ class TestComposerDraftGuard:
         calls = self._patch(monkeypatch,
                             "❯ first line of a draft\n  continuation\n")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
         assert "first line of a draft" in capsys.readouterr().err
 
@@ -1380,7 +1386,7 @@ class TestComposerDraftGuard:
         calls = self._patch(monkeypatch, "❯ do not touch this\n",
                             project_state="BUSY")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "--force", "hello"])
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
         assert not self._literal_sent(calls)
         # The guard read the composer AFTER the defensive mode-cancel,
         # so the capture reflects the live composer, not copy-mode
@@ -1397,7 +1403,7 @@ class TestComposerDraftGuard:
         long_draft = "❯ " + "x" * 120
         calls = self._patch(monkeypatch, long_draft + "\n")
         with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "hello"])
+            ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
         err = capsys.readouterr().err
         # The cap is 60 chars of the whole stripped line, so the

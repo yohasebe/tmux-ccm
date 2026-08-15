@@ -25,6 +25,7 @@ _ccm() {
         'bg:External Claude Code agent-view sessions'
         'send:Send a prompt to another project'
         'sidekick-send:Send a prompt to the sidekick agent CLI in this window'
+        'spool:Inspect / withdraw queued messages'
         'menu:Interactive menu'
         'init:Interactive setup wizard'
         'setup-hooks:Install Claude Code hooks for improved state detection'
@@ -82,6 +83,11 @@ _ccm() {
                 local -a bg_cmds
                 bg_cmds=('list')
                 compadd -a bg_cmds
+                ;;
+            spool)
+                local -a spool_cmds
+                spool_cmds=('list' 'cancel')
+                compadd -a spool_cmds
                 ;;
             debug)
                 local -a debug_cmds

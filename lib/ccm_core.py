@@ -1080,6 +1080,7 @@ import ccm_render  # noqa: E402, F401
 import ccm_rules  # noqa: E402, F401
 import ccm_runtime  # noqa: E402, F401
 import ccm_send  # noqa: E402, F401
+import ccm_spool  # noqa: E402, F401
 import ccm_signals  # noqa: E402, F401
 import ccm_snapshot  # noqa: E402, F401
 import ccm_window  # noqa: E402, F401
@@ -1245,6 +1246,9 @@ _SUBCOMMANDS = (
     ("sidekick-send",
      _passthrough_argparse_config,
      lambda a: ccm_send.cmd_sidekick_send(a.rest)),
+    ("spool",
+     _passthrough_argparse_config,
+     lambda a: ccm_spool.cmd_spool(a.rest)),
     ("snapshot-save", _add_name_arg,
      lambda a: ccm_snapshot.cmd_snapshot_save(a.name)),
     ("snapshot-load", _add_name_arg,

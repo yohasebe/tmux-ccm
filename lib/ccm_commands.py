@@ -40,6 +40,7 @@ import ccm_jsonl
 import ccm_pane_state
 import ccm_runtime
 import ccm_render
+import ccm_spool
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
@@ -941,6 +942,19 @@ def cmd_doctor():
             f"{ccm_runtime.auto_exit_log_path()}")
     else:
         row(OK, "auto-exit log", "no sessions closed by ccm")
+
+    spool = ccm_spool.spool_summary()
+    if spool["pending"] or spool["expired"]:
+        parts = []
+        if spool["pending"]:
+            parts.append(f"{spool['pending']} queued — `ccm spool list`")
+        if spool["expired"]:
+            parts.append(
+                f"{spool['expired']} expired undelivered "
+                f"(TTL {ccm_spool.SPOOL_TTL_SEC // 60}m)")
+        row(WARN, "spool", "; ".join(parts))
+    else:
+        row(OK, "spool", "no queued messages")
 
     section(f"Active projects ({len(projects)})")
     if not projects:

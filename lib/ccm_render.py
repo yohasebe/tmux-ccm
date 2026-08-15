@@ -17,6 +17,7 @@ import unicodedata
 import ccm_core
 import ccm_canaries
 import ccm_signals
+import ccm_spool
 
 
 # ─── Display width (terminal column count) ───
@@ -342,9 +343,11 @@ def external_agent_label(project):
 def print_status():
     """Print status of all ccm projects (for `ccm status` CLI command)."""
     projects = ccm_core.build_project_list(fast=False)
+    spool_counts = ccm_spool.pending_counts()
 
     if not projects:
         print("No active projects.")
+        _print_spool_summary(spool_counts)
         return
 
     if ccm_core.hooks_configured():
@@ -445,6 +448,14 @@ def print_status():
                       if getattr(p, "attention_agents", ()) else C_DIM)
             pane_marker += f" {colour}{badge}{C_RESET}"
             pane_marker_visible_w += 1 + display_width(badge)
+        # Spool marker `✉N`: N messages are queued for this project
+        # (store-and-forward). Dim like `⊘` — a queue length, not a
+        # state. `✉` (U+2709) is ambiguous-width, same as `⚙`.
+        spool_n = spool_counts.get(p.name, 0)
+        if spool_n:
+            spool_marker = f"✉{spool_n}"
+            pane_marker += f" {C_DIM}{spool_marker}{C_RESET}"
+            pane_marker_visible_w += 1 + display_width(spool_marker)
         branch = p.branch or "-"
         ports = p.ports or "-"
         d = ccm_core.shorten_home(p.dir) if p.dir else ""
@@ -473,6 +484,19 @@ def print_status():
         name_field = f"{name_text}{pane_marker}{' ' * name_pad_w}"
         print(f"{status_field} {name_field} {mode_field} "
               f"{pad_to_width(branch, 16)} {pad_to_width(ports, 12)} {d}")
+
+    _print_spool_summary(spool_counts)
+
+
+def _print_spool_summary(spool_counts):
+    """A queued-but-undelivered message is the store-and-forward
+    equivalent of an unread refusal — keep the totals visible where
+    an agent polling `ccm status` will see them."""
+    total_queued = sum(spool_counts.values())
+    if total_queued:
+        breakdown = ", ".join(f"{n}:{c}" for n, c in spool_counts.items())
+        print(f"\n{C_DIM}spool: {total_queued} queued ({breakdown}) — "
+              f"`ccm spool list`{C_RESET}")
 
 
 def print_ports():

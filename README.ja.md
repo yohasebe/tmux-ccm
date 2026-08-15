@@ -36,7 +36,7 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 - **Git 連携** — プロジェクトごとに git ブランチと dirty 状態を表示
 - **ポート検出** — プロジェクトごとのリスニングポートを表示
 - **スナップショット** — プロジェクトレイアウトの保存と復元
-- **プロジェクト間メッセージング** — `ccm send <project> <message>` で他プロジェクトの Claude にプロンプト送信、状態に応じた安全な制御 (PERMIT は拒否、BUSY は `--force` でキュー投入)
+- **プロジェクト間メッセージング** — `ccm send <project> <message>` で他プロジェクトの Claude にプロンプト送信、状態に応じた安全な制御 (PERMIT は拒否)。相手が取り込み中なら store-and-forward キューで後送
 - **Permission mode の可視化** — 各プロジェクトの Claude Code permission mode (manual / accept / plan / auto / bypass) を `ccm status` とダッシュボードに表示。「このプロジェクトは許可を求めてこない」理由が一目で分かる
 - **サイドキック対応** — 分割ペインで Claude の隣に2つ目のエージェント CLI を動かせます。ccm はそれを自身の追跡から外したうえで、存在していることを示します。[別モデルをサイドキックとして使う](docs/guide.ja.md#別モデルをサイドキックとして使うccm_ignore)、[他のエージェント CLI との往復リレー](docs/guide.ja.md#他のエージェント-cli-との往復リレー)を参照
 - **自動起動** — Claude Code が起動していないプロジェクトに attach すると自動起動
@@ -365,8 +365,9 @@ ccm snapshot save|load|list|delete  スナップショット管理
 ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
 ccm send <name> <msg> [flags]     他プロジェクトのClaude Codeセッションにプロンプト送信
-                                  flags: --file --stdin --no-enter --force --start -y --
+                                  flags: --file --stdin --no-enter --now --force --start -y --
 ccm sidekick-send <msg> [flags]   このウィンドウ内のサイドキック（別エージェントCLI）にプロンプト送信
+ccm spool list|cancel …           キュー済み（store-and-forward）メッセージの確認 / 取り下げ
 ccm bg list                       外部の Claude Code agent-view セッション一覧（読み取り専用）
 ccm init                          対話型セットアップウィザード（フック・復元・ステータスバー）
 ccm setup-hooks                   Claude Codeフックをインストール（検出精度向上）

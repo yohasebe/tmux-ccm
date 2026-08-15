@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Store-and-forward spool for `ccm send`. When the target cannot take a
+  message (BUSY / PERMIT / SHELL, an agents TUI, or a composer holding a
+  draft), the message is written to `$CCM_DATA_DIR/spool/<project>/` and
+  the periodic status pass delivers it once the project reads IDLE again.
+  Delivery re-detects the pane's raw state and refuses to merge into a
+  draft; one message per project per pass, claimed by rename under a
+  per-project lock, at-least-once (a crash mid-delivery redelivers).
+  Messages older than `CCM_SPOOL_TTL_SEC` (default 60 min) move to
+  `expired/` and surface in `ccm status` / `ccm doctor` instead of
+  arriving. Delivered messages carry an envelope header
+  (`[from: … · queued … · delivered … — reply with `ccm send …`]`).
+  New `ccm spool list` / `ccm spool cancel <id|--all> [project]` to
+  inspect and withdraw — a queued mis-send is cancellable. Queued counts
+  show on `ccm status`, `ccm doctor`, and the dashboard (`✉N`).
 - `ccm sidekick-send "<message>"` delivers a prompt to the sidekick agent
   CLI in a split pane of the caller's own window — the relay lane
   `ccm send` deliberately never takes. The target is resolved from tmux
@@ -33,14 +47,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the bar, highest priority first, instead of next to the clock. Default
   `right`. `status-left` is not written to.
 
+### Changed
+- `ccm send` no longer refuses when the target cannot take the message
+  right now — it queues the message to the spool and reports
+  `Queued for <project>` (queue length, TTL, message id). This flips the
+  default for BUSY / PERMIT / SHELL targets and mid-send transitions:
+  scripts that relied on a non-zero exit to detect a non-delivery should
+  use `--now`, which keeps the old fail-fast behaviour (PERMIT with
+  classification and guidance included).
+
 ### Fixed
 - `ccm send` no longer types into a composer that already holds a
   half-typed draft. State detection cannot see one (an `❯` prompt
   holding text still reads IDLE), so the message used to merge into the
   user's in-progress text and the committing Enter would submit the
   garbled mix. The delivery path now reads the composer line
-  immediately before typing and refuses while a draft is present,
-  quoting its opening fragment.
+  immediately before typing and — while a draft is present — queues the
+  message for later delivery (refuses with `--now`), quoting the draft's
+  opening fragment.
 - Arrowing onto a footer-less dialog's deny option no longer drops the
   detection. The cursor rewrites the line as `❯ 3. Deny (esc)`, which the
   match rejected and the idle-prompt pattern then claimed — an open

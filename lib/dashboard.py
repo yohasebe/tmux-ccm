@@ -57,6 +57,7 @@ from ccm_core import (
 )
 from ccm_pane_state import enumerate_window_panes
 import ccm_agentview
+import ccm_spool
 from ccm_window import auto_start_claude, reset_window_after_attach
 from ccm_canaries import (
     disable_all_hooks_warning,
@@ -878,6 +879,7 @@ class Dashboard:
                 # left and right. The right-anchored placement keeps
                 # paths visually stable across refresh ticks.
                 annotations = []
+                spool_counts = ccm_spool.pending_counts()
                 for proj in projects:
                     pieces = []  # widths for COL_DIR calc
                     elapsed_str = ""
@@ -919,6 +921,10 @@ class Dashboard:
                     # window. Dim like `⊘` — presence, not a state.
                     ext_label = external_agent_label(proj)
                     ext_badge = f"⚙{ext_label}" if ext_label else ""
+                    # Spool marker `✉N`: N messages queued for this
+                    # project. Dim — a queue length, not a state.
+                    spool_n = spool_counts.get(proj.name, 0)
+                    spool_marker = f"✉{spool_n}" if spool_n else ""
                     # All width calculations go through `display_width`
                     # (terminal columns), not `len` (codepoints). Names
                     # and branches can contain CJK / emoji; mixing the
@@ -930,6 +936,8 @@ class Dashboard:
                         pieces.append(display_width(ignore_marker))
                     if ext_badge:
                         pieces.append(display_width(ext_badge))
+                    if spool_marker:
+                        pieces.append(display_width(spool_marker))
                     if mode_badge:
                         pieces.append(display_width(mode_badge))
                     if suffix_str:
@@ -946,6 +954,7 @@ class Dashboard:
                         "pane_marker": pane_marker,
                         "ignore_marker": ignore_marker,
                         "ext_badge": ext_badge,
+                        "spool_marker": spool_marker,
                         "mode_badge": mode_badge,
                         "elapsed": elapsed_str,
                         "suffix": suffix_str,
@@ -1039,6 +1048,14 @@ class Dashboard:
                         self._addstr(stdscr, y, col, ann["ext_badge"],
                                      badge_attr)
                         col += display_width(ann["ext_badge"]) + 1
+
+                    # Spool marker ✉N: messages queued for this project
+                    # (store-and-forward). Dim — a queue length, not a
+                    # state.
+                    if ann.get("spool_marker"):
+                        self._addstr(stdscr, y, col, ann["spool_marker"],
+                                     curses.color_pair(C_DIM))
+                        col += display_width(ann["spool_marker"]) + 1
 
                     # Permission-mode badge {label}: dim as secondary
                     # info, except bypassPermissions which gets bold

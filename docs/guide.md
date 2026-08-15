@@ -211,14 +211,35 @@ ccm send demo --no-enter "TODO: "
 
 ### State policy
 
-| Target state | Default | `--force` | `--start` |
-|---|---|---|---|
-| **IDLE** | Send immediately | — | — |
-| **BUSY** | Refused (avoid mixing with active turn) | Queued into input buffer | — |
-| **SHELL** (Claude not running) | Refused | — | Launches Claude, polls for IDLE (up to `CCM_START_WAIT_SEC`, default 10s), then sends |
-| **PERMIT** (permission dialog open) | **Hard refused** | **Still refused** — typing into a permission dialog could accidentally approve/deny a tool call | — |
+| Target state | Default | `--now` | `--force` | `--start` |
+|---|---|---|---|---|
+| **IDLE** | Send immediately | Send immediately | — | — |
+| **BUSY** | Queued for later delivery | Refused | Sent now into the input buffer (mixes with the current turn) | — |
+| **SHELL** (Claude not running) | Queued — delivered once Claude is running and idle | Refused | — | Launches Claude, polls for IDLE (up to `CCM_START_WAIT_SEC`, default 10s), then sends |
+| **PERMIT** (permission dialog open) | Queued — delivered after the dialog is resolved | **Refused** | Still queued — a dialog is never typed into, even with `--force` | — |
 
-The state check is not the only refusal. State detection cannot see a half-typed draft in the target's composer (an `❯` prompt holding text still reads IDLE), so immediately before typing, `ccm send` reads the composer line itself and refuses while a draft is present — otherwise the message would merge into text you are still writing, and the Enter would submit the garbled mix. Finish or clear the draft in the target pane, then retry.
+### The spool (store-and-forward)
+
+When the target cannot take a message right now, `ccm send` no longer fails by default: the message is written to `$CCM_DATA_DIR/spool/<project>/` and delivered by the periodic status pass once the project reads IDLE again. You get an explicit `Queued for <project>` line with the queue length and a message id — a send that queued is not a send that arrived.
+
+Delivery is deliberately conservative:
+
+- **One message per project per pass.** A second message sent back-to-back would land in the input buffer of the turn the first just started, so the queue drains one per idle transition.
+- **Re-checked at delivery time.** The pane's raw state is re-detected right before typing, and a composer holding a draft defers the message rather than merging into it.
+- **TTL.** A queued instruction goes stale — delivered an hour late it is no longer the instruction you meant. Messages older than `CCM_SPOOL_TTL_SEC` (default 60 min) move to `expired/` and surface in `ccm status` / `ccm doctor` instead of delivering. Queued messages never start a Claude session on their own.
+- **At-least-once.** A crash mid-delivery re-delivers on the next pass rather than losing the message; the envelope line lets the receiver tell a duplicate apart.
+
+Delivered messages arrive under an envelope header — `[from: <project> · queued 14:03 · delivered 15:02 — reply with `ccm send <project> "…"`]` — so the receiver knows who sent it, how long it waited, and how to answer.
+
+Queued counts show on `ccm status`, `ccm doctor`, and the dashboard (`✉N` by the project name). To inspect or withdraw:
+
+```bash
+ccm spool list                 # all pending messages, with age and preview
+ccm spool cancel <id> <project>   # withdraw one (a queued mis-send is cancellable)
+ccm spool cancel --all <project>  # clear the project's queue
+```
+
+The state check is not the only gate. State detection cannot see a half-typed draft in the target's composer (an `❯` prompt holding text still reads IDLE), so immediately before typing, `ccm send` reads the composer line itself and — while a draft is present — queues the message like any other undeliverable state (`--now` refuses instead). Otherwise the message would merge into text you are still writing, and the Enter would submit the garbled mix.
 
 ### Flags
 
@@ -227,6 +248,7 @@ The state check is not the only refusal. State detection cannot see a half-typed
 | `--file <path>` | Read message from a file |
 | `--stdin` (or bare `-`) | Read message from stdin |
 | `--no-enter` | Send the text without the final Enter (useful for prefilling a prompt) |
+| `--now` | Fail instead of queueing when the target cannot take the message now |
 | `--force` | Allow sending to a BUSY target (queues into Claude's input buffer) |
 | `--start` | Auto-launch Claude if the target is in SHELL state |
 | `-y`, `--yes` | Skip the interactive confirmation prompt |
@@ -759,6 +781,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | `CCM_STARTUP_GRACE_SEC` | `60` (seconds) | Window during which the legacy `startup_transient_raw_busy` rule demotes raw=BUSY to IDLE when no hook signal is present — covers Claude's MCP-loading phase after `claude --continue`, which typically completes in 10–30 s |
 | `CCM_SLIVER_HEIGHT_THRESHOLD` | `4` (rows) | Minimum tmux pane height for a pane to participate in window-state aggregation. Panes shorter than this cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a genuinely BUSY pane. Raise if you have legitimate small Agent Teams panes that should still count; lower (down to 1) to disable the filter entirely |
 | `CCM_HOOK_CMD_TIMEOUT` | `5000` (ms) | Timeout Claude Code applies to each ccm hook invocation. ccm's hooks each do one signal-file write — comfortably within any reasonable value. Lower if you are debugging a hook hang; the default is generous enough that you will only notice it during a Claude Code or filesystem stall |
+| `CCM_SPOOL_TTL_SEC` | `3600` (seconds) | How long a message queued by `ccm send` (store-and-forward) stays deliverable. Past the TTL it moves to `expired/` and shows up in `ccm status` / `ccm doctor` instead of arriving — a stale instruction delivered late executes out of context. See "The spool" under the send section |
 | `CCM_START_WAIT_SEC` | `10` (seconds) | How long `ccm send --start` polls a SHELL-state target for IDLE after sending `claude --continue`, before refusing the send. Tuned for the two real cases: a normal resume reaches IDLE in 1-5 s, while an auto-`/compact` on a long-session resume can keep BUSY for 10-60+ s — no reasonable wait gets the message through anyway, so refusing at 10 s gives the operator a useful response time. Progress is printed once per second when run interactively so the wait is visible. Raise if your environment routinely needs more |
 
 ### Runtime directories

@@ -63,6 +63,7 @@ import sys
 import time
 
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
+import ccm_spool  # store-and-forward queue for undeliverable sends
 from ccm_constants import (
     CLAUDE_CMD,
     PATTERN_COMPOSER_DRAFT,
@@ -413,13 +414,58 @@ def _composer_draft_fragment(pane_target):
 
 _SEND_USAGE = (
     "Usage: ccm send <name|#idx> <message> "
-    "[--file path] [--stdin|-] [--force] [--start] [--no-enter] [-y|--yes]\n"
+    "[--file path] [--stdin|-] [--force] [--start] [--now] [--no-enter] [-y|--yes]\n"
     # `--` is the only way to send a message that starts with a dash,
     # and a user who needs it is by definition looking at a message
     # ccm just tried to parse as flags — so it belongs in the usage
     # line they are about to be shown, not only in the guide.
     "       ccm send <name> -- <message starting with a dash>"
 )
+
+
+# ─── Spool hand-off ───
+# A target that cannot take the message right now (BUSY / PERMIT /
+# SHELL / agents-TUI / a composer holding a draft) no longer fails
+# the send by default: the message is queued for the reconciler's
+# delivery pass (see ccm_spool) and the sender is told. `--now`
+# restores the old fail-fast behaviour for callers that would rather
+# retry themselves. Permanent errors — ambiguous target, self-send,
+# unregistered window — still refuse immediately: they do not heal
+# with time, so queueing them would only hide the mistake.
+
+def _sender_label():
+    """Best-effort identity of the calling window's project, for the
+    spool envelope's `from:` — which is also the receiver's reply
+    route, so the project name is the useful value."""
+    caller = os.environ.get("TMUX_PANE", "")
+    if not caller:
+        return "unknown"
+    win = (ccm_core.tmux_cmd(
+        "display-message", "-p", "-t", caller, "#{window_id}") or "").strip()
+    if not win:
+        return "unknown"
+    name = (ccm_core.tmux_cmd(
+        "show-option", "-w", "-t", win, "-qv", "@ccm_project") or "").strip()
+    if name:
+        return name
+    name = (ccm_core.tmux_cmd(
+        "display-message", "-p", "-t", win, "#{window_name}") or "").strip()
+    return name or "unknown"
+
+
+def _queue_message(project_name, message, reason):
+    """Spool the message for the reconciler's delivery pass and say
+    so — never a silent exit 0, since "queued" and "delivered" are
+    different facts and the sender planned around one of them."""
+    sender = _sender_label()
+    msg_id, n = ccm_spool.enqueue(project_name, sender, message)
+    ttl_min = max(1, ccm_spool.SPOOL_TTL_SEC // 60)
+    ccm_core.ccm_info(
+        f"Queued for {project_name} ({reason}; {n} pending, "
+        f"TTL {ttl_min}m, id {msg_id}).\n"
+        f"  Inspect: `ccm spool list` · withdraw: "
+        f"`ccm spool cancel {msg_id} {project_name}`"
+    )
 
 
 def cmd_send(args):
@@ -432,6 +478,8 @@ def cmd_send(args):
       ccm send <name> --no-enter <msg>     Send without submitting
       ccm send <name> --force <msg>        Send to a BUSY project (queued)
       ccm send <name> --start <msg>        Auto-launch Claude if SHELL
+      ccm send <name> --now <msg>          Fail instead of spooling when
+                                           the target cannot take it now
       ccm send -y <name> <msg>             Skip confirmation prompt
       ccm send <name> -- "--literal"       `--` ends flag parsing
     """
@@ -445,6 +493,7 @@ def cmd_send(args):
     no_enter = False
     force = False
     auto_start = False
+    now = False
     skip_confirm = False
 
     stop_flags = False
@@ -469,6 +518,8 @@ def cmd_send(args):
                 force = True
             elif arg == "--start":
                 auto_start = True
+            elif arg == "--now":
+                now = True
             elif arg in ("-y", "--yes"):
                 skip_confirm = True
             else:
@@ -621,6 +672,10 @@ def cmd_send(args):
 
     # State-based gating
     if state == "PERMIT":
+        if not now:
+            _queue_message(project_name, message,
+                           "target is in PERMIT state")
+            return
         # Give the caller (human or another Claude) enough information
         # to understand what the target pane is blocked on. The refusal
         # itself is unconditional — PERMIT is never auto-dismissed from
@@ -654,6 +709,11 @@ def cmd_send(args):
     did_launch = False
     if state == "SHELL":
         if not auto_start:
+            if not now:
+                _queue_message(
+                    project_name, message,
+                    "target is in SHELL state (Claude not running)")
+                return
             ccm_core.ccm_die(
                 f"{project_name} is in SHELL state (Claude not running). "
                 "Use --start to auto-launch Claude before sending."
@@ -713,6 +773,9 @@ def cmd_send(args):
             ccm_core.ccm_die("\n".join(lines))
 
     if state == "BUSY" and not force:
+        if not now:
+            _queue_message(project_name, message, "target is BUSY")
+            return
         ccm_core.ccm_die(
             f"{project_name} is BUSY. The message would queue in the "
             "input buffer and mix with Claude's current turn. Use --force "
@@ -738,6 +801,11 @@ def cmd_send(args):
                 "capture-pane", "-a", "-t", pane_target, "-p", "-S", "-10"
             ) or ""
         if ccm_core.is_agents_tui(raw_tail):
+            if not now:
+                _queue_message(
+                    project_name, message,
+                    "target is showing the `claude agents` TUI")
+                return
             tail_lines = [l for l in raw_tail.split("\n") if l.strip()][-8:]
             lines = [
                 f"{project_name} is showing the `claude agents` TUI — send refused.",
@@ -785,6 +853,10 @@ def cmd_send(args):
     # resolution fallback.
     rechecked = _recheck_delivery_state(win_target, pane_target)
     if rechecked == "PERMIT":
+        if not now:
+            _queue_message(project_name, message,
+                           "target transitioned to PERMIT mid-send")
+            return
         ccm_core.ccm_die(
             f"{project_name} transitioned to PERMIT after the initial "
             "state check — send refused. PERMIT never receives "
@@ -797,12 +869,20 @@ def cmd_send(args):
         # class). The --start path is exempt: it just launched Claude
         # and the wait loop confirmed IDLE a moment ago, so a raw
         # SHELL reading there is detection lag, not a dead session.
+        if not now:
+            _queue_message(project_name, message,
+                           "target no longer hosts a running Claude")
+            return
         ccm_core.ccm_die(
             f"{project_name} no longer hosts a running Claude (state "
             "changed to SHELL after the initial check) — refusing to "
             "type the message into a bare shell."
         )
     if rechecked == "BUSY" and not force:
+        if not now:
+            _queue_message(project_name, message,
+                           "target became BUSY mid-send")
+            return
         ccm_core.ccm_die(
             f"{project_name} became BUSY after the initial state "
             "check. The message would queue in the input buffer and "
@@ -824,6 +904,11 @@ def cmd_send(args):
     # composer during the IDLE wait).
     draft = _composer_draft_fragment(pane_target)
     if draft is not None:
+        if not now:
+            _queue_message(
+                project_name, message,
+                "target's composer holds a half-typed draft")
+            return
         ccm_core.ccm_die(
             f"{project_name}'s composer holds a half-typed draft — "
             "send refused: the message would merge into text being "

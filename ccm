@@ -76,6 +76,7 @@ Usage:
                                            -- (end flags; for a msg starting with -)
   ccm sidekick-send <msg> [flags]   Send a prompt to the sidekick agent CLI in this window
                                     flags: --file <path> | --stdin | - | --no-enter | --
+  ccm spool list|cancel …           Inspect / withdraw queued (store-and-forward) messages
   ccm menu                          Interactive menu (for keybinding)
   ccm init                          Interactive setup wizard
   ccm setup-hooks                   Install Claude Code hooks for improved state detection
@@ -232,6 +233,10 @@ case "${1:-help}" in
         # and may start with a dash after `--`.
         shift
         python3 "$CCM_ROOT/lib/ccm_core.py" sidekick-send "$@"
+        ;;
+    spool)
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" spool "$@"
         ;;
     menu)
         ccm_check_deps
