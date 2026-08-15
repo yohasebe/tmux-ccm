@@ -195,6 +195,15 @@ _ACCEPT_CHARS = "❯⏵"
 PATTERN_INPUT_PROMPT = re.compile(rf"^[{_PROMPT_CHARS}]\s")
 PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 
+# A composer line that carries text after the prompt character is a
+# half-typed draft. State detection cannot see this: raw IDLE only
+# requires `^❯\s`, which a composer holding text also satisfies. The
+# send path matches this against the pane bottom and refuses to merge
+# a message into a draft the user is still writing. Claude-only on
+# purpose — it is the one TUI ccm tracks; sidekick TUIs are never
+# pattern-matched (see EXTERNAL_AGENT_COMMANDS).
+PATTERN_COMPOSER_DRAFT = re.compile(rf"^[{_PROMPT_CHARS}]\s*\S")
+
 # Active-work spinner footer. Claude Code renders a status line of
 # the shape `<glyph> <verb>… (<elapsed> · <arrow> <N>k tokens)` ONLY
 # while it is actively generating or running a tool — e.g.

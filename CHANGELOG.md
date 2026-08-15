@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Fixed
+- `ccm send` no longer types into a composer that already holds a
+  half-typed draft. State detection cannot see one (an `❯` prompt
+  holding text still reads IDLE), so the message used to merge into the
+  user's in-progress text and the committing Enter would submit the
+  garbled mix. The delivery path now reads the composer line
+  immediately before typing and refuses while a draft is present,
+  quoting its opening fragment.
 - Arrowing onto a footer-less dialog's deny option no longer drops the
   detection. The cursor rewrites the line as `❯ 3. Deny (esc)`, which the
   match rejected and the idle-prompt pattern then claimed — an open

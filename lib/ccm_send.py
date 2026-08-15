@@ -55,7 +55,11 @@ import sys
 import time
 
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
-from ccm_constants import CLAUDE_CMD, SHELL_FOREGROUND_COMMANDS
+from ccm_constants import (
+    CLAUDE_CMD,
+    PATTERN_COMPOSER_DRAFT,
+    SHELL_FOREGROUND_COMMANDS,
+)
 from ccm_pane_state import detect_pane_state, enumerate_window_panes
 
 
@@ -362,6 +366,40 @@ def _recheck_delivery_state(win_target, pane_target):
         pane.pane_pid, pane.pane_id, ps_lines, str(os.getpgrp()),
         current_command=pane.current_command,
     )
+
+
+# ─── Composer-draft guard ───
+# State detection cannot see a half-typed draft: the raw IDLE check
+# matches `^❯\s`, which a composer already holding text satisfies too.
+# So a send that arrives while the user is mid-sentence merges into
+# their draft, and the committing Enter submits the garbled mix.
+# The delivery path therefore reads the composer line itself and
+# refuses while a draft is present. This shrinks the mixing race from
+# "the whole IDLE period" to the capture→send-keys gap (~100 ms);
+# that residual TOCTOU cannot be closed from outside the TUI and is
+# accepted. Fail-OPEN when no composer line is visible at all: a
+# transient capture error must not break sends that worked before
+# this guard existed — the same call `_recheck_delivery_state` makes.
+def _composer_draft_fragment(pane_target):
+    """Return a one-line fragment of the draft in the target pane's
+    composer, or None when the composer is bare (or unreadable).
+
+    A draft's first row is the one carrying the `❯` prompt, so a
+    per-line scan of the visible capture is enough even for a
+    multi-line draft. The fragment is capped so the refusal message
+    stays readable."""
+    cap = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p") or ""
+    if not cap.strip():
+        cap = ccm_core.tmux_cmd(
+            "capture-pane", "-a", "-t", pane_target, "-p"
+        ) or ""
+    for line in cap.split("\n"):
+        if PATTERN_COMPOSER_DRAFT.match(line):
+            fragment = line.strip()
+            if len(fragment) > 60:
+                fragment = fragment[:60] + "..."
+            return fragment
+    return None
 
 
 _SEND_USAGE = (
@@ -767,6 +805,23 @@ def cmd_send(args):
     # a pane stuck in copy-mode would interpret the message characters
     # as copy-mode bindings rather than typed input.
     _send_keys(pane_target, "-X", "cancel", label="pre-cancel")
+
+    # Composer-draft guard (see the note above
+    # `_composer_draft_fragment`). Runs after the mode cancel so the
+    # capture reads the live composer, and before any payload
+    # keystrokes. Applies to every delivery path — including `--force`
+    # (queueing into a BUSY turn must not also merge into a draft) and
+    # `--start` (the user may have typed into the freshly launched
+    # composer during the IDLE wait).
+    draft = _composer_draft_fragment(pane_target)
+    if draft is not None:
+        ccm_core.ccm_die(
+            f"{project_name}'s composer holds a half-typed draft — "
+            "send refused: the message would merge into text being "
+            "written right now.\n"
+            f"  Draft: \"{draft}\"\n"
+            "  Finish or clear the draft in the target pane, then retry."
+        )
 
     # Literal send, converting `\n` into M-Enter (Claude Code's
     # "newline without submit" key) so the body is delivered as a

@@ -536,9 +536,11 @@ class TestCmdSend:
 
     def _run_start_with_captures(self, monkeypatch, message, capture_responses):
         """Drive a SHELL + --start send where `build_project_list`
-        reports IDLE after launch, and each `capture-pane` call (made
-        only by the delivery-verification `_body_landed`) returns the
-        next item of `capture_responses` (last item repeats). Returns
+        reports IDLE after launch. The FIRST `capture-pane` call is the
+        composer-draft guard's, which runs before any typing, so it is
+        answered with a bare composer; each LATER call (the
+        delivery-verification `_body_landed`) returns the next item of
+        `capture_responses` (last item repeats). Returns
         (send_calls, raised) where `raised` is True iff cmd_send exited
         via ccm_die (delivery unconfirmed)."""
         initial = self._make_project(state="SHELL")
@@ -554,7 +556,11 @@ class TestCmdSend:
                 send_calls.append(args)
                 return ""
             if args and args[0] == "capture-pane":
-                i = min(cap_idx[0], len(capture_responses) - 1)
+                if cap_idx[0] == 0:
+                    cap_idx[0] += 1
+                    # Pre-typing read by the composer-draft guard.
+                    return "❯ \n"
+                i = min(cap_idx[0] - 1, len(capture_responses) - 1)
                 cap_idx[0] += 1
                 return capture_responses[i]
             return ""
@@ -1254,3 +1260,138 @@ class TestSendPreTypeRecheck:
             c[:3] == ("send-keys", "-t", "0:5") and "-l" in c
             for c in calls
         )
+
+
+class TestComposerDraftGuard:
+    """The composer-draft guard: state detection cannot see a
+    half-typed draft (raw IDLE matches `^❯\\s`, which a composer
+    holding text also satisfies), so `cmd_send` reads the composer
+    line itself immediately before typing and refuses while a draft
+    is present. Without it, the message merges into the user's
+    in-progress text and the committing Enter submits the mix."""
+
+    def _patch(self, monkeypatch, capture, project_state="IDLE"):
+        """Stub the gate to `project_state` and every capture-pane
+        read to `capture` (a string, or a callable taking the tmux
+        args for alt-screen variants). Returns the tmux call list."""
+        project = ccm_core.Project(
+            win_target="0:5", win_idx="5", name="demo",
+            directory="/tmp/demo", state=project_state,
+        )
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(
+            ccm_core, "find_window",
+            lambda sess, name: project.win_idx if name == project.name else None,
+        )
+        monkeypatch.setattr(
+            ccm_core, "build_project_list", lambda fast=False: [project],
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        # The pre-type re-check agrees with the gate; the guard under
+        # test is the composer read, not the state re-check.
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state",
+                            lambda *a: project_state)
+        calls = []
+
+        def tmux(*args):
+            calls.append(args)
+            if args[0] == "capture-pane":
+                return capture(args) if callable(capture) else capture
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux)
+        return calls
+
+    @staticmethod
+    def _literal_sent(calls):
+        return any("-l" in c for c in calls if c[0] == "send-keys")
+
+    def test_draft_refuses_and_never_types(self, monkeypatch, capsys):
+        calls = self._patch(monkeypatch, "❯ half-typed thought\n")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "hello"])
+        assert not self._literal_sent(calls), \
+            "body typed over a half-typed draft"
+        err = capsys.readouterr().err
+        # The refusal names what is sitting in the composer, so the
+        # operator can tell whose draft it is.
+        assert "half-typed thought" in err
+
+    def test_bare_composer_proceeds(self, monkeypatch):
+        """The normal IDLE screen: bare `❯` prompt, status line below.
+        No draft → the send proceeds."""
+        calls = self._patch(
+            monkeypatch,
+            "  ⎿  Tip: example tip line\n"
+            "❯ \n"
+            "  /tmp/demo  main  ·  ctx 42%\n",
+        )
+        ccm_send.cmd_send(["demo", "hello"])
+        assert self._literal_sent(calls)
+
+    def test_unreadable_composer_fails_open(self, monkeypatch):
+        """An empty capture (tmux hiccup) must not break sends that
+        worked before this guard existed — the same fail-open call
+        `_recheck_delivery_state` makes. Pinned so a future
+        tightening is a deliberate choice, not a side effect."""
+        calls = self._patch(monkeypatch, "")
+        ccm_send.cmd_send(["demo", "hello"])
+        assert self._literal_sent(calls)
+
+    def test_draft_found_via_alternate_screen(self, monkeypatch):
+        """When the normal capture comes back empty the guard retries
+        against the alternate screen before giving up — a draft
+        visible only there must still refuse."""
+        def capture(args):
+            if "-a" in args:
+                return "❯ draft on the alt screen\n"
+            return ""
+        calls = self._patch(monkeypatch, capture)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "hello"])
+        assert not self._literal_sent(calls)
+
+    def test_multiline_draft_detected_from_first_row(self, monkeypatch,
+                                                     capsys):
+        """A multi-line draft carries the `❯` prompt on its first
+        row; that row alone must trigger the refusal."""
+        calls = self._patch(monkeypatch,
+                            "❯ first line of a draft\n  continuation\n")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "hello"])
+        assert not self._literal_sent(calls)
+        assert "first line of a draft" in capsys.readouterr().err
+
+    def test_draft_refused_even_with_force_on_busy(self, monkeypatch,
+                                                   capsys):
+        """`--force` licenses queueing into a BUSY turn — it does not
+        license merging into the user's draft. Uniform refusal."""
+        calls = self._patch(monkeypatch, "❯ do not touch this\n",
+                            project_state="BUSY")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "hello"])
+        assert not self._literal_sent(calls)
+        # The guard read the composer AFTER the defensive mode-cancel,
+        # so the capture reflects the live composer, not copy-mode
+        # scrollback.
+        cancel_i = next(i for i, c in enumerate(calls)
+                        if c == ("send-keys", "-t", "0:5", "-X", "cancel"))
+        capture_i = next(i for i, c in enumerate(calls)
+                         if c[0] == "capture-pane")
+        assert cancel_i < capture_i
+
+    def test_fragment_is_capped_in_the_refusal(self, monkeypatch, capsys):
+        """A long draft is quoted capped, so the refusal stays a
+        readable one-liner instead of flooding the terminal."""
+        long_draft = "❯ " + "x" * 120
+        calls = self._patch(monkeypatch, long_draft + "\n")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "hello"])
+        assert not self._literal_sent(calls)
+        err = capsys.readouterr().err
+        # The cap is 60 chars of the whole stripped line, so the
+        # `❯ ` prefix leaves room for 58 x's plus the ellipsis.
+        assert "x" * 58 in err and "x" * 59 not in err
+        assert "..." in err

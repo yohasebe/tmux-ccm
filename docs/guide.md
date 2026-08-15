@@ -218,6 +218,8 @@ ccm send demo --no-enter "TODO: "
 | **SHELL** (Claude not running) | Refused | — | Launches Claude, polls for IDLE (up to `CCM_START_WAIT_SEC`, default 10s), then sends |
 | **PERMIT** (permission dialog open) | **Hard refused** | **Still refused** — typing into a permission dialog could accidentally approve/deny a tool call | — |
 
+The state check is not the only refusal. State detection cannot see a half-typed draft in the target's composer (an `❯` prompt holding text still reads IDLE), so immediately before typing, `ccm send` reads the composer line itself and refuses while a draft is present — otherwise the message would merge into text you are still writing, and the Enter would submit the garbled mix. Finish or clear the draft in the target pane, then retry.
+
 ### Flags
 
 | Flag | Purpose |
