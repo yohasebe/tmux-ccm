@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import ccm_constants
 import ccm_core
 import ccm_send
 import ccm_spool
@@ -38,6 +39,23 @@ def _project(name="demo", state="IDLE", win_target="0:5"):
 
 def _pending(root, project="demo"):
     return ccm_spool._pending(os.path.join(root, project))
+
+
+class TestSuiteIsolation:
+    def test_spool_root_is_redirected_for_every_test(self):
+        """Positive control for the autouse fixture: no test may write
+        into the user's real spool. This one asks for no fixture at
+        all — exactly the shape of test that polluted the data
+        directory before the redirect moved into conftest."""
+        import ccm_spool
+        real = os.path.join(ccm_constants.CCM_DATA_DIR, "spool")
+        assert ccm_spool.SPOOL_ROOT != real
+
+    def test_enqueue_without_a_fixture_stays_out_of_the_real_spool(self):
+        import ccm_spool
+        ccm_spool.enqueue("audit-probe", "tester", "body")
+        real = os.path.join(ccm_constants.CCM_DATA_DIR, "spool")
+        assert not os.path.exists(os.path.join(real, "audit-probe"))
 
 
 class TestEnqueue:

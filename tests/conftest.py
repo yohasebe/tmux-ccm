@@ -12,6 +12,8 @@ import pytest
 # Make lib/ importable so each test file can `import ccm_core` etc.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
+import ccm_spool
+
 
 # ─── Live-subprocess guard ───
 # ccm's whole reason to exist is driving a tmux server. A test that
@@ -73,11 +75,18 @@ def isolate_runtime_state(tmp_path, monkeypatch):
     """Keep tests out of the user's real runtime data directory.
 
     Several tests drive `auto_exit_idle` end to end, which appends to
-    the auto-exit evidence log. Same reason as the subprocess guard
-    below: the suite must not reach the machine it runs on.
+    the auto-exit evidence log, and any test that sends to an
+    undeliverable target enqueues into the spool. Same reason as the
+    subprocess guard below: the suite must not reach the machine it
+    runs on. Redirected here rather than in the test files that
+    happen to need it, so a test written later cannot pollute the
+    user's data by forgetting to ask.
     """
     monkeypatch.setenv("CCM_AUTO_EXIT_LOG",
                        str(tmp_path / "state" / "auto-exit.log"))
+    # `SPOOL_ROOT` is resolved at import, so the env var alone would
+    # not move it — patch the resolved value.
+    monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", str(tmp_path / "spool"))
 
 
 @pytest.fixture(autouse=True)
