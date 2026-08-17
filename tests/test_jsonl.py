@@ -696,6 +696,47 @@ class TestJsonlFromSessionInfo:
         path = ccm_jsonl._jsonl_from_session_info("500")
         assert path == str(expected)
 
+    def test_found_by_session_id_when_the_directory_is_not_the_slug(
+            self, tmp_path, monkeypatch):
+        """The directory name is not always the sanitised cwd — a host
+        can name it itself, and the sanitising rule has been read
+        wrong before. Losing the transcript loses the terminal
+        stop_reason that releases a held BUSY, and that failure has no
+        timeout. The session id identifies the file either way."""
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR",
+                            str(tmp_path / "sessions"))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR",
+                            str(tmp_path / "projects"))
+        (tmp_path / "sessions").mkdir()
+        (tmp_path / "sessions" / "500.json").write_text(
+            '{"pid":500,"sessionId":"s-1","cwd":"/x/y","kind":"interactive"}'
+        )
+        # Named by the host, not derived from the cwd.
+        other = tmp_path / "projects" / "short-name"
+        other.mkdir(parents=True)
+        expected = other / "s-1.jsonl"
+        expected.write_text("{}\n")
+
+        assert ccm_jsonl._jsonl_from_session_info("500") == str(expected)
+
+    def test_another_session_id_is_not_mistaken_for_this_one(
+            self, tmp_path, monkeypatch):
+        """The fallback searches by session id, so it must not settle
+        for a transcript belonging to a different session."""
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR",
+                            str(tmp_path / "sessions"))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR",
+                            str(tmp_path / "projects"))
+        (tmp_path / "sessions").mkdir()
+        (tmp_path / "sessions" / "500.json").write_text(
+            '{"pid":500,"sessionId":"s-1","cwd":"/x/y","kind":"interactive"}'
+        )
+        other = tmp_path / "projects" / "short-name"
+        other.mkdir(parents=True)
+        (other / "s-2.jsonl").write_text("{}\n")
+
+        assert ccm_jsonl._jsonl_from_session_info("500") is None
+
     def test_returns_none_for_headless_session(self, tmp_path, monkeypatch):
         """kind='cli' (headless -p mode) should be skipped — ccm tracks
         only interactive sessions."""

@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- A session's transcript is found by its session id when the directory it
+  sits in is not the sanitised working directory. Losing the transcript loses
+  the terminal stop reason that releases a held BUSY, and that failure has no
+  timeout of its own.
 - A delivered message is no longer reported as unconfirmed because the
   composer wrapped it. The check looked for a fragment as a contiguous
   substring, and the wrap lands wherever the width falls — mid-word, or

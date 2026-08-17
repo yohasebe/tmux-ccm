@@ -30,6 +30,7 @@ resolution), so we must NOT resolve symlinks here.
 """
 
 import json
+import glob
 import os
 import re
 import time
@@ -277,7 +278,23 @@ def _jsonl_from_session_info(claude_pid):
     # non-alphanumeric character, not just `/`.
     slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
     path = os.path.join(CLAUDE_PROJECTS_DIR, slug, f"{session_id}.jsonl")
-    return path if os.path.exists(path) else None
+    if os.path.exists(path):
+        return path
+    # The directory name is not always the sanitised cwd: a host can
+    # name it itself (CLAUDE_CODE_PROJECT_DIR_NAME, 2.1.234), and the
+    # rule has been read wrong before — a slug computed from the wrong
+    # transformation loses the transcript, and with it the terminal
+    # `stop_reason` that releases a held BUSY. That failure has no
+    # timeout, so it holds until someone notices.
+    #
+    # The session id is what actually identifies the file, so fall
+    # back to finding it by that. This adds no new assumption about
+    # upstream: `<session id>.jsonl` is the same filename the primary
+    # lookup already relies on. It runs only when the primary misses.
+    for found in glob.glob(
+            os.path.join(CLAUDE_PROJECTS_DIR, "*", f"{session_id}.jsonl")):
+        return found
+    return None
 
 
 def _find_newest_jsonl(project_dir: str, claude_pid=None):

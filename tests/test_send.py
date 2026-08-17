@@ -1378,6 +1378,14 @@ class TestComposerDraftGuard:
     def _literal_sent(calls):
         return any("-l" in c for c in calls if c[0] == "send-keys")
 
+    def test_composer_uses_a_non_breaking_space(self):
+        """Measured against a live session: the composer renders a
+        NO-BREAK SPACE after the prompt glyph, not an ordinary one.
+        `\\s` covers it — pinned so a future tightening to a literal
+        space cannot silently stop seeing every draft."""
+        import ccm_constants
+        assert ccm_constants.PATTERN_COMPOSER_DRAFT.match("\u276f\u00a0text")
+
     def test_doubled_glyph_mode_line_is_not_a_draft(self):
         """Older builds render the accept-edits mode as `❯❯ …` at line
         start. The prompt glyph doubled is a mode line, not a draft —
