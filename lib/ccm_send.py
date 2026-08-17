@@ -248,7 +248,16 @@ def _body_landed(win_target, signatures):
         cap = ccm_core.tmux_cmd(
             "capture-pane", "-a", "-t", win_target, "-p"
         ) or ""
-    return any(sig in cap for sig in signatures)
+    # Compare with whitespace removed from both sides. A composer
+    # wraps the body to its own width, and the break lands wherever
+    # the width falls — mid-word, or mid-sentence in a language that
+    # writes without spaces. A signature that straddles the break is
+    # then absent as a substring while sitting there in plain view,
+    # and the send reports a failure that did not happen. A caller
+    # who is told "not delivered" about a delivered message either
+    # sends it twice or stops believing the check.
+    flat = "".join(cap.split())
+    return any("".join(sig.split()) in flat for sig in signatures)
 
 
 def _type_body(win_target, lines):

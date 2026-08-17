@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- A delivered message is no longer reported as unconfirmed because the
+  composer wrapped it. The check looked for a fragment as a contiguous
+  substring, and the wrap lands wherever the width falls — mid-word, or
+  mid-sentence in a language written without spaces.
 - A prompt already sent no longer reads as a half-typed draft. Claude Code
   draws submitted prompts into the transcript with the same `❯` glyph the
   composer uses, and the guard scanned the pane from the top and took the

@@ -1286,6 +1286,48 @@ class TestSendPreTypeRecheck:
         )
 
 
+class TestDeliveryVerification:
+    """`_body_landed` decides whether a typed body actually reached
+    the composer. Its answer is reported to the caller as delivered
+    or not, so a false negative is as costly as a false positive: it
+    invites a resend of a message that is already there."""
+
+    @staticmethod
+    def _cap(text):
+        def tmux(*args):
+            return text if args[0] == "capture-pane" else ""
+        return tmux
+
+    def test_wrapped_signature_still_counts_as_landed(self, monkeypatch):
+        """The composer wraps the body to its own width, and the
+        break lands wherever the width falls — mid-word, or
+        mid-sentence in a language written without spaces. A
+        signature straddling the break is absent as a substring while
+        sitting in plain view. Found by sending a real message: it
+        arrived, the peer was already answering it, and the send
+        reported a delivery it could not confirm."""
+        sig = ("the quick brown fox jumps over the lazy dog",)
+        wrapped = ("  the quick brown fox jumps\n"
+                   "  over the lazy dog\n")
+        monkeypatch.setattr(ccm_core, "tmux_cmd", self._cap(wrapped))
+        assert ccm_send._body_landed("0:5", sig)
+
+    def test_absent_body_is_still_absent(self, monkeypatch):
+        sig = ("the quick brown fox jumps over the lazy dog",)
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            self._cap("nothing of the sort here\n"))
+        assert not ccm_send._body_landed("0:5", sig)
+
+    def test_whitespace_only_difference_does_not_invent_a_match(
+            self, monkeypatch):
+        """Flattening whitespace must not make unrelated text match:
+        the comparison drops spacing, not characters."""
+        sig = ("alpha beta gamma delta epsilon zeta",)
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            self._cap("alpha beta gamma delta\n"))
+        assert not ccm_send._body_landed("0:5", sig)
+
+
 class TestComposerDraftGuard:
     """The composer-draft guard: state detection cannot see a
     half-typed draft (raw IDLE matches `^❯\\s`, which a composer
