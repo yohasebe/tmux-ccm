@@ -66,7 +66,7 @@ import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 import ccm_spool  # store-and-forward queue for undeliverable sends
 from ccm_constants import (
     CLAUDE_CMD,
-    PATTERN_COMPOSER_DRAFT,
+    composer_draft_fragment,
     SHELL_FOREGROUND_COMMANDS,
     external_agent_name,
 )
@@ -394,22 +394,15 @@ def _composer_draft_fragment(pane_target):
     """Return a one-line fragment of the draft in the target pane's
     composer, or None when the composer is bare (or unreadable).
 
-    A draft's first row is the one carrying the `❯` prompt, so a
-    per-line scan of the visible capture is enough even for a
-    multi-line draft. The fragment is capped so the refusal message
-    stays readable."""
+    Which line is the composer is the whole question — see
+    `composer_draft_fragment`, which both this and the spool's
+    delivery check call so they cannot answer it differently."""
     cap = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p") or ""
     if not cap.strip():
         cap = ccm_core.tmux_cmd(
             "capture-pane", "-a", "-t", pane_target, "-p"
         ) or ""
-    for line in cap.split("\n"):
-        if PATTERN_COMPOSER_DRAFT.match(line):
-            fragment = line.strip()
-            if len(fragment) > 60:
-                fragment = fragment[:60] + "..."
-            return fragment
-    return None
+    return composer_draft_fragment(cap)
 
 
 _SEND_USAGE = (

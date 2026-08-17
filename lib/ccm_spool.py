@@ -50,6 +50,7 @@ import time
 
 import ccm_constants
 import ccm_core
+import ccm_notify
 import ccm_send  # shared typing helpers (_send_keys / _type_body)
 from ccm_pane_state import detect_pane_state, enumerate_window_panes
 
@@ -193,7 +194,16 @@ def _expire_and_prune(pdir, now):
                 os.rename(os.path.join(pdir, name),
                           os.path.join(edir, name))
             except OSError:
-                pass
+                continue
+            # Tell somebody. `ccm send` reported the message as
+            # queued, and queued is not delivered — without this the
+            # only trace of the loss is a count in `ccm spool list`,
+            # which nobody reads until they notice a reply missing.
+            try:
+                ccm_notify.notify("SPOOLEXPIRED", os.path.basename(pdir),
+                                  _sender)
+            except Exception:
+                ccm_core.log_caught_exception("spool-expire-notify")
     for sub in ("delivered", "expired"):
         d = os.path.join(pdir, sub)
         try:
@@ -271,9 +281,8 @@ def _deliverable_pane(win_target):
         return None, "capture unreadable"
     if ccm_core.is_agents_tui(cap):
         return None, "agents TUI"
-    for line in cap.split("\n"):
-        if ccm_constants.PATTERN_COMPOSER_DRAFT.match(line):
-            return None, "composer holds a draft"
+    if ccm_constants.composer_draft_fragment(cap) is not None:
+        return None, "composer holds a draft"
     return pane.pane_id, None
 
 

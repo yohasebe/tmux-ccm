@@ -83,7 +83,8 @@ def notify(state, project, detail=""):
     # not depend on the user having predicted the event and added it
     # to @ccm-notify. Without it an auto-exit reads as a crash or a
     # mystery timeout (report).
-    if state != "AUTOEXIT" and setting != "all" and state_lower not in setting:
+    if (state not in ("AUTOEXIT", "SPOOLEXPIRED")
+            and setting != "all" and state_lower not in setting):
         return
 
     sound_setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-notify-sound") or "off"
@@ -104,6 +105,13 @@ def notify(state, project, detail=""):
         "IDLE":   (f"ccm {project}",
                    "Waiting for your input",
                    ""),
+        # detail carries the sender, so the person who queued it
+        # learns which message never arrived.
+        "SPOOLEXPIRED": (f"ccm \u2709 {project}",
+                         (f"A message from {detail} expired in the queue "
+                          "and was never delivered" if detail else
+                          "A queued message expired and was never delivered"),
+                         ""),
         # detail carries the timeout, e.g. "10m".
         "AUTOEXIT": (f"ccm ■ {project}",
                      (f"Auto-exited after {detail} idle — "

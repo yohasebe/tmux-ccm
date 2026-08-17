@@ -207,6 +207,43 @@ PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 # older builds (`❯❯ accept edits on`) from reading as a draft.
 PATTERN_COMPOSER_DRAFT = re.compile(rf"^[{_PROMPT_CHARS}]\s+\S")
 
+# The rules Claude Code draws above and below its input box. The
+# composer is what sits BETWEEN the last two of them, and finding it
+# that way is the whole point: a submitted prompt is rendered into
+# the transcript carrying the same `❯` glyph, so scanning the pane
+# top-down and taking the first hit reads the user's previous message
+# as a draft — and refuses every send for as long as one is on
+# screen. That shipped, and cost a queued message its whole TTL.
+PATTERN_COMPOSER_RULE = re.compile(r"^\s*\u2500{10,}\s*$")
+
+# How far above the bottom the closing rule may sit. Below it Claude
+# Code draws only the status lines, so a rule further up than this
+# belongs to the transcript (or to a dialog covering the composer)
+# and brackets something that is not an input box.
+COMPOSER_TAIL_WINDOW = 6
+
+
+def composer_draft_fragment(pane_text):
+    """A one-line fragment of the half-typed draft in the pane's
+    composer, or None when the composer is bare — or absent.
+
+    Absent means a dialog is covering it; None there is deliberate.
+    The caller decides what an open dialog means from the detected
+    state, and answering that question twice, in two places, is how
+    the two answers start to disagree.
+    """
+    lines = pane_text.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    rules = [i for i, ln in enumerate(lines) if PATTERN_COMPOSER_RULE.match(ln)]
+    if len(rules) < 2 or len(lines) - rules[-1] > COMPOSER_TAIL_WINDOW:
+        return None
+    for ln in lines[rules[-2] + 1:rules[-1]]:
+        if PATTERN_COMPOSER_DRAFT.match(ln):
+            fragment = ln.strip()
+            return fragment[:60] + "..." if len(fragment) > 60 else fragment
+    return None
+
 # Active-work spinner footer. Claude Code renders a status line of
 # the shape `<glyph> <verb>… (<elapsed> · <arrow> <N>k tokens)` ONLY
 # while it is actively generating or running a tool — e.g.

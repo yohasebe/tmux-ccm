@@ -13,6 +13,28 @@ import ccm_core
 import ccm_send
 
 
+def composer_screen(*composer_rows, scrollback=True):
+    """A pane capture shaped like Claude Code's real screen.
+
+    The composer sits between two horizontal rules with the status
+    lines under them, and — crucially — submitted prompts are drawn
+    into the transcript above with the SAME glyph. A fixture without
+    that scrollback cannot tell a draft from a message already sent,
+    which is how the guard shipped refusing every send while any
+    prompt was still on screen.
+    """
+    rule = "\u2500" * 80
+    out = []
+    if scrollback:
+        out += ["\u276f a prompt sent earlier", "\u23fa and its response", ""]
+    out += [rule] + list(composer_rows) + [
+        rule,
+        "  /tmp/demo  main  Opus 5  ctx 42%",
+        "  \u23f5\u23f5 auto mode on (shift+tab to cycle)",
+    ]
+    return "\n".join(out) + "\n"
+
+
 class TestCmdSend:
     """Unit tests for `ccm send` — the cross-project prompt injector."""
 
@@ -1324,7 +1346,8 @@ class TestComposerDraftGuard:
         assert ccm_constants.PATTERN_COMPOSER_DRAFT.match("❯ a draft")
 
     def test_draft_refuses_and_never_types(self, monkeypatch, capsys):
-        calls = self._patch(monkeypatch, "❯ half-typed thought\n")
+        calls = self._patch(monkeypatch,
+                            composer_screen("❯ half-typed thought"))
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls), \
@@ -1346,6 +1369,36 @@ class TestComposerDraftGuard:
         ccm_send.cmd_send(["demo", "--now", "hello"])
         assert self._literal_sent(calls)
 
+    def test_prompt_in_the_scrollback_is_not_a_draft(self, monkeypatch):
+        """Claude Code draws a SUBMITTED prompt into the transcript
+        with the same `❯` glyph the composer uses. Reading the pane
+        top-down and taking the first hit therefore calls the user's
+        previous message a draft, and refuses every send for as long
+        as one is on screen — which is nearly always. Reported from a
+        send that queued and then expired undelivered."""
+        calls = self._patch(
+            monkeypatch,
+            composer_screen("❯ ", scrollback=True),
+        )
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls), \
+            "an old prompt on screen blocked a send into a bare composer"
+
+    def test_dialog_over_the_composer_is_not_a_draft(self, monkeypatch):
+        """A permission dialog replaces the input box entirely. With
+        no composer on screen there is no draft to protect, and the
+        open dialog is the state check's business, not this guard's."""
+        calls = self._patch(
+            monkeypatch,
+            "❯ a prompt sent earlier\n"
+            "\n"
+            + "\u2500" * 80 + "\n"
+            " ❯ 1. Yes\n"
+            " Esc to cancel \u00b7 Tab to amend\n",
+        )
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls)
+
     def test_unreadable_composer_fails_open(self, monkeypatch):
         """An empty capture (tmux hiccup) must not break sends that
         worked before this guard existed — the same fail-open call
@@ -1361,7 +1414,7 @@ class TestComposerDraftGuard:
         visible only there must still refuse."""
         def capture(args):
             if "-a" in args:
-                return "❯ draft on the alt screen\n"
+                return composer_screen("❯ draft on the alt screen")
             return ""
         calls = self._patch(monkeypatch, capture)
         with pytest.raises(SystemExit):
@@ -1372,8 +1425,8 @@ class TestComposerDraftGuard:
                                                      capsys):
         """A multi-line draft carries the `❯` prompt on its first
         row; that row alone must trigger the refusal."""
-        calls = self._patch(monkeypatch,
-                            "❯ first line of a draft\n  continuation\n")
+        calls = self._patch(monkeypatch, composer_screen(
+            "❯ first line of a draft", "  continuation"))
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
@@ -1383,7 +1436,8 @@ class TestComposerDraftGuard:
                                                    capsys):
         """`--force` licenses queueing into a BUSY turn — it does not
         license merging into the user's draft. Uniform refusal."""
-        calls = self._patch(monkeypatch, "❯ do not touch this\n",
+        calls = self._patch(monkeypatch,
+                            composer_screen("❯ do not touch this"),
                             project_state="BUSY")
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
@@ -1401,7 +1455,7 @@ class TestComposerDraftGuard:
         """A long draft is quoted capped, so the refusal stays a
         readable one-liner instead of flooding the terminal."""
         long_draft = "❯ " + "x" * 120
-        calls = self._patch(monkeypatch, long_draft + "\n")
+        calls = self._patch(monkeypatch, composer_screen(long_draft))
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)

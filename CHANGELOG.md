@@ -57,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- A prompt already sent no longer reads as a half-typed draft. Claude Code
+  draws submitted prompts into the transcript with the same `❯` glyph the
+  composer uses, and the guard scanned the pane from the top and took the
+  first one — so a send was refused, and under the spool queued and then
+  expired undelivered, for as long as any prompt was on screen. The composer
+  is now located by the rules the TUI draws around it.
+- A queued message that expires without being delivered says so, instead of
+  leaving a count in `ccm spool list` as the only trace.
 - `ccm send` no longer types into a composer that already holds a
   half-typed draft. State detection cannot see one (an `❯` prompt
   holding text still reads IDLE), so the message used to merge into the

@@ -16,6 +16,7 @@ import pytest
 
 import ccm_constants
 import ccm_core
+import ccm_notify
 import ccm_send
 import ccm_spool
 
@@ -38,6 +39,28 @@ def _project(name="demo", state="IDLE", win_target="0:5"):
 
 def _pending(root, project="demo"):
     return ccm_spool._pending(os.path.join(root, project))
+
+
+def composer_screen(*composer_rows, scrollback=True):
+    """A pane capture shaped like Claude Code's real screen.
+
+    The composer sits between two horizontal rules with the status
+    lines under them, and — crucially — submitted prompts are drawn
+    into the transcript above with the SAME glyph. A fixture without
+    that scrollback cannot tell a draft from a message already sent,
+    which is how the guard shipped refusing every send while any
+    prompt was still on screen.
+    """
+    rule = "\u2500" * 80
+    out = []
+    if scrollback:
+        out += ["\u276f a prompt sent earlier", "\u23fa and its response", ""]
+    out += [rule] + list(composer_rows) + [
+        rule,
+        "  /tmp/demo  main  Opus 5  ctx 42%",
+        "  \u23f5\u23f5 auto mode on (shift+tab to cycle)",
+    ]
+    return "\n".join(out) + "\n"
 
 
 class TestSuiteIsolation:
@@ -151,6 +174,7 @@ class TestExpiry:
     def test_stale_message_expires_instead_of_delivering(
             self, spool_root, monkeypatch):
         monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
+        monkeypatch.setattr(ccm_notify, "notify", lambda *a, **k: None)
         name = self._enqueue_aged(spool_root, "stale instruction", 3700)
         delivered = []
 
@@ -164,6 +188,31 @@ class TestExpiry:
         assert _pending(spool_root) == []
         expired = os.listdir(os.path.join(spool_root, "demo", "expired"))
         assert expired == [name]
+
+    def test_expiry_notifies_the_sender(self, spool_root, monkeypatch):
+        """`ccm send` reported the message as queued, and queued is
+        not delivered. Without a notification the only trace of the
+        loss is a count nobody reads until a reply goes missing —
+        which is how a report was lost for a whole TTL."""
+        monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
+        seen = []
+        monkeypatch.setattr(ccm_notify, "notify",
+                            lambda state, project, detail="": seen.append(
+                                (state, project, detail)))
+        self._enqueue_aged(spool_root, "stale instruction", 3700)
+        ccm_spool._expire_and_prune(os.path.join(spool_root, "demo"),
+                                    time.time())
+        assert seen == [("SPOOLEXPIRED", "demo", "tester")]
+
+    def test_fresh_message_does_not_notify(self, spool_root, monkeypatch):
+        monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
+        seen = []
+        monkeypatch.setattr(ccm_notify, "notify",
+                            lambda *a, **k: seen.append(a))
+        self._enqueue_aged(spool_root, "fresh", 10)
+        ccm_spool._expire_and_prune(os.path.join(spool_root, "demo"),
+                                    time.time())
+        assert seen == []
 
     def test_fresh_message_is_not_expired(self, spool_root, monkeypatch):
         monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
@@ -351,7 +400,8 @@ class TestDeliverablePane:
         assert pane_id is None and "PERMIT" in reason
 
     def test_composer_draft_defers(self, monkeypatch):
-        self._stub_panes(monkeypatch, capture="❯ half typed\n")
+        self._stub_panes(monkeypatch,
+                         capture=composer_screen("❯ half typed"))
         pane_id, reason = ccm_spool._deliverable_pane("0:5")
         assert pane_id is None and "draft" in reason
 
@@ -447,7 +497,7 @@ class TestCmdSendSpooling:
         self._patch_resolution(monkeypatch, spool_root, "IDLE")
         calls = []
         monkeypatch.setattr(ccm_core, "tmux_cmd",
-                            self._tmux(calls, capture="❯ user typing\n"))
+                            self._tmux(calls, capture=composer_screen("❯ user typing")))
         ccm_send.cmd_send(["demo", "queue behind the draft"])
         assert len(_pending(spool_root)) == 1
 
