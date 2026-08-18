@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `ccm spool clear-expired [project]` acknowledges messages that expired
+  without being delivered, clearing the warning they raise. A warning that
+  cannot be answered is one the reader learns to scroll past.
 - Store-and-forward spool for `ccm send`. When the target cannot take a
   message (BUSY / PERMIT / SHELL, an agents TUI, or a composer holding a
   draft), the message is written to `$CCM_DATA_DIR/spool/<project>/` and
@@ -57,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- `ccm status` gives an expired message the same weight the dashboard does.
+  It sat in the dim queue-length summary, where a loss read as routine.
 - `ccm status` and the dashboard name a message that expired without being
   delivered. They reported the queue length alone, so a project whose queue
   had emptied by expiry read as clean while `ccm doctor` warned about it.

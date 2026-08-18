@@ -236,6 +236,7 @@ ccm send demo --no-enter "TODO: "
 
 ```bash
 ccm spool list                    # 保留中メッセージ一覧（経過時間と冒頭付き）
+ccm spool clear-expired           # 未達のまま期限切れになった記録を了解済みにする
 ccm spool cancel <id> <project>   # 1件取り下げ（キュー済みの誤送信は取り消せます）
 ccm spool cancel --all <project>  # そのプロジェクトのキューを全消去
 ```

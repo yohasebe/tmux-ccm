@@ -76,7 +76,8 @@ from ccm_commands import (
     cmd_unregister,
 )
 from ccm_snapshot import cmd_snapshot_load, cmd_snapshot_save
-from ccm_render import (
+from ccm_render import (spool_expired_warning,
+                        
     display_width,
     external_agent_label,
     format_dir,
@@ -806,15 +807,10 @@ class Dashboard:
             # A spooled message that expired without arriving. The
             # sender was told "queued", so the loss has no other
             # trace here — the queue length alone reads as empty.
-            expired = ccm_spool.expired_counts()
-            if expired:
-                total = sum(expired.values())
-                names = ", ".join(f"{n}:{c}" for n, c in expired.items())
-                self._addstr(
-                    stdscr, row, 2,
-                    f"⚠ spool: {total} expired undelivered ({names}) — "
-                    "`ccm spool list`",
-                    curses.color_pair(C_YELLOW))
+            expired_msg = spool_expired_warning()
+            if expired_msg:
+                self._addstr(stdscr, row, 2, "⚠ " + expired_msg,
+                             curses.color_pair(C_YELLOW))
                 row += 1
 
             # Per-project SHELL cluster canary (#48069 silent-exit regression)

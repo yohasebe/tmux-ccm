@@ -365,6 +365,13 @@ def print_status():
         print(f"\033[33m⚠ {cluster_msg}\033[0m")
     for silence_msg in ccm_canaries.hook_silence_warnings(projects):
         print(f"\033[33m⚠ {silence_msg}\033[0m")
+    # A message that expired without arriving is a loss, not a queue
+    # length — the same weight the dashboard gives it. Left in the dim
+    # summary below it read as routine to anyone (or anything) that
+    # polls this output.
+    expired_msg = spool_expired_warning()
+    if expired_msg:
+        print(f"\033[33m⚠ {expired_msg}\033[0m")
     print()
 
     # A SHELL row hosting an external agent says so once, with the
@@ -488,6 +495,25 @@ def print_status():
     _print_spool_summary(spool_counts)
 
 
+def spool_expired_warning():
+    """One line naming messages that expired without being delivered,
+    or "" when there are none.
+
+    Shared by `ccm status` and the dashboard so the same fact carries
+    the same weight in both — the reader who sees it in one place and
+    not the other learns to trust neither.
+    """
+    expired = ccm_spool.expired_counts()
+    total = sum(expired.values())
+    if not total:
+        return ""
+    names = ", ".join(f"{n}:{c}" for n, c in sorted(expired.items()))
+    if len(names) > 60:
+        names = names[:57] + "..."
+    return (f"spool: {total} expired undelivered ({names}) — "
+            "`ccm spool list`")
+
+
 def _print_spool_summary(spool_counts):
     """A queued-but-undelivered message is the store-and-forward
     equivalent of an unread refusal — keep the totals visible where
@@ -497,19 +523,11 @@ def _print_spool_summary(spool_counts):
     length says work is still on its way, while an expired one says
     work never arrived. Reporting only the first leaves a loss with
     no trace anywhere the reader looks."""
-    parts = []
     total_queued = sum(spool_counts.values())
     if total_queued:
         breakdown = ", ".join(f"{n}:{c}" for n, c in spool_counts.items())
-        parts.append(f"{total_queued} queued ({breakdown})")
-    expired = ccm_spool.expired_counts()
-    total_expired = sum(expired.values())
-    if total_expired:
-        breakdown = ", ".join(f"{n}:{c}" for n, c in expired.items())
-        parts.append(f"{total_expired} expired undelivered ({breakdown})")
-    if parts:
-        print(f"\n{C_DIM}spool: " + " · ".join(parts)
-              + f" — `ccm spool list`{C_RESET}")
+        print(f"\n{C_DIM}spool: {total_queued} queued ({breakdown}) — "
+              f"`ccm spool list`{C_RESET}")
 
 
 def print_ports():

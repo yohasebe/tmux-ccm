@@ -86,7 +86,7 @@ _ccm() {
                 ;;
             spool)
                 local -a spool_cmds
-                spool_cmds=('list' 'cancel')
+                spool_cmds=('list' 'cancel' 'clear-expired')
                 compadd -a spool_cmds
                 ;;
             debug)

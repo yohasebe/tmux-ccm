@@ -74,7 +74,8 @@ _EVIDENCE_KEEP_SEC = 7 * 86400
 _SPOOL_USAGE = (
     "Usage: ccm spool list [project]          List queued messages\n"
     "       ccm spool cancel <id> [project]   Withdraw a queued message\n"
-    "       ccm spool cancel --all [project]  Withdraw all of them"
+    "       ccm spool cancel --all [project]  Withdraw all of them\n"
+    "       ccm spool clear-expired [project] Acknowledge undelivered ones"
 )
 
 
@@ -189,24 +190,9 @@ def expired_counts():
 
 def spool_summary():
     """{"pending": N, "expired": M} across all projects, for doctor."""
-    pending = sum(pending_counts().values())
-    expired = 0
-    try:
-        entries = os.listdir(SPOOL_ROOT)
-    except OSError:
-        entries = []
-    for entry in entries:
-        edir = os.path.join(SPOOL_ROOT, entry, "expired")
-        if os.path.isdir(edir):
-            try:
-                expired += sum(
-                    1 for n in os.listdir(edir) if n.endswith(".msg"))
-            except OSError:
-                pass
-    return {"pending": pending, "expired": expired}
+    return {"pending": sum(pending_counts().values()),
+            "expired": sum(expired_counts().values())}
 
-
-# ─── GC ───
 
 def _expire_and_prune(pdir, now):
     """Move stale pending messages to expired/, and trim evidence."""
@@ -526,6 +512,40 @@ def _cmd_cancel(rest):
     ccm_core.ccm_info(f"Cancelled {target} ({name}).")
 
 
+def _cmd_clear_expired(rest):
+    """Drop the records of messages that expired undelivered.
+
+    They are kept as evidence and warned about until they age out, and
+    until now there was no way to say "seen". A warning that cannot be
+    answered is one the reader learns to scroll past — the same reason
+    `ccm errors` has `--clear`. Deleting the evidence is the
+    acknowledgement; nothing else is affected, since a queued message
+    lives elsewhere.
+    """
+    project = rest[0] if rest else None
+    removed = 0
+    for name, pdir in _iter_project_dirs(only=project):
+        edir = os.path.join(pdir, "expired")
+        try:
+            names = os.listdir(edir)
+        except OSError:
+            continue
+        for n in names:
+            if not n.endswith(".msg"):
+                continue
+            try:
+                os.unlink(os.path.join(edir, n))
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        ccm_core.ccm_info(
+            f"Cleared {removed} expired message record(s)."
+            + (f" ({project})" if project else ""))
+    else:
+        ccm_core.ccm_info("No expired message records to clear.")
+
+
 def cmd_spool(args):
     """Inspect and withdraw queued (store-and-forward) messages.
 
@@ -533,6 +553,7 @@ def cmd_spool(args):
       ccm spool list [project]          List queued messages
       ccm spool cancel <id> [project]   Withdraw one
       ccm spool cancel --all [project]  Withdraw all
+      ccm spool clear-expired [project] Acknowledge the undelivered
     """
     if not args or args[0] in ("-h", "--help"):
         print(_SPOOL_USAGE)
@@ -542,5 +563,7 @@ def cmd_spool(args):
         _cmd_list(rest)
     elif sub == "cancel":
         _cmd_cancel(rest)
+    elif sub == "clear-expired":
+        _cmd_clear_expired(rest)
     else:
         ccm_core.ccm_die(_SPOOL_USAGE)

@@ -76,7 +76,7 @@ Usage:
                                            -- (end flags; for a msg starting with -)
   ccm sidekick-send <msg> [flags]   Send a prompt to the sidekick agent CLI in this window
                                     flags: --file <path> | --stdin | - | --no-enter | --
-  ccm spool list|cancel …           Inspect / withdraw queued (store-and-forward) messages
+  ccm spool list|cancel|clear-expired  Inspect / withdraw / acknowledge queued (store-and-forward) messages
   ccm menu                          Interactive menu (for keybinding)
   ccm init                          Interactive setup wizard
   ccm setup-hooks                   Install Claude Code hooks for improved state detection

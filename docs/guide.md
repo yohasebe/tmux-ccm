@@ -235,6 +235,7 @@ Queued counts show on `ccm status`, `ccm doctor`, and the dashboard (`✉N` by t
 
 ```bash
 ccm spool list                 # all pending messages, with age and preview
+ccm spool clear-expired           # acknowledge messages that never arrived
 ccm spool cancel <id> <project>   # withdraw one (a queued mis-send is cancellable)
 ccm spool cancel --all <project>  # clear the project's queue
 ```

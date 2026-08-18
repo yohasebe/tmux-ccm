@@ -119,23 +119,31 @@ class TestExpiredVisibility:
         open(os.path.join(ddir, "1-tester.msg"), "w").close()
         assert ccm_spool.expired_counts() == {}
 
-    def test_status_names_an_expired_only_project(self, spool_root, capsys,
-                                                  monkeypatch):
-        """`ccm status` used to report the queue length alone, so a
-        project whose queue had emptied by expiry looked clean."""
+    def test_expired_warning_names_the_project(self, spool_root):
+        """The line `ccm status` and the dashboard both print. They
+        used to report the queue length alone, so a project whose
+        queue had emptied by expiry looked clean in both."""
         import ccm_render
         edir = os.path.join(spool_root, "demo", "expired")
         os.makedirs(edir)
         open(os.path.join(edir, "1-tester.msg"), "w").close()
-        ccm_render._print_spool_summary({})
-        out = capsys.readouterr().out
-        assert "expired undelivered" in out and "demo" in out
+        msg = ccm_render.spool_expired_warning()
+        assert "expired undelivered" in msg and "demo:1" in msg
 
-    def test_status_says_nothing_when_there_is_nothing(self, spool_root,
-                                                       capsys):
+    def test_expired_warning_is_empty_when_nothing_expired(self, spool_root):
         import ccm_render
-        ccm_render._print_spool_summary({})
-        assert capsys.readouterr().out.strip() == ""
+        assert ccm_render.spool_expired_warning() == ""
+
+    def test_expired_warning_caps_a_long_project_list(self, spool_root):
+        """Warning lines share the terminal with everything else; a
+        long list of names must not push the rest off screen."""
+        import ccm_render
+        for i in range(20):
+            edir = os.path.join(spool_root, f"project-number-{i}", "expired")
+            os.makedirs(edir)
+            open(os.path.join(edir, "1-tester.msg"), "w").close()
+        msg = ccm_render.spool_expired_warning()
+        assert len(msg) < 120 and msg.count("...") == 1
 
 
 class TestSpoolCli:
@@ -212,6 +220,40 @@ class TestSpoolCli:
     def test_unknown_subcommand_dies(self, spool_root):
         with pytest.raises(SystemExit):
             ccm_spool.cmd_spool(["flush"])
+
+
+class TestClearExpired:
+    """A warning that cannot be answered is one the reader learns to
+    scroll past, so the evidence of an undelivered message can be
+    acknowledged — the same reason `ccm errors` has `--clear`."""
+
+    def _expired(self, spool_root, project="demo", n=1):
+        edir = os.path.join(spool_root, project, "expired")
+        os.makedirs(edir, exist_ok=True)
+        for i in range(n):
+            open(os.path.join(edir, f"{i}-tester.msg"), "w").close()
+
+    def test_clears_and_reports(self, spool_root, capsys):
+        self._expired(spool_root, n=2)
+        ccm_spool.cmd_spool(["clear-expired"])
+        assert "Cleared 2" in capsys.readouterr().out
+        assert ccm_spool.expired_counts() == {}
+
+    def test_scoped_to_one_project(self, spool_root):
+        self._expired(spool_root, "demo")
+        self._expired(spool_root, "other")
+        ccm_spool.cmd_spool(["clear-expired", "demo"])
+        assert ccm_spool.expired_counts() == {"other": 1}
+
+    def test_leaves_queued_messages_alone(self, spool_root):
+        self._expired(spool_root)
+        ccm_spool.enqueue("demo", "tester", "still waiting")
+        ccm_spool.cmd_spool(["clear-expired"])
+        assert len(_pending(spool_root)) == 1
+
+    def test_says_so_when_there_is_nothing(self, spool_root, capsys):
+        ccm_spool.cmd_spool(["clear-expired"])
+        assert "No expired" in capsys.readouterr().out
 
 
 class TestExpiry:
