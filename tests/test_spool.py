@@ -114,6 +114,25 @@ class TestSpoolCli:
         assert "demo:" in out and "first line of body" in out
         assert "ago" in out
 
+    def test_expired_only_project_is_still_listed(self, spool_root, capsys):
+        """A project whose queue is empty can still hold the record of
+        a message that never arrived. `ccm doctor` counts it and sends
+        the reader to this command, so hiding it here is how a lost
+        message stays lost."""
+        edir = os.path.join(spool_root, "demo", "expired")
+        os.makedirs(edir)
+        open(os.path.join(edir, "1-tester.msg"), "w").close()
+        ccm_spool.cmd_spool(["list"])
+        out = capsys.readouterr().out
+        assert "demo:" in out
+        assert "1 expired" in out
+        assert "No queued messages" not in out
+
+    def test_truly_empty_still_says_so(self, spool_root, capsys):
+        os.makedirs(os.path.join(spool_root, "demo"))
+        ccm_spool.cmd_spool(["list"])
+        assert "No queued messages" in capsys.readouterr().out
+
     def test_list_scoped_to_project(self, spool_root, capsys):
         ccm_spool.enqueue("demo", "a", "for demo")
         ccm_spool.enqueue("other", "a", "for other")

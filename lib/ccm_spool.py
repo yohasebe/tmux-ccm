@@ -424,7 +424,17 @@ def _cmd_list(rest):
     shown = 0
     for name, pdir in _iter_project_dirs(only=project):
         pending = _pending(pdir)
-        if not pending:
+        expired_dir = os.path.join(pdir, "expired")
+        try:
+            n_expired = sum(1 for n in os.listdir(expired_dir)
+                            if n.endswith(".msg"))
+        except OSError:
+            n_expired = 0
+        # A project whose queue is empty can still be the one holding
+        # the record of a message that never arrived. Skipping it
+        # because nothing is pending hides that record in the command
+        # `ccm doctor` sends the reader to.
+        if not pending and not n_expired:
             continue
         print(f"{name}:")
         for fname in pending:
@@ -433,18 +443,14 @@ def _cmd_list(rest):
             age = _msg_age(now, queued) if queued else "?"
             msg_id = fname[:-4]
             print(f"  {msg_id}  ({age})  {_preview(os.path.join(pdir, fname))}")
-            shown += 1
-        expired_dir = os.path.join(pdir, "expired")
-        try:
-            n_expired = sum(1 for n in os.listdir(expired_dir)
-                            if n.endswith(".msg"))
-        except OSError:
-            n_expired = 0
         if n_expired:
             print(f"  ({n_expired} expired — never delivered)")
-    if project is not None and shown == 0:
+        shown += 1
+    if shown:
+        return
+    if project is not None:
         ccm_core.ccm_info(f"No queued messages for {project}.")
-    elif shown == 0:
+    else:
         ccm_core.ccm_info("No queued messages.")
 
 

@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- `ccm spool list` shows a project whose only messages expired undelivered.
+  It reported "No queued messages" and skipped the project entirely, which
+  hid the record of a lost message in the command `ccm doctor` points at.
 - A session's transcript is found by its session id when the directory it
   sits in is not the sanitised working directory. Losing the transcript loses
   the terminal stop reason that releases a held BUSY, and that failure has no
