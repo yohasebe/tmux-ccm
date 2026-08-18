@@ -159,6 +159,34 @@ def pending_counts():
     return counts
 
 
+def expired_counts():
+    """`{project: n_expired}` for projects holding a message that was
+    never delivered.
+
+    Separate from `pending_counts` because the two mean opposite
+    things to the reader: a pending count is work still on its way, an
+    expired one is work that never arrived. Surfacing only the first
+    is how the record of a loss stays invisible in the places people
+    actually look.
+    """
+    counts = {}
+    try:
+        entries = os.listdir(SPOOL_ROOT)
+    except OSError:
+        return counts
+    for entry in entries:
+        if entry.endswith(".lock"):
+            continue
+        edir = os.path.join(SPOOL_ROOT, entry, "expired")
+        try:
+            n = sum(1 for n_ in os.listdir(edir) if n_.endswith(".msg"))
+        except OSError:
+            continue
+        if n:
+            counts[entry] = n
+    return counts
+
+
 def spool_summary():
     """{"pending": N, "expired": M} across all projects, for doctor."""
     pending = sum(pending_counts().values())

@@ -102,6 +102,42 @@ class TestEnqueue:
         assert "/" not in msg_id and " " not in msg_id
 
 
+class TestExpiredVisibility:
+    """A message that expired without arriving must be visible in the
+    places a reader actually looks, not only in `ccm doctor`. The
+    sender was told "queued", so nothing else records the loss."""
+
+    def test_expired_counts_are_reported_per_project(self, spool_root):
+        edir = os.path.join(spool_root, "demo", "expired")
+        os.makedirs(edir)
+        open(os.path.join(edir, "1-tester.msg"), "w").close()
+        assert ccm_spool.expired_counts() == {"demo": 1}
+
+    def test_expired_counts_ignore_delivered_evidence(self, spool_root):
+        ddir = os.path.join(spool_root, "demo", "delivered")
+        os.makedirs(ddir)
+        open(os.path.join(ddir, "1-tester.msg"), "w").close()
+        assert ccm_spool.expired_counts() == {}
+
+    def test_status_names_an_expired_only_project(self, spool_root, capsys,
+                                                  monkeypatch):
+        """`ccm status` used to report the queue length alone, so a
+        project whose queue had emptied by expiry looked clean."""
+        import ccm_render
+        edir = os.path.join(spool_root, "demo", "expired")
+        os.makedirs(edir)
+        open(os.path.join(edir, "1-tester.msg"), "w").close()
+        ccm_render._print_spool_summary({})
+        out = capsys.readouterr().out
+        assert "expired undelivered" in out and "demo" in out
+
+    def test_status_says_nothing_when_there_is_nothing(self, spool_root,
+                                                       capsys):
+        import ccm_render
+        ccm_render._print_spool_summary({})
+        assert capsys.readouterr().out.strip() == ""
+
+
 class TestSpoolCli:
     def test_list_empty(self, spool_root, capsys):
         ccm_spool.cmd_spool(["list"])

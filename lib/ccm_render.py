@@ -491,12 +491,25 @@ def print_status():
 def _print_spool_summary(spool_counts):
     """A queued-but-undelivered message is the store-and-forward
     equivalent of an unread refusal — keep the totals visible where
-    an agent polling `ccm status` will see them."""
+    an agent polling `ccm status` will see them.
+
+    Expired messages are named too, and named separately: a queue
+    length says work is still on its way, while an expired one says
+    work never arrived. Reporting only the first leaves a loss with
+    no trace anywhere the reader looks."""
+    parts = []
     total_queued = sum(spool_counts.values())
     if total_queued:
         breakdown = ", ".join(f"{n}:{c}" for n, c in spool_counts.items())
-        print(f"\n{C_DIM}spool: {total_queued} queued ({breakdown}) — "
-              f"`ccm spool list`{C_RESET}")
+        parts.append(f"{total_queued} queued ({breakdown})")
+    expired = ccm_spool.expired_counts()
+    total_expired = sum(expired.values())
+    if total_expired:
+        breakdown = ", ".join(f"{n}:{c}" for n, c in expired.items())
+        parts.append(f"{total_expired} expired undelivered ({breakdown})")
+    if parts:
+        print(f"\n{C_DIM}spool: " + " · ".join(parts)
+              + f" — `ccm spool list`{C_RESET}")
 
 
 def print_ports():

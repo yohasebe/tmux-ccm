@@ -803,6 +803,20 @@ class Dashboard:
                 self._addstr(stdscr, row, 2, "⚠ " + managed_warning, curses.color_pair(C_YELLOW))
                 row += 1
 
+            # A spooled message that expired without arriving. The
+            # sender was told "queued", so the loss has no other
+            # trace here — the queue length alone reads as empty.
+            expired = ccm_spool.expired_counts()
+            if expired:
+                total = sum(expired.values())
+                names = ", ".join(f"{n}:{c}" for n, c in expired.items())
+                self._addstr(
+                    stdscr, row, 2,
+                    f"⚠ spool: {total} expired undelivered ({names}) — "
+                    "`ccm spool list`",
+                    curses.color_pair(C_YELLOW))
+                row += 1
+
             # Per-project SHELL cluster canary (#48069 silent-exit regression)
             for cluster_msg in shell_cluster_warnings(projects):
                 self._addstr(stdscr, row, 2, "⚠ " + cluster_msg, curses.color_pair(C_YELLOW))

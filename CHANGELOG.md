@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- `ccm status` and the dashboard name a message that expired without being
+  delivered. They reported the queue length alone, so a project whose queue
+  had emptied by expiry read as clean while `ccm doctor` warned about it.
 - `ccm spool list` shows a project whose only messages expired undelivered.
   It reported "No queued messages" and skipped the project entirely, which
   hid the record of a lost message in the command `ccm doctor` points at.
