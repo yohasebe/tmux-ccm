@@ -217,8 +217,8 @@ class TestClassifyPermitModal:
         `Enter to confirm · Esc to cancel` footer a safe picker uses,
         so without a content signature it read as harmless — and the
         guidance would have invited dismissing it from another pane.
-        Answering it grants read, edit and execute in that directory.
-        Wording measured against a first-run session."""
+        Answering it grants read, edit and execute in that
+        directory."""
         text = (
             " Quick safety check: Is this a project you created or one "
             "you trust?\n"

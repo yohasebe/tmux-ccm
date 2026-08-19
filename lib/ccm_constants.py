@@ -189,7 +189,7 @@ ATTENTION_WAITING_TTL_SEC = int(
 # these first. See: https://github.com/anthropics/claude-code
 
 # Input prompt characters. The composer renders a NO-BREAK SPACE
-# after the glyph, not an ordinary one (measured), which is why
+# after the glyph, not an ordinary one, which is why
 # every pattern below matches whitespace as `\s` rather than a
 # literal space.
 _PROMPT_CHARS = "❯"
@@ -431,7 +431,6 @@ PATTERN_PERMISSION_DIALOG = re.compile(
 # prints would have invited an operator to dismiss it from another
 # pane. Answering it grants read, edit and execute in that directory,
 # which is a permission grant wearing a confirmation's clothes.
-# Measured against a first-run session in a fresh directory.
 PATTERN_TRUST_MODAL = re.compile(
     r"Yes, I trust this folder"
     r"|Is this a project you created or one you trust\?"
