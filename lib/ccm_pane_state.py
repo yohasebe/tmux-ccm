@@ -233,10 +233,18 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
             return "PERMIT"
 
     if has_child:
-        # Scan the whole visible pane for the input prompt. The `❯`
-        # row marks the top of the input area — when the user is
-        # composing a multi-line message, the `❯` may be many rows
-        # above the pane bottom while the user keeps typing.
+        # Whether Claude's own UI is on screen at all, rather than
+        # where its input box is. The composer is drawn continuously,
+        # so this is true almost whenever Claude is running; what is
+        # actually being asked is "has something covered the UI"
+        # (a dialog, a flood of output).
+        #
+        # Do NOT read the match as locating the input area. A
+        # submitted prompt is drawn into the transcript with the same
+        # glyph, so the first `❯` on screen is usually an old message
+        # — a belief that cost the send path a real bug. Nothing here
+        # depends on which row matched, and the BUSY/IDLE call below
+        # is made by the spinner, not by this.
         visible = capture_pane_visible(pane_target)
         prompt_visible = any(
             PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line)

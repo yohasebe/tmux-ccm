@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `ccm doctor` reports tmux's `focus-events`, which Claude Code asks for in
+  a startup banner that scrolls away.
 - `ccm spool clear-expired [project]` acknowledges messages that expired
   without being delivered, clearing the warning they raise. A warning that
   cannot be answered is one the reader learns to scroll past.
@@ -60,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- The folder-trust prompt is treated as a permission request. It carries the
+  same footer a model picker does, so it classified as a harmless
+  confirmation — and answering it grants read, edit and execute in that
+  directory.
+- The permission-dialog question matches whichever space Claude Code draws
+  after it. The composer renders a no-break space, so requiring an ordinary
+  one anywhere is an assumption with nothing behind it.
 - `ccm status` gives an expired message the same weight the dashboard does.
   It sat in the dim queue-length summary, where a loss read as routine.
 - `ccm status` and the dashboard name a message that expired without being

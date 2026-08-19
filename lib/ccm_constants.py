@@ -188,7 +188,10 @@ ATTENTION_WAITING_TTL_SEC = int(
 # matched. If detection breaks after a Claude Code update, check
 # these first. See: https://github.com/anthropics/claude-code
 
-# Input prompt characters (single character followed by space = idle prompt)
+# Input prompt characters. The composer renders a NO-BREAK SPACE
+# after the glyph, not an ordinary one (measured), which is why
+# every pattern below matches whitespace as `\s` rather than a
+# literal space.
 _PROMPT_CHARS = "❯"
 # Accept-edits prompt characters (doubled = accept-edits mode)
 _ACCEPT_CHARS = "❯⏵"
@@ -409,7 +412,7 @@ PATTERN_RESUME_MODAL = re.compile(
 )
 PATTERN_PERMISSION_DIALOG = re.compile(
     r"Do you want to proceed\?"
-    r"|Do you want to allow Claude to "
+    r"|Do you want to allow Claude to\s"
     r"|Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
     # Footer-less permission dialogs (WebFetch / web-content,
     # subagent permission requests) ask "Do you want to allow
@@ -421,6 +424,17 @@ PATTERN_PERMISSION_DIALOG = re.compile(
     # same reason as in PATTERN_PERMIT_FOOTER — it keeps prose that
     # merely quotes the option text from mis-classifying.
     r"|" + _DENY_OPTION_LINE
+)
+# The folder-trust prompt. Its footer is the same `Enter to confirm ·
+# Esc to cancel` a safe picker uses, so without a content signature it
+# classified as a harmless confirmation — and the guidance `ccm send`
+# prints would have invited an operator to dismiss it from another
+# pane. Answering it grants read, edit and execute in that directory,
+# which is a permission grant wearing a confirmation's clothes.
+# Measured against a first-run session in a fresh directory.
+PATTERN_TRUST_MODAL = re.compile(
+    r"Yes, I trust this folder"
+    r"|Is this a project you created or one you trust\?"
 )
 PATTERN_MODEL_PICKER = re.compile(
     r"Switch between Claude models"
@@ -529,6 +543,8 @@ def classify_permit_modal(pane_text: str):
     through as a safe confirmation-modal.
     """
     if PATTERN_PERMISSION_DIALOG.search(pane_text):
+        cat = "permission-request"
+    elif PATTERN_TRUST_MODAL.search(pane_text):
         cat = "permission-request"
     elif PATTERN_RESUME_MODAL.search(pane_text):
         cat = "session-resume"

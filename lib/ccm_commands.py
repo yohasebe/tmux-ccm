@@ -859,6 +859,17 @@ def cmd_doctor():
     for tool in ("jq", "fzf"):
         path = _probe(["which", tool])
         row(OK if path else WARN, tool, path or "not found (recommended)")
+    # Claude Code asks tmux for focus-events at startup and says so in
+    # its own banner. ccm is what put the session in tmux, so the
+    # setting belongs in the same report as the rest of what the
+    # session needs — the banner scrolls away, this does not.
+    focus = (ccm_core.tmux_cmd("show-options", "-gv", "focus-events") or "").strip()
+    if focus == "on":
+        row(OK, "focus-events", "on")
+    else:
+        row(WARN, "focus-events",
+            f"{focus or 'off'} — Claude Code asks for it; "
+            "add `set -g focus-events on` to ~/.tmux.conf")
 
     section("Setup")
     if ccm_core.hooks_configured():

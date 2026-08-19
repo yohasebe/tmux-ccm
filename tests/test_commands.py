@@ -119,7 +119,8 @@ class TestCmdDoctor:
                     hooks=True, hooks_log_warning="",
                     disable_warning="", managed_warning="",
                     cluster_warnings=(), projects=(),
-                    errors_log_lines=0, ps_text="", panes_cache=()):
+                    errors_log_lines=0, ps_text="", panes_cache=(),
+                    focus_events="on"):
         """Stub every external dependency cmd_doctor reads, returning
         controlled values so each test exercises a specific branch
         without standing up real tmux / claude state."""
@@ -139,7 +140,11 @@ class TestCmdDoctor:
                             lambda fast=False: list(projects))
         # tmux_cmd is called for show-option @ccm_session_id per
         # project; return empty for all of them.
-        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **kw: "")
+        def fake_tmux(*a, **kw):
+            if "focus-events" in a:
+                return focus_events
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
         # The multi-claude row reads the bulk panes cache plus a ps
         # snapshot. Both would trip conftest's live-subprocess guard,
         # and the scan swallows that failure — so without these stubs
@@ -179,6 +184,25 @@ class TestCmdDoctor:
                         "Active projects", "Silent-exception log",
                         "Configuration"):
             assert section in out, f"missing section: {section}"
+
+    def test_focus_events_off_is_flagged(self, tmp_path, monkeypatch,
+                                         capsys):
+        """Claude Code asks tmux for focus-events in a startup banner
+        that scrolls away. ccm is what put the session in tmux, so
+        the setting belongs in the report that does not scroll."""
+        self._stub_world(monkeypatch, tmp_path, focus_events="off")
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "focus-events" in out
+        assert "set -g focus-events on" in out
+
+    def test_focus_events_on_is_not_flagged(self, tmp_path, monkeypatch,
+                                            capsys):
+        self._stub_world(monkeypatch, tmp_path, focus_events="on")
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "focus-events" in out
+        assert "set -g focus-events on" not in out
 
     def test_warns_when_hooks_not_installed(self, tmp_path,
                                             monkeypatch, capsys):

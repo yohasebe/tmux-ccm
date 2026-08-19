@@ -212,6 +212,28 @@ class TestClassifyPermitModal:
         cat, guidance = ccm_constants.classify_permit_modal(text)
         assert cat == "permission-request"
 
+    def test_folder_trust_prompt_is_a_permission_request(self):
+        """The first-run folder-trust prompt carries the same
+        `Enter to confirm · Esc to cancel` footer a safe picker uses,
+        so without a content signature it read as harmless — and the
+        guidance would have invited dismissing it from another pane.
+        Answering it grants read, edit and execute in that directory.
+        Wording measured against a first-run session."""
+        text = (
+            " Quick safety check: Is this a project you created or one "
+            "you trust?\n"
+            " \u276f 1. Yes, I trust this folder\n"
+            "   2. No, exit\n"
+            " Enter to confirm \u00b7 Esc to cancel"
+        )
+        cat, guidance = ccm_constants.classify_permit_modal(text)
+        assert cat == "permission-request"
+
+    def test_trust_signature_does_not_catch_the_safe_pickers(self):
+        for text in ("Switch between Claude models\nEnter to confirm \u00b7 Esc to cancel",
+                     "This session is 3h 11m old\nEnter to confirm \u00b7 Esc to cancel"):
+            assert ccm_constants.classify_permit_modal(text)[0] != "permission-request"
+
     def test_confirmation_modal_footer_only(self):
         """No content signature matches but footer is the confirm
         shape — classify as a generic confirmation-modal (not unknown).
