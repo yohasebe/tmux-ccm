@@ -68,7 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   directory.
 - The permission-dialog question matches whichever space Claude Code draws
   after it. The composer renders a no-break space, so requiring an ordinary
-  one anywhere is an assumption with nothing behind it.
+  one anywhere is an assumption with nothing behind it. The prefix now
+  matches horizontal whitespace only, so a wrapped transcript quotation of
+  the question does not read as a live dialog.
+- The expired-message warning also names `ccm spool clear-expired` as the
+  way to acknowledge a lost message.
 - `ccm status` gives an expired message the same weight the dashboard does.
   It sat in the dim queue-length summary, where a loss read as routine.
 - `ccm status` and the dashboard name a message that expired without being

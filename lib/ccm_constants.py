@@ -190,8 +190,9 @@ ATTENTION_WAITING_TTL_SEC = int(
 
 # Input prompt characters. The composer renders a NO-BREAK SPACE
 # after the glyph, not an ordinary one, which is why
-# every pattern below matches whitespace as `\s` rather than a
-# literal space.
+# patterns below match whitespace rather than a literal space.
+# Where a wrapped line must not count, horizontal whitespace is
+# spelled out instead (`[ \t\xa0]`).
 _PROMPT_CHARS = "❯"
 # Accept-edits prompt characters (doubled = accept-edits mode)
 _ACCEPT_CHARS = "❯⏵"
@@ -412,7 +413,10 @@ PATTERN_RESUME_MODAL = re.compile(
 )
 PATTERN_PERMISSION_DIALOG = re.compile(
     r"Do you want to proceed\?"
-    r"|Do you want to allow Claude to\s"
+    # Horizontal whitespace only: a wrapped transcript line that ends
+    # in this phrase is a quotation, not a live dialog, and must not
+    # classify as one.
+    r"|Do you want to allow Claude to[ \t\xa0]"
     r"|Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
     # Footer-less permission dialogs (WebFetch / web-content,
     # subagent permission requests) ask "Do you want to allow
@@ -459,7 +463,7 @@ _PERMIT_GUIDANCE = {
         "User action required: switch to the target pane and\n"
         "respond to the prompt yourself. ccm refuses to send\n"
         "keystrokes here because they could accidentally approve\n"
-        "or deny a tool call."
+        "or deny the requested action."
     ),
     "confirmation-modal": (
         "Confirmation modal (e.g., /model picker, /exit).\n"

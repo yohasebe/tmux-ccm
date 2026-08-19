@@ -76,13 +76,13 @@ from ccm_commands import (
     cmd_unregister,
 )
 from ccm_snapshot import cmd_snapshot_load, cmd_snapshot_save
-from ccm_render import (spool_expired_warning,
-                        
+from ccm_render import (
     display_width,
     external_agent_label,
     format_dir,
     format_elapsed,
     signal_age_suffix,
+    spool_expired_warning,
     truncate_to_width,
 )
 

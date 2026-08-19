@@ -234,6 +234,21 @@ class TestClassifyPermitModal:
                      "This session is 3h 11m old\nEnter to confirm \u00b7 Esc to cancel"):
             assert ccm_constants.classify_permit_modal(text)[0] != "permission-request"
 
+    def test_question_accepts_nbsp_after_to(self):
+        """The composer uses a NO-BREAK SPACE; the question prefix
+        must accept horizontal whitespace, not only an ordinary
+        space."""
+        assert ccm_constants.PATTERN_PERMISSION_DIALOG.search(
+            "Do you want to allow Claude to\u00a0fetch this content?")
+
+    def test_wrapped_question_text_is_a_quotation_not_a_dialog(self):
+        """The question phrase split across a line break is a wrapped
+        transcript quotation, not a live dialog. The question prefix
+        matches horizontal whitespace only (space / tab / NBSP), so a
+        newline after `to` must not count."""
+        text = "Do you want to allow Claude to\nfetch this content?"
+        assert not ccm_constants.PATTERN_PERMISSION_DIALOG.search(text)
+
     def test_confirmation_modal_footer_only(self):
         """No content signature matches but footer is the confirm
         shape — classify as a generic confirmation-modal (not unknown).

@@ -508,10 +508,10 @@ def spool_expired_warning():
     if not total:
         return ""
     names = ", ".join(f"{n}:{c}" for n, c in sorted(expired.items()))
-    if len(names) > 60:
-        names = names[:57] + "..."
+    if len(names) > 50:
+        names = names[:47] + "..."
     return (f"spool: {total} expired undelivered ({names}) — "
-            "`ccm spool list`")
+            "`ccm spool list` / `clear-expired`")
 
 
 def _print_spool_summary(spool_counts):

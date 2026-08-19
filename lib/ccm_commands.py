@@ -863,7 +863,7 @@ def cmd_doctor():
     # its own banner. ccm is what put the session in tmux, so the
     # setting belongs in the same report as the rest of what the
     # session needs — the banner scrolls away, this does not.
-    focus = (ccm_core.tmux_cmd("show-options", "-gv", "focus-events") or "").strip()
+    focus = (ccm_core.tmux_cmd("show-option", "-gqv", "focus-events") or "").strip()
     if focus == "on":
         row(OK, "focus-events", "on")
     else:
