@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- `ccm capture` says when it read nothing instead of printing an empty block.
+  A pane hosting a session is never blank, so silence there means the read
+  failed — and this output is what an agent reads to decide whether a message
+  landed or whether a peer is still working.
 - The folder-trust prompt is treated as a permission request. It carries the
   same footer a model picker does, so it classified as a harmless
   confirmation — and answering it grants read, edit and execute in that

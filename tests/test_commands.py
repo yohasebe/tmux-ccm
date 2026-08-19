@@ -1143,6 +1143,24 @@ class TestCmdCapture:
         assert "line1" in out and "line2" in out
         assert "=== end ===" in out
 
+    def test_capture_says_so_when_it_read_nothing(self, monkeypatch,
+                                                  capsys):
+        """A read that came back with nothing must not look like a
+        window that shows nothing. This output is what an agent reads
+        to decide whether a message landed or whether a peer is still
+        working, and a pane hosting a session is never blank."""
+        self._stub_capture(monkeypatch, captured="")
+        ccm_commands.cmd_capture(["proj"])
+        out = capsys.readouterr().out
+        assert "nothing captured" in out
+        assert "=== end ===" in out
+
+    def test_capture_of_whitespace_only_is_also_reported(self, monkeypatch,
+                                                         capsys):
+        self._stub_capture(monkeypatch, captured="   \n\n")
+        ccm_commands.cmd_capture(["proj"])
+        assert "nothing captured" in capsys.readouterr().out
+
     def test_capture_by_window_index(self, monkeypatch, capsys):
         self._stub_capture(
             monkeypatch,

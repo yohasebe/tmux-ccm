@@ -597,7 +597,18 @@ def cmd_capture(args):
             ccm_core.ccm_warn("No clipboard tool available (install pbcopy, xclip, or xsel)")
     else:
         print(f"=== ccm capture: {proj_name} ===")
-        print(output)
+        # A read that came back with nothing must not look like a
+        # window that shows nothing. This output is what an agent
+        # reads to decide whether a message landed or whether a peer
+        # is still working, and a pane hosting a session is never
+        # blank — so silence here means the read failed, and saying
+        # so is the difference between "nothing happened" and "I
+        # could not see".
+        if output.strip():
+            print(output)
+        else:
+            print("(nothing captured — the pane may have exited "
+                  "or become unreadable)")
         print("=== end ===")
 
 
