@@ -745,7 +745,7 @@ class TestDeriveStateFromEvents:
         ) == "BUSY"
 
     def test_permit_promoted_busy_not_cut_by_short_window(self):
-        """2026-07-23 regression pin: a BUSY promoted from a permit
+        """Regression pin: a BUSY promoted from a permit
         event (auto-approved tool, fresher JSONL proves dispatch) can
         run for minutes legitimately — the short stale-BUSY release
         window must NOT cut it. Only START-class origins (the Esc
@@ -1449,7 +1449,7 @@ class TestDeriveStateFromEvents:
         ) == "BUSY"
 
     def test_permit_event_subagent_webfetch_raw_busy_no_jsonl_tool_use(self):
-        """2026-06-30 incident, distilled: a background
+        """Distilled from a live failure: a background
         subagent's WebFetch raised a permit and ran for minutes
         (spinner → raw=BUSY), but its tool_use record landed in the
         SUBAGENT's JSONL, so the main session's JSONL showed no fresh
