@@ -33,7 +33,22 @@ def fake_claude_home(tmp_path, monkeypatch):
 
 
 def _write_roster(home, workers):
-    roster = {"proto": 1, "supervisorPid": 12345, "workers": workers}
+    """Write a roster whose workers are claimed unless a test says
+    otherwise.
+
+    A worker with neither a job document nor a dispatch record is one
+    the daemon keeps warm for the next task, and ccm does not list
+    those. Tests about anything else — pid coercion, malformed keys —
+    want ordinary sessions, so a dispatch is filled in for them; a
+    test about the unclaimed case passes its own worker dict with
+    `dispatch` left out.
+    """
+    filled = {}
+    for short, w in workers.items():
+        if isinstance(w, dict) and "dispatch" not in w:
+            w = dict(w, dispatch={"short": short})
+        filled[short] = w
+    roster = {"proto": 1, "supervisorPid": 12345, "workers": filled}
     (home / ".claude" / "daemon" / "roster.json").write_text(json.dumps(roster))
 
 
@@ -199,6 +214,45 @@ class TestListBgSessions:
         # startedAt (epoch ms) feeds created_at when state.json
         # is unavailable.
         assert s.created_at == pytest.approx(1778583950.174, abs=1.0)
+
+    def test_unclaimed_worker_is_not_a_session(self, fake_claude_home):
+        """The daemon keeps a worker warm so the next dispatch starts
+        fast. It is not work anyone is waiting on, and listing it puts
+        a nameless row in front of the reader with nothing to attach
+        to."""
+        roster = {"proto": 1, "workers": {
+            "aaaaaaaa": {"pid": 1, "cwd": "/x", "dispatch": {"short": "aaaaaaaa"}},
+            "bbbbbbbb": {"pid": 2, "cwd": "/y"},
+        }}
+        (fake_claude_home / ".claude" / "daemon" / "roster.json").write_text(
+            json.dumps(roster))
+        shorts = [s.short for s in ccm_agentview.list_bg_sessions()]
+        assert shorts == ["aaaaaaaa"]
+
+    def test_dispatched_job_shows_before_its_state_file_lands(
+            self, fake_claude_home):
+        """A dispatch that has registered but whose state file has not
+        been written yet is a real session starting, not a warm
+        worker. Hiding it would trade one invisible thing for
+        another."""
+        roster = {"proto": 1, "workers": {
+            "aaaaaaaa": {"pid": 1, "cwd": "/x", "dispatch": {"short": "aaaaaaaa"}},
+        }}
+        (fake_claude_home / ".claude" / "daemon" / "roster.json").write_text(
+            json.dumps(roster))
+        assert len(ccm_agentview.list_bg_sessions()) == 1
+
+    def test_corrupt_state_file_still_counts_as_a_job(self, fake_claude_home):
+        """Existence, not parseability: a job whose state file cannot
+        be read is still a job, and dropping it would hide real work
+        because of a bad byte."""
+        roster = {"proto": 1, "workers": {"abcd1234": {"pid": 1, "cwd": "/x"}}}
+        (fake_claude_home / ".claude" / "daemon" / "roster.json").write_text(
+            json.dumps(roster))
+        jd = fake_claude_home / ".claude" / "jobs" / "abcd1234"
+        jd.mkdir(parents=True)
+        (jd / "state.json").write_text("garbage{{{")
+        assert len(ccm_agentview.list_bg_sessions()) == 1
 
     def test_malformed_state_file_doesnt_crash(self, fake_claude_home):
         _write_roster(fake_claude_home, {"abcd1234": {"pid": 1, "cwd": "/x"}})

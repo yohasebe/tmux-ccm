@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- Background sessions list only workers a task has claimed. The daemon also
+  keeps a worker warm for the next dispatch, and that appeared as a nameless
+  row with nothing to attach to. A job whose state file is missing or corrupt
+  still counts — existence, not readability.
 - `ccm capture` says when it read nothing instead of printing an empty block.
   A pane hosting a session is never blank, so silence there means the read
   failed — and this output is what an agent reads to decide whether a message
