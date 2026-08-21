@@ -62,6 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- A project whose transcript directory is shared with another finds its own
+  session. The directory name turns every non-alphanumeric character into a
+  dash, so `a/b`, `a-b` and `a_b` name one directory — and the newest file in
+  it could belong to the other project, holding this one busy or releasing it
+  early. A transcript records the directory it belongs to; that now decides.
 - Background sessions list only workers a task has claimed. The daemon also
   keeps a worker warm for the next dispatch, and that appeared as a nameless
   row with nothing to attach to. A job whose state file is missing or corrupt

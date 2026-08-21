@@ -680,6 +680,64 @@ class TestReadSessionInfo:
         assert info is not None  # accepted because etime unknown
 
 
+class TestSlugCollision:
+    """The slug turns every non-alphanumeric character into a dash,
+    so `a/b`, `a-b` and `a_b` name one directory. Two projects can
+    share it, and answering with the wrong one's transcript means the
+    wrong `stop_reason` and the wrong mtime — the other project's
+    activity holding this one BUSY, or its terminal stop releasing a
+    BUSY that is still running."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(tmp_path))
+        ccm_jsonl._jsonl_path_cache.clear()
+
+    def _write(self, d, name, cwd):
+        import json as _json
+        p = d / name
+        p.write_text(_json.dumps({"type": "user", "cwd": cwd}) + "\n")
+        return p
+
+    def test_picks_the_transcript_that_claims_this_directory(
+            self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        mine, other = "/x/my-project", "/x/my_project"
+        assert ccm_jsonl._project_slug(mine) == ccm_jsonl._project_slug(other)
+        d = tmp_path / ccm_jsonl._project_slug(mine)
+        d.mkdir()
+        a = self._write(d, "aaa.jsonl", mine)
+        b = self._write(d, "bbb.jsonl", other)
+        os.utime(a, (1000, 1000))
+        os.utime(b, (2000, 2000))   # the other project's is newer
+        assert ccm_jsonl._find_newest_jsonl(mine) == str(a)
+
+    def test_each_side_of_a_collision_gets_its_own(
+            self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch)
+        mine, other = "/x/my-project", "/x/my_project"
+        d = tmp_path / ccm_jsonl._project_slug(mine)
+        d.mkdir()
+        a = self._write(d, "aaa.jsonl", mine)
+        b = self._write(d, "bbb.jsonl", other)
+        assert ccm_jsonl._find_newest_jsonl(mine) == str(a)
+        ccm_jsonl._jsonl_path_cache.clear()
+        assert ccm_jsonl._find_newest_jsonl(other) == str(b)
+
+    def test_falls_back_to_newest_when_nothing_claims_a_directory(
+            self, tmp_path, monkeypatch):
+        """An older transcript format that records no directory must
+        still be found — the check narrows an ambiguity, it does not
+        add a requirement."""
+        self._setup(tmp_path, monkeypatch)
+        mine = "/x/my-project"
+        d = tmp_path / ccm_jsonl._project_slug(mine)
+        d.mkdir()
+        import json as _json
+        p = d / "aaa.jsonl"
+        p.write_text(_json.dumps({"type": "user"}) + "\n")
+        assert ccm_jsonl._find_newest_jsonl(mine) == str(p)
+
+
 class TestJsonlFromSessionInfo:
     def test_resolves_exact_path(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(tmp_path / "sessions"))
