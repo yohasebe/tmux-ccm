@@ -723,6 +723,54 @@ class TestSlugCollision:
         ccm_jsonl._jsonl_path_cache.clear()
         assert ccm_jsonl._find_newest_jsonl(other) == str(b)
 
+    def test_a_transcript_naming_another_directory_is_never_used(
+            self, tmp_path, monkeypatch):
+        """The reported bug in full: this project's transcript says
+        nothing (an older format, or its directory sits behind a long
+        run of housekeeping), while the colliding project's names
+        itself. Taking the newest would hand back the one file that
+        has already said it belongs elsewhere."""
+        self._setup(tmp_path, monkeypatch)
+        mine, other = "/x/my-project", "/x/my_project"
+        d = tmp_path / ccm_jsonl._project_slug(mine)
+        d.mkdir()
+        import json as _json
+        quiet = d / "aaa.jsonl"
+        quiet.write_text(_json.dumps({"type": "user"}) + "\n")
+        theirs = self._write(d, "bbb.jsonl", other)
+        os.utime(quiet, (1000, 1000))
+        os.utime(theirs, (2000, 2000))
+        assert ccm_jsonl._find_newest_jsonl(mine) == str(quiet)
+
+    def test_no_answer_beats_the_wrong_answer(self, tmp_path, monkeypatch):
+        """When every candidate names somewhere else there is nothing
+        here to return. A held BUSY nobody released is the safe
+        failure; the wrong project's transcript can release a BUSY
+        that is still running, and auto-exit acts on that one."""
+        self._setup(tmp_path, monkeypatch)
+        mine, other = "/x/my-project", "/x/my_project"
+        d = tmp_path / ccm_jsonl._project_slug(mine)
+        d.mkdir()
+        self._write(d, "bbb.jsonl", other)
+        assert ccm_jsonl._find_newest_jsonl(mine) is None
+
+    def test_directory_found_past_a_long_housekeeping_head(
+            self, tmp_path, monkeypatch):
+        """A session can open with a hundred records that carry no
+        directory — queued task notifications among them — and those
+        are the busy sessions, where the attribution matters most. The
+        probe is bounded in bytes for that reason, not in lines."""
+        self._setup(tmp_path, monkeypatch)
+        mine = "/x/my-project"
+        d = tmp_path / ccm_jsonl._project_slug(mine)
+        d.mkdir()
+        import json as _json
+        p = d / "aaa.jsonl"
+        head = "".join(_json.dumps({"type": "queue-operation"}) + "\n"
+                       for _ in range(120))
+        p.write_text(head + _json.dumps({"type": "user", "cwd": mine}) + "\n")
+        assert ccm_jsonl._find_newest_jsonl(mine) == str(p)
+
     def test_falls_back_to_newest_when_nothing_claims_a_directory(
             self, tmp_path, monkeypatch):
         """An older transcript format that records no directory must

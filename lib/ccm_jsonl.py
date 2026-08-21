@@ -304,22 +304,33 @@ def _canonical(path: str) -> str:
         return path
 
 
-#: How far into a transcript to look for the directory it records.
-#: The field appears on ordinary conversation records, which start
-#: early; reading further would cost more than the answer is worth.
-JSONL_CWD_PROBE_LINES = 40
+#: How far into a transcript to read looking for the directory it
+#: records. Bytes, not lines: the records that carry no `cwd` are the
+#: housekeeping ones — queued task notifications among them — and a
+#: single such line can run to megabytes, so a line budget bounds the
+#: wrong thing. Sessions exist whose first `cwd` sits past line 100
+#: behind that housekeeping, and they are the busy ones, where
+#: getting the attribution right matters most.
+JSONL_CWD_PROBE_BYTES = 512 * 1024
+
+#: What a transcript says about the directory it belongs to.
+CWD_MINE, CWD_FOREIGN, CWD_SILENT = "mine", "foreign", "silent"
 
 
-def _jsonl_claims_dir(path: str, want: str) -> bool:
-    """True when this transcript records `want` as its directory.
+def _jsonl_cwd_claim(path: str, want: str) -> str:
+    """Whether this transcript claims `want`, claims somewhere else,
+    or says nothing.
 
-    False when it names a different one — and also when it names
-    none, since silence is not a claim.
+    Three answers, not two: a file that positively names another
+    directory is evidence against itself, and treating that the same
+    as silence is what lets the wrong project's transcript through.
     """
+    read = 0
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            for i, line in enumerate(f):
-                if i >= JSONL_CWD_PROBE_LINES:
+            for line in f:
+                read += len(line)
+                if read > JSONL_CWD_PROBE_BYTES:
                     break
                 if '"cwd"' not in line:
                     continue
@@ -328,10 +339,10 @@ def _jsonl_claims_dir(path: str, want: str) -> bool:
                 except (ValueError, TypeError):
                     continue
                 if cwd:
-                    return _canonical(cwd) == want
+                    return CWD_MINE if _canonical(cwd) == want else CWD_FOREIGN
     except OSError:
-        return False
-    return False
+        return CWD_SILENT
+    return CWD_SILENT
 
 
 def _find_newest_jsonl(project_dir: str, claude_pid=None):
@@ -380,9 +391,8 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     # is still running. A transcript records the directory it belongs
     # to, so prefer a candidate that claims this one; fall back to
     # newest only when none of them says.
-    newest, newest_mtime = None, -1.0
-    owned = None
-    owned_mtime = -1.0
+    mine = quiet = None
+    mine_mtime = quiet_mtime = -1.0
     want = _canonical(project_dir)
     for entry in entries:
         if not entry.endswith(".jsonl"):
@@ -392,14 +402,21 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
             mt = os.path.getmtime(full)
         except OSError:
             continue
-        if mt > newest_mtime:
-            newest_mtime = mt
-            newest = full
-        if mt > owned_mtime and _jsonl_claims_dir(full, want):
-            owned_mtime = mt
-            owned = full
+        claim = _jsonl_cwd_claim(full, want)
+        if claim == CWD_MINE:
+            if mt > mine_mtime:
+                mine_mtime, mine = mt, full
+        elif claim == CWD_SILENT:
+            if mt > quiet_mtime:
+                quiet_mtime, quiet = mt, full
 
-    chosen = owned or newest
+    # A file that names another directory is never the answer, even
+    # when it is the only one here: "no transcript" costs a held BUSY
+    # nobody released, while the wrong project's transcript can
+    # release a BUSY that is still running — and auto-exit acts on
+    # that one. Silence is not disqualifying; a claim to somewhere
+    # else is.
+    chosen = mine or quiet
     _jsonl_path_cache[project_dir] = (chosen, now + JSONL_CACHE_TTL)
     return chosen
 

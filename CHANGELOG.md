@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-17
+
 ### Added
 - `ccm doctor` reports tmux's `focus-events`, which Claude Code asks for in
   a startup banner that scrolls away.
@@ -53,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Changed
+- `ccm sidekick-send` does not read the peer's composer, so a message typed
+  into a half-written draft still merges. Locating another vendor's input box
+  means matching that vendor's screen, which is the coupling this lane exists
+  without; capture the pane first, as the manual procedure always asked.
 - `ccm send` no longer refuses when the target cannot take the message
   right now — it queues the message to the spool and reports
   `Queued for <project>` (queue length, TTL, message id). This flips the
@@ -62,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- The guide's example search binding says that `prefix + /` is tmux-copycat's
+  too, and that a second binding replaces the first.
 - A project whose transcript directory is shared with another finds its own
   session. The directory name turns every non-alphanumeric character into a
   dash, so `a/b`, `a-b` and `a_b` name one directory — and the newest file in
@@ -84,16 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   one anywhere is an assumption with nothing behind it. The prefix now
   matches horizontal whitespace only, so a wrapped transcript quotation of
   the question does not read as a live dialog.
-- The expired-message warning also names `ccm spool clear-expired` as the
-  way to acknowledge a lost message.
-- `ccm status` gives an expired message the same weight the dashboard does.
-  It sat in the dim queue-length summary, where a loss read as routine.
-- `ccm status` and the dashboard name a message that expired without being
-  delivered. They reported the queue length alone, so a project whose queue
-  had emptied by expiry read as clean while `ccm doctor` warned about it.
-- `ccm spool list` shows a project whose only messages expired undelivered.
-  It reported "No queued messages" and skipped the project entirely, which
-  hid the record of a lost message in the command `ccm doctor` points at.
 - A session's transcript is found by its session id when the directory it
   sits in is not the sanitised working directory. Losing the transcript loses
   the terminal stop reason that releases a held BUSY, and that failure has no
@@ -108,8 +106,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   first one — so a send was refused, and under the spool queued and then
   expired undelivered, for as long as any prompt was on screen. The composer
   is now located by the rules the TUI draws around it.
-- A queued message that expires without being delivered says so, instead of
-  leaving a count in `ccm spool list` as the only trace.
+- A queued message that expired without arriving is reported wherever the
+  queue is: a desktop notice when it happens, a named warning in `ccm
+  status`, the dashboard and `ccm doctor`, and its own row in `ccm spool
+  list`. `ccm spool clear-expired` acknowledges it. The sender had been
+  told "queued", and queued is not delivered.
 - `ccm send` no longer types into a composer that already holds a
   half-typed draft. State detection cannot see one (an `❯` prompt
   holding text still reads IDLE), so the message used to merge into the
@@ -148,16 +149,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   project. Adding one was listed there; the ways back out were reachable only
   behind `r`, which the help line rendered as "remove". The name prompt
   defaults to the selected project, so a plain Enter targets it.
-- The settings canaries resolve files in the order Claude Code does, so the
-  file they name is the one deciding. `allowManagedHooksOnly` is reported only
-  from the administrator's settings, where it has effect.
-- The example project name used across the README, guide and tests is a
-  synthetic one.
-- The `disableAllHooks` and `allowManagedHooksOnly` canaries read the
-  administrator's settings and each project's settings as well as the user's
-  own file, and name which one carries the flag.
-- `stat` in the config-writer tests no longer assumes BSD flags, which failed
-  the Linux CI job.
+- The settings canaries read the administrator's settings and each
+  project's as well as the user's own file, resolving them in the order
+  Claude Code does, and name which one carries the flag.
+  `allowManagedHooksOnly` is reported only from the administrator's
+  settings, where it has effect.
 - The status bar re-lays itself when the terminal is resized. Its layout is
   baked from the width at render time, so a resize left it laid out for the
   old width until the next periodic pass — entries clipped on a narrower

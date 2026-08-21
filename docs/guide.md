@@ -686,6 +686,14 @@ The conventions that make the relay work:
   **The pause before `Enter` is load-bearing, and it is the failure you are most likely to hit by hand.** Chain the body and the `Enter` with `&&` and the peer's TUI can still be digesting the inserted text when `Enter` arrives, and take it as a *newline* instead of a submit. The body then sits in the composer, unsent, looking exactly like a message that went through. Measured against Kimi K3: no gap fails every time, 0.3 s and 1 s both submit. Claude Code's own composer tolerates a zero gap — which is why `ccm send` needs no pause and why this bites only when the peer is something else.
 
   **Confirm the send, don't assume it.** `ccm sidekick-send` does this itself (the post-send capture above). By hand, `ccm capture` after `Enter` and look at the peer's input box: *empty* means submitted, *your text still sitting there* means it was not — visible text is proof of failure, not proof of delivery.
+  **It does not read the peer's composer, so check it yourself.** `ccm send`
+  refuses to type into a Claude pane whose composer already holds a half-typed
+  draft, because the committing Enter would submit the mixture. There is no
+  equivalent here: locating another vendor's input box means matching that
+  vendor's screen, which is the coupling this lane exists without. Run `ccm
+  capture <this project>` first and look at the peer's input box — the same
+  glance the procedure always asked for.
+
 - **A sidekick answers to its own window.** `ccm send` reaches a project's *Claude* — never a sidekick, which is dropped from delivery precisely so it cannot intercept one. `ccm sidekick-send` holds the same boundary from the other side: it only ever targets the sidekick sharing the caller's window, and it verifies the pane's directory belongs to the project before typing. When you want something from another project's sidekick, ask that project's Claude to relay it — that session knows whether its peer is idle and which keys its TUI takes, and it stays aware of what its own sidekick is doing. Reach in from elsewhere (raw `tmux send-keys` across windows) and two senders can land in one composer, interleaved into a single garbled prompt.
 - **Report, don't poll**: neither side can observe the other's progress. When you finish a request, report back with `ccm send` — the reply arrives as a new turn on its own.
 - **Long results**: write them to a file and send a one-line pointer; this also sidesteps the differing newline keys.
