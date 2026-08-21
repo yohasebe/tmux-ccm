@@ -1379,8 +1379,8 @@ class TestComposerDraftGuard:
         return any("-l" in c for c in calls if c[0] == "send-keys")
 
     def test_composer_uses_a_non_breaking_space(self):
-        """Measured against a live session: the composer renders a
-        NO-BREAK SPACE after the prompt glyph, not an ordinary one.
+        """The composer renders a NO-BREAK SPACE after the prompt
+        glyph, not an ordinary one.
         `\\s` covers it — pinned so a future tightening to a literal
         space cannot silently stop seeing every draft."""
         import ccm_constants
