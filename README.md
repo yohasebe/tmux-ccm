@@ -1,3 +1,5 @@
+
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.png">
@@ -380,7 +382,7 @@ ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
 ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
 ccm statusline                    Print one-line status (used by tmux status bar)
 ccm inject-status                 Update tmux status bar (called internally)
-ccm debug trace <target> [interval] Live state-detection trace; target is a project or tmux pane/window (read-only)
+ccm debug trace <target> [interval] Live state-detection trace; target is a project, tmux pane/window, or session:index (read-only)
 ccm errors [--clear]              View / clear the silent-exception log
 ccm reset <name>                  Clear stuck runtime state (last-resort recovery)
 ccm ignore [project]              Hide a pane (default: current) or project from ccm
