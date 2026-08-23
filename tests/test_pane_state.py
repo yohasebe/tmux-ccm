@@ -751,18 +751,33 @@ class TestWorkClock:
             at=1000 + 10 * w) == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
-    def test_two_static_clocks_age_on_their_own_time(self, mock_tmux):
-        """A screen can show two footers at once (a frozen one above
-        a quotation). Both are registered on the pass they appear, so
-        each ages on its own first-seen time — evaluating only the
-        first would let the second start a fresh window whenever the
-        first expired, and two quotations would outlive any window."""
+    def test_two_static_clocks_fail_safe(self, mock_tmux):
+        """One slot per pane: two footer strings on one screen
+        alternate and each reads as movement, so they hold BUSY past
+        the window. Accepted — that direction only delays auto-exit,
+        while aging each string separately would misread a retry
+        countdown's recycled values and call a live storm idle, which
+        is the direction auto-exit acts on."""
         w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
         both = ("✳ Slithering… (7s · ↓ 380 tokens)\n"
                 "reply text quoting (12s · ↓ 1.2k tokens) verbatim\n"
                 "❯ \n")
         assert self._state(mock_tmux, both, at=1000) == "BUSY"
-        assert self._state(mock_tmux, both, at=1000 + w + 1) == "IDLE"
+        assert self._state(mock_tmux, both, at=1000 + w + 1) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_a_recycled_value_is_a_new_sighting_once_the_screen_moves_on(
+            self, mock_tmux):
+        """Footers recycle their strings: a countdown returns to
+        `Retrying in 3s` every attempt, and `(2s · thinking with max
+        effort)` opens every thinking phase. A value identical to one
+        seen long ago must be believed again — aging by
+        first-ever-sight would call a live turn idle. The no-clock
+        pass in between is what makes the repeat a new sighting."""
+        screen = self._frame("(2s · thinking with max effort)")
+        assert self._state(mock_tmux, screen, at=1000) == "BUSY"
+        assert self._state(mock_tmux, "turn done\n❯ \n", at=1010) == "IDLE"
+        assert self._state(mock_tmux, screen, at=5000) == "BUSY"
 
 
 # ─── detect_window_raw ───

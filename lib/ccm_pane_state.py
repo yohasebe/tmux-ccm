@@ -34,7 +34,7 @@ mocks routed through `ccm_core` reach this module unchanged.
 
 import time
 from collections import OrderedDict, namedtuple
-from typing import Optional
+from typing import Optional, Tuple
 
 from ccm_constants import (
     CLAUDE_PROCESS_NAME,
@@ -203,20 +203,24 @@ def capture_pane_visible(pane_target):
 # and either would pin the window busy forever — a worse failure
 # than the false idle this reading exists to prevent.
 #
-# So the claim is made only while the clock ticks. `_work_clock_cache`
-# maps pane_target → {clock string → when that value was first seen}.
-# A value seen for the first time is believed (fail-open — a one-shot
-# process has no history, and BUSY is the safe direction); a value
-# unchanged for longer than SPINNER_STALE_RELEASE_SEC is not. Kept
-# per (pane, clock) rather than per pane because one screen can show
-# several footers (a frozen one above a live one, two quotations) —
-# with a single slot they would alternate and each read as "changed".
+# So a clock is believed when it MOVED since the last read — a live
+# one changes every second — and an unmoved one only inside
+# SPINNER_STALE_RELEASE_SEC. Believing movement rather than novelty
+# is what keeps recycled strings honest: a retry countdown cycles
+# through its few values every attempt, and a thinking footer
+# repeats verbatim across turns, so aging by first-ever-sight would
+# call a live retry storm idle — the dangerous direction, the one
+# auto-exit acts on. One slot per pane. The corner that loses: a
+# screen showing several static footers at once alternates them and
+# reads as movement, holding BUSY — accepted, because that direction
+# only delays auto-exit.
+#
 # In-process only, like the JSONL caches: detection stays read-only
 # and long-lived pollers (inject_status, dashboard) accumulate the
-# history the check needs.
+# history the check needs. One-shot readers see every clock as
+# moved, i.e. fail open toward BUSY — the safe direction.
 _WORK_CLOCK_CACHE_MAX = 128   # panes
-_PER_PANE_CLOCKS_MAX = 4      # distinct clock strings remembered per pane
-_work_clock_cache: "OrderedDict[str, OrderedDict[str, float]]" = OrderedDict()
+_work_clock_cache: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
 
 #: Indirection so tests can drive the staleness window deterministically.
 _now = time.time
@@ -240,21 +244,16 @@ def _work_clock(line) -> Optional[str]:
 
 def _clock_is_ticking(pane_target, clock) -> bool:
     now = _now()
-    clocks = _work_clock_cache.get(pane_target)
-    if clocks is None:
-        clocks = OrderedDict()
-        _work_clock_cache[pane_target] = clocks
+    prev = _work_clock_cache.get(pane_target)
+    if prev is None or prev[0] != clock:
+        # First sighting, or the value moved — believed at once.
+        _work_clock_cache[pane_target] = (clock, now)
+        _work_clock_cache.move_to_end(pane_target)
         if len(_work_clock_cache) > _WORK_CLOCK_CACHE_MAX:
             _work_clock_cache.popitem(last=False)
-    else:
-        _work_clock_cache.move_to_end(pane_target)
-    first_seen = clocks.get(clock)
-    if first_seen is None:
-        if len(clocks) >= _PER_PANE_CLOCKS_MAX:
-            clocks.popitem(last=False)
-        clocks[clock] = now
         return True
-    return now - first_seen <= SPINNER_STALE_RELEASE_SEC
+    _work_clock_cache.move_to_end(pane_target)
+    return now - prev[1] <= SPINNER_STALE_RELEASE_SEC
 
 
 def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
@@ -356,17 +355,21 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
     # The claim is gated on the clock ticking because raw=BUSY has no
     # release path: a static footer (frozen frame, quoted text) must
     # age out on its own — see `_clock_is_ticking`.
-    #
-    # Every visible clock is registered each pass, not just the
-    # first: a screen can show several (a frozen footer above a
-    # quotation), and each must age on its own first-seen time —
-    # evaluating only the first would let the rest start their
-    # windows whenever they happen to be reached.
     ticking = False
+    found = False
     for line in capture_pane_visible(pane_target):
         clock = _work_clock(line)
-        if clock is not None and _clock_is_ticking(pane_target, clock):
+        if clock is None:
+            continue
+        found = True
+        if _clock_is_ticking(pane_target, clock):
             ticking = True
+    if not found:
+        # The work display moved on (the turn ended, the screen was
+        # cleared). Forget the last value, so a later turn whose
+        # footer happens to spell the identical string is a new
+        # sighting rather than a very stale one.
+        _work_clock_cache.pop(pane_target, None)
     if ticking:
         return "BUSY"
 
