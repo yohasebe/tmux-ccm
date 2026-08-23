@@ -300,8 +300,14 @@ def composer_draft_fragment(pane_text):
 # What separates a running turn from the finished line beside it
 # (`Crunched for 8s`) is the parenthesised elapsed time, not what
 # follows it, so that is all this asks for.
+#
+# The closing paren is optional: a narrow pane clips the footer at
+# the pane's right edge (`(5s · ↓ 25 tok`), and ccm's own sidekick
+# layout splits windows into panes narrow enough to do that daily.
+# End of line therefore closes the match as well as `)`. The
+# finished line still fails — it has no opening paren at all.
 PATTERN_ACTIVE_SPINNER = re.compile(
-    r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·[^)\n]*\)"
+    r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·[^)\n]*(?:\)|$)"
 )
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:

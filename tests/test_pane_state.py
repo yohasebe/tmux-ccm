@@ -312,6 +312,24 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_clipped_by_pane_width(self, mock_tmux):
+        """A narrow pane clips the footer at its right edge before the
+        closing parenthesis — `✳ Slithering… (5s · ↓ 25 tok` — and
+        ccm's own sidekick layout splits windows into panes narrow
+        enough to do that daily. End of line closes the match; the
+        finished line (`Crunched for 8s`) still fails, having no
+        opening paren at all."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "bats")
+        )
+        mock_tmux.return_value = (
+            "✳ Slithering… (5s · ↓ 25 tok\n"
+            "❯ \n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
     def test_busy_spinner_with_hour_component(self, mock_tmux):
         """Past the hour mark the elapsed gains an `h` unit —
         "(3h 11m 16s · ↓ 8.8k tokens)". The minutes-only pattern stopped

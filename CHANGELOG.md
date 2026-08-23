@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- The active-work footer is still recognised when a narrow pane clips it
+  before the closing parenthesis — which ccm's own sidekick layout, splitting
+  a window into narrow panes, does daily.
+
 ## [0.11.0] - 2026-08-17
 
 ### Added
