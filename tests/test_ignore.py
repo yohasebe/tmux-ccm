@@ -97,7 +97,8 @@ class TestRawAggregationSkip:
     def _run(self, cache, pane_states):
         """Patch detect_pane_state to return a fixed state per pid so
         aggregation is deterministic without capture-pane."""
-        def _fake(pid, pane_id, ps_lines, own_pgid, current_command=None):
+        def _fake(pid, pane_id, ps_lines, own_pgid, current_command=None,
+                  **_kwargs):
             return pane_states[pid]
         with patch.object(ccm_pane_state, "detect_pane_state", _fake):
             return ccm_pane_state.detect_window_raw(

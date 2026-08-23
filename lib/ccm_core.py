@@ -435,7 +435,8 @@ def read_cache_file(cache_dir, directory):
 _WINDOW_FORMAT = (
     "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
     "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
-    "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}"
+    "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}\t"
+    "#{@ccm_work_clock}\t#{@ccm_work_clock_ts}"
 )
 _WINDOW_FIELDS_MIN = 6  # win_target, project, dir, prev_state, completed_at, win_activity
 
@@ -507,6 +508,12 @@ def _parse_window_line(line):
     # every row carries the same value — one subprocess saved over a
     # dedicated show-option).
     attention_toggle = parts[8] if len(parts) >= 9 else ""
+    # The window's persisted work clock, same arrangement as
+    # cached_session_id: the bulk query already paid for it, so
+    # detection compares the pane's clock against it without a
+    # per-window show-option. "" → fetched, nothing stored.
+    work_clock = parts[9] if len(parts) >= 10 else ""
+    work_clock_ts = parts[10] if len(parts) >= 11 else ""
     return {
         "win_target": parts[0],
         "project": project,
@@ -517,6 +524,8 @@ def _parse_window_line(line):
         "bg_active_str": bg_active_str,
         "cached_session_id": cached_session_id,
         "attention_toggle": attention_toggle,
+        "work_clock": work_clock,
+        "work_clock_ts": work_clock_ts,
     }
 
 
@@ -546,6 +555,7 @@ def _resolve_window_state(row, fast, panes_cache, ps_lines, own_pgid):
             panes_cache, ps_lines, own_pgid,
             prev_bg_active=bool(row["bg_active_str"]),
             cached_session_id=row["cached_session_id"],
+            cached_work_clock=(row["work_clock"], row["work_clock_ts"]),
         )
     except Exception:
         log_caught_exception(f"build_project_list[{row['project']}]")

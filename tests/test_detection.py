@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+import types
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock, call
 
@@ -288,6 +289,171 @@ class TestApplyActions:
             and "@ccm_completed_at" in c[0]
         ]
         assert len(clear_calls) == 1
+
+    # --- work-clock persistence ---
+
+    def _clock_calls(self, mock_tmux):
+        return [c[0] for c in mock_tmux.call_args_list
+                if "@ccm_work_clock" in str(c[0])]
+
+    def test_work_clock_written_on_change(self):
+        """A newly observed clock is persisted with the pass's
+        timestamp — this is the history the next detection PROCESS
+        compares against (tmux spawns the periodic path fresh every
+        status-interval, so nothing in-process survives)."""
+        rule = ccm_rules.Rule(name="t", result="BUSY", action=ccm_rules.Action.DEFAULT)
+        ctx = make_ctx(work_clock="(7s · ↓ 380 tokens)", now=12345)
+        _, _, mock_tmux = self._run(rule, ctx)
+        writes = self._clock_calls(mock_tmux)
+        assert ("set-option", "-wt", "0:1", "@ccm_work_clock",
+                "(7s · ↓ 380 tokens)") in writes
+        assert ("set-option", "-wt", "0:1", "@ccm_work_clock_ts",
+                "12345") in writes
+
+    def test_static_work_clock_never_refreshes_the_timestamp(self):
+        """Same value as stored → no write at all. A static frame
+        must keep its original timestamp, because its age is the
+        verdict — refreshing it would keep a frozen frame alive
+        forever, the very bug the tick check exists to release."""
+        rule = ccm_rules.Rule(name="t", result="IDLE", action=ccm_rules.Action.DEFAULT)
+        ctx = make_ctx(work_clock="(7s · ↓ 380 tokens)",
+                       prev_work_clock=("(7s · ↓ 380 tokens)", 12000),
+                       now=12345)
+        _, _, mock_tmux = self._run(rule, ctx)
+        assert self._clock_calls(mock_tmux) == []
+
+    def test_work_clock_cleared_when_no_longer_on_screen(self):
+        """The clock disappears (turn ended, screen cleared) → the
+        option is cleared, so a later turn spelling the identical
+        footer is a new sighting rather than a very stale one."""
+        rule = ccm_rules.Rule(name="t", result="IDLE", action=ccm_rules.Action.DEFAULT)
+        ctx = make_ctx(work_clock=None,
+                       prev_work_clock=("(7s · ↓ 380 tokens)", 12000))
+        _, _, mock_tmux = self._run(rule, ctx)
+        clears = self._clock_calls(mock_tmux)
+        assert ("set-option", "-wut", "0:1", "@ccm_work_clock") in clears
+        assert ("set-option", "-wut", "0:1", "@ccm_work_clock_ts") in clears
+
+    def test_work_clock_noop_when_neither_observed_nor_stored(self):
+        """The steady state for nearly every window: no clock on
+        screen, nothing stored — zero tmux churn."""
+        rule = ccm_rules.Rule(name="t", result="IDLE", action=ccm_rules.Action.DEFAULT)
+        ctx = make_ctx()
+        _, _, mock_tmux = self._run(rule, ctx)
+        assert self._clock_calls(mock_tmux) == []
+
+    def test_work_clock_not_written_under_hold_no_write(self):
+        """HOLD_NO_WRITE means no tmux state is touched — the clock
+        option is state too. A clock first seen during a hold is
+        picked up by the next default pass (fail-open)."""
+        rule = ccm_rules.Rule(
+            name="t", result="PERMIT", action=ccm_rules.Action.HOLD_NO_WRITE)
+        ctx = make_ctx(work_clock="(7s · ↓ 380 tokens)", now=12345)
+        _, _, mock_tmux = self._run(rule, ctx)
+        assert self._clock_calls(mock_tmux) == []
+
+
+class TestWorkClockAcrossProcesses:
+    """The periodic path is a fresh process every time (tmux spawns
+    `ccm inject-status` per status-interval), so the tick check's
+    history can only live on the window itself. Regression pin for
+    the audit finding: a frozen spinner frame must release across
+    SEPARATE detection passes that share nothing but the tmux
+    options — and it must never refresh its own timestamp."""
+
+    FROZEN = ("✳ Slithering… (7s · ↓ 380 tokens)\n"
+              "❯ \n"
+              "  ~/code/ccm  main  Opus 5  ctx ███░ 27%")
+
+    def _pass(self, store, screen, now, prev_state, project_dir,
+              monkeypatch):
+        """One detection pass as a short-lived process: `store` (the
+        fake tmux options) is the ONLY state carried between passes."""
+        def tmux_dispatch(*args):
+            a = list(args)
+            if "capture-pane" in a:
+                return screen
+            for opt, key in (("@ccm_work_clock_ts", "ts"),
+                             ("@ccm_work_clock", "clock")):
+                if opt in a:
+                    if "show-option" in a:
+                        return store.get(key, "")
+                    if "-u" in a or "-wut" in a:
+                        store.pop(key, None)
+                    else:
+                        store[key] = a[-1]
+                    return ""
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux_dispatch)
+        monkeypatch.setattr(ccm_pane_state, "_now", lambda: now)
+        monkeypatch.setattr(ccm_detection, "time",
+                            types.SimpleNamespace(time=lambda: now))
+        ps = make_ps_lines((100, 1, 100, "bash"), (200, 100, 100, "claude"))
+        panes = [("0:1", "100", "%0", "claude", "1", "48")]
+        with patch("ccm_signals.read_hook_signal", return_value=None):
+            return ccm_detection.detect_window_state(
+                "0:1", project_dir, prev_state, panes, ps, "99999")
+
+    def test_frozen_frame_releases_on_the_periodic_path(
+            self, tmp_path, monkeypatch):
+        """Four passes, each a fresh process (only the option store
+        survives): first sighting claims BUSY and is persisted; the
+        unchanged frame keeps its claim inside the window and loses
+        it past the window — WITHOUT the timestamp ever moving."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        store = {}
+        project = str(tmp_path / "proj")
+        p = lambda t, prev: self._pass(store, self.FROZEN, t, prev,
+                                       project, monkeypatch)
+
+        assert p(1000, "IDLE") == "BUSY"
+        assert store["clock"] == "(7s · ↓ 380 tokens)"
+        assert store["ts"] == "1000"
+
+        assert p(1000 + w, "BUSY") == "BUSY"
+        assert store["ts"] == "1000"   # within the window: untouched
+
+        assert p(1000 + w + 1, "BUSY") == "IDLE"
+        assert store["ts"] == "1000"   # a static frame must not refresh
+
+        assert p(1000 + w + 2, "IDLE") == "IDLE"
+
+    def test_clock_that_advances_rearms_on_the_periodic_path(
+            self, tmp_path, monkeypatch):
+        """The same sequence with a live clock: each pass observes a
+        new value, persists it, and the claim never goes stale."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        store = {}
+        project = str(tmp_path / "proj")
+        live = lambda f: (f"✳ Slithering… {f}\n"
+                          "❯ \n  ~/code/ccm  main  Opus 5  ctx ███░ 27%")
+
+        assert self._pass(store, live("(7s · ↓ 380 tokens)"), 1000,
+                          "IDLE", project, monkeypatch) == "BUSY"
+        assert self._pass(store, live("(38s · ↓ 402 tokens)"), 1000 + w + 1,
+                          "BUSY", project, monkeypatch) == "BUSY"
+        assert store["clock"] == "(38s · ↓ 402 tokens)"
+        assert store["ts"] == str(1000 + w + 1)
+
+    def test_identical_footer_after_a_quiet_pass_is_a_new_sighting(
+            self, tmp_path, monkeypatch):
+        """Footers recycle their strings (`(2s · thinking with max
+        effort)` opens every thinking phase). Once the clock has left
+        the screen the option is cleared, so the identical string
+        seen much later starts fresh instead of reading as ancient."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        store = {}
+        project = str(tmp_path / "proj")
+        think = ("✽ Slithering… (2s · thinking with max effort)\n"
+                 "❯ \n  ~/code/ccm  main  Opus 5  ctx ███░ 27%")
+
+        assert self._pass(store, think, 1000, "IDLE", project,
+                          monkeypatch) == "BUSY"
+        assert self._pass(store, "turn done\n❯ \n", 1010, "IDLE",
+                          project, monkeypatch) == "IDLE"
+        assert store == {}             # cleared when the clock left
+        assert self._pass(store, think, 5000, "IDLE", project,
+                          monkeypatch) == "BUSY"
 
 
 class TestLifecycleSequences:

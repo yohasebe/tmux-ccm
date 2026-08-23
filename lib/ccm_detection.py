@@ -64,10 +64,25 @@ def _set_win_state(win_target, state):
     ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", state)
 
 
+def _parse_work_clock(clock_str, ts_str) -> Optional[tuple]:
+    """Parse the persisted `@ccm_work_clock` / `@ccm_work_clock_ts`
+    pair into a `(clock, unix_ts)` tuple, or None when unset or
+    malformed — an unparseable history must not judge anything, so
+    it degrades to "no history" (every clock reads as moved)."""
+    if not clock_str:
+        return None
+    try:
+        ts = int(ts_str)
+    except (TypeError, ValueError):
+        return None
+    return (clock_str, ts)
+
+
 def build_detection_context(win_target, project_dir, prev_state,
                             panes_cache, ps_lines, own_pgid,
                             prev_bg_active: bool = False,
                             cached_session_id: Optional[str] = None,
+                            cached_work_clock=None,
                             ) -> DetectionContext:
     """Gather all inputs needed for rule evaluation.
 
@@ -75,7 +90,29 @@ def build_detection_context(win_target, project_dir, prev_state,
     The returned context is an immutable snapshot.
     """
     now = int(time.time())
-    raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid)
+
+    # The window's persisted work clock — the cross-process history
+    # the tick check compares against. Mirrors the `cached_session_id`
+    # arrangement: the bulk `list-windows` query in build_project_list
+    # already fetched it, so the periodic path pays no extra
+    # subprocess; a direct caller (None) falls back to one show-option.
+    if cached_work_clock is not None:
+        prev_work_clock = _parse_work_clock(*cached_work_clock)
+    elif win_target:
+        prev_work_clock = _parse_work_clock(
+            ccm_core.tmux_cmd(
+                "show-option", "-wqv", "-t", win_target, "@ccm_work_clock"),
+            ccm_core.tmux_cmd(
+                "show-option", "-wqv", "-t", win_target, "@ccm_work_clock_ts"),
+        )
+    else:
+        prev_work_clock = None
+
+    observed_clocks = []
+    raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,
+                            stored_clock=prev_work_clock,
+                            clock_out=observed_clocks)
+    work_clock = observed_clocks[0] if observed_clocks else None
 
     # Find the window's primary claude_pid (first pane that hosts one).
     # Used to resolve the exact JSONL path via the runtime session file
@@ -179,6 +216,8 @@ def build_detection_context(win_target, project_dir, prev_state,
         now=now,
         prev_bg_active=prev_bg_active,
         session_id=session_id,
+        work_clock=work_clock,
+        prev_work_clock=prev_work_clock,
     )
 
 
@@ -215,6 +254,26 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
 
     if action == Action.HOLD_NO_WRITE:
         return state
+
+    # Work-clock persistence. The tick check in ccm_pane_state
+    # compares the window's current clock against the value stored
+    # here last pass — and that history cannot live in-process,
+    # because tmux spawns the periodic path (ccm inject-status, the
+    # one auto-exit runs on) fresh every status-interval. Write on
+    # CHANGE only: a static frame must never refresh the timestamp,
+    # because its age is the verdict. Same shape as the
+    # @ccm_session_id cache above, including clearing when the clock
+    # disappears so a later identical footer starts fresh.
+    prev_clock_str = ctx.prev_work_clock[0] if ctx.prev_work_clock else None
+    if ctx.work_clock != prev_clock_str:
+        if ctx.work_clock is None:
+            ccm_core.tmux_cmd("set-option", "-wut", win_target, "@ccm_work_clock")
+            ccm_core.tmux_cmd("set-option", "-wut", win_target, "@ccm_work_clock_ts")
+        else:
+            ccm_core.tmux_cmd("set-option", "-wt", win_target,
+                              "@ccm_work_clock", ctx.work_clock)
+            ccm_core.tmux_cmd("set-option", "-wt", win_target,
+                              "@ccm_work_clock_ts", str(ctx.now))
 
     # Action.DEFAULT — set @ccm_prev_state.
     # Skip the write when the value is already what we'd set. On a
@@ -334,7 +393,8 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
 def detect_window_state(win_target, project_dir, prev_state,
                         panes_cache, ps_lines, own_pgid,
                         prev_bg_active: bool = False,
-                        cached_session_id: Optional[str] = None):
+                        cached_session_id: Optional[str] = None,
+                        cached_work_clock=None):
     """Full detection pipeline. Returns the resolved state string.
 
     Three-line orchestrator:
@@ -351,6 +411,7 @@ def detect_window_state(win_target, project_dir, prev_state,
         panes_cache, ps_lines, own_pgid,
         prev_bg_active=prev_bg_active,
         cached_session_id=cached_session_id,
+        cached_work_clock=cached_work_clock,
     )
     state, rule, event_log_state = resolve_state_from_context(ctx, project_dir)
     return apply_actions(win_target, project_dir, ctx, rule, state,

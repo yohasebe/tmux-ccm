@@ -97,6 +97,16 @@ class DetectionContext:
     # `~/.claude/sessions/<pid>.json`. None when no live claude is
     # running, or when session_info has not been written yet.
     session_id: Optional[str] = None
+    # The work clock this window's panes show now (first
+    # clock-showing pane's, e.g. "(7s · ↓ 380 tokens)" or
+    # "Retrying in 3s"), or None when no pane shows one. Detection
+    # only observes it; `apply_actions` persists it so the next
+    # detection process can judge whether it ticks.
+    work_clock: Optional[str] = None
+    # The window's persisted `(clock_string, unix_ts)` from the
+    # previous detection pass, or None when nothing is stored.
+    # Compared against `work_clock` by the tick check.
+    prev_work_clock: Optional[Tuple[str, int]] = None
 
 
 class Action(Enum):

@@ -34,7 +34,7 @@ mocks routed through `ccm_core` reach this module unchanged.
 """
 
 import time
-from collections import OrderedDict, namedtuple
+from collections import namedtuple
 from typing import Optional, Tuple
 
 from ccm_constants import (
@@ -212,17 +212,28 @@ def capture_pane_visible(pane_target):
 # through its few values every attempt, and a thinking footer
 # repeats verbatim across turns, so aging by first-ever-sight would
 # call a live retry storm idle — the dangerous direction, the one
-# auto-exit acts on. One slot per pane. The corner that loses: a
-# screen showing several static footers at once alternates them and
-# reads as movement, holding BUSY — accepted, because that direction
-# only delays auto-exit.
+# auto-exit acts on. The corner that loses: a screen showing
+# several static footers at once alternates them and reads as
+# movement, holding BUSY — accepted, because that direction only
+# delays auto-exit.
 #
-# In-process only, like the JSONL caches: detection stays read-only
-# and long-lived pollers (inject_status, dashboard) accumulate the
-# history the check needs. One-shot readers see every clock as
-# moved, i.e. fail open toward BUSY — the safe direction.
-_WORK_CLOCK_CACHE_MAX = 128   # panes
-_work_clock_cache: "OrderedDict[str, Tuple[str, float]]" = OrderedDict()
+# The history this comparison needs CANNOT live in-process: tmux
+# spawns `ccm inject-status` fresh every status-interval, so the
+# periodic path — the one auto-exit runs on — always starts empty,
+# and an in-process cache only ever worked while the dashboard
+# happened to be open. It therefore lives on the window itself, in
+# `@ccm_work_clock` / `@ccm_work_clock_ts`, written by
+# `apply_actions` on CHANGE only: a static frame must never refresh
+# the timestamp, because its age is the verdict. Detection stays
+# read-only; a process that finds nothing stored sees every clock
+# as moved, i.e. fails open toward BUSY — the safe direction.
+#
+# The slot is per WINDOW, not per pane: single-pane projects (the
+# dominant case) get exact semantics; a window with several
+# clock-showing panes compares each pane's clock against the one
+# stored value, so an unfamiliar clock reads as moved — the safe
+# direction — and a frozen pane's clock ages out once it is the one
+# being stored.
 
 #: Indirection so tests can drive the staleness window deterministically.
 _now = time.time
@@ -238,33 +249,43 @@ def _work_clock(line) -> Optional[str]:
     identical across passes means static. The spinning glyph and
     verb stay OUTSIDE the matched segment on purpose — they change
     even in a frame grabbed mid-animation, and including them would
-    make a frozen frame look alive."""
+    make a frozen frame look alive. Tabs are stripped so the value
+    is safe to persist through a tab-separated tmux format."""
     m = PATTERN_ACTIVE_SPINNER.search(line)
     if m:
-        return m.group(0)
+        return m.group(0).replace("\t", " ")
     m = PATTERN_RETRY_BACKOFF.search(line)
     if m:
-        return m.group(0)
+        return m.group(0).replace("\t", " ")
     return None
 
 
-def _clock_is_ticking(pane_target, clock) -> bool:
-    now = _now()
-    prev = _work_clock_cache.get(pane_target)
-    if prev is None or prev[0] != clock:
-        # First sighting, or the value moved — believed at once.
-        _work_clock_cache[pane_target] = (clock, now)
-        _work_clock_cache.move_to_end(pane_target)
-        if len(_work_clock_cache) > _WORK_CLOCK_CACHE_MAX:
-            _work_clock_cache.popitem(last=False)
+def _clock_is_ticking(clock, stored, now) -> bool:
+    """Believe `clock` when it moved, or has not stood still for long.
+
+    `stored` is the window's persisted `(clock_string, unix_ts)`
+    from the previous detection pass, or None when nothing is
+    stored. A different (or absent) stored value means the clock
+    moved — believed at once. The same value is believed only
+    inside SPINNER_STALE_RELEASE_SEC; past that it is a frozen
+    frame or a quotation, not a running turn. Pure: the caller
+    supplies the history and the time."""
+    if stored is None or stored[0] != clock:
         return True
-    _work_clock_cache.move_to_end(pane_target)
-    return now - prev[1] <= SPINNER_STALE_RELEASE_SEC
+    return now - stored[1] <= SPINNER_STALE_RELEASE_SEC
 
 
 def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
-                      current_command=""):
+                      current_command="", stored_clock=None,
+                      clock_out=None):
     """Per-pane raw state. Returns SHELL / BUSY / IDLE / PERMIT.
+
+    `stored_clock` is the window's persisted `(clock, ts)` tuple the
+    tick check compares against (see `_clock_is_ticking`); None means
+    no history, so every clock reads as moved. `clock_out`, when a
+    list is passed, collects the first work clock this pane shows
+    (if any) so the caller can persist it — the history cannot live
+    in-process (see the "Work-clock staleness" note above).
 
     Resolution order (highest priority first):
       1. No claude under the pane → SHELL.
@@ -363,30 +384,34 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
     # release path: a static footer (frozen frame, quoted text) must
     # age out on its own — see `_clock_is_ticking`.
     ticking = False
-    found = False
+    found = None
+    now = _now()
     for line in capture_pane_visible(pane_target):
         clock = _work_clock(line)
         if clock is None:
             continue
-        found = True
-        if _clock_is_ticking(pane_target, clock):
+        if found is None:
+            found = clock
+        if _clock_is_ticking(clock, stored_clock, now):
             ticking = True
-    if not found:
-        # The work display moved on (the turn ended, the screen was
-        # cleared). Forget the last value, so a later turn whose
-        # footer happens to spell the identical string is a new
-        # sighting rather than a very stale one.
-        _work_clock_cache.pop(pane_target, None)
+    if found is not None and clock_out is not None:
+        clock_out.append(found)
     if ticking:
         return "BUSY"
 
     return "IDLE"
 
 
-def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
+def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,
+                      stored_clock=None, clock_out=None):
     """Window-level raw state = aggregation across panes that are
     tall enough to render Claude's UI. Priority: PERMIT > BUSY >
     IDLE > SHELL.
+
+    `stored_clock` / `clock_out` are passed through to
+    `detect_pane_state`: the persisted work-clock history the tick
+    check compares against, and the collector for the clock this
+    window shows now (so `apply_actions` can persist it).
 
     A tmux window can host multiple panes (single-pane projects are
     the dominant case, but Agent Teams splits a window into one
@@ -441,7 +466,9 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
     best = "SHELL"
     for pid, pane_id, current_command, _height in eligible:
         state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
-                                  current_command=current_command)
+                                  current_command=current_command,
+                                  stored_clock=stored_clock,
+                                  clock_out=clock_out)
         if state == "PERMIT":
             return "PERMIT"
         if state == "BUSY":

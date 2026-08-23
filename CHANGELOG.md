@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   while that clock ticks: a frozen frame (a session hung after rendering the
   footer) or a transcript quoting a footer stops counting after
   `CCM_SPINNER_STALE_RELEASE_SEC` (default 30 s), because raw BUSY has no
-  other way out.
+  other way out. The comparison history lives on the window itself, so the
+  release works from the periodic status pass — a fresh process every time —
+  not only while the dashboard is open.
 - The active-work footer is still recognised when a narrow pane clips it
   before the closing parenthesis — which ccm's own sidekick layout, splitting
   a window into narrow panes, does daily.

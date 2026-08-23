@@ -694,20 +694,25 @@ class TestWorkClock:
     footer — is the only evidence a turn is running. It is believed
     only while it ticks: raw=BUSY has no release path, so a static
     footer (a frozen frame after a hang, or a transcript quoting a
-    footer) must age out on its own."""
+    footer) must age out on its own.
 
-    def setup_method(self):
-        ccm_pane_state._work_clock_cache.clear()
+    The history lives OUTSIDE the process (the `@ccm_work_clock`
+    window option), because tmux spawns the periodic detection path
+    fresh every status-interval — so each test supplies the stored
+    `(clock, ts)` a fresh process would read."""
 
     def _ps(self):
         return make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"))
 
-    def _state(self, mock_tmux, text, at):
+    def _state(self, mock_tmux, text, at, stored=None):
+        """One detection pass as a short-lived process sees it: no
+        in-process history, only the stored (clock, ts) from the
+        window option."""
         mock_tmux.return_value = text
         with patch.object(ccm_pane_state, "_now", lambda: at):
             return ccm_pane_state.detect_pane_state(
-                "100", "%0", self._ps(), "99999")
+                "100", "%0", self._ps(), "99999", stored_clock=stored)
 
     @staticmethod
     def _frame(footer):
@@ -719,65 +724,57 @@ class TestWorkClock:
     def test_ticking_spinner_reads_busy_without_a_child(self, mock_tmux):
         """A turn spends its thinking and generation with nothing
         spawned, and the footer is on screen the whole while. First
-        sighting is believed (fail-open — a one-shot process has no
-        history, and BUSY is the safe direction). Mutation target:
-        dropping the no-child branch reads this IDLE."""
+        sighting (nothing stored) is believed — fail-open, because
+        BUSY is the safe direction. Mutation target: dropping the
+        no-child branch reads this IDLE."""
         assert self._state(
             mock_tmux, self._frame("(7s · ↓ 380 tokens)"), at=1000) == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
     def test_static_clock_stops_claiming_after_the_window(self, mock_tmux):
-        """The same frame across passes: a frozen frame or a quoted
-        footer is static, and a static clock stops holding the window
-        busy past SPINNER_STALE_RELEASE_SEC. Mutation target: without
-        the tick check this holds BUSY forever."""
+        """The stored value unchanged across passes: a frozen frame
+        or a quoted footer is static, and a static clock stops
+        holding the window busy past SPINNER_STALE_RELEASE_SEC.
+        Mutation target: without the tick check this holds BUSY
+        forever."""
         w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
         screen = self._frame("(7s · ↓ 380 tokens)")
+        stored = ("(7s · ↓ 380 tokens)", 1000)
         assert self._state(mock_tmux, screen, at=1000) == "BUSY"
-        assert self._state(mock_tmux, screen, at=1000 + w) == "BUSY"
-        assert self._state(mock_tmux, screen, at=1000 + w + 1) == "IDLE"
+        assert self._state(mock_tmux, screen, at=1000 + w,
+                           stored=stored) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w + 1,
+                           stored=stored) == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
     def test_a_clock_that_advances_keeps_its_claim(self, mock_tmux):
-        """A live spinner shows a new value every pass, and each new
-        value is believed on sight. Long after a static frame would
-        have been released, an ADVANCED clock still claims — the
-        release must not latch."""
+        """A live spinner shows a new value every pass, and a value
+        that differs from the stored one is believed on sight. Long
+        after a static frame would have been released, an ADVANCED
+        clock still claims — the release must not latch."""
         w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
-        assert self._state(
-            mock_tmux, self._frame("(7s · ↓ 380 tokens)"), at=1000) == "BUSY"
+        stored = ("(7s · ↓ 380 tokens)", 1000)
         assert self._state(
             mock_tmux, self._frame("(9s · ↓ 402 tokens)"),
-            at=1000 + 10 * w) == "BUSY"
+            at=1000 + 10 * w, stored=stored) == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
     def test_two_static_clocks_fail_safe(self, mock_tmux):
-        """One slot per pane: two footer strings on one screen
-        alternate and each reads as movement, so they hold BUSY past
-        the window. Accepted — that direction only delays auto-exit,
-        while aging each string separately would misread a retry
-        countdown's recycled values and call a live storm idle, which
-        is the direction auto-exit acts on."""
+        """One stored slot per window: a second footer string on
+        screen differs from the stored one and reads as movement, so
+        two static clocks hold BUSY past the window. Accepted — that
+        direction only delays auto-exit, while aging each string
+        separately would misread a retry countdown's recycled values
+        and call a live storm idle, which is the direction auto-exit
+        acts on."""
         w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
         both = ("✳ Slithering… (7s · ↓ 380 tokens)\n"
                 "reply text quoting (12s · ↓ 1.2k tokens) verbatim\n"
                 "❯ \n")
+        stored = ("(7s · ↓ 380 tokens)", 1000)
         assert self._state(mock_tmux, both, at=1000) == "BUSY"
-        assert self._state(mock_tmux, both, at=1000 + w + 1) == "BUSY"
-
-    @patch("ccm_core.tmux_cmd")
-    def test_a_recycled_value_is_a_new_sighting_once_the_screen_moves_on(
-            self, mock_tmux):
-        """Footers recycle their strings: a countdown returns to
-        `Retrying in 3s` every attempt, and `(2s · thinking with max
-        effort)` opens every thinking phase. A value identical to one
-        seen long ago must be believed again — aging by
-        first-ever-sight would call a live turn idle. The no-clock
-        pass in between is what makes the repeat a new sighting."""
-        screen = self._frame("(2s · thinking with max effort)")
-        assert self._state(mock_tmux, screen, at=1000) == "BUSY"
-        assert self._state(mock_tmux, "turn done\n❯ \n", at=1010) == "IDLE"
-        assert self._state(mock_tmux, screen, at=5000) == "BUSY"
+        assert self._state(mock_tmux, both, at=1000 + w + 1,
+                           stored=stored) == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
     def test_retry_backoff_reads_busy_without_a_child(self, mock_tmux):
@@ -812,8 +809,10 @@ class TestWorkClock:
                  "blocking it (ConnectionRefused) · Retrying in 3s · "
                  "attempt 8/10\n"
                  "❯ \n")
+        stored = ("Retrying in 3s", 1000)
         assert self._state(mock_tmux, retry, at=1000) == "BUSY"
-        assert self._state(mock_tmux, retry, at=1000 + w + 1) == "IDLE"
+        assert self._state(mock_tmux, retry, at=1000 + w + 1,
+                           stored=stored) == "IDLE"
 
 
 # ─── detect_window_raw ───
