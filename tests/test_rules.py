@@ -207,9 +207,26 @@ class TestEvaluateRules:
         rule, state = ccm_rules.evaluate_rules(
             make_ctx(raw="IDLE",
                      jsonl_last_stop_reason="user_pending",
-                     jsonl_age=60)
+                     jsonl_age=10)
         )
         assert (rule.name, state) == ("jsonl_user_prompt_pending", "BUSY")
+
+    def test_jsonl_user_pending_gives_up_with_the_event_log(self):
+        """Both paths stop claiming a turn is running at the same
+        moment. The event-log path abstains past its release window;
+        this rule used to keep asserting BUSY for ten times longer,
+        so an Esc that landed before the answer began — writing no
+        terminal record for either path to find — held the pane BUSY
+        for ten minutes with nothing running."""
+        from ccm_constants import BUSY_STALE_RELEASE_SEC
+        inside = ccm_rules.evaluate_rules(
+            make_ctx(raw="IDLE", jsonl_last_stop_reason="user_pending",
+                     jsonl_age=BUSY_STALE_RELEASE_SEC - 1))
+        outside = ccm_rules.evaluate_rules(
+            make_ctx(raw="IDLE", jsonl_last_stop_reason="user_pending",
+                     jsonl_age=BUSY_STALE_RELEASE_SEC + 1))
+        assert inside[0].name == "jsonl_user_prompt_pending"
+        assert outside[0].name != "jsonl_user_prompt_pending"
 
     def test_jsonl_user_pending_does_not_promote_when_raw_busy(self):
         """If raw is already BUSY, the earlier `raw_busy_passthrough`

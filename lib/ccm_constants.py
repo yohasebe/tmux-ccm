@@ -291,8 +291,17 @@ def composer_draft_fragment(pane_text):
 # is working went dark for the rest of that turn). Each unit is
 # independently optional rather than a fixed "h m s" shape, because
 # nothing guarantees Claude Code keeps printing a zero-valued unit.
+# The segments after the elapsed time are read as opaque. Within one
+# turn the footer passes through several shapes — a bare verb, then
+# `(2s · thinking with max effort)`, then
+# `(5s · ↓ 25 tokens · thought for 3s)`, then `(7s · ↓ 380 tokens)` —
+# and a pattern anchored on `tokens)` matched only the last of them,
+# leaving the pane reading IDLE while Claude was plainly working.
+# What separates a running turn from the finished line beside it
+# (`Crunched for 8s`) is the parenthesised elapsed time, not what
+# follows it, so that is all this asks for.
 PATTERN_ACTIVE_SPINNER = re.compile(
-    r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·\s*[↑↓]\s*[\d.]+k?\s+tokens\)"
+    r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·[^)\n]*\)"
 )
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:

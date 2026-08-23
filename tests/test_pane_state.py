@@ -257,6 +257,59 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_before_any_tokens(self, mock_tmux):
+        """Early in a turn the footer carries no token count at all —
+        "(2s · thinking with max effort)". Anchoring on `tokens)` made
+        the one piece of on-screen evidence that Claude is working
+        invisible until output started flowing, and an accept-edits
+        pane keeps `❯` on screen throughout, so raw read IDLE."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude")
+        )
+        mock_tmux.return_value = (
+            "✽ Slithering… (2s · thinking with max effort)\n"
+            "❯ \n"
+            "  ~/code/ccm  main  Opus 5  ctx ███░ 27%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_with_a_trailing_segment(self, mock_tmux):
+        """Mid-turn the footer gains a segment after the tokens —
+        "(5s · ↓ 25 tokens · thought for 3s)". A pattern that required
+        the parenthesis to close right after `tokens` stopped matching
+        there. What separates a running turn from the finished line
+        beside it is the parenthesised elapsed time, not what follows
+        it."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude")
+        )
+        mock_tmux.return_value = (
+            "✳ Slithering… (5s · ↓ 25 tokens · thought for 3s)\n"
+            "❯ \n"
+            "  ~/code/ccm  main  Opus 5  ctx ███░ 27%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_finished_marker_is_not_a_running_turn(self, mock_tmux):
+        """The line left behind when a turn ends carries the same
+        glyph and verb but no parenthesised elapsed — "Crunched for
+        8s". Widening the footer must not make the aftermath read as
+        work in progress."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude")
+        )
+        mock_tmux.return_value = (
+            "✻ Crunched for 8s\n"
+            "❯ \n"
+            "  ~/code/ccm  main  Opus 5  ctx ███░ 27%"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
     def test_busy_spinner_with_hour_component(self, mock_tmux):
         """Past the hour mark the elapsed gains an `h` unit —
         "(3h 11m 16s · ↓ 8.8k tokens)". The minutes-only pattern stopped

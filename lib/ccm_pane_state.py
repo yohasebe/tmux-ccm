@@ -268,6 +268,20 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
             return "IDLE"
         return "BUSY"
 
+    # No child process. That used to end the question, on the
+    # reasoning that work means a tool is running — but a turn spends
+    # its thinking and its generation entirely inside claude, with
+    # nothing spawned, and the pane says so all the while: the
+    # spinner is on screen with its elapsed time ticking. Reading
+    # only the process table there calls a working session idle, and
+    # idle is the reading auto-exit acts on.
+    #
+    # The same footer, the same evidence, asked without the process
+    # table gating it.
+    for line in capture_pane_visible(pane_target):
+        if PATTERN_ACTIVE_SPINNER.search(line):
+            return "BUSY"
+
     return "IDLE"
 
 
