@@ -13,7 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   whole backoff, and the session spawns no child and writes no log while it
   waits — so a long backoff had no signal marking it as working, and idle is
   the reading auto-exit acts on. The countdown is matched without the tail,
-  which a narrow pane clips.
+  which a narrow pane clips, and in minutes as well as seconds — the backoff
+  grows with every attempt, so the long ones are the ones that matter.
+- A leftover child process (a dev server the session no longer owns) plus a
+  static spinner-shaped string on screen no longer holds the window busy
+  without expiry. The accept-edits disambiguation now asks the same question
+  the childless path asks — is the pane's clock ticking? — instead of taking
+  any footer-shaped string as yes.
 - A pane is read as busy while Claude is thinking or generating with no
   child process spawned — the spinner's elapsed-time footer is on screen the
   whole while, and reading only the process table there called a working
@@ -25,8 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   release works from the periodic status pass — a fresh process every time —
   not only while the dashboard is open.
 - The active-work footer is still recognised when a narrow pane clips it
-  before the closing parenthesis — which ccm's own sidekick layout, splitting
-  a window into narrow panes, does daily.
+  before the closing parenthesis.
 
 ## [0.11.0] - 2026-08-17
 

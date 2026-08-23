@@ -338,7 +338,18 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 # (measured at 100 columns the line ended `attemp…`), and the
 # countdown is also the clock — it ticks once a second, which is
 # what lets the staleness check treat the line like the spinner.
-PATTERN_RETRY_BACKOFF = re.compile(r"Retrying in \d+s")
+#
+# The units are optional the same way the spinner's elapsed units
+# are: backoff grows with every attempt, so a seconds-only pattern
+# would stop matching exactly the long backoffs this exists for.
+# (`Retrying in 1m 5s` is unobserved as yet — the risk is in the
+# shape, and the duration formatter is shared with the footer,
+# which does render minutes.) Decimal seconds are not matched:
+# unobserved anywhere upstream, and the footer's own elapsed is
+# integer seconds.
+PATTERN_RETRY_BACKOFF = re.compile(
+    r"Retrying in (?:\d+h\s+)?(?:\d+m\s+)?\d+s"
+)
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:
 #
