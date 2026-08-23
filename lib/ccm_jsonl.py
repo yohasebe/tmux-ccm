@@ -484,7 +484,7 @@ def _is_interrupt_user_record(rec: dict) -> bool:
     Read as a genuine prompt it is actively harmful — the record is
     NEWER than the interrupted assistant turn, so it would promote to
     `user_pending` ("user just submitted, no response yet") and pin
-    BUSY for the whole BUSY_HOOK_JSONL_WINDOW.
+    BUSY for the whole user-pending window.
 
     Matched against the WHOLE stripped text, never as a substring: a
     message that merely mentions the phrase would otherwise release a
@@ -573,7 +573,7 @@ def _parse_jsonl_tail(
         # `user_pending` promotion below — otherwise running a slash
         # command while idle leaves such a record as the JSONL tail
         # and the `jsonl_user_prompt_pending` rule falsely shows BUSY
-        # for the whole BUSY_HOOK_JSONL_WINDOW (~10 min).
+        # for the whole of that rule's window.
         if rec_type == "user" and _is_local_command_user_record(rec):
             continue
         # Esc-interrupt note: evidence the turn ENDED, so it must not

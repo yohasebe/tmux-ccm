@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- A turn cancelled with Esc before the answer began no longer holds the
+  project busy for ten minutes. Nothing writes a terminal record in that
+  case, so both detection paths had to fall back on the pane — and only one
+  of them gave up when it stopped seeing work. They now use the same window.
 - A connection or rate-limit retry reads as busy instead of idle. The retry
   line (`Retrying in Ns · attempt M/10`) replaces the spinner footer for the
   whole backoff, and the session spawns no child and writes no log while it
