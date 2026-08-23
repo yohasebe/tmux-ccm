@@ -275,6 +275,31 @@ def _clock_is_ticking(clock, stored, now) -> bool:
     return now - stored[1] <= SPINNER_STALE_RELEASE_SEC
 
 
+def _scan_work_clock(lines, stored_clock, now, clock_out) -> bool:
+    """True when any work clock in `lines` is ticking.
+
+    The single implementation of the clock scan — the childless
+    branch and the accept-edits disambiguation ask the same
+    question ("is claude working?"), so they must not answer it
+    separately. The first clock seen is reported to `clock_out`
+    (when a list is passed) for the persistence hand-off. Every
+    visible clock is evaluated, not just the first, so each starts
+    being judged from the pass it appears on."""
+    ticking = False
+    found = None
+    for line in lines:
+        clock = _work_clock(line)
+        if clock is None:
+            continue
+        if found is None:
+            found = clock
+        if _clock_is_ticking(clock, stored_clock, now):
+            ticking = True
+    if found is not None and clock_out is not None:
+        clock_out.append(found)
+    return ticking
+
+
 def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
                       current_command="", stored_clock=None,
                       clock_out=None):
@@ -368,30 +393,17 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
             # approved permission is the latest hook event and a long
             # tool is still running (see PATTERN_ACTIVE_SPINNER
             # docstring).
-            #
-            # The gate is the same `_clock_is_ticking` the childless
-            # branch uses, because the question is the same — "is
-            # claude working?", not "is anything alive?". A leftover
-            # long-lived child (a dev server claude no longer owns —
-            # the `(bg)` case) keeps this branch reachable after the
-            # turn ends, and a static spinner-shaped string on screen
-            # would otherwise pin raw=BUSY, which has no release
-            # path. The leftover process itself is the bg-active
-            # mechanism's concern, not a reason to skip the gate.
-            ticking = False
-            found = None
-            now = _now()
-            for line in visible:
-                clock = _work_clock(line)
-                if clock is None:
-                    continue
-                if found is None:
-                    found = clock
-                if _clock_is_ticking(clock, stored_clock, now):
-                    ticking = True
-            if found is not None and clock_out is not None:
-                clock_out.append(found)
-            if ticking:
+            # The gate is the same one the childless branch uses —
+            # literally the same scan — because the question is the
+            # same: "is claude working?", not "is anything alive?".
+            # A leftover long-lived child (a dev server claude no
+            # longer owns — the `(bg)` case) keeps this branch
+            # reachable after the turn ends, and a static
+            # spinner-shaped string on screen would otherwise pin
+            # raw=BUSY, which has no release path. The leftover
+            # process itself is the bg-active mechanism's concern,
+            # not a reason to skip the gate.
+            if _scan_work_clock(visible, stored_clock, _now(), clock_out):
                 return "BUSY"
             return "IDLE"
         return "BUSY"
@@ -407,20 +419,8 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
     # The claim is gated on the clock ticking because raw=BUSY has no
     # release path: a static footer (frozen frame, quoted text) must
     # age out on its own — see `_clock_is_ticking`.
-    ticking = False
-    found = None
-    now = _now()
-    for line in capture_pane_visible(pane_target):
-        clock = _work_clock(line)
-        if clock is None:
-            continue
-        if found is None:
-            found = clock
-        if _clock_is_ticking(clock, stored_clock, now):
-            ticking = True
-    if found is not None and clock_out is not None:
-        clock_out.append(found)
-    if ticking:
+    if _scan_work_clock(capture_pane_visible(pane_target),
+                        stored_clock, _now(), clock_out):
         return "BUSY"
 
     return "IDLE"

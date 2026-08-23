@@ -317,7 +317,7 @@ def composer_draft_fragment(pane_text):
 #
 # The closing paren is optional: a narrow pane clips the footer at
 # the pane's right edge (`(5s · ↓ 25 tok`), and ccm's own sidekick
-# layout splits windows into panes narrow enough to do that daily.
+# layout splits windows into panes narrow enough to do that.
 # End of line therefore closes the match as well as `)`. The
 # finished line still fails — it has no opening paren at all.
 PATTERN_ACTIVE_SPINNER = re.compile(
