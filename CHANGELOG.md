@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- A connection or rate-limit retry reads as busy instead of idle. The retry
+  line (`Retrying in Ns · attempt M/10`) replaces the spinner footer for the
+  whole backoff, and the session spawns no child and writes no log while it
+  waits — so a long backoff had no signal marking it as working, and idle is
+  the reading auto-exit acts on. The countdown is matched without the tail,
+  which a narrow pane clips.
 - A pane is read as busy while Claude is thinking or generating with no
   child process spawned — the spinner's elapsed-time footer is on screen the
   whole while, and reading only the process table there called a working

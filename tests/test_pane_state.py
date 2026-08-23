@@ -779,6 +779,42 @@ class TestWorkClock:
         assert self._state(mock_tmux, "turn done\n❯ \n", at=1010) == "IDLE"
         assert self._state(mock_tmux, screen, at=5000) == "BUSY"
 
+    @patch("ccm_core.tmux_cmd")
+    def test_retry_backoff_reads_busy_without_a_child(self, mock_tmux):
+        """A connection / rate-limit retry replaces the spinner
+        footer (measured: zero spinner-form matches across 75 samples
+        of a 188 s storm), spawns no child, and writes no JSONL — so
+        nothing else marks the session as working while it waits.
+        Verbatim shape from that measurement."""
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 "blocking it (ConnectionRefused) · Retrying in 3s · "
+                 "attempt 8/10\n"
+                 "❯ \n")
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_retry_backoff_clipped_tail_still_reads_busy(self, mock_tmux):
+        """The retry line's tail clips in a narrow pane (measured at
+        100 columns it ended `attemp…`), so the match must not depend
+        on anything past the countdown."""
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 "blocking it (ConnectionRefused) · Retrying in 3s · attemp…\n"
+                 "❯ \n")
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_exhausted_retry_line_ages_out(self, mock_tmux):
+        """When retries give up, the last line stays on screen with
+        nothing left to tick. It must release like any static clock —
+        otherwise a failed session pins the window busy forever."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 "blocking it (ConnectionRefused) · Retrying in 3s · "
+                 "attempt 8/10\n"
+                 "❯ \n")
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+        assert self._state(mock_tmux, retry, at=1000 + w + 1) == "IDLE"
+
 
 # ─── detect_window_raw ───
 

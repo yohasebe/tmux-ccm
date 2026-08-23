@@ -14,7 +14,8 @@ state (`SHELL` / `BUSY` / `IDLE` / `PERMIT`) inferred from:
      `capture_pane_visible`) — recognises Claude's `❯` input prompt
      (IDLE), modal footers like `Esc to cancel · Tab to amend`
      (PERMIT), and the work clock: the spinner's elapsed-time
-     footer, believed only while it ticks (see `_clock_is_ticking`).
+     footer or a retry countdown, believed only while it ticks (see
+     `_clock_is_ticking`).
 
 `detect_pane_state` combines both per pane; `detect_window_raw`
 aggregates across panes (PERMIT > BUSY > IDLE > SHELL) with sliver
@@ -43,6 +44,7 @@ from ccm_constants import (
     PATTERN_ACTIVE_SPINNER,
     PATTERN_INPUT_PROMPT,
     PATTERN_PERMIT_FOOTER,
+    PATTERN_RETRY_BACKOFF,
     SPINNER_STALE_RELEASE_SEC,
 )
 # `import ccm_core` lives at the BOTTOM of this module (after the
@@ -230,13 +232,17 @@ def _work_clock(line) -> Optional[str]:
     """Return the on-screen clock string marking an active turn on
     this line, or None.
 
-    The matched parenthesised segment always contains the elapsed
-    seconds (PATTERN_ACTIVE_SPINNER requires them), so the string
-    itself serves as the clock: identical across passes means static.
-    The spinning glyph and verb stay OUTSIDE the matched segment on
-    purpose — they change even in a frame grabbed mid-animation, and
-    including them would make a frozen frame look alive."""
+    The matched segment always contains a ticking value — the
+    spinner pattern requires the elapsed seconds, the retry pattern
+    the countdown — so the string itself serves as the clock:
+    identical across passes means static. The spinning glyph and
+    verb stay OUTSIDE the matched segment on purpose — they change
+    even in a frame grabbed mid-animation, and including them would
+    make a frozen frame look alive."""
     m = PATTERN_ACTIVE_SPINNER.search(line)
+    if m:
+        return m.group(0)
+    m = PATTERN_RETRY_BACKOFF.search(line)
     if m:
         return m.group(0)
     return None
@@ -284,10 +290,11 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
          user is still composing.
       7. No children + a ticking work clock visible → BUSY. A turn
          spends its thinking and its generation with nothing spawned,
-         and the spinner's elapsed-time footer is on screen the whole
-         while — believed only while it ticks (`_clock_is_ticking`),
-         so a frozen frame or a quoted footer cannot hold the window
-         busy past SPINNER_STALE_RELEASE_SEC.
+         and a retry backoff waits the same way — the spinner's
+         elapsed-time footer or the `Retrying in Ns` countdown is on
+         screen the whole while. Believed only while it ticks
+         (`_clock_is_ticking`), so a frozen frame or a quoted footer
+         cannot hold the window busy past SPINNER_STALE_RELEASE_SEC.
       8. No children + no ticking clock → IDLE.
     """
     claude_pid = find_claude_pid(pane_pid, ps_lines)

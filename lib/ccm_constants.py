@@ -323,6 +323,22 @@ def composer_draft_fragment(pane_text):
 PATTERN_ACTIVE_SPINNER = re.compile(
     r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·[^)\n]*(?:\)|$)"
 )
+# Connection / rate-limit retries REPLACE the spinner footer with a
+# line of their own — measured against an unreachable endpoint:
+#
+#   ✻ Connection refused — a firewall or proxy may be blocking it (ConnectionRefused) · Retrying in 3s · attempt 8/10
+#
+# (75 samples over 188 s and 10 attempts: zero matches for the
+# spinner form; the footer does not come back between attempts.)
+# While it waits, the session has no child process, writes no JSONL,
+# and shows nothing else that moves — so without this line a long
+# backoff reads as idle, the reading auto-exit acts on.
+#
+# Only the countdown is asked for: the tail clips in narrow panes
+# (measured at 100 columns the line ended `attemp…`), and the
+# countdown is also the clock — it ticks once a second, which is
+# what lets the staleness check treat the line like the spinner.
+PATTERN_RETRY_BACKOFF = re.compile(r"Retrying in \d+s")
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:
 #
