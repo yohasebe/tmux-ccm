@@ -7,12 +7,14 @@ state (`SHELL` / `BUSY` / `IDLE` / `PERMIT`) inferred from:
 
   1. The process tree under the pane (`find_claude_pid`,
      `has_children`) — distinguishes "no claude here" (SHELL) from
-     "claude is running tools" (children present) from "claude is
-     idle waiting for input" (no children).
-  2. The bottom rows of the pane via `tmux capture-pane`
-     (`capture_pane_bottom`) — recognises Claude's `❯` input
-     prompt (IDLE) and modal footers like `Esc to cancel · Tab to
-     amend` (PERMIT).
+     "claude is running tools" (children present) from "claude has
+     nothing spawned" (thinking, generating, or at rest — told
+     apart by the pane's work clock, below).
+  2. The pane text via `tmux capture-pane` (`capture_pane_bottom`,
+     `capture_pane_visible`) — recognises Claude's `❯` input prompt
+     (IDLE), modal footers like `Esc to cancel · Tab to amend`
+     (PERMIT), and the work clock: the spinner's elapsed-time
+     footer, believed only while it ticks (see `_clock_is_ticking`).
 
 `detect_pane_state` combines both per pane; `detect_window_raw`
 aggregates across panes (PERMIT > BUSY > IDLE > SHELL) with sliver
@@ -30,7 +32,9 @@ and `SLIVER_HEIGHT_THRESHOLD` are accessed via `ccm_core.X` so test
 mocks routed through `ccm_core` reach this module unchanged.
 """
 
-from collections import namedtuple
+import time
+from collections import OrderedDict, namedtuple
+from typing import Optional
 
 from ccm_constants import (
     CLAUDE_PROCESS_NAME,
@@ -39,6 +43,7 @@ from ccm_constants import (
     PATTERN_ACTIVE_SPINNER,
     PATTERN_INPUT_PROMPT,
     PATTERN_PERMIT_FOOTER,
+    SPINNER_STALE_RELEASE_SEC,
 )
 # `import ccm_core` lives at the BOTTOM of this module (after the
 # function definitions) so that when `ccm_pane_state` is the entry
@@ -186,6 +191,72 @@ def capture_pane_visible(pane_target):
     return [l for l in raw.split("\n") if l.strip()]
 
 
+# ─── Work-clock staleness ───
+#
+# The no-children question — "is claude working or at rest?" — is
+# answered by the pane's clock: the spinner footer carries elapsed
+# seconds that tick once a second while a turn runs. But raw=BUSY
+# has no timeout anywhere in the pipeline (every stale-release path
+# requires raw=IDLE), so a STATIC clock must not be believed past a
+# window: a frozen frame (claude hung after rendering the footer)
+# and a transcript line merely quoting a footer are both static,
+# and either would pin the window busy forever — a worse failure
+# than the false idle this reading exists to prevent.
+#
+# So the claim is made only while the clock ticks. `_work_clock_cache`
+# maps pane_target → {clock string → when that value was first seen}.
+# A value seen for the first time is believed (fail-open — a one-shot
+# process has no history, and BUSY is the safe direction); a value
+# unchanged for longer than SPINNER_STALE_RELEASE_SEC is not. Kept
+# per (pane, clock) rather than per pane because one screen can show
+# several footers (a frozen one above a live one, two quotations) —
+# with a single slot they would alternate and each read as "changed".
+# In-process only, like the JSONL caches: detection stays read-only
+# and long-lived pollers (inject_status, dashboard) accumulate the
+# history the check needs.
+_WORK_CLOCK_CACHE_MAX = 128   # panes
+_PER_PANE_CLOCKS_MAX = 4      # distinct clock strings remembered per pane
+_work_clock_cache: "OrderedDict[str, OrderedDict[str, float]]" = OrderedDict()
+
+#: Indirection so tests can drive the staleness window deterministically.
+_now = time.time
+
+
+def _work_clock(line) -> Optional[str]:
+    """Return the on-screen clock string marking an active turn on
+    this line, or None.
+
+    The matched parenthesised segment always contains the elapsed
+    seconds (PATTERN_ACTIVE_SPINNER requires them), so the string
+    itself serves as the clock: identical across passes means static.
+    The spinning glyph and verb stay OUTSIDE the matched segment on
+    purpose — they change even in a frame grabbed mid-animation, and
+    including them would make a frozen frame look alive."""
+    m = PATTERN_ACTIVE_SPINNER.search(line)
+    if m:
+        return m.group(0)
+    return None
+
+
+def _clock_is_ticking(pane_target, clock) -> bool:
+    now = _now()
+    clocks = _work_clock_cache.get(pane_target)
+    if clocks is None:
+        clocks = OrderedDict()
+        _work_clock_cache[pane_target] = clocks
+        if len(_work_clock_cache) > _WORK_CLOCK_CACHE_MAX:
+            _work_clock_cache.popitem(last=False)
+    else:
+        _work_clock_cache.move_to_end(pane_target)
+    first_seen = clocks.get(clock)
+    if first_seen is None:
+        if len(clocks) >= _PER_PANE_CLOCKS_MAX:
+            clocks.popitem(last=False)
+        clocks[clock] = now
+        return True
+    return now - first_seen <= SPINNER_STALE_RELEASE_SEC
+
+
 def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
                       current_command=""):
     """Per-pane raw state. Returns SHELL / BUSY / IDLE / PERMIT.
@@ -212,7 +283,13 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
          (not just the bottom) because a long multi-line user input
          pushes the `❯` row well above the bottom 8 lines while the
          user is still composing.
-      7. No children → IDLE.
+      7. No children + a ticking work clock visible → BUSY. A turn
+         spends its thinking and its generation with nothing spawned,
+         and the spinner's elapsed-time footer is on screen the whole
+         while — believed only while it ticks (`_clock_is_ticking`),
+         so a frozen frame or a quoted footer cannot hold the window
+         busy past SPINNER_STALE_RELEASE_SEC.
+      8. No children + no ticking clock → IDLE.
     """
     claude_pid = find_claude_pid(pane_pid, ps_lines)
     if not claude_pid:
@@ -266,6 +343,31 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
                 if PATTERN_ACTIVE_SPINNER.search(line):
                     return "BUSY"
             return "IDLE"
+        return "BUSY"
+
+    # No child process. That used to end the question, on the
+    # reasoning that work means a tool is running — but a turn spends
+    # its thinking and its generation entirely inside claude, with
+    # nothing spawned, and the pane says so all the while: the
+    # spinner's elapsed-time footer is on screen, ticking. Reading
+    # only the process table there calls a working session idle, and
+    # idle is the reading auto-exit acts on.
+    #
+    # The claim is gated on the clock ticking because raw=BUSY has no
+    # release path: a static footer (frozen frame, quoted text) must
+    # age out on its own — see `_clock_is_ticking`.
+    #
+    # Every visible clock is registered each pass, not just the
+    # first: a screen can show several (a frozen footer above a
+    # quotation), and each must age on its own first-seen time —
+    # evaluating only the first would let the rest start their
+    # windows whenever they happen to be reached.
+    ticking = False
+    for line in capture_pane_visible(pane_target):
+        clock = _work_clock(line)
+        if clock is not None and _clock_is_ticking(pane_target, clock):
+            ticking = True
+    if ticking:
         return "BUSY"
 
     return "IDLE"

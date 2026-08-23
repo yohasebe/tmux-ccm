@@ -687,6 +687,84 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
 
+# ─── Work-clock staleness (no-child spinner reading) ───
+
+class TestWorkClock:
+    """No child process: the pane's clock — the spinner's elapsed-time
+    footer — is the only evidence a turn is running. It is believed
+    only while it ticks: raw=BUSY has no release path, so a static
+    footer (a frozen frame after a hang, or a transcript quoting a
+    footer) must age out on its own."""
+
+    def setup_method(self):
+        ccm_pane_state._work_clock_cache.clear()
+
+    def _ps(self):
+        return make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"))
+
+    def _state(self, mock_tmux, text, at):
+        mock_tmux.return_value = text
+        with patch.object(ccm_pane_state, "_now", lambda: at):
+            return ccm_pane_state.detect_pane_state(
+                "100", "%0", self._ps(), "99999")
+
+    @staticmethod
+    def _frame(footer):
+        return (f"✳ Slithering… {footer}\n"
+                "❯ \n"
+                "  ~/code/ccm  main  Opus 5  ctx ███░ 27%")
+
+    @patch("ccm_core.tmux_cmd")
+    def test_ticking_spinner_reads_busy_without_a_child(self, mock_tmux):
+        """A turn spends its thinking and generation with nothing
+        spawned, and the footer is on screen the whole while. First
+        sighting is believed (fail-open — a one-shot process has no
+        history, and BUSY is the safe direction). Mutation target:
+        dropping the no-child branch reads this IDLE."""
+        assert self._state(
+            mock_tmux, self._frame("(7s · ↓ 380 tokens)"), at=1000) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_static_clock_stops_claiming_after_the_window(self, mock_tmux):
+        """The same frame across passes: a frozen frame or a quoted
+        footer is static, and a static clock stops holding the window
+        busy past SPINNER_STALE_RELEASE_SEC. Mutation target: without
+        the tick check this holds BUSY forever."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        screen = self._frame("(7s · ↓ 380 tokens)")
+        assert self._state(mock_tmux, screen, at=1000) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w + 1) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_a_clock_that_advances_keeps_its_claim(self, mock_tmux):
+        """A live spinner shows a new value every pass, and each new
+        value is believed on sight. Long after a static frame would
+        have been released, an ADVANCED clock still claims — the
+        release must not latch."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        assert self._state(
+            mock_tmux, self._frame("(7s · ↓ 380 tokens)"), at=1000) == "BUSY"
+        assert self._state(
+            mock_tmux, self._frame("(9s · ↓ 402 tokens)"),
+            at=1000 + 10 * w) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_two_static_clocks_age_on_their_own_time(self, mock_tmux):
+        """A screen can show two footers at once (a frozen one above
+        a quotation). Both are registered on the pass they appear, so
+        each ages on its own first-seen time — evaluating only the
+        first would let the second start a fresh window whenever the
+        first expired, and two quotations would outlive any window."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        both = ("✳ Slithering… (7s · ↓ 380 tokens)\n"
+                "reply text quoting (12s · ↓ 1.2k tokens) verbatim\n"
+                "❯ \n")
+        assert self._state(mock_tmux, both, at=1000) == "BUSY"
+        assert self._state(mock_tmux, both, at=1000 + w + 1) == "IDLE"
+
+
 # ─── detect_window_raw ───
 
 class TestDetectWindowRaw:

@@ -108,6 +108,20 @@ PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))
 # marker, the /model footer verb).
 BUSY_STALE_RELEASE_SEC = int(
     os.environ.get("CCM_BUSY_STALE_RELEASE_SEC", "60"))
+# How long an on-screen work clock (the spinner's elapsed-time
+# footer) may stand still before its claim to a running turn stops
+# being believed. The claim is what lets a childless pane — claude
+# thinking or generating, nothing spawned — read BUSY, and raw=BUSY
+# has no timeout anywhere in the pipeline, so the claim must limit
+# itself: a frozen frame (claude hung after rendering the footer)
+# and a transcript line merely quoting a footer are static, and past
+# this window they stop holding the window busy. The clock has
+# 1-second resolution and ticks every second while live, so 30 s of
+# stillness (~15 consecutive identical reads at the dashboard's 2 s
+# cadence) is unambiguous; the safety net for the false-IDLE
+# direction remains auto-exit's IDLE_EXIT_TIMEOUT (600 s sustained).
+SPINNER_STALE_RELEASE_SEC = int(
+    os.environ.get("CCM_SPINNER_STALE_RELEASE_SEC", "30"))
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 # Hook-vs-real-activity gap discriminator. A BUSY hook fired more

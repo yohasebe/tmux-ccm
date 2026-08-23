@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- A pane is read as busy while Claude is thinking or generating with no
+  child process spawned — the spinner's elapsed-time footer is on screen the
+  whole while, and reading only the process table there called a working
+  session idle, which is the reading auto-exit acts on. The claim holds only
+  while that clock ticks: a frozen frame (a session hung after rendering the
+  footer) or a transcript quoting a footer stops counting after
+  `CCM_SPINNER_STALE_RELEASE_SEC` (default 30 s), because raw BUSY has no
+  other way out.
 - The active-work footer is still recognised when a narrow pane clips it
   before the closing parenthesis — which ccm's own sidekick layout, splitting
   a window into narrow panes, does daily.
