@@ -298,14 +298,16 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
          before the tool subprocess spawns).
       4. Has live children + no input prompt anywhere visible →
          BUSY.
-      5. Has live children + input prompt visible + an active-work
-         spinner footer also visible → BUSY. In accept-edits mode
-         the `❯` composer stays on screen WHILE a tool runs, so a
-         visible prompt alone is not proof of idleness; the spinner
-         (`… (elapsed · arrow Nk tokens)`) is rendered only during
-         active generation / tool execution and disambiguates.
-      6. Has live children + input prompt visible + no spinner →
-         IDLE. The prompt is searched across the whole visible area
+      5. Has live children + input prompt visible + a ticking work
+         clock also visible → BUSY. In accept-edits mode the `❯`
+         composer stays on screen WHILE a tool runs, so a visible
+         prompt alone is not proof of idleness; the ticking footer
+         is rendered only during active generation / tool execution
+         and disambiguates. The clock is gated the same way as in 7,
+         so a leftover child plus a static footer-shaped string
+         cannot pin BUSY.
+      6. Has live children + input prompt visible + no ticking clock
+         → IDLE. The prompt is searched across the whole visible area
          (not just the bottom) because a long multi-line user input
          pushes the `❯` row well above the bottom 8 lines while the
          user is still composing.
@@ -357,18 +359,40 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
         if prompt_visible:
             # A visible `❯` normally means IDLE (queued-input box).
             # But accept-edits mode keeps that box on screen while a
-            # tool runs, so check for the active-work spinner first:
-            # its incrementing `(elapsed · arrow Nk tokens)` footer
-            # appears only during generation / tool execution, never
-            # at a true idle prompt or during a menu / permission
-            # wait (Claude has stopped generating to ask). Present →
-            # the pane is BUSY despite the visible prompt. This is
-            # what un-sticks the false PERMIT when an approved
-            # permission is the latest hook event and a long tool is
-            # still running (see PATTERN_ACTIVE_SPINNER docstring).
+            # tool runs, so check for the work clock first: its
+            # ticking footer appears only during generation / tool
+            # execution, never at a true idle prompt or during a
+            # menu / permission wait (Claude has stopped generating
+            # to ask). Ticking → the pane is BUSY despite the visible
+            # prompt. This is what un-sticks the false PERMIT when an
+            # approved permission is the latest hook event and a long
+            # tool is still running (see PATTERN_ACTIVE_SPINNER
+            # docstring).
+            #
+            # The gate is the same `_clock_is_ticking` the childless
+            # branch uses, because the question is the same — "is
+            # claude working?", not "is anything alive?". A leftover
+            # long-lived child (a dev server claude no longer owns —
+            # the `(bg)` case) keeps this branch reachable after the
+            # turn ends, and a static spinner-shaped string on screen
+            # would otherwise pin raw=BUSY, which has no release
+            # path. The leftover process itself is the bg-active
+            # mechanism's concern, not a reason to skip the gate.
+            ticking = False
+            found = None
+            now = _now()
             for line in visible:
-                if PATTERN_ACTIVE_SPINNER.search(line):
-                    return "BUSY"
+                clock = _work_clock(line)
+                if clock is None:
+                    continue
+                if found is None:
+                    found = clock
+                if _clock_is_ticking(clock, stored_clock, now):
+                    ticking = True
+            if found is not None and clock_out is not None:
+                clock_out.append(found)
+            if ticking:
+                return "BUSY"
             return "IDLE"
         return "BUSY"
 

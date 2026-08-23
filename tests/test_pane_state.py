@@ -705,14 +705,15 @@ class TestWorkClock:
         return make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"))
 
-    def _state(self, mock_tmux, text, at, stored=None):
+    def _state(self, mock_tmux, text, at, stored=None, ps=None):
         """One detection pass as a short-lived process sees it: no
         in-process history, only the stored (clock, ts) from the
         window option."""
         mock_tmux.return_value = text
         with patch.object(ccm_pane_state, "_now", lambda: at):
             return ccm_pane_state.detect_pane_state(
-                "100", "%0", self._ps(), "99999", stored_clock=stored)
+                "100", "%0", ps or self._ps(), "99999",
+                stored_clock=stored)
 
     @staticmethod
     def _frame(footer):
@@ -798,6 +799,72 @@ class TestWorkClock:
                  "blocking it (ConnectionRefused) · Retrying in 3s · attemp…\n"
                  "❯ \n")
         assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_retry_backoff_in_minutes_reads_busy(self, mock_tmux):
+        """Backoff grows with every attempt, so a seconds-only
+        pattern stops matching exactly the long backoffs this exists
+        for. The countdown takes the same unit-optional shape as the
+        spinner's elapsed. (`1m 5s` is unobserved as yet — the risk
+        is in the shape; the duration formatter is shared with the
+        footer, which does render minutes.)"""
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 "blocking it (ConnectionRefused) · Retrying in 1m 5s · "
+                 "attempt 9/10\n"
+                 "❯ \n")
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+
+    def test_retry_backoff_units_required_shape(self):
+        """Decimal seconds and bare minutes are not matched:
+        unobserved upstream, and the footer's own elapsed is integer
+        seconds — the pattern must not grow past what is known."""
+        p = ccm_pane_state.PATTERN_RETRY_BACKOFF
+        assert p.search("Retrying in 45s")
+        assert p.search("Retrying in 1m 5s")
+        assert not p.search("Retrying in 1.5s")
+        assert not p.search("Retrying in 2m")
+
+    @patch("ccm_core.tmux_cmd")
+    def test_leftover_child_plus_static_clock_releases(self, mock_tmux):
+        """The accept-edits disambiguation asked the same question
+        the childless branch asks — "is claude working?", not "is
+        anything alive?" — but took any spinner-shaped string as yes.
+        A leftover long-lived child (a dev server claude no longer
+        owns — the `(bg)` case) keeps that branch reachable after the
+        turn ends, and a static footer on screen pinned raw=BUSY,
+        which has no release path. Same gate, both branches."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "node"))   # leftover dev server
+        screen = ("✳ Slithering… (7s · ↓ 380 tokens)\n"
+                  "❯ \n"
+                  "  ⏵⏵ accept edits on (shift+tab to cycle)")
+        stored = ("(7s · ↓ 380 tokens)", 1000)
+        assert self._state(mock_tmux, screen, at=1000, ps=ps) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w,
+                           stored=stored, ps=ps) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w + 1,
+                           stored=stored, ps=ps) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_clock_reported_from_the_child_branch_too(self, mock_tmux):
+        """The persistence hand-off must see clocks from both
+        branches — a clock only ever observed through the child
+        branch would never reach the window option, and the next
+        detection process would judge it with no history."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "node"))
+        mock_tmux.return_value = (
+            "✳ Slithering… (7s · ↓ 380 tokens)\n"
+            "❯ \n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)")
+        out = []
+        state = ccm_pane_state.detect_pane_state(
+            "100", "%0", ps, "99999", clock_out=out)
+        assert state == "BUSY"
+        assert out == ["(7s · ↓ 380 tokens)"]
 
     @patch("ccm_core.tmux_cmd")
     def test_exhausted_retry_line_ages_out(self, mock_tmux):
