@@ -264,7 +264,8 @@ class TestDetectPaneState:
         invisible until output started flowing, and an accept-edits
         pane keeps `❯` on screen throughout, so raw read IDLE."""
         ps = make_ps_lines(
-            (100, 1, 100, "bash"), (200, 100, 100, "claude")
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "bats")
         )
         mock_tmux.return_value = (
             "✽ Slithering… (2s · thinking with max effort)\n"
@@ -283,7 +284,8 @@ class TestDetectPaneState:
         beside it is the parenthesised elapsed time, not what follows
         it."""
         ps = make_ps_lines(
-            (100, 1, 100, "bash"), (200, 100, 100, "claude")
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "bats")
         )
         mock_tmux.return_value = (
             "✳ Slithering… (5s · ↓ 25 tokens · thought for 3s)\n"

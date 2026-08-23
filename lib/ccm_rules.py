@@ -279,13 +279,7 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         name="jsonl_user_prompt_pending",
         raw_in=("IDLE",),
         jsonl_last_stop_reason_in=(JSONL_USER_PENDING,),
-        # The same window the event-log path gives itself before it
-        # stops claiming a turn is running. It used to be ten times
-        # longer, so a turn the event log had already given up on was
-        # re-asserted here — an Esc that landed before the answer
-        # began writes no terminal record for either path to see, and
-        # the pane sat BUSY for ten minutes with nothing running.
-        jsonl_age_lt=BUSY_STALE_RELEASE_SEC,
+        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
         result="BUSY",
         phase="midturn",
     ),

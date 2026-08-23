@@ -68,15 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
-- A turn cancelled with Esc before the answer began no longer holds the
-  project busy for ten minutes. Nothing writes a terminal record in that case,
-  so both detection paths had to fall back on the pane — and only one of them
-  gave up when it stopped seeing work. They now use the same window.
-- The pane is read as busy while Claude is thinking. The spinner's footer
-  changes shape several times within a turn, and only its final form was
-  matched; it was also consulted only when a child process existed, which a
-  turn spends its thinking without. Either gap alone made a working session
-  read as idle, which is the reading auto-exit acts on.
+- The spinner is recognised through the shapes its footer takes. Within one
+  turn it carries an elapsed time with no token count, then one with a
+  trailing segment, then the familiar form — and only the last was matched, so
+  a pane with a tool running read as idle for the rest.
 - The guide's example search binding says that `prefix + /` is tmux-copycat's
   too, and that a second binding replaces the first.
 - A project whose transcript directory is shared with another finds its own
