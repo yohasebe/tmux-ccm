@@ -40,6 +40,7 @@ from typing import Optional, Tuple
 # state and only matters for fresh standalone imports.
 from ccm_constants import (
     BUSY_STALE_RELEASE_SEC,
+    BUSY_HOOK_JSONL_WINDOW,
     HOOK_FRESH_THRESHOLD,
     JSONL_HOOK_GAP_TOLERANCE,
     JSONL_USER_PENDING,
@@ -271,20 +272,14 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         # window as IDLE for the entire thinking phase. Hooks that
         # would normally cover this (PreToolUse, etc.) may not have
         # fired yet — claude is still thinking, not yet calling tools.
-        # Bounded by the same window the event-log path gives itself
-        # before it stops claiming a turn is running. It used to be
-        # ten times longer, so a turn the event log had already given
-        # up on was re-asserted here — an Esc that landed before the
-        # answer began writes no terminal record for either path to
-        # see, and the pane sat BUSY for ten minutes with nothing
-        # running. Sharing the shorter window is safe now that a
-        # childless working turn reads raw=BUSY on its own: thinking,
-        # generation, and retry backoffs all show a ticking work
-        # clock, and a ticking clock never reaches this rule.
+        # Bounded by the long-tool window so a session that has
+        # genuinely stalled (no JSONL activity for 10+ minutes)
+        # falls through to the default rule rather than showing
+        # BUSY indefinitely.
         name="jsonl_user_prompt_pending",
         raw_in=("IDLE",),
         jsonl_last_stop_reason_in=(JSONL_USER_PENDING,),
-        jsonl_age_lt=BUSY_STALE_RELEASE_SEC,
+        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
         result="BUSY",
         phase="midturn",
     ),

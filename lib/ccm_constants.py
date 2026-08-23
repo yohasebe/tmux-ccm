@@ -101,11 +101,11 @@ PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))
 # from 1200 s of silence to 660 s. What it buys is large: an
 # Esc-interrupted turn fires no Stop hook and writes no further JSONL,
 # so it used to sit in a false BUSY for ten minutes; it now clears in
-# one. The release requires the CONJUNCTION of raw=IDLE (no ticking
-# work clock on screen — a static footer does not count) and a frozen
-# JSONL — neither alone is trusted, because a single long silent tool
-# freezes the JSONL too, and spinner detection has broken before on
-# upstream reworks (the accept-edits marker, the /model footer verb).
+# one. The release requires the CONJUNCTION of raw=IDLE (no spinner on
+# screen) and a frozen JSONL — neither alone is trusted, because a
+# single long silent tool freezes the JSONL too, and spinner detection
+# has broken before on upstream reworks (the accept-edits
+# marker, the /model footer verb).
 BUSY_STALE_RELEASE_SEC = int(
     os.environ.get("CCM_BUSY_STALE_RELEASE_SEC", "60"))
 # How long an on-screen work clock (the spinner's elapsed-time
