@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- A window whose only Claude lives in an ignored pane no longer claims
+  SHELL or DOWN. ccm deliberately does not see that Claude, so it has no
+  basis for either claim — and SHELL made `ccm send` queue messages
+  against a presumed-absent Claude, or offer `--start` to launch Claude
+  into a visible pane, which can be a sidekick's. The window now reports
+  a new IGNORED state (`⊘`, dim): not a rung of the
+  PERMIT > BUSY > IDLE > SHELL ladder but a verdict that ccm cannot
+  answer. Any Claude in a visible pane still answers normally, `ccm send`
+  to an IGNORED project is refused (never queued, never auto-started)
+  with a refusal that points at `ccm unignore <project>`, and auto-exit
+  does not act on it.
 - The ignore marker on a pane running a known external-agent CLI (the main
   use of `ccm ignore`) is no longer stripped as stale — it survived only
   while claude ran there, so a hidden sidekick agent reappeared after one
