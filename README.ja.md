@@ -401,6 +401,7 @@ ccm clear-notifications           macOS 通知センターから ccm 通知を�
 | `⚙<name>` | （全状態） | presence マーカー（dim）: ウィンドウ内のペインで外部エージェント CLI が動作中。存在は示すが状態は追跡しない |
 | ■ | SHELL | シェルのみ（Claude未起動） |
 | ○ | DOWN | ウィンドウ利用不可 |
+| ⊘ | IGNORED | ウィンドウ内の全 Claude ペインが `CCM_IGNORE` で非表示 — ccm は意図的にその Claude を見ていないため、状態を主張しない。`ccm send` は拒否され、`ccm unignore` を案内 |
 
 ### Claude Codeフック（推奨）
 

@@ -405,6 +405,7 @@ ccm clear-notifications           Remove ccm notifications from macOS Notificati
 | `⚙<name>` | (any state) | Presence marker (dim): a pane in the window is running an external agent CLI. ccm shows that it is there but does not track its state |
 | ■ | SHELL | Shell active, Claude not running |
 | ○ | DOWN | Window not available |
+| ⊘ | IGNORED | Every Claude pane in the window is hidden via `CCM_IGNORE` — ccm deliberately cannot see the window's Claude, so it claims no state. `ccm send` is refused and points at `ccm unignore` |
 
 ### Claude Code Hooks (Recommended)
 

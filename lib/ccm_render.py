@@ -177,6 +177,7 @@ C_STATE = {
     "IDLE": "\033[0;34m",        # blue
     "SHELL": "\033[38;5;245m",   # gray
     "DOWN": "\033[2m",           # dim
+    "IGNORED": "\033[2m",        # dim
 }
 
 

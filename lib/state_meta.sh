@@ -10,7 +10,9 @@
 #
 # State taxonomy:
 #   Detection states (written to @ccm_prev_state, used by
-#   DETECTION_RULES): PERMIT / BUSY / IDLE / SHELL / DOWN
+#   DETECTION_RULES): PERMIT / BUSY / IDLE / SHELL / DOWN / IGNORED
+#   (IGNORED: every Claude pane is hidden via @ccm_ignore, so the
+#   window's state is unknowable — not a claim that Claude is absent)
 #   Display-only "recently completed" marker: COMPLETED — not a
 #   detection state, only ever shown as the ✔ next to an IDLE row
 #   that just transitioned from BUSY/PERMIT.
@@ -28,6 +30,7 @@ ccm_state_icon() {
         IDLE)      printf '●' ;;
         SHELL)     printf '■' ;;
         DOWN)      printf '○' ;;
+        IGNORED)   printf '⊘' ;;
         *)         printf '●' ;;
     esac
 }

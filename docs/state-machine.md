@@ -10,6 +10,10 @@ States answer one question: **does the user need to take action right now?**
 - `BUSY` — no, claude has the ball; wait
 - `IDLE` — no, the user has the ball, but no immediate action is required
 - `SHELL` / `DOWN` — environmental (claude not running)
+- `IGNORED` — unknowable by choice: every claude pane is hidden via
+  `@ccm_ignore`, so ccm makes no claim about the window's claude
+  (SHELL/DOWN would assert "claude is not running" on evidence ccm
+  deliberately excluded)
 
 Background activity (leftover dev servers, phantom upstream events, cron-triggered processes) is **informational, not action-actionable** — it goes into a parenthesised suffix (`(bg)`, `(Nm)`) rather than the state label. The state label is the one-glance answer to "do I need to do something?"; suffixes carry context for users who want the deeper picture.
 
@@ -24,6 +28,7 @@ When choosing between adding a new state, a new rule, or a new suffix, ask the p
 | `IDLE` | `●` | Claude is running and waiting for the next user input (`❯` prompt visible). |
 | `BUSY` | `◉` | Claude is processing — thinking, streaming a response, running a tool, or paused mid-turn for a tool result. Any state where the ball is on Claude's side. |
 | `PERMIT` | `⚠` | A permission dialog or confirmation modal is on screen waiting for the user. `ccm send` always refuses, even with `--force`. |
+| `IGNORED` | `⊘` | Every pane hosting `claude` is excluded via `@ccm_ignore` and no visible pane hosts one. Not a rung of the ladder — a visibility verdict: ccm cannot answer. `ccm send` always refuses (never queued, never auto-started) and points at `ccm unignore`. |
 
 `STATE_PRIORITY` (used for dashboard sorting and status-bar collapsed indicator): `PERMIT < BUSY < IDLE < SHELL < DOWN`. Smaller number = higher priority.
 
@@ -34,6 +39,7 @@ A tmux window can host multiple panes, but ccm reports a single state per window
 1. Filter out panes shorter than `SLIVER_HEIGHT_THRESHOLD` (4 rows by default, `CCM_SLIVER_HEIGHT_THRESHOLD` overrides). Such panes cannot render Claude's `❯` prompt + accept-edits indicator + footer, so capture-pane–based prompt detection silently fails and the pane false-reads BUSY (children present, no prompt visible).
 2. Aggregate the remaining panes by priority: `PERMIT > BUSY > IDLE > SHELL`. The window state is the most attention-needing pane's state.
 3. If every pane is below the threshold (impossible in practice), bypass the filter — better to give a possibly-wrong answer than fall through to SHELL on a window full of slivers.
+4. Visibility verdict, checked before SHELL/DOWN is allowed to stand: ignored panes never enter the aggregation, but they are still probed for a `claude` process (same `find_claude_pid` predicate, same `ps_lines` — no extra subprocess). If at least one ignored pane hosts claude and the aggregated answer would be SHELL (no visible claude) or DOWN (no visible pane at all), the window resolves to `IGNORED` instead: SHELL/DOWN claim "claude is not running", which ccm has no basis for while the only claude is deliberately unseen. Any visible claude answers normally — IGNORED never masks a PERMIT/BUSY/IDLE the user can actually see.
 
 This rule satisfies two competing requirements simultaneously:
 
@@ -50,19 +56,21 @@ Inactive panes also drive the `(bg)` UI affordance (state=IDLE with raw=BUSY: th
 
 ## Detection backbones
 
-The event-log path (`derive_state_from_events`) is the primary detection mechanism. The legacy `DETECTION_RULES` table is the safety net for cases where the event log is empty / malformed / in a post-`session_end` transient — the dispatcher commits the event-log state when derive returns non-`None`, and falls back to legacy otherwise. `CCM_USE_EVENT_LOG=off` is a diagnostic kill-switch that disables the event-log read entirely; the unset default and any other value resolve to the auto dispatch.
+The event-log path (`derive_state_from_events`) is the primary detection mechanism. The legacy `DETECTION_RULES` table is the safety net for cases where the event log is empty / malformed / in a post-`session_end` transient — the dispatcher commits the event-log state when derive returns non-`None`, and falls back to legacy otherwise. `CCM_USE_EVENT_LOG=off` is a diagnostic kill-switch that disables the event-log read entirely; the unset default and any other value resolve to the auto dispatch. One exception short-circuits the dispatch itself: raw=IGNORED never reaches the event-log read — the verdict is about visibility, not activity, and the log belongs to sessions ccm chose not to watch (derive would read their absence from the visible process tree as `pid_present=False` and answer SHELL, overriding the verdict).
 
 ### Legacy backbone — `DETECTION_RULES` table
 
 The legacy table is intentionally minimal: it exists only to produce a sensible state when the event-log path declines to answer. All hook / JSONL freshness reasoning lives in the event-log path. Each rule constrains the input `DetectionContext` (raw, hook_state, hook_age, prev_state, jsonl_age, jsonl_last_stop_reason, claude_pid_age) and emits a resolved state. First match wins.
 
-1. `process_down` — raw=DOWN → DOWN
-2. `process_shell` — raw=SHELL → SHELL
-3. `hook_fresh_busy` — fresh BUSY hook (< 2 s) + recap-gap guard → BUSY
-4. `startup_transient_raw_busy` — raw=BUSY + young pid + no hook → IDLE (MCP loading window)
-5. `raw_busy_passthrough` — raw=BUSY → BUSY (no-hooks process-tree fallback)
-6. `raw_permit_passthrough` — raw=PERMIT → PERMIT (capture-pane modal footer fallback)
-7. `default` — final catch-all → trust raw state
+1. `process_ignored` — raw=IGNORED → IGNORED (visibility verdict; first so no hook/JSONL evidence from a deliberately-unwatched session can resurrect an activity claim — `hook_fresh_busy` would otherwise win for a few seconds after a session is ignored)
+2. `process_down` — raw=DOWN → DOWN
+3. `process_shell` — raw=SHELL → SHELL
+4. `hook_fresh_busy` — fresh BUSY hook (< 2 s) + recap-gap guard → BUSY
+5. `startup_transient_raw_busy` — raw=BUSY + young pid + no hook → IDLE (MCP loading window)
+6. `raw_busy_passthrough` — raw=BUSY → BUSY (no-hooks process-tree fallback)
+7. `jsonl_user_prompt_pending` — raw=IDLE + fresh `user_pending` JSONL → BUSY (pre-record thinking phase)
+8. `raw_permit_passthrough` — raw=PERMIT → PERMIT (capture-pane modal footer fallback)
+9. `default` — final catch-all → trust raw state
 
 ### Event-log backbone — `derive_state_from_events`
 
@@ -109,10 +117,11 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
 
 These are tested by `TestPipelineInvariants` and `TestDeriveInvariants`:
 
-- Every legacy `evaluate_rules` call returns a state in `{SHELL, DOWN, BUSY, IDLE, PERMIT}`.
+- Every legacy `evaluate_rules` call returns a state in `{SHELL, DOWN, BUSY, IDLE, PERMIT, IGNORED}`.
 - raw=SHELL always resolves to SHELL.
 - raw=DOWN always resolves to DOWN.
-- `derive_state_from_events` returns either `None` or a state in the same set.
+- raw=IGNORED always resolves to IGNORED (even against a fresh BUSY hook).
+- `derive_state_from_events` returns either `None` or a state in `{SHELL, BUSY, IDLE, PERMIT}` — never IGNORED, which it is never asked to judge (the dispatcher short-circuits it).
 - `pid_present=False` always resolves derive to `SHELL`.
 - `raw=="PERMIT"` always pulls derive to `PERMIT` (or `None`, never `BUSY` / `IDLE`).
 

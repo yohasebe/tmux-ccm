@@ -218,6 +218,7 @@ ccm send demo --no-enter "TODO: "
 | **BUSY** | 後送キューに保存 | 拒否 | 入力バッファにキューして即送信(進行中のターンと混線) | — |
 | **SHELL**(Claude 未起動) | キューに保存 — Claude が起動して IDLE になってから配送 | 拒否 | — | Claude を起動し、IDLE 到達をポーリング（最大 `CCM_START_WAIT_SEC` 秒、デフォルト10秒）してから送信 |
 | **PERMIT**(許可ダイアログ表示中) | キューに保存 — ダイアログが解消されてから配送 | **拒否** | それでもキュー — ダイアログには決して打鍵しない(`--force` でも) | — |
+| **IGNORED**(全 Claude ペイン非表示) | **拒否** — キューにも保存しない | 拒否 | 拒否 | 拒否 — ccm が見ていないウィンドウに Claude を起動することはない。拒否メッセージが `ccm unignore <project>` を案内 |
 
 ### スプール（store-and-forward）
 
@@ -304,6 +305,7 @@ ccm setup-hooks
 | 状態 | 検出方法 | 詳細 |
 |------|----------|------|
 | **SHELL** | プロセスチェック | ウィンドウの子プロセスに `claude` が見つからない |
+| **IGNORED** | ペインオプション + プロセスチェック | `claude` をホストするペインが全て `@ccm_ignore` で除外され、可視ペインのどれもホストしていない状態 — ccm は意図的にその Claude を見ていないため、SHELL/DOWN（「Claude は起動していない」）は根拠のない主張になる。PERMIT > BUSY > IDLE > SHELL の梯子の段ではなく、SHELL/DOWN の主張に先立って判定される可視性の結論。`⊘`（dim）で表示。`ccm send` は拒否され `ccm unignore` を案内。auto-exit は反応しない（IDLE にのみ作用） |
 | **BUSY** | event-log + JSONL stop_reason | 主経路: BUSY 系フック (`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`SubagentStart`/`Stop`、`PreCompact`/`PostCompact`) が追記する per-session event log (`hooks/<sessionId>.events.jsonl`、Claude Code の session UUID でキー)。`derive_state_from_events` が tail を純関数で評価し、最新エントリが start-class なら BUSY を返す。フック沈黙時は JSONL `stop_reason` で橋渡し: 直近の `tool_use` ならツールターン境界の Stop を超えて BUSY を維持、`end_turn` / `max_tokens` / `stop_sequence` が最新 event より新しければ数秒以内に IDLE へ release。Claude Code housekeeping レコード（`system/away_summary`、`turn_duration`、`attachment/task_reminder`、`permission-mode`、`file-history-snapshot`、`last-prompt`）は JSONL 活動から除外され、recap や起動時 housekeeping が偽の活動として検出されない |
 | **IDLE** | event-log + capture-pane | event log の最新エントリが end-class（`stop` / `notify_idle` / `notify_permit` 解消後）で、入力プロンプト `❯ ` が表示されており、PERMIT フッターにマッチしない状態。フックなし時は legacy fallback がプロセスツリー + プロンプト可視性のみで判定 |
 | **PERMIT** | フック + capture-pane フォールバック | 主経路: `PermissionRequest` / `PermissionDenied` / `Notification`（permission_prompt）フック。フォールバック: モーダルフッター（permission ダイアログの `Esc to cancel · Tab to amend`、confirmation modal の `Enter to confirm · Esc to <verb>` — v2.1.144 の `/model` 形式 `Enter to confirm · d to set as default for new sessions · Esc to cancel` のような中間 `· <action key>` セグメントも許容）をペインから直接検出 — フックが途中で停止したセッションでも捕捉可能 |

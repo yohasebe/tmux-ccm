@@ -647,6 +647,9 @@ Use the following commands to discover, inspect, and coordinate other projects:
       buffer and mixes with Claude's current turn)
     - **SHELL** → refused unless `--start` (launches Claude first, waits
       ~2s, then sends)
+    - **IGNORED** → always refused. Every Claude pane in the window is
+      hidden via `@ccm_ignore`, so there is no visible target. Ask the
+      user to run `ccm unignore <name>` first.
     - **PERMIT** → **always refused, even with `--force`**. Typing into
       a permission dialog could accidentally approve or deny a tool
       call. Ask the user to respond to the dialog in the target pane

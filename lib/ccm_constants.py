@@ -770,6 +770,7 @@ TERMINAL_STOP_REASONS_TUPLE = tuple(sorted(TERMINAL_STOP_REASONS))
 # paths is bash-only (not a detection state).
 STATE_ICONS = {
     "PERMIT": "⚠", "BUSY": "◉", "IDLE": "●", "SHELL": "■", "DOWN": "○",
+    "IGNORED": "⊘",
 }
 
 

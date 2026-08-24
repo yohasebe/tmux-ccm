@@ -44,6 +44,7 @@ TMUX_COLORS = {
     "IDLE": "#5f87af",
     "SHELL": "#8a8a8a",
     "DOWN": "#8a8a8a",
+    "IGNORED": "#8a8a8a",
 }
 
 
