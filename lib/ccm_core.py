@@ -573,24 +573,27 @@ def _count_panes(panes_cache, win_target):
 
 def _resolve_ignored_panes(panes_cache, win_target, ps_lines):
     """Number of LIVE ignored panes (`@ccm_ignore` set AND currently
-    hosting a claude process) for the window's `⊘` marker — and
-    self-heal stale markers.
+    hosting claude or a known external-agent CLI) for the window's `⊘`
+    marker — and self-heal stale markers.
 
     `@ccm_ignore` lives on the tmux PANE, but the sidekick it hides is
-    a SESSION. When that claude exits, the pane keeps the option (the
+    a SESSION. When that agent exits, the pane keeps the option (the
     ignored session's own SessionEnd hook early-exits, so nothing
     clears it, and the pane survives as a shell). Left as-is, the `⊘`
-    would linger after the sidekick is gone, and a NEW claude later
+    would linger after the sidekick is gone, and a NEW agent later
     launched in that same pane would be silently ignored. So a pane
-    marked ignored but no longer hosting claude is stale: its
-    `@ccm_ignore` is unset here and it is not counted. A genuinely
-    live env-based sidekick (`CCM_IGNORE=1`) re-stamps the marker on
-    its next hook fire, so a rare spurious clear self-corrects."""
+    marked ignored but no longer hosting claude or a known external
+    agent is stale: its `@ccm_ignore` is unset here and it is not
+    counted. The liveness question is the same one the attention
+    reader answers (`external_agent_name`); a genuinely live env-based
+    sidekick (`CCM_IGNORE=1`) re-stamps the marker on its next hook
+    fire, so a rare spurious clear self-corrects."""
     count = 0
     for pc in panes_cache:
         if pc[0] != win_target or not _pane_is_ignored(pc):
             continue
-        if ccm_detection.find_claude_pid(pc[1], ps_lines):
+        if (ccm_detection.find_claude_pid(pc[1], ps_lines)
+                or external_agent_name(pc[3])):
             count += 1
         else:
             tmux_cmd("set-option", "-p", "-t", pc[2], "-u", "@ccm_ignore")

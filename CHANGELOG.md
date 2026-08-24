@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- The ignore marker on a pane running a known external-agent CLI (the main
+  use of `ccm ignore`) is no longer stripped as stale — it survived only
+  while claude ran there, so a hidden sidekick agent reappeared after one
+  detection pass. Liveness now asks the same question the attention reader
+  asks: still hosting claude or a known agent.
 - A turn cancelled with Esc before the answer began no longer holds the
   project busy for ten minutes. Nothing writes a terminal record in that
   case, so both detection paths had to fall back on the pane — and only one

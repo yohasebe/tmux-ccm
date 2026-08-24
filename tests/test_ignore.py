@@ -41,8 +41,9 @@ class TestPaneIsIgnored:
 
 class TestResolveIgnoredPanes:
     """`_resolve_ignored_panes` counts only LIVE ignored panes (marker
-    set AND hosting a claude process) and self-heals stale markers left
-    when a sidekick claude exits but its pane survives as a shell."""
+    set AND hosting claude or a known external-agent CLI) and
+    self-heals stale markers left when a sidekick agent exits but its
+    pane survives as a shell."""
 
     def _live_claude(self, monkeypatch, live_pids):
         """Stub find_claude_pid so given pane pids read as hosting
@@ -79,6 +80,18 @@ class TestResolveIgnoredPanes:
         cache = [("0:1", "100", "%0", "claude", "1", "40", "1")]
         assert ccm_core._resolve_ignored_panes(cache, "0:1", []) == 1
         # A live sidekick's marker must NOT be cleared.
+        assert not any(c[0] == "set-option" and "-u" in c for c in calls)
+
+    def test_ignored_external_agent_pane_kept(self, monkeypatch):
+        # An ignored pane hosting a known external-agent CLI (the main
+        # CCM_IGNORE use case) is live even with no claude process:
+        # counted, and its marker is left intact. Without this the
+        # self-heal would strip the marker off exactly the panes it is
+        # meant for — an ignored sidekick agent would reappear while
+        # the claude pane stayed hidden.
+        calls = self._live_claude(monkeypatch, set())  # no live claude
+        cache = [("0:1", "100", "%0", "kimi", "1", "40", "1")]
+        assert ccm_core._resolve_ignored_panes(cache, "0:1", []) == 1
         assert not any(c[0] == "set-option" and "-u" in c for c in calls)
 
     def test_total_pane_count_includes_ignored(self):
