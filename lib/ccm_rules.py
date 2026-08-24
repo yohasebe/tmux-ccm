@@ -68,7 +68,8 @@ class DetectionContext:
     All fields are derived before any rule is evaluated, so rule
     matching is a pure function of this context.
     """
-    raw: str              # detect_window_raw result: DOWN/SHELL/BUSY/IDLE
+    raw: str              # detect_window_raw result:
+                          # DOWN/SHELL/BUSY/IDLE/PERMIT/IGNORED
     hook_state: str       # hook signal state: BUSY/PERMIT/SHELL/""
     hook_ts: int          # hook signal timestamp (0 if no signal)
     hook_age: int         # now - hook_ts (-1 if no signal)
@@ -220,15 +221,30 @@ class Rule:
 # Priority-ordered rule table. First match wins.
 #
 # Priority rationale:
-#   1-2  process tree authoritative for SHELL/DOWN
-#   3    fresh BUSY hook beats stale pipeline (rare race
+#   1    visibility verdict authoritative for IGNORED (the window's
+#        claude is deliberately unseen — no ladder claim may stand)
+#   2-3  process tree authoritative for SHELL/DOWN
+#   4    fresh BUSY hook beats stale pipeline (rare race
 #        where event-log is empty but hook just fired)
-#   4    startup transient: demote raw=BUSY during MCP loading
+#   5    startup transient: demote raw=BUSY during MCP loading
 #        (pid-age based, monotonic discriminator)
-#   5-6  raw BUSY/PERMIT passthrough (process-tree fallback for
+#   6-7  raw BUSY/PERMIT passthrough (process-tree fallback for
 #        hook-less detection)
-#   7    default: trust raw state
+#   8    default: trust raw state
 DETECTION_RULES: Tuple[Rule, ...] = (
+    Rule(
+        # IGNORED is not a rung of the PERMIT>BUSY>IDLE>SHELL ladder
+        # but a visibility verdict from `detect_window_raw`: at least
+        # one ignored pane hosts claude and no visible pane does, so
+        # SHELL/DOWN would assert "claude is not running" on evidence
+        # ccm chose not to look at. Passthrough, like the two rules
+        # below. First so no hook/jsonl evidence from sessions ccm is
+        # deliberately not watching can resurrect an activity claim.
+        name="process_ignored",
+        raw_in=("IGNORED",),
+        result="IGNORED",
+        phase="shell",
+    ),
     Rule(name="process_down", raw_in=("DOWN",), result="DOWN", phase="shell"),
     Rule(name="process_shell", raw_in=("SHELL",), result="SHELL", phase="shell"),
     Rule(
@@ -341,6 +357,7 @@ _FAST_PREV_TO_RAW = {
     "BUSY": "BUSY",
     "PERMIT": "PERMIT",
     "IDLE": "IDLE",
+    "IGNORED": "IGNORED",
     "": "IDLE",
 }
 

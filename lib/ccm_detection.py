@@ -365,7 +365,13 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
     rule, legacy_state = evaluate_rules(ctx)
 
     event_log_state = None
-    if _event_log_enabled():
+    # raw=IGNORED short-circuits the event-log path: the verdict is
+    # about visibility (every claude pane is deliberately unseen), not
+    # activity, and the log belongs to sessions ccm chose not to
+    # watch — their hooks early-exit, so anything in it is stale and
+    # must not resurrect a claim. It would also read pid_present as
+    # False and answer SHELL, overriding the verdict.
+    if _event_log_enabled() and ctx.raw != "IGNORED":
         # `ctx.session_id or ""` — same N+1 guard as the hook-signal
         # read in build_detection_context: a SHELL window has no
         # session_id, and None would trigger a per-cycle tmux
@@ -374,8 +380,9 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
             project_dir, session_id=ctx.session_id or "")
         # pid_present: the legacy raw detection already resolved
         # SHELL when no claude process is present, so raw not in
-        # ("SHELL", "DOWN") is a reliable proxy without a second ps scan.
-        pid_present = ctx.raw not in ("SHELL", "DOWN")
+        # ("SHELL", "DOWN") is a reliable proxy without a second ps
+        # scan. IGNORED's visible panes host no claude either.
+        pid_present = ctx.raw not in ("SHELL", "DOWN", "IGNORED")
         event_log_state = derive_state_from_events(
             events=events,
             jsonl_stop_reason=ctx.jsonl_last_stop_reason,

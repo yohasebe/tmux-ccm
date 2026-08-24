@@ -602,9 +602,11 @@ class TestPipelineInvariants:
     inputs and verify each output respects the documented invariants.
     Pure unit-level — no mocks."""
 
-    @pytest.mark.parametrize("raw", ["IDLE", "BUSY", "PERMIT", "SHELL", "DOWN"])
+    @pytest.mark.parametrize("raw", ["IDLE", "BUSY", "PERMIT", "SHELL",
+                                     "DOWN", "IGNORED"])
     @pytest.mark.parametrize("hook_state", ["", "BUSY", "PERMIT"])
-    @pytest.mark.parametrize("prev_state", ["IDLE", "BUSY", "PERMIT", "SHELL"])
+    @pytest.mark.parametrize("prev_state", ["IDLE", "BUSY", "PERMIT", "SHELL",
+                                            "IGNORED"])
     def test_resolved_state_always_in_valid_set(
         self, raw, hook_state, prev_state
     ):

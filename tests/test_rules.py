@@ -130,6 +130,7 @@ class TestRulePhaseAnnotations:
         (and ccm_detection.py) together so the intent is explicit
         in two places."""
         expected = {
+            "process_ignored": "shell",
             "process_down": "shell",
             "process_shell": "shell",
             "hook_fresh_busy": "midturn",

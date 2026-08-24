@@ -464,12 +464,26 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,
     a hidden sidekick session (a second Claude pane launched with
     `CCM_IGNORE=1`) never contributes its PERMIT/BUSY to the window's
     state.
+
+    Visibility verdict — IGNORED is not a rung of the ladder above
+    but a different kind of conclusion, checked before SHELL/DOWN is
+    allowed to stand: if at least one IGNORED pane hosts claude and
+    no visible pane does, the window's claude is deliberately
+    unseen. SHELL ("claude is not running") or DOWN would then be
+    claims ccm has no basis for — it chose not to look. IGNORED says
+    "ccm cannot answer" instead. When no ignored pane hosts claude,
+    SHELL / DOWN stand as before (nothing is hidden, so the claim is
+    honest). Liveness uses the same `find_claude_pid` predicate
+    `_resolve_ignored_panes` uses, on the already-fetched `ps_lines`.
     """
     panes = []
+    hidden_claude = False
     for pc in panes_cache:
         if pc[0] != win_target:
             continue
         if ccm_core._pane_is_ignored(pc):
+            if find_claude_pid(pc[1], ps_lines):
+                hidden_claude = True
             continue
         try:
             height = int(pc[5]) if pc[5] else None
@@ -480,7 +494,7 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,
         panes.append((pc[1], pc[2], pc[3], height))
 
     if not panes:
-        return "DOWN"
+        return "IGNORED" if hidden_claude else "DOWN"
 
     eligible = [p for p in panes
                 if p[3] is None or p[3] >= ccm_core.SLIVER_HEIGHT_THRESHOLD]
@@ -499,6 +513,11 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,
             best = "BUSY"
         elif state == "IDLE" and best != "BUSY":
             best = "IDLE"
+    # A SHELL verdict claims "no claude in this window". If the only
+    # claude is in an ignored pane, that claim rests on evidence ccm
+    # deliberately excluded — answer IGNORED instead (see docstring).
+    if best == "SHELL" and hidden_claude:
+        return "IGNORED"
     return best
 
 

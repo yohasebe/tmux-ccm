@@ -141,6 +141,118 @@ class TestRawAggregationSkip:
         assert self._run(cache, {"100": "BUSY"}) == "DOWN"
 
 
+class TestIgnoredVerdict:
+    """The window-level IGNORED verdict in `detect_window_raw`: when
+    every claude-hosting pane is ignored and no visible pane hosts
+    claude, the window is IGNORED — SHELL / DOWN would claim "claude
+    is not running" on evidence ccm deliberately excluded. Not a rung
+    of the PERMIT > BUSY > IDLE > SHELL ladder: any visible claude
+    answers normally instead."""
+
+    def _run(self, cache, pane_states, claude_pids):
+        def _fake_detect(pid, pane_id, ps_lines, own_pgid,
+                         current_command=None, **_kwargs):
+            return pane_states[pid]
+        with patch.object(ccm_pane_state, "detect_pane_state",
+                          _fake_detect), \
+                patch.object(ccm_pane_state, "find_claude_pid",
+                             lambda pid, ps: pid if pid in claude_pids
+                             else None):
+            return ccm_pane_state.detect_window_raw(
+                "0:1", cache, [], "999")
+
+    def test_visible_claude_ignored_sidekick_unchanged(self):
+        # Claude visible + sidekick ignored → normal aggregation.
+        cache = [
+            ("0:1", "100", "%0", "claude", "1", "40", ""),   # main, IDLE
+            ("0:1", "200", "%1", "kimi", "0", "40", "1"),    # ignored agent
+        ]
+        assert self._run(cache, {"100": "IDLE"}, set()) == "IDLE"
+
+    def test_ignored_claude_visible_sidekick_is_ignored(self):
+        # Claude ignored + sidekick visible → IGNORED. This was the
+        # false SHELL: the only claude is deliberately unseen.
+        cache = [
+            ("0:1", "100", "%0", "kimi", "1", "40", ""),     # visible agent
+            ("0:1", "200", "%1", "claude", "0", "40", "1"),  # ignored claude
+        ]
+        assert self._run(cache, {"100": "SHELL"}, {"200"}) == "IGNORED"
+
+    def test_ignored_claude_plus_visible_claude_unchanged(self):
+        # Claude ignored + ANOTHER claude visible → the visible one
+        # answers, as before.
+        cache = [
+            ("0:1", "100", "%0", "claude", "1", "40", ""),   # visible, IDLE
+            ("0:1", "200", "%1", "claude", "0", "40", "1"),  # ignored claude
+        ]
+        assert self._run(cache, {"100": "IDLE"}, {"200"}) == "IDLE"
+
+    def test_no_claude_anywhere_stays_shell(self):
+        # No claude at all + ignored sidekick → still SHELL (nothing
+        # is hidden, so the claim is honest).
+        cache = [
+            ("0:1", "100", "%0", "zsh", "1", "40", ""),      # visible shell
+            ("0:1", "200", "%1", "kimi", "0", "40", "1"),    # ignored agent
+        ]
+        assert self._run(cache, {"100": "SHELL"}, set()) == "SHELL"
+
+    def test_no_claude_all_panes_ignored_stays_down(self):
+        cache = [("0:1", "200", "%1", "kimi", "0", "40", "1")]
+        assert self._run(cache, {}, set()) == "DOWN"
+
+    def test_all_panes_ignored_with_claude_is_ignored(self):
+        # Was DOWN — another claim ccm has no basis for while the
+        # window's only claude is deliberately unseen.
+        cache = [("0:1", "200", "%1", "claude", "0", "40", "1")]
+        assert self._run(cache, {}, {"200"}) == "IGNORED"
+
+
+class TestIgnoredPipeline:
+    """IGNORED must survive the resolution pipeline unchanged: the
+    legacy rule table passes it through, the event-log path never
+    overrides it, and the statusline fast path keeps it."""
+
+    def _ctx(self, **kw):
+        import ccm_rules
+        base = dict(raw="IGNORED", hook_state="", hook_ts=0,
+                    hook_age=-1, prev_state="SHELL", jsonl_age=-1,
+                    now=1000)
+        base.update(kw)
+        return ccm_rules.DetectionContext(**base)
+
+    def test_rule_table_passes_ignored_through(self):
+        import ccm_rules
+        _rule, state = ccm_rules.evaluate_rules(self._ctx())
+        assert state == "IGNORED"
+
+    def test_fresh_busy_hook_cannot_override_ignored(self):
+        # The visibility verdict sits FIRST in the rule table: even a
+        # fresh BUSY hook signal (fired just before the session was
+        # ignored, still inside the trust window) must not resurrect
+        # an activity claim for a window whose claude is deliberately
+        # unseen. Without the `process_ignored` rule, hook_fresh_busy
+        # would answer BUSY here.
+        import ccm_rules
+        ctx = self._ctx(hook_state="BUSY", hook_ts=999, hook_age=1,
+                        jsonl_age=2)
+        _rule, state = ccm_rules.evaluate_rules(ctx)
+        assert state == "IGNORED"
+
+    def test_event_log_does_not_override_ignored(self):
+        # Without the short-circuit, derive_state_from_events reads
+        # pid_present=False (no claude among visible panes) and
+        # answers SHELL — overriding the visibility verdict.
+        import ccm_detection
+        state, _rule, event_log_state = \
+            ccm_detection.resolve_state_from_context(self._ctx(), "/tmp/x")
+        assert event_log_state is None
+        assert state == "IGNORED"
+
+    def test_fast_path_keeps_ignored(self):
+        import ccm_rules
+        assert ccm_rules.evaluate_fast("IGNORED", None) == "IGNORED"
+
+
 class TestPrimaryPidSkip:
     """The window's tracked session must never resolve to an ignored
     pane's claude."""

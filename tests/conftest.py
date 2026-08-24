@@ -239,7 +239,8 @@ def make_ps_lines(*entries):
 # allowed to commit. Any rule resolution outside this set means a
 # bug in DETECTION_RULES (the dashboard renderer assumes it sees only
 # these). Used by Pipeline / Derive invariant tests.
-VALID_RESOLVED_STATES = frozenset({"SHELL", "DOWN", "BUSY", "IDLE", "PERMIT"})
+VALID_RESOLVED_STATES = frozenset(
+    {"SHELL", "DOWN", "BUSY", "IDLE", "PERMIT", "IGNORED"})
 
 
 def make_ctx(**overrides):
