@@ -337,6 +337,34 @@ class TestCmdSend:
 
     # --- state gating ---
 
+    def test_send_ignored_rejected_with_unignore_guidance(
+        self, monkeypatch, capsys
+    ):
+        """IGNORED is a hard guard: ccm cannot see a delivery target,
+        so the send is refused — not queued, not auto-started — and
+        the refusal names `ccm unignore` as the only exit."""
+        project = self._make_project(state="IGNORED")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd", return_value=""), \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "hello"])
+        err = capsys.readouterr().err
+        assert "IGNORED state" in err
+        assert "ccm unignore demo" in err
+
+    def test_send_ignored_rejected_with_start_and_force(self, monkeypatch):
+        """Neither --start nor --force overrides IGNORED: launching
+        would type into a visible pane (e.g. a sidekick's), and force
+        only overrides BUSY."""
+        project = self._make_project(state="IGNORED")
+        self._patch_resolution(monkeypatch, project=project)
+        for flags in (["--start"], ["--force", "--now"], ["--start", "--force"]):
+            with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                    pytest.raises(SystemExit):
+                ccm_send.cmd_send(["demo", *flags, "hello"])
+            calls = self._tmux_calls(mock_tmux)
+            assert not any(c[:2] == ("send-keys", "-t") for c in calls), flags
+
     def test_send_permit_rejected(self, monkeypatch, capsys):
         """PERMIT state is a hard guard — refuse unconditionally.
         (Via --now: by default the message is spooled instead; the

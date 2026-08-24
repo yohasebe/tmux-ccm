@@ -704,6 +704,21 @@ def cmd_send(args):
             lines.extend(f"    {l}" for l in tail_lines)
         ccm_core.ccm_die("\n".join(lines))
 
+    # IGNORED: every claude pane in the window is excluded via
+    # `@ccm_ignore`, so ccm cannot see a delivery target at all.
+    # Refused unconditionally — never queued (the spool assumes a
+    # deliverable target exists) and never auto-started (`--start`
+    # would launch claude into a visible pane, e.g. a sidekick's).
+    # `ccm unignore` is the only exit from an invisible window.
+    if state == "IGNORED":
+        ccm_core.ccm_die(
+            f"{project_name} is in IGNORED state — every Claude pane in "
+            "its window is hidden via @ccm_ignore, so there is no "
+            "visible delivery target.\n"
+            f"  Run `ccm unignore {project_name}` to make the window "
+            "visible again, then retry."
+        )
+
     # True once we actually launched Claude this invocation (SHELL +
     # --start). Gates post-send delivery verification: only a
     # freshly-launched target can be in the premature-IDLE window
