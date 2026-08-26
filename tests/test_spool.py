@@ -502,6 +502,21 @@ class TestDeliverablePane:
         pane_id, reason = ccm_spool._deliverable_pane("0:5")
         assert pane_id is None and "draft" in reason
 
+    def test_dim_suggestion_does_not_defer(self, monkeypatch):
+        """Claude Code's dim-rendered next-prompt suggestion is not a
+        draft — the delivery check must see through it via the `-e`
+        capture, answering through the same shared function as
+        `ccm send`'s guard."""
+        ghost = "\x1b[39m❯ \x1b[2mnow try that\x1b[0m"
+        self._stub_panes(monkeypatch)
+        monkeypatch.setattr(
+            ccm_core, "tmux_cmd",
+            lambda *a: (composer_screen(ghost) if "-e" in a
+                        else composer_screen("❯ now try that"))
+            if a[0] == "capture-pane" else "")
+        pane_id, reason = ccm_spool._deliverable_pane("0:5")
+        assert pane_id == "%51" and reason is None
+
     def test_agents_tui_defers(self, monkeypatch):
         self._stub_panes(monkeypatch)
         monkeypatch.setattr(ccm_core, "is_agents_tui", lambda t: True)

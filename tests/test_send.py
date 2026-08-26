@@ -1542,3 +1542,51 @@ class TestComposerDraftGuard:
         # `❯ ` prefix leaves room for 58 x's plus the ellipsis.
         assert "x" * 58 in err and "x" * 59 not in err
         assert "..." in err
+
+    def test_dim_suggestion_is_not_a_draft(self, monkeypatch):
+        """Claude Code draws a next-prompt SUGGESTION into the composer
+        after a turn ends — the exact moment a send is meant to land —
+        with the same `❯` line shape as a draft but entirely dim
+        (SGR 2). A plain capture drops the attribute, so only the
+        `-e` capture can tell it from a draft. The suggestion vanishes
+        on the first keystroke, so it must never refuse a send."""
+        ghost = "\x1b[39m❯ \x1b[2mnow try http://example.com/ and compare\x1b[0m"
+
+        def capture(args):
+            if "-e" in args:
+                return composer_screen(ghost)
+            return composer_screen("❯ now try http://example.com/ and compare")
+        calls = self._patch(monkeypatch, capture)
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls), \
+            "Claude's dim suggestion was mistaken for a draft"
+
+    def test_dim_mixed_with_plain_text_is_a_draft(self, monkeypatch):
+        """Only an ENTIRELY dim fragment is the suggestion. A genuine
+        draft with a dim fragment mixed in keeps the draft verdict —
+        the safe side."""
+        mixed = "\x1b[39m❯ real words \x1b[2mthen a dim tail\x1b[0m"
+
+        def capture(args):
+            if "-e" in args:
+                return composer_screen(mixed)
+            return composer_screen("❯ real words then a dim tail")
+        calls = self._patch(monkeypatch, capture)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)
+
+    def test_unreadable_attribute_capture_keeps_draft_verdict(
+        self, monkeypatch
+    ):
+        """When the `-e` capture fails, the plain-text verdict stands
+        (refuse side) — the dim discriminator is additive, never a new
+        failure mode."""
+        def capture(args):
+            if "-e" in args:
+                return ""
+            return composer_screen("❯ half-typed thought")
+        calls = self._patch(monkeypatch, capture)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)

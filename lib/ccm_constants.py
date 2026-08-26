@@ -241,7 +241,7 @@ PATTERN_COMPOSER_RULE = re.compile(r"^\s*\u2500{10,}\s*$")
 COMPOSER_TAIL_WINDOW = 6
 
 
-def composer_draft_fragment(pane_text):
+def composer_draft_fragment(pane_text, pane_text_attributed=None):
     """A one-line fragment of the half-typed draft in the pane's
     composer, or None when the composer is bare — or absent.
 
@@ -249,6 +249,20 @@ def composer_draft_fragment(pane_text):
     The caller decides what an open dialog means from the detected
     state, and answering that question twice, in two places, is how
     the two answers start to disagree.
+
+    `pane_text_attributed` is the same pane captured with
+    `capture-pane -e` (SGR attributes kept). Claude Code draws a
+    next-prompt SUGGESTION into the composer when a turn ends — the
+    exact moment a send is meant to land — with the same `❯` line
+    shape as a half-typed draft, but entirely in dim (SGR 2). A plain
+    capture drops that attribute, so the suggestion read as a draft
+    and refused (or spooled) the send; the suggestion vanishes on the
+    first real keystroke, so refusing on it never protected anything.
+    A fragment whose text is entirely dim is the suggestion, not a
+    draft → None. Any non-dim character keeps the draft verdict (the
+    safe side), and a missing / misaligned attribute capture falls
+    back to the plain-text answer, unchanged from before this
+    discriminator existed.
     """
     lines = pane_text.split("\n")
     while lines and not lines[-1].strip():
@@ -256,11 +270,63 @@ def composer_draft_fragment(pane_text):
     rules = [i for i, ln in enumerate(lines) if PATTERN_COMPOSER_RULE.match(ln)]
     if len(rules) < 2 or len(lines) - rules[-1] > COMPOSER_TAIL_WINDOW:
         return None
-    for ln in lines[rules[-2] + 1:rules[-1]]:
+    for idx in range(rules[-2] + 1, rules[-1]):
+        ln = lines[idx]
         if PATTERN_COMPOSER_DRAFT.match(ln):
+            if pane_text_attributed is not None:
+                att_lines = pane_text_attributed.split("\n")
+                if (idx < len(att_lines)
+                        and _fragment_text_is_dim(att_lines[idx])):
+                    return None
             fragment = ln.strip()
             return fragment[:60] + "..." if len(fragment) > 60 else fragment
     return None
+
+
+_SGR_PARAM_RE = re.compile(r"\x1b\[([0-9;]*)m")
+
+
+def _fragment_text_is_dim(attributed_line):
+    """True when every visible character after the composer prompt
+    glyph carries the dim attribute (SGR 2) — the signature of Claude
+    Code's next-prompt suggestion, e.g.
+    `\\x1b[39m❯ \\x1b[2mnow try …\\x1b[0m`. The glyph itself is chrome
+    (not dim), so it and the whitespace after it are skipped first.
+    Any non-dim visible character — a genuine draft, or one with a dim
+    fragment mixed in — answers False: the safe side keeps calling it
+    a draft."""
+    dim = False
+    past_prefix = False
+    saw_text = False
+    pos = 0
+
+    def _scan(chunk):
+        nonlocal past_prefix, saw_text
+        for ch in chunk:
+            if not past_prefix:
+                if ch in _PROMPT_CHARS or ch.isspace():
+                    continue
+                past_prefix = True
+            if not ch.isspace():
+                saw_text = True
+                if not dim:
+                    return False
+        return True
+
+    for m in _SGR_PARAM_RE.finditer(attributed_line):
+        if not _scan(attributed_line[pos:m.start()]):
+            return False
+        for p in m.group(1).split(";"):
+            if p in ("", "0"):
+                dim = False
+            elif p == "2":
+                dim = True
+            elif p == "22":
+                dim = False
+        pos = m.end()
+    if not _scan(attributed_line[pos:]):
+        return False
+    return saw_text
 
 # Active-work spinner footer. Claude Code renders a status line of
 # the shape `<glyph> <verb>… (<elapsed> · <arrow> <N>k tokens)` ONLY

@@ -241,7 +241,7 @@ ccm spool cancel <id> <project>   # withdraw one (a queued mis-send is cancellab
 ccm spool cancel --all <project>  # clear the project's queue
 ```
 
-The state check is not the only gate. State detection cannot see a half-typed draft in the target's composer (an `❯` prompt holding text still reads IDLE), so immediately before typing, `ccm send` reads the composer line itself and — while a draft is present — queues the message like any other undeliverable state (`--now` refuses instead). Otherwise the message would merge into text you are still writing, and the Enter would submit the garbled mix.
+The state check is not the only gate. State detection cannot see a half-typed draft in the target's composer (an `❯` prompt holding text still reads IDLE), so immediately before typing, `ccm send` reads the composer line itself and — while a draft is present — queues the message like any other undeliverable state (`--now` refuses instead). Otherwise the message would merge into text you are still writing, and the Enter would submit the garbled mix. Claude Code's own next-prompt suggestion (drawn dim in the composer when a turn ends) is distinguished from a real draft via the capture's SGR attributes and does not block a send — it vanishes on the first keystroke, so there is nothing to protect.
 
 ### Flags
 
