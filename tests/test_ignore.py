@@ -170,8 +170,8 @@ class TestIgnoredVerdict:
         assert self._run(cache, {"100": "IDLE"}, set()) == "IDLE"
 
     def test_ignored_claude_visible_sidekick_is_ignored(self):
-        # Claude ignored + sidekick visible → IGNORED. This was the
-        # false SHELL: the only claude is deliberately unseen.
+        # Claude ignored + sidekick visible → IGNORED. The false
+        # SHELL case: the only claude is deliberately unseen.
         cache = [
             ("0:1", "100", "%0", "kimi", "1", "40", ""),     # visible agent
             ("0:1", "200", "%1", "claude", "0", "40", "1"),  # ignored claude

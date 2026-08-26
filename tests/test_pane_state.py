@@ -315,8 +315,8 @@ class TestDetectPaneState:
     def test_busy_spinner_clipped_by_pane_width(self, mock_tmux):
         """A narrow pane clips the footer at its right edge before the
         closing parenthesis — `✳ Slithering… (5s · ↓ 25 tok` — and
-        ccm's own sidekick layout splits windows into panes narrow
-        enough to do that daily. End of line closes the match; the
+        a sidekick layout splits windows into panes narrow enough
+        to do that. End of line closes the match; the
         finished line (`Crunched for 8s`) still fails, having no
         opening paren at all."""
         ps = make_ps_lines(
