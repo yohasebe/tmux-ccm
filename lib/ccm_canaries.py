@@ -159,6 +159,11 @@ MANAGED_SETTINGS_FILES = {
     "win32": r"C:\ProgramData\ClaudeCode\managed-settings.json",
 }
 MANAGED_SETTINGS_DEFAULT = "/etc/claude-code/managed-settings.json"
+# The label `_settings_sources` gives the managed file. It is BOTH
+# printed and compared against, so it lives in one place: renaming a
+# label that doubles as a discriminator silently stops a warning
+# firing, which is the one direction a canary must never fail in.
+MANAGED_SOURCE_LABEL = "managed-settings.json"
 
 
 def _read_settings_file(path):
@@ -179,8 +184,17 @@ def _settings_sources(projects=None):
     one that decides. Getting this order wrong does not change whether
     a warning fires, but it names the wrong file when more than one
     carries the flag, and the name is the whole point of saying it.
+
+    Only the FILE form of the managed tier is here. An organization can
+    also deliver managed settings through MDM / OS policy or from the
+    claude.ai console, and neither leaves a file to read — so a flag
+    enforced that way is invisible from here. That is why the label is
+    the file name rather than "managed settings": a check that cannot
+    see two of the three delivery paths must not answer for the tier.
+    Claude Code itself is the authority (`/status` names the managed
+    source in force); ccm does not re-derive it.
     """
-    yield ("managed settings",
+    yield (MANAGED_SOURCE_LABEL,
            MANAGED_SETTINGS_FILES.get(sys.platform, MANAGED_SETTINGS_DEFAULT))
     for project in projects or []:
         directory = os.path.expanduser(getattr(project, "dir", "") or "")
@@ -252,7 +266,7 @@ def managed_hooks_only_warning(projects=None) -> str:
     """
     del projects  # deliberately not scanned; see above
     source = _flag_source("allowManagedHooksOnly")
-    if source == "managed settings":
+    if source == MANAGED_SOURCE_LABEL:
         return (
             f"Claude Code `allowManagedHooksOnly: true` is set in "
             f"{source} — all user-scope hooks (including every ccm "

@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `ccm send` no longer refuses to deliver because of Claude Code's own
+  next-prompt suggestion. Claude Code draws that suggestion into the composer
+  when a turn ends — the moment a send is meant to land — with the same `❯`
+  line shape as a half-typed draft but entirely dim, and the composer guard
+  captured without the terminal's attributes, so it read as a draft and the
+  message was refused (or queued until it expired). The guard now reads the
+  attributes too: an entirely dim line is the suggestion, any non-dim
+  character keeps the draft verdict, and an unreadable attribute capture
+  falls back to refusing as before.
+- `ccm doctor` no longer reports the managed settings tier when it has read
+  one file from it. An organization can deliver `disableAllHooks` or
+  `allowManagedHooksOnly` through MDM / OS policy or from the claude.ai
+  console, and neither leaves a file to read — so a green "not set (managed
+  settings)" claimed a scope the check does not have, in the one direction a
+  canary must never fail in. Both rows now name `managed-settings.json` and
+  point at `/status`, which is what knows the managed source in force.
 - A window whose only Claude lives in an ignored pane no longer claims
   SHELL or DOWN. ccm deliberately does not see that Claude, so it has no
   basis for either claim — and SHELL made `ccm send` queue messages

@@ -301,7 +301,28 @@ class TestSettingsScanScope:
         monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES",
                             {sys.platform: str(managed)})
         msg = ccm_canaries.managed_hooks_only_warning()
-        assert "managed settings" in msg, msg
+        # The file, not the tier: MDM and claude.ai-console delivery
+        # leave nothing on disk, so naming the tier would answer for
+        # two paths this check cannot see.
+        assert "managed-settings.json" in msg, msg
+        assert "managed settings" not in msg, msg
+
+    def test_the_warning_does_not_key_on_a_spelling(self, tmp_path,
+                                                     monkeypatch):
+        """The managed label is displayed AND compared against, so the
+        two must be one definition. When they were two, renaming the
+        display stopped the warning firing — a canary going quiet, the
+        one direction it must never fail in."""
+        self._isolate(monkeypatch, tmp_path)
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text('{"allowManagedHooksOnly": true}')
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT",
+                            str(managed))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES",
+                            {sys.platform: str(managed)})
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SOURCE_LABEL",
+                            "some other spelling")
+        assert ccm_canaries.managed_hooks_only_warning() != ""
 
     def test_the_user_file_is_reported_last(self, tmp_path, monkeypatch):
         """Claude Code resolves the user's own file last, so when two

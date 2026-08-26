@@ -912,18 +912,23 @@ def cmd_doctor():
     projects = ccm_core.build_project_list(fast=False)
     # Name the scope: a bare "not set" reads as a claim about
     # everywhere, and a session started with an explicit
-    # `--permission-mode` is out of reach.
+    # `--permission-mode` is out of reach. The managed tier is named by
+    # its FILE, not by the tier: MDM / OS policy and claude.ai-console
+    # delivery leave no file to read, so a flag enforced either way is
+    # invisible here and `/status` is the thing that knows.
     dah = ccm_canaries.disable_all_hooks_warning(projects)
     row(WARN if dah else OK,
         "disableAllHooks",
-        dah or "not set (managed, user and per-project settings)")
+        dah or "not set (managed-settings.json, user and per-project settings; MDM / console policies: see /status)")
     # This one is read from the administrator's file alone, because
     # that is the only place Claude Code honours it. Saying otherwise
-    # would claim a scope the check does not have.
+    # would claim a scope the check does not have — and this flag is
+    # the likeliest of the two to arrive by MDM or from the console,
+    # the two managed paths that leave nothing on disk.
     mho = ccm_canaries.managed_hooks_only_warning()
     row(WARN if mho else OK,
         "allowManagedHooksOnly",
-        mho or "not set (managed settings)")
+        mho or "not set (managed-settings.json; MDM / console policies: see /status)")
 
     cluster_msgs = ccm_canaries.shell_cluster_warnings(projects)
     if cluster_msgs:
