@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- The `claude agents` TUI is refused again on every row kind. The TUI
+  draws a different footer per row kind (session rows and collapsed
+  rows differ in the verb and middle segments), and the detector fixed
+  the leading verb — so on a collapsed row it read the pane as not the
+  TUI, lifting the refusal that keeps `ccm send` keystrokes from
+  spawning an unintended agent-view session. The pattern now matches
+  the stable skeleton: a line-start `enter to <verb>` and a closing
+  `? for shortcuts`.
 - `ccm send` no longer refuses to deliver because of Claude Code's own
   next-prompt suggestion. Claude Code draws that suggestion into the composer
   when a turn ends — the moment a send is meant to land — with the same `❯`

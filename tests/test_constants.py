@@ -505,11 +505,30 @@ class TestAgentsTUIDetection:
         )
         assert self._detect(text)
 
+    def test_collapsed_row_footer(self):
+        """The TUI draws a DIFFERENT footer for a collapsed row —
+        different verb, different middle segments. Fixing the leading
+        verb to `open` read this state as not-the-TUI and silently
+        lifted the send refusal: keystrokes spawned an unintended
+        agent-view session."""
+        text = (
+            "  3 sessions collapsed\n"
+            "enter to collapse · ctrl+x to delete all · ? for shortcuts"
+        )
+        assert self._detect(text)
+
+    def test_for_shortcuts_without_question_mark_not_matched(self):
+        """The literal `?` is a required anchor: a different UI that
+        merely ends in `for shortcuts` must not classify as the
+        agents TUI."""
+        assert not self._detect(
+            "enter to open · ctrl+x to delete · for shortcuts")
+
     def test_case_insensitive(self):
         """Upstream tweaks capitalization periodically; the matcher
         is IGNORECASE so we don't have to chase wording drift."""
         assert self._detect("Enter to open · ? for shortcuts")
-        assert self._detect("ENTER TO OPEN something FOR SHORTCUTS")
+        assert self._detect("ENTER TO OPEN something ? FOR SHORTCUTS")
 
     def test_empty_and_none(self):
         assert not self._detect("")

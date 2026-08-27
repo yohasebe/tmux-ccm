@@ -619,18 +619,25 @@ _PERMIT_GUIDANCE = {
 # `cmd_send` checks `PATTERN_AGENTS_FOOTER` against the captured pane
 # tail and refuses on match, with a tailored guidance message.
 #
-# Footer shape observed on v2.1.139+:
-#   "enter to open · space to reply · ctrl+x to delete · ? for shortcuts"
+# Footer shapes observed on v2.1.139+ — the TUI draws a DIFFERENT
+# footer per row kind, and only the skeleton is stable (the verb and
+# the middle segments vary):
+#   session row:   "enter to open · space to reply · ctrl+x to delete · ? for shortcuts"
+#   collapsed row: "enter to collapse · ctrl+x to delete all · ? for shortcuts"
 #
-# The "enter to open" prefix + "? for shortcuts" suffix together are
-# specific enough to the TUI that a permissive `.*?` between them is
-# safe — Claude response text containing those phrases at line start
-# is implausible, and the footer line lives at the captured-pane tail
-# (the only place `cmd_send` looks). IGNORECASE absorbs upstream
-# wording case shifts; MULTILINE lets `^` match any line so multi-row
-# capture works without splitting per-line.
+# Fixing the leading verb (`enter to open`) reads the collapsed-row
+# footer as NOT the TUI — and `is_agents_tui` returning False there
+# lifts the send refusal, so keystrokes meant for a conversation
+# silently spawn an agent-view session (the dangerous direction).
+# Generalised the same way PATTERN_PERMIT_FOOTER was: the leading
+# `enter to <verb>` is opaque; the invariants are the line-start
+# `enter to <word>` and the closing `? for shortcuts`, with the
+# literal `?` required so a different UI that merely ends in
+# `for shortcuts` does not match. IGNORECASE absorbs upstream wording
+# case shifts; MULTILINE lets `^` match any line so multi-row capture
+# works without splitting per-line.
 PATTERN_AGENTS_FOOTER = re.compile(
-    r"^\s*enter to open\b.*?\bfor shortcuts\b",
+    r"^\s*enter to \S+\b.*?\?\s*for shortcuts\b",
     re.IGNORECASE | re.MULTILINE,
 )
 
