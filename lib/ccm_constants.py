@@ -620,25 +620,38 @@ _PERMIT_GUIDANCE = {
 # tail and refuses on match, with a tailored guidance message.
 #
 # Footer shapes observed on v2.1.139+ — the TUI draws a DIFFERENT
-# footer per row kind, and only the skeleton is stable (the verb and
-# the middle segments vary):
+# footer per view state, and only the skeleton is stable (the verb
+# and the middle segments vary, and a mode chip may be prepended):
 #   session row:   "enter to open · space to reply · ctrl+x to delete · ? for shortcuts"
 #   collapsed row: "enter to collapse · ctrl+x to delete all · ? for shortcuts"
+#   after `←` backgrounds the session (chip prefix):
+#     "⏵⏵ auto mode · enter to return · space to reply · ctrl+x to delete · ? for shortcuts"
 #
 # Fixing the leading verb (`enter to open`) reads the collapsed-row
 # footer as NOT the TUI — and `is_agents_tui` returning False there
 # lifts the send refusal, so keystrokes meant for a conversation
 # silently spawn an agent-view session (the dangerous direction).
+# Anchoring `enter to` at line start had the same hole for the
+# chip-prefixed variant: the refusal lifted, and with the pane's
+# dispatch-box ghost correctly passing the dim-draft check, a send
+# flowed straight into the box that spawns a new session.
 # Generalised the same way PATTERN_PERMIT_FOOTER was: the leading
-# `enter to <verb>` is opaque; the invariants are the line-start
-# `enter to <word>` and the closing `? for shortcuts`, with the
-# literal `?` required so a different UI that merely ends in
-# `for shortcuts` does not match. IGNORECASE absorbs upstream wording
-# case shifts; MULTILINE lets `^` match any line so multi-row capture
-# works without splitting per-line.
+# `enter to <verb>` is opaque and may sit mid-line after a mode
+# chip; the invariants are `enter to <word>` and the closing
+# `? for shortcuts` on the same line, with the literal `?` required
+# so a different UI that merely ends in `for shortcuts` does not
+# match. IGNORECASE absorbs upstream wording case shifts.
+#
+# Accepted cost of dropping the line-start anchor: prose that quotes
+# the WHOLE skeleton on ONE line (both `enter to …` and
+# `? for shortcuts`) matches. The caller captures only the send-time
+# tail (`capture-pane -S -10`), the quote must survive to the last
+# 10 lines at send time, and the failure direction is a visible send
+# refusal with guidance — the safe side. Quotes split across lines
+# still cannot match (`[^\n]` does not cross the newline).
 PATTERN_AGENTS_FOOTER = re.compile(
-    r"^\s*enter to \S+\b.*?\?\s*for shortcuts\b",
-    re.IGNORECASE | re.MULTILINE,
+    r"\benter to \S+\b[^\n]*?\?\s*for shortcuts\b",
+    re.IGNORECASE,
 )
 
 

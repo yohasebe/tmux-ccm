@@ -517,6 +517,21 @@ class TestAgentsTUIDetection:
         )
         assert self._detect(text)
 
+    def test_mode_chip_prefixed_footer(self):
+        """After `←` backgrounds the session, the agent view draws a
+        THIRD footer variant with a mode chip prepended. A line-start
+        anchor read this as not-the-TUI, lifting the send refusal —
+        and with the dispatch box's ghost correctly passing the
+        dim-draft check, the send flowed into the box that spawns a
+        brand-new session."""
+        text = (
+            "  session a · idle · 2m\n"
+            "❯ describe a task for a new session\n"
+            "⏵⏵ auto mode · enter to return · space to reply · "
+            "ctrl+x to delete · ? for shortcuts"
+        )
+        assert self._detect(text)
+
     def test_for_shortcuts_without_question_mark_not_matched(self):
         """The literal `?` is a required anchor: a different UI that
         merely ends in `for shortcuts` must not classify as the
@@ -555,16 +570,28 @@ class TestAgentsTUIDetection:
         assert not self._detect("Esc to cancel · Tab to amend")
         assert not self._detect("Enter to confirm · Esc to cancel")
 
-    def test_body_text_with_phrases_not_at_line_start(self):
-        """Defensive: claude could mention these phrases in answer
-        text. The line-start MULTILINE anchor keeps body text from
-        false-tripping the matcher — only the actual footer line
-        at column 0 (after optional whitespace) qualifies."""
+    def test_body_text_with_phrases_on_separate_lines_not_matched(self):
+        """Defensive: claude could quote these phrases in answer text.
+        The `enter to …` half and the `? for shortcuts` half must sit
+        on the SAME line to match, so prose that mentions them on
+        separate lines cannot false-trip the matcher."""
         text = (
-            "I see you have `enter to open` mapped in your TUI; the "
-            "documentation says `? for shortcuts` shows the help."
+            "In the agents TUI, `enter to open` opens a session row.\n"
+            "Press `? for shortcuts` there to see the help overlay."
         )
         assert not self._detect(text)
+
+    def test_single_line_full_skeleton_quote_matches(self):
+        """Documents the accepted cost of dropping the line-start
+        anchor (needed for the mode-chip variant): prose quoting the
+        WHOLE skeleton on ONE line matches. The caller only captures
+        the send-time tail (-S -10) and the failure direction is a
+        visible refusal — the safe side."""
+        text = (
+            "the footer reads `enter to open · space to reply · "
+            "ctrl+x to delete · ? for shortcuts` verbatim"
+        )
+        assert self._detect(text)
 
 
 class TestStaleReleaseWindows:
