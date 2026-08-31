@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.251-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.252-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -52,7 +52,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107+**
-  (tested against v2.1.251 — see the badge at the top of this page)
+  (tested against v2.1.252 — see the badge at the top of this page)
 
 ## Installation
 
@@ -402,7 +402,7 @@ ccm clear-notifications           Remove ccm notifications from macOS Notificati
 | `* <elapsed>` | IDLE (recently completed) | Transient marker (asterisk green, time dim) shown for 30 s after BUSY/PERMIT → IDLE |
 | `[N]` | (any state, multi-pane window) | Pane count marker (brackets dim, digit cyan) when a window has more than one pane |
 | `⊘` | (any state) | Hidden-pane marker (dim): the window has a pane excluded from ccm via `CCM_IGNORE` |
-| `⚙<name>` | (any state) | Presence marker (dim): a pane in the window is running an external agent CLI. ccm shows that it is there but does not track its state |
+| `▸<name>` | (any state) | Presence marker (dim): a pane in the window is running an external agent CLI. ccm shows that it is there but does not track its state |
 | ■ | SHELL | Shell active, Claude not running |
 | ○ | DOWN | Window not available |
 | ⊘ | IGNORED | Every Claude pane in the window is hidden via `CCM_IGNORE` — ccm deliberately cannot see the window's Claude, so it claims no state. `ccm send` is refused and points at `ccm unignore` |

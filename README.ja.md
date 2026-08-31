@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.251-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.252-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -52,7 +52,7 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107 以上**
-  （v2.1.251 で動作確認済み — ページ冒頭のバッジを参照）
+  （v2.1.252 で動作確認済み — ページ冒頭のバッジを参照）
 
 ## インストール
 
@@ -398,7 +398,7 @@ ccm clear-notifications           macOS 通知センターから ccm 通知を�
 | `* <elapsed>` | IDLE（最近完了） | BUSY/PERMIT → IDLE 遷移後 30 秒間表示される一時マーカー（アスタリスク緑、時間 dim） |
 | `[N]` | （任意の状態、マルチペインウィンドウ） | ペイン数マーカー（角括弧 dim、数字 cyan）。ウィンドウに 2 ペイン以上ある場合に表示 |
 | `⊘` | （全状態） | 非表示ペインのマーカー（dim）: `CCM_IGNORE` で ccm から除外されたペインがウィンドウ内にある |
-| `⚙<name>` | （全状態） | presence マーカー（dim）: ウィンドウ内のペインで外部エージェント CLI が動作中。存在は示すが状態は追跡しない |
+| `▸<name>` | （全状態） | presence マーカー（dim）: ウィンドウ内のペインで外部エージェント CLI が動作中。存在は示すが状態は追跡しない |
 | ■ | SHELL | シェルのみ（Claude未起動） |
 | ○ | DOWN | ウィンドウ利用不可 |
 | ⊘ | IGNORED | ウィンドウ内の全 Claude ペインが `CCM_IGNORE` で非表示 — ccm は意図的にその Claude を見ていないため、状態を主張しない。`ccm send` は拒否され、`ccm unignore` を案内 |
