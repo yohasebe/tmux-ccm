@@ -752,7 +752,7 @@ PARKED_FOREGROUND_COMMANDS = frozenset({
 # Foreground commands (`tmux #{pane_current_command}`) of external
 # agent CLIs — non-claude agent sessions a user runs in a sidekick
 # pane of a registered window. Display-only presence signal: panes
-# matching this set surface a dim `⚙<name>` badge (dashboard /
+# matching this set surface a dim `▸<name>` badge (dashboard /
 # `ccm status` / status bar mode 2) so the session is visible
 # without ccm tracking its state. Deliberately an allowlist rather
 # than "any non-shell foreground": parked editors / pagers (vim,

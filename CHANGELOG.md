@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- The external-agent presence badge is now `▸<name>` instead of
+  `⚙<name>` on the dashboard, `ccm status`, and the status bar. The
+  gear read as "settings"; the triangle reads as "someone is next to
+  this session". `▸` (U+25B8) is Neutral-width, so column budgets are
+  unchanged. Colours are unchanged: dim for presence only, PERMIT
+  yellow while the sidekick waits on a decision.
+
 ### Fixed
 - `ccm send` is refused again when the `claude agents` view prefixes its
   footer with a mode chip. Backgrounding a session with `←` draws

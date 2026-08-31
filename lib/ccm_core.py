@@ -377,14 +377,14 @@ class Project:
         # Tuple of foreground command names (one per pane) matching
         # EXTERNAL_AGENT_COMMANDS — external agent CLI sessions
         # running in this window's panes. Display-only presence
-        # signal (dim `⚙<name>` badge / `(name)` note on SHELL
+        # signal (dim `▸<name>` badge / `(name)` note on SHELL
         # rows); detection never reads it. Populated from the bulk
         # panes_cache (zero extra subprocesses); () on the fast
         # path, mirroring pane_count=1 / ignored_panes=0 there.
         self.external_agents = external_agents
         # Agent names (subset of external_agents) whose pane currently
         # holds a `waiting` attention marker — the sidekick is blocked
-        # on a decision. Drives the ⚙ badge's attention colour and
+        # on a decision. Drives the ▸ badge's attention colour and
         # nothing else: NOT part of the 4-state model, never consulted
         # by detection, () on the fast path.
         self.attention_agents = attention_agents
@@ -732,10 +732,10 @@ def _resolve_external_agent_panes(panes_cache, win_target):
     `_resolve_ignored_panes` there is no live-process check and no
     self-heal — `pane_current_command` is tmux's own live value, so
     a stale entry is impossible. Display-only: the result feeds the
-    `⚙<name>` presence badge and the `(name)` note on SHELL rows;
+    `▸<name>` presence badge and the `(name)` note on SHELL rows;
     detection and the state machine never see it."""
     # Canonical short names, not the raw command: a launcher symlink
-    # resolves to a platform-suffixed binary, and `⚙grok-macos-aarc`
+    # resolves to a platform-suffixed binary, and `▸grok-macos-aarc`
     # is neither readable nor stable across machines.
     return tuple(
         external_agent_name(pc[3]) for pc in panes_cache

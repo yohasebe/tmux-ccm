@@ -376,7 +376,7 @@ def print_status():
     print()
 
     # A SHELL row hosting an external agent says so once, with the
-    # `⚙name` badge beside the project name. It used to say it twice —
+    # `▸name` badge beside the project name. It used to say it twice —
     # a `(name)` note in this column repeated the badge, and widening
     # the column to fit it shifted every other row's layout.
     status_w = 12
@@ -431,8 +431,8 @@ def print_status():
         if getattr(p, "ignored_panes", 0):
             # An ignored Claude sidekick waiting on a permission
             # dialog turns its ⊘ PERMIT-yellow — the counterpart of
-            # the ⚙ badge's attention colour, since a hidden claude
-            # wears ⊘ rather than ⚙.
+            # the ▸ badge's attention colour, since a hidden claude
+            # wears ⊘ rather than ▸.
             ignore_colour = (
                 C_STATE["PERMIT"]
                 if "claude" in getattr(p, "attention_agents", ())
@@ -442,7 +442,7 @@ def print_status():
         else:
             ignore_marker = ""
         pane_marker += ignore_marker
-        # External-agent presence badge `⚙<name>`: a pane running an
+        # External-agent presence badge `▸<name>`: a pane running an
         # external agent CLI exists in this window. Dim like `⊘` —
         # presence only, not a state. When a sidekick has a live
         # attention marker (it is blocked on a decision), the badge
@@ -451,14 +451,16 @@ def print_status():
         # 4-state model itself.
         ext_label = external_agent_label(p)
         if ext_label:
-            badge = f"⚙{ext_label}"
+            badge = f"▸{ext_label}"
             colour = (C_STATE["PERMIT"]
                       if getattr(p, "attention_agents", ()) else C_DIM)
             pane_marker += f" {colour}{badge}{C_RESET}"
             pane_marker_visible_w += 1 + display_width(badge)
         # Spool marker `✉N`: N messages are queued for this project
         # (store-and-forward). Dim like `⊘` — a queue length, not a
-        # state. `✉` (U+2709) is ambiguous-width, same as `⚙`.
+        # state. `✉` (U+2709) is ambiguous-width (unlike the `▸`
+        # badge, which was picked Neutral-width for exactly this
+        # reason).
         spool_n = spool_counts.get(p.name, 0)
         if spool_n:
             spool_marker = f"✉{spool_n}"

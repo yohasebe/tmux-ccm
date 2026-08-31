@@ -1,7 +1,7 @@
 """Tests for the Tier-1 external-agent presence badge.
 
 A pane whose foreground command (`pane_current_command`) matches
-EXTERNAL_AGENT_COMMANDS surfaces a dim `⚙<name>` badge on the
+EXTERNAL_AGENT_COMMANDS surfaces a dim `▸<name>` badge on the
 dashboard / `ccm status` / status-bar mode 2, plus a `(name)` note
 on SHELL rows (window has no claude — SHELL keeps its meaning of
 "no claude here" and the note says what IS running). Display-only:
@@ -128,13 +128,13 @@ class TestPrintStatusExternalAgent:
                                   external_agents=("kimi",))]
         out = self._run(projects, monkeypatch, capsys)
         row = next(l for l in out.splitlines() if "sidekick" in l)
-        assert "⚙kimi" in _strip_ansi(row)
-        assert _strip_ansi(row).index("⚙kimi") > row.index("sidekick")
+        assert "▸kimi" in _strip_ansi(row)
+        assert _strip_ansi(row).index("▸kimi") > row.index("sidekick")
 
     def test_shell_row_stays_shell_and_is_marked_once(
             self, monkeypatch, capsys):
         """A kimi-only window is SHELL (no claude) — the state is not
-        faked — and the `⚙kimi` badge beside the name is the ONE place
+        faked — and the `▸kimi` badge beside the name is the ONE place
         the agent is named. A `(kimi)` note in the STATUS cell used to
         say it a second time on the same row."""
         projects = [_make_project("kimionly", "SHELL",
@@ -144,7 +144,7 @@ class TestPrintStatusExternalAgent:
         row = next(l for l in out.splitlines() if "kimionly" in l)
         plain = _strip_ansi(row)
         assert "SHELL" in plain
-        assert "⚙kimi" in plain
+        assert "▸kimi" in plain
         assert "(kimi)" not in plain
 
     def test_note_widens_status_column_consistently(
@@ -169,7 +169,7 @@ class TestPrintStatusExternalAgent:
         before — no badge, no note, STATUS column stays 12 wide."""
         projects = [_make_project("plain", "IDLE")]
         out = self._run(projects, monkeypatch, capsys)
-        assert "⚙" not in out
+        assert "▸" not in out
         header = next(l for l in out.splitlines() if "STATUS" in l)
         # "STATUS" padded to 12 then one space before PROJECT.
         assert _strip_ansi(header).startswith("STATUS" + " " * 7)
@@ -188,25 +188,25 @@ class TestBuildDetailEntriesExternalAgent:
     def test_mode2_badge_present(self, monkeypatch):
         p = _make_project("sidekick", "IDLE", external_agents=("kimi",))
         entries = self._entries([p], True, monkeypatch)
-        assert "⚙kimi" in entries[0]
+        assert "▸kimi" in entries[0]
 
     def test_mode2_shell_row_is_marked_once(self, monkeypatch):
         p = _make_project("kimionly", "SHELL", external_agents=("kimi",))
         entries = self._entries([p], True, monkeypatch)
         assert "■" in entries[0]
-        assert "⚙kimi" in entries[0]
+        assert "▸kimi" in entries[0]
         assert "(kimi)" not in entries[0]
 
     def test_mode1_unchanged(self, monkeypatch):
         p = _make_project("sidekick", "IDLE", external_agents=("kimi",))
         entries = self._entries([p], False, monkeypatch)
-        assert "⚙" not in entries[0]
+        assert "▸" not in entries[0]
         assert "(kimi)" not in entries[0]
 
     def test_no_badge_without_external_agents(self, monkeypatch):
         p = _make_project("plain", "IDLE")
         entries = self._entries([p], True, monkeypatch)
-        assert "⚙" not in entries[0]
+        assert "▸" not in entries[0]
 
 
 class TestDashboardExternalAgent:
@@ -253,7 +253,7 @@ class TestDashboardExternalAgent:
         projects = [_make_project("sidekick", "IDLE", pane_count=2,
                                   external_agents=("kimi",))]
         texts = self._render_texts(monkeypatch, projects)
-        assert "⚙kimi" in texts
+        assert "▸kimi" in texts
 
     def test_shell_row_is_marked_once(self, monkeypatch):
         projects = [_make_project("kimionly", "SHELL",
@@ -261,7 +261,7 @@ class TestDashboardExternalAgent:
         texts = self._render_texts(monkeypatch, projects)
         # The badge names the agent; the state cell stays plain SHELL
         # (not faked) and does not repeat the name.
-        assert any("⚙kimi" in t for t in texts)
+        assert any("▸kimi" in t for t in texts)
         assert " (kimi)" not in texts
         assert any("SHELL" in t for t in texts)
 
@@ -323,7 +323,7 @@ class TestDashboardExternalAgent:
     def test_no_badge_for_claude_only(self, monkeypatch):
         projects = [_make_project("plain", "IDLE")]
         texts = self._render_texts(monkeypatch, projects)
-        assert not any("⚙" in t for t in texts)
+        assert not any("▸" in t for t in texts)
         assert not any("(kimi)" in t for t in texts)
 
 
@@ -394,7 +394,7 @@ class TestPlatformSuffixedBinaries:
         assert ccm_constants.external_agent_name("claude") == ""
 
     def test_badge_label_uses_the_short_name(self):
-        """`⚙grok-macos-aarc` is neither readable nor stable across
+        """`▸grok-macos-aarc` is neither readable nor stable across
         machines; the badge carries the canonical name."""
         panes = [("0:2", "1", "%1", "grok-macos-aarc", "0", "40", "")]
         assert ccm_core._resolve_external_agent_panes(panes, "0:2") == ("grok",)

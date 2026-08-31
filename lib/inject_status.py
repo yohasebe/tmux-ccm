@@ -195,13 +195,13 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # draws the eye. ASCII-only to avoid font/terminal width
         # ambiguity that would offset later columns.
         pane_n = str(p.pane_count) if p.pane_count > 1 else ""
-        # External-agent presence badge `⚙<name>` (mode 2 only — mode
+        # External-agent presence badge `▸<name>` (mode 2 only — mode
         # 1 is the minimal no-extras format). Dim; presence only, not
         # a state. The label is the shared one from ccm_render so the
         # badge text matches `ccm status` / the dashboard exactly.
         ext_label = external_agent_label(p)
         # A SHELL row with an external agent is marked once, by the
-        # `⚙name` badge. A `(name)` note in the post slot used to
+        # `▸name` badge. A `(name)` note in the post slot used to
         # repeat it on the same entry.
 
         def _render_pane_marker(name_color):
@@ -239,7 +239,7 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
                             if getattr(p, "attention_agents", ())
                             else "#666666")
                 entry += (
-                    f" #[fg={badge_fg}]⚙{ext_label}"
+                    f" #[fg={badge_fg}]▸{ext_label}"
                     f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
                 )
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"

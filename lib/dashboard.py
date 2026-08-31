@@ -926,11 +926,11 @@ class Dashboard:
                     # present but untracked. Dim, quiet aside.
                     ignore_marker = "⊘" if getattr(
                         proj, "ignored_panes", 0) else ""
-                    # External-agent presence badge `⚙<name>`: a pane
+                    # External-agent presence badge `▸<name>`: a pane
                     # running an external agent CLI exists in this
                     # window. Dim like `⊘` — presence, not a state.
                     ext_label = external_agent_label(proj)
-                    ext_badge = f"⚙{ext_label}" if ext_label else ""
+                    ext_badge = f"▸{ext_label}" if ext_label else ""
                     # Spool marker `✉N`: N messages queued for this
                     # project. Dim — a queue length, not a state.
                     spool_n = spool_counts.get(proj.name, 0)
@@ -1033,7 +1033,7 @@ class Dashboard:
                     # Dim — present-but-untracked, not a state — until
                     # that hidden Claude is blocked on a permission
                     # dialog, when it borrows PERMIT's yellow (the
-                    # ⊘-wearing counterpart of the ⚙ attention colour).
+                    # ⊘-wearing counterpart of the ▸ attention colour).
                     if ann.get("ignore_marker"):
                         ig_attr = (
                             curses.color_pair(C_PERMIT) | curses.A_BOLD
@@ -1043,7 +1043,7 @@ class Dashboard:
                                      ig_attr)
                         col += display_width(ann["ignore_marker"]) + 1
 
-                    # External-agent badge ⚙<name>: a pane running an
+                    # External-agent badge ▸<name>: a pane running an
                     # external agent CLI exists. Dim — presence only —
                     # unless the sidekick holds a live attention
                     # marker (blocked on a decision), which borrows

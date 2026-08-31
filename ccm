@@ -254,7 +254,7 @@ case "${1:-help}" in
     setup-sidekick-hooks)
         # Install ccm's attention adapter into a sidekick CLI's own
         # hook config (Kimi), so it self-reports "waiting on a
-        # decision" — the ⚙ badge turns PERMIT-yellow and a desktop
+        # decision" — the ▸ badge turns PERMIT-yellow and a desktop
         # notification fires.
         shift
         python3 "$CCM_ROOT/lib/ccm_core.py" setup-sidekick-hooks "$@"

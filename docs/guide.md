@@ -676,7 +676,7 @@ or press `i` on a project in the dashboard.
 
 ![How ccm sees a window with a sidekick: the Claude Code pane is tracked and its state becomes the window's, while a second agent CLI in a split pane gets only a presence badge. The two exchange messages directly — the sidekick reports back with ccm send, and Claude messages it with ccm sidekick-send after checking it with ccm capture.](../assets/sidekick-model.svg)
 
-You can run an agent CLI other than Claude Code in a split pane of a project window and let the two agents exchange messages without a human relaying text. ccm stays Claude-centric: it only shows a dim `⚙<name>` presence badge when a known external agent CLI runs in a pane (display only — it does not track that agent's state), and `ccm capture` shows every pane so either side can read the other.
+You can run an agent CLI other than Claude Code in a split pane of a project window and let the two agents exchange messages without a human relaying text. ccm stays Claude-centric: it only shows a dim `▸<name>` presence badge when a known external agent CLI runs in a pane (display only — it does not track that agent's state), and `ccm capture` shows every pane so either side can read the other.
 
 The conventions that make the relay work:
 
@@ -702,11 +702,11 @@ The conventions that make the relay work:
 
 `ccm setup-claude-md` writes these conventions into `~/.claude/CLAUDE.md` so every Claude session knows them; putting the equivalent in the other CLI's own instructions file completes the loop.
 
-**The sidekick can be another Claude Code.** Nothing above depends on the peer being a different product — a second `claude` in the split pane relays exactly the same way, with one exception: `ccm sidekick-send` only targets known *non-Claude* CLIs (a second `claude` is deliberately absent from that set — it is the tracked session's own binary), so reaching a Claude sidekick still means `ccm capture` to check, then `tmux send-keys` by hand. What changes with a Claude sidekick is how ccm sees it: a second Claude Code is a session ccm *would* track, so you hide it deliberately with `CCM_IGNORE` (see the section above) and it carries `⊘` rather than the `⚙` a non-Claude CLI gets. In practice it is the easier pairing — the submit and newline keys match, and the peer already knows the conventions from your `CLAUDE.md`.
+**The sidekick can be another Claude Code.** Nothing above depends on the peer being a different product — a second `claude` in the split pane relays exactly the same way, with one exception: `ccm sidekick-send` only targets known *non-Claude* CLIs (a second `claude` is deliberately absent from that set — it is the tracked session's own binary), so reaching a Claude sidekick still means `ccm capture` to check, then `tmux send-keys` by hand. What changes with a Claude sidekick is how ccm sees it: a second Claude Code is a session ccm *would* track, so you hide it deliberately with `CCM_IGNORE` (see the section above) and it carries `⊘` rather than the `▸` a non-Claude CLI gets. In practice it is the easier pairing — the submit and newline keys match, and the peer already knows the conventions from your `CLAUDE.md`.
 
 ## Sidekick attention: knowing when it needs you
 
-A sidekick's approval dialog is easy to miss: ccm deliberately reads no state from a non-Claude pane, so a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `⚙kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships:
+A sidekick's approval dialog is easy to miss: ccm deliberately reads no state from a non-Claude pane, so a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships:
 
 ```bash
 ccm setup-sidekick-hooks kimi     # writes [[hooks]] entries into ~/.kimi-code/config.toml
@@ -715,7 +715,7 @@ ccm remove-sidekick-hooks kimi    # removes them (backup kept either way)
 
 Takes effect in **new** Kimi sessions only — Kimi loads its config at session start, so restart the sidekick pane's `kimi` once after installing.
 
-From then on, when the sidekick hits a permission prompt its hook drops an attention marker keyed to its tmux pane, and ccm reacts on every surface at once: the `⚙kimi` badge turns PERMIT-yellow on the dashboard, `ccm status` and the status bar, and a desktop notification fires with the tool it is asking about. When you (or the buddy Claude) answer the dialog, the resolution hook clears the wait and the badge dims again. The window's own state never changes — PERMIT still means *Claude* needs you; the yellow gear means the *sidekick* does.
+From then on, when the sidekick hits a permission prompt its hook drops an attention marker keyed to its tmux pane, and ccm reacts on every surface at once: the `▸kimi` badge turns PERMIT-yellow on the dashboard, `ccm status` and the status bar, and a desktop notification fires with the tool it is asking about. When you (or the buddy Claude) answer the dialog, the resolution hook clears the wait and the badge dims again. The window's own state never changes — PERMIT still means *Claude* needs you; the yellow gear means the *sidekick* does.
 
 Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-sidekick-attention off` (markers are still written when off — only ccm's display and notification go quiet, so other local consumers of the marker directory keep working).
 
