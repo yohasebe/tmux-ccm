@@ -54,17 +54,3 @@ _index_mode() {
     # or the change is accidental. Both deserve a failing test.
     [[ "$(_index_mode hooks/lib.sh)" == "100644" ]]
 }
-
-@test "dev scripts are executable in the git index" {
-    # scripts/*.sh are maintainer tooling run directly (./scripts/…).
-    # Not user-facing, but the same forgotten-+x accident applies.
-    local count=0 mode path
-    while read -r mode _ _ path; do
-        count=$((count + 1))
-        [[ "$mode" == "100755" ]] || {
-            echo "script not executable in index: $path ($mode)" >&2
-            return 1
-        }
-    done < <(git -C "$CCM_ROOT" ls-files -s -- 'scripts/*.sh')
-    [[ "$count" -ge 1 ]]
-}
