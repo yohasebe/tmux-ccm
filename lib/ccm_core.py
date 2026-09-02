@@ -141,15 +141,15 @@ def tmux_batch(*commands):
 def ps_snapshot():
     """Single ps call for scan cycle.
 
-    Output columns: pid ppid pgid comm etime. `etime` is appended at
+    Output columns: pid ppid pgid ucomm etime. `etime` is appended at
     the end so the existing `parts[0..3]` positions for pid / ppid /
-    pgid / comm are unchanged — all process-tree helpers
+    pgid / command name are unchanged — all process-tree helpers
     (find_claude_pid, has_children) parse by index without
     modification. `etime` is consumed only by `find_process_age`
     below, which distinguishes Claude's startup window from
     steady-state operation.
 
-    macOS `ps` truncates the `comm` column at a fixed byte width,
+    macOS `ps` truncates the command-name column at a fixed byte width,
     which can slice a multi-byte UTF-8 character in half (e.g. an
     app named `⌘英かな`). Decoding the raw bytes with
     `errors="replace"` keeps the line intact (truncated names are
@@ -158,7 +158,12 @@ def ps_snapshot():
     """
     try:
         r = subprocess.run(
-            ["ps", "-eo", "pid,ppid,pgid,comm,etime"],
+            # ucomm, not comm: macOS comm is the full executable path
+            # (width-truncated in multi-column output, so even the
+            # basename is unrecoverable), which never equals
+            # CLAUDE_PROCESS_NAME. ucomm is the kernel short name
+            # ("claude") on macOS and a comm alias on Linux procps.
+            ["ps", "-eo", "pid,ppid,pgid,ucomm,etime"],
             capture_output=True, timeout=5,
         )
         if r.returncode != 0:

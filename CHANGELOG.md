@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Claude process detection now works on macOS. `ps -eo comm` there renders
+  the full executable path (and multi-column output width-truncates it), so
+  `find_claude_pid` never matched `claude`: every window read as SHELL
+  ("Claude not running") and `ccm send` refused or spooled everything. The
+  ps snapshot now requests `ucomm` — the kernel short name on macOS and an
+  alias of `comm` on Linux procps, so Linux behavior is unchanged.
 - `ccm send` is refused again when the `claude agents` view prefixes its
   footer with a mode chip. Backgrounding a session with `←` draws
   `⏵⏵ auto mode · enter to return · … · ? for shortcuts`, and the
