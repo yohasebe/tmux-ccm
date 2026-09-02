@@ -74,6 +74,17 @@ class TestFindClaudePid:
         ps = make_ps_lines((100, 50, 100, "zsh"))
         assert ccm_pane_state.find_claude_pid(100, ps) is None
 
+    def test_full_path_command_name_never_matches(self):
+        """macOS `ps -o comm` renders the executable path, not the
+        short name (and multi-column output width-truncates it, so
+        even the basename can be lost). Measured on macOS 26: every
+        pane read as SHELL because no ps line ever equalled `claude`.
+        The parser's contract is short names — which is why
+        `ps_snapshot` requests `ucomm` (the kernel short name on
+        macOS, an alias of comm on Linux procps)."""
+        ps = make_ps_lines((200, 100, 100, "/usr/local/bin/claude"))
+        assert ccm_pane_state.find_claude_pid(100, ps) is None
+
 
 # ─── has_children ───
 

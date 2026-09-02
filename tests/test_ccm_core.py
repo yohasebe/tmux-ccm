@@ -100,7 +100,7 @@ class TestParseEtime:
 class TestFindProcessAge:
     """`find_process_age` reads the etime column from `ps_snapshot`
     output. Pin the expected column position: etime is `parts[4]` in
-    the `pid ppid pgid comm etime` format."""
+    the `pid ppid pgid ucomm etime` format."""
 
     def test_returns_age_for_matching_pid(self):
         ps_lines = [
@@ -123,6 +123,24 @@ class TestFindProcessAge:
     def test_returns_minus_one_when_etime_unparseable(self):
         ps_lines = ["  100     1     1 claude   garbage"]
         assert ccm_core.find_process_age(100, ps_lines) == -1
+
+
+class TestPsSnapshotColumns:
+    def test_requests_ucomm_not_comm(self, monkeypatch):
+        """The snapshot must ask ps for `ucomm`: on macOS `comm` is the
+        full executable path (width-truncated in multi-column output),
+        which never equals CLAUDE_PROCESS_NAME — so every window would
+        read as SHELL. `ucomm` is the kernel short name on macOS and an
+        alias of comm on Linux procps."""
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return MagicMock(returncode=0, stdout=b"")
+
+        monkeypatch.setattr(ccm_core.subprocess, "run", fake_run)
+        ccm_core.ps_snapshot()
+        assert seen["argv"] == ["ps", "-eo", "pid,ppid,pgid,ucomm,etime"]
 
 
 
