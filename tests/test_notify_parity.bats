@@ -309,3 +309,24 @@ ccm_notify.notify('BUSY', 'proj', '')
         return 1
     }
 }
+
+# ============================================================
+# @ccm-notify-transport: forced osascript transport
+# ============================================================
+
+@test "transport=osascript: both impls skip terminal-notifier for the osascript path" {
+    mock_set_global_option @ccm-notify "permit,completed"
+    mock_set_global_option @ccm-notify-transport "osascript"
+    _invoke_both PERMIT transportproj
+    assert_both_fired "transportproj"
+    [[ "$(_log_count 'terminal-notifier')" -eq 0 ]]
+    [[ "$(_log_count 'osascript')" -eq 2 ]]
+}
+
+@test "transport unset: terminal-notifier stays preferred (both impls)" {
+    mock_set_global_option @ccm-notify "permit,completed"
+    _invoke_both PERMIT autoproj
+    assert_both_fired "autoproj"
+    [[ "$(_log_count 'terminal-notifier')" -eq 2 ]]
+    [[ "$(_log_count 'osascript')" -eq 0 ]]
+}

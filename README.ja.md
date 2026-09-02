@@ -193,6 +193,14 @@ ccm が `PATH` 上の有無を自動検出して優先使用します。設定�
 > [!IMPORTANT]
 > `terminal-notifier` が初めて通知を送る際、macOS は通知許可ダイアログを表示することがあります — 許可してください。導入後に ccm 通知が届かない場合は「システム設定 → 通知 → terminal-notifier」を開き「通知を許可」が ON になっているか確認してください。通知は terminal-notifier 自身の bundle id 名義で配送されるため（使用しているターミナルエミュレータには非依存）、許可は一度で済み、Terminal.app / iTerm2 / WezTerm / kitty / ghostty いずれでも同じ動作になります。
 
+環境によっては `terminal-notifier` が通知の許可自体を取得できないことがあります — 新しめの macOS はアドホック署名バイナリからの許可リクエストを拒否し（管理対象マシンでは一般的）、失敗は無音です: `Could not request notification permission` となり、通知センターには何も届きません。ccm は `PATH` 上に `terminal-notifier` があれば優先的に使うため、この状態ではすべての通知が失われます。その場合は osascript トランスポートを強制してください:
+
+```tmux
+set -g @ccm-notify-transport "osascript"
+```
+
+未設定（または `auto`）の場合は、従来どおり terminal-notifier を優先する動作のままです。
+
 通知センターに残った ccm 通知を一括削除（`terminal-notifier` が必要）:
 
 ```bash

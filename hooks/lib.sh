@@ -526,7 +526,16 @@ _ccm_instant_notify() {
     # notification flows under terminal-notifier's own bundle id,
     # which the user authorises once and is independent of which
     # terminal emulator they actually use.
-    if command -v terminal-notifier &>/dev/null; then
+    # @ccm-notify-transport: force a transport. Default (unset/"auto")
+    # keeps the prefer-terminal-notifier order below. Set to "osascript"
+    # where terminal-notifier can't be authorized to send — newer macOS
+    # refuses the authorization request outright for ad-hoc-signed
+    # binaries ("Notifications are not allowed for this application"),
+    # while osascript posts under an already-authorized Apple-signed
+    # bundle.
+    local notify_transport
+    notify_transport=$(tmux show-option -gqv @ccm-notify-transport 2>/dev/null)
+    if [[ "$notify_transport" != "osascript" ]] && command -v terminal-notifier &>/dev/null; then
         local tn_args=(-message "$body" -title "$title"
                        -group "ccm-${project}")
         if [[ "$sound_setting" == "on" ]]; then
