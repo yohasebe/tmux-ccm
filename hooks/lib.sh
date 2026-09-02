@@ -71,6 +71,12 @@ ccm_hook_init() {
 
     INPUT=$(cat)
 
+    # No tmux server → nothing to manage, and every tmux call below
+    # would fail (hooks run under set -euo pipefail, so that surfaces
+    # as a "hook error" in the Claude Code TUI). Out-of-tmux Claude
+    # sessions hit this whenever the last tmux session is killed.
+    tmux list-sessions >/dev/null 2>&1 || return 1
+
     # CCM_IGNORE: launch-time opt-out (`CCM_IGNORE=1 claude`). Mark the
     # pane immediately — this only needs $TMUX_PANE, so it works even
     # if the session id cannot be read below — then suppress the hook.
@@ -313,7 +319,7 @@ ccm_write_signal() {
             # `_ccm_instant_permit_icon`, so this `else` covers BUSY
             # signal writes (PreToolUse / PostToolUse / etc.) without
             # double-refreshing.
-            tmux refresh-client -S 2>/dev/null
+            tmux refresh-client -S 2>/dev/null || true  # headless: no attached client => rc 1, must not fail set -e hooks
         fi
 
         # Push the freshly written state into the rendered status bar
@@ -350,7 +356,7 @@ _ccm_instant_permit_icon() {
 
     # Force tmux to redraw status bar — this triggers #(ccm inject-status)
     # if status-interval has elapsed, giving faster pickup
-    tmux refresh-client -S 2>/dev/null
+    tmux refresh-client -S 2>/dev/null || true  # headless: no attached client => rc 1, must not fail set -e hooks
 }
 
 # Schedule a COMPLETED notification after a short grace period.
