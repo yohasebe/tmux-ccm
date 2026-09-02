@@ -38,7 +38,7 @@ bg_remaining=$(printf '%s' "$INPUT" | \
 bg_remaining=${bg_remaining:-0}
 
 if [[ "$bg_remaining" == "0" ]]; then
-    project=$(ccm_hook_resolve_project "$CWD")
+    project=$(ccm_hook_resolve_project "$CWD" "$KEY")
     if [[ -n "$project" ]]; then
         _ccm_schedule_completed_notify "$HOOK_DIR" "$KEY" "$CWD" "$project"
     fi

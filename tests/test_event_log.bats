@@ -25,6 +25,10 @@ setup() {
     # aborts. An empty windows file makes the mock return 0 with empty
     # output (matches the real tmux behaviour in an empty session).
     : > "${MOCK_STATE_DIR}/windows"
+    # Same file-existence convention for list-sessions: the hooks bail
+    # out early when no tmux server answers, so the harness must model
+    # a live one.
+    : > "${MOCK_STATE_DIR}/sessions"
 
     source "${CCM_ROOT}/hooks/lib.sh"
 

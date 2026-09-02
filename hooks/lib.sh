@@ -71,6 +71,12 @@ ccm_hook_init() {
 
     INPUT=$(cat)
 
+    # No tmux server → nothing to manage, and every tmux call below
+    # would fail (hooks run under set -euo pipefail, so that surfaces
+    # as a "hook error" in the Claude Code TUI). Out-of-tmux Claude
+    # sessions hit this whenever the last tmux session is killed.
+    tmux list-sessions >/dev/null 2>&1 || return 1
+
     # CCM_IGNORE: launch-time opt-out (`CCM_IGNORE=1 claude`). Mark the
     # pane immediately — this only needs $TMUX_PANE, so it works even
     # if the session id cannot be read below — then suppress the hook.
@@ -250,9 +256,21 @@ ccm_hook_format_tool_detail() {
 # notification ("ccm ✔ my-project" rather than "ccm ✔ ").
 # Args: $1=CWD to match against `@ccm_dir`.
 ccm_hook_resolve_project() {
-    local cwd="$1"
-    tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
-        | awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}'
+    # $2 (the firing session id) applies the same discriminator as
+    # ccm_write_signal's window update: a resolved window answers only
+    # to its own session; an unresolved one only to a tmux-resident
+    # session (TMUX_PANE set). Without it, a same-cwd session outside
+    # tmux resolved the project and fired its COMPLETED notifications.
+    # Omitting $2 preserves the plain cwd lookup.
+    local cwd="$1" key="${2:-}"
+    if [[ -z "$key" ]]; then
+        tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
+            | awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}'
+    else
+        tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_session_id}' 2>/dev/null \
+            | awk -F'\t' -v d="$cwd" -v k="$key" -v pane="${TMUX_PANE:-}" \
+                '$2==d { if ($4==k || ($4=="" && pane!="")) print $3; exit }'
+    fi
 }
 
 # Write signal to hook file AND directly update tmux window option
@@ -291,6 +309,18 @@ ccm_write_signal() {
         if [[ -n "$cached_sid" && -n "$key" && "$cached_sid" != "$key" ]]; then
             return 0
         fi
+        # An UNRESOLVED window (no cached sid yet — every window's
+        # state until its own claude's first event lands) must not
+        # accept the update from just any same-cwd session either:
+        # the window's own claude is tmux-resident by definition
+        # (tmux sets TMUX_PANE in its pane), while a Claude Desktop /
+        # IDE / other-terminal session on the same directory is not.
+        # Without this, the foreign session paints the window's icon
+        # during exactly the window where the sid discriminator above
+        # is blind.
+        if [[ -z "$cached_sid" && -z "${TMUX_PANE:-}" ]]; then
+            return 0
+        fi
         # Update state option
         tmux set-option -wt "$win_target" @ccm_prev_state "$state" 2>/dev/null
         # Update window name icon for instant status bar change
@@ -313,7 +343,7 @@ ccm_write_signal() {
             # `_ccm_instant_permit_icon`, so this `else` covers BUSY
             # signal writes (PreToolUse / PostToolUse / etc.) without
             # double-refreshing.
-            tmux refresh-client -S 2>/dev/null
+            tmux refresh-client -S 2>/dev/null || true  # headless: no attached client => rc 1, must not fail set -e hooks
         fi
 
         # Push the freshly written state into the rendered status bar
@@ -350,7 +380,7 @@ _ccm_instant_permit_icon() {
 
     # Force tmux to redraw status bar — this triggers #(ccm inject-status)
     # if status-interval has elapsed, giving faster pickup
-    tmux refresh-client -S 2>/dev/null
+    tmux refresh-client -S 2>/dev/null || true  # headless: no attached client => rc 1, must not fail set -e hooks
 }
 
 # Schedule a COMPLETED notification after a short grace period.
