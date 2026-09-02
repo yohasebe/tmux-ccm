@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.258-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.259-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -52,7 +52,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107+**
-  (tested against v2.1.258 — see the badge at the top of this page)
+  (tested against v2.1.259 — see the badge at the top of this page)
 
 ## Installation
 
