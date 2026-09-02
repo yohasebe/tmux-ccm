@@ -71,6 +71,12 @@ ccm_hook_init() {
 
     INPUT=$(cat)
 
+    # No tmux server → nothing to manage, and every tmux call below
+    # would fail (hooks run under set -euo pipefail, so that surfaces
+    # as a "hook error" in the Claude Code TUI). Out-of-tmux Claude
+    # sessions hit this whenever the last tmux session is killed.
+    tmux list-sessions >/dev/null 2>&1 || return 1
+
     # CCM_IGNORE: launch-time opt-out (`CCM_IGNORE=1 claude`). Mark the
     # pane immediately — this only needs $TMUX_PANE, so it works even
     # if the session id cannot be read below — then suppress the hook.

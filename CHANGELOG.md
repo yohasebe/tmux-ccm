@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Hook scripts exit cleanly when no tmux server is running at all (the last
+  session was killed while Claude Code sessions were still open elsewhere).
+  Every tmux call in the state path failed and, under `set -euo pipefail`,
+  read as a hook error; with no server there is nothing to manage, so the
+  hooks now no-op before writing any artefacts.
 - State hooks no longer surface a "hook error" in Claude Code when the tmux
   server has no attached client. `tmux refresh-client -S` exits 1 headless
   (detached server — a network drop, scripted use), and hook scripts run

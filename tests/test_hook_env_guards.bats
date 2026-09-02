@@ -79,3 +79,19 @@ run_hook() {
     [ -f "${HOOKS_DIR}/guard-test" ]
     grep -q BUSY "${HOOKS_DIR}/guard-test"
 }
+
+@test "on-prompt-submit exits 0 and writes nothing when no tmux server runs" {
+    write_no_server_stub
+    run_hook on-prompt-submit.sh UserPromptSubmit
+    [ "$status" -eq 0 ]
+    # With no server there is nothing to manage: no signal, no events.
+    [ ! -e "${HOOKS_DIR}/guard-test" ]
+    [ ! -e "${HOOKS_DIR}/guard-test.events.jsonl" ]
+}
+
+@test "on-stop exits 0 and writes nothing when no tmux server runs" {
+    write_no_server_stub
+    run_hook on-stop.sh Stop
+    [ "$status" -eq 0 ]
+    [ ! -e "${HOOKS_DIR}/guard-test.events.jsonl" ]
+}
