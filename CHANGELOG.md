@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `@ccm-notify-transport "osascript"` forces the osascript notification
+  transport even when `terminal-notifier` is installed. Newer macOS refuses
+  notification authorization outright for ad-hoc-signed binaries (common on
+  managed machines): terminal-notifier then fails silently, and — being
+  preferred whenever it is on `PATH` — took every notification down with
+  it. Unset (or `auto`) keeps the existing prefer-terminal-notifier order.
+
 ### Changed
 - The external-agent presence badge is now `▸<name>` instead of
   `⚙<name>` on the dashboard, `ccm status`, and the status bar. The

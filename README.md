@@ -193,6 +193,14 @@ ccm auto-detects it on `PATH` and uses it preferentially. No configuration neede
 > [!IMPORTANT]
 > The first time `terminal-notifier` sends a notification, macOS may show a permission dialog — accept it. If you don't see ccm notifications afterwards, open `System Settings → Notifications → terminal-notifier` and confirm "Allow Notifications" is on. Notifications are delivered under terminal-notifier's own bundle id (independent of which terminal emulator you use), so the grant is one-time and works the same on Terminal.app / iTerm2 / WezTerm / kitty / ghostty.
 
+Some environments refuse notification authorization for `terminal-notifier` entirely — newer macOS rejects the request for ad-hoc-signed binaries (common on managed machines), and the failure is silent: `Could not request notification permission`, and nothing ever reaches Notification Center. Because ccm prefers `terminal-notifier` whenever it is on `PATH`, that takes every notification down with it. Force the osascript transport instead:
+
+```tmux
+set -g @ccm-notify-transport "osascript"
+```
+
+Unset (or `auto`), ccm keeps the prefer-terminal-notifier order above.
+
 To bulk-clear ccm notifications from Notification Center (requires `terminal-notifier`):
 
 ```bash

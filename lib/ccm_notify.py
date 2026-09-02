@@ -131,7 +131,13 @@ def notify(state, project, detail=""):
     # one. terminal-notifier respects -group; osascript does not.
     group_id = f"ccm-{project}"
 
-    tn_path = _terminal_notifier_path()
+    # @ccm-notify-transport: force a transport (see hooks/lib.sh). When
+    # set to "osascript", skip terminal-notifier even if installed —
+    # used where its ad-hoc-signed binary can't be authorized to send
+    # (newer macOS refuses the authorization request for ad-hoc-signed
+    # binaries) but the Apple-signed osascript path can.
+    transport = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-notify-transport") or ""
+    tn_path = None if transport == "osascript" else _terminal_notifier_path()
     if tn_path:
         # Intentionally NO `-sender com.apple.Terminal`. Specifying
         # a sender bundle id makes macOS deliver the notification
