@@ -256,9 +256,21 @@ ccm_hook_format_tool_detail() {
 # notification ("ccm ✔ my-project" rather than "ccm ✔ ").
 # Args: $1=CWD to match against `@ccm_dir`.
 ccm_hook_resolve_project() {
-    local cwd="$1"
-    tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
-        | awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}'
+    # $2 (the firing session id) applies the same discriminator as
+    # ccm_write_signal's window update: a resolved window answers only
+    # to its own session; an unresolved one only to a tmux-resident
+    # session (TMUX_PANE set). Without it, a same-cwd session outside
+    # tmux resolved the project and fired its COMPLETED notifications.
+    # Omitting $2 preserves the plain cwd lookup.
+    local cwd="$1" key="${2:-}"
+    if [[ -z "$key" ]]; then
+        tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
+            | awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}'
+    else
+        tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_session_id}' 2>/dev/null \
+            | awk -F'\t' -v d="$cwd" -v k="$key" -v pane="${TMUX_PANE:-}" \
+                '$2==d { if ($4==k || ($4=="" && pane!="")) print $3; exit }'
+    fi
 }
 
 # Write signal to hook file AND directly update tmux window option
@@ -295,6 +307,18 @@ ccm_write_signal() {
         # file above is already written — keyed by the firing
         # session, so no tmux reader ever resolves to it.
         if [[ -n "$cached_sid" && -n "$key" && "$cached_sid" != "$key" ]]; then
+            return 0
+        fi
+        # An UNRESOLVED window (no cached sid yet — every window's
+        # state until its own claude's first event lands) must not
+        # accept the update from just any same-cwd session either:
+        # the window's own claude is tmux-resident by definition
+        # (tmux sets TMUX_PANE in its pane), while a Claude Desktop /
+        # IDE / other-terminal session on the same directory is not.
+        # Without this, the foreign session paints the window's icon
+        # during exactly the window where the sid discriminator above
+        # is blind.
+        if [[ -z "$cached_sid" && -z "${TMUX_PANE:-}" ]]; then
             return 0
         fi
         # Update state option

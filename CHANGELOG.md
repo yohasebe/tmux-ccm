@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- A Claude Code session running outside tmux (another terminal tab, an
+  IDE's embedded session) in a registered project's directory no longer
+  paints that project's state icon or fires its COMPLETED notifications
+  while the window is unresolved — no cached session id, which is every
+  window's state until its own claude's first event lands. The window's
+  own claude is tmux-resident by definition (tmux sets `TMUX_PANE` in its
+  pane), so that is now required for unresolved-window updates and for
+  on-stop's project resolution. Session-keyed signal and event files are
+  unchanged for all sessions.
 - Hook scripts exit cleanly when no tmux server is running at all (the last
   session was killed while Claude Code sessions were still open elsewhere).
   Every tmux call in the state path failed and, under `set -euo pipefail`,

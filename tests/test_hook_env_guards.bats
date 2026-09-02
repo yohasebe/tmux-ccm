@@ -36,6 +36,30 @@ write_no_server_stub() {
     chmod +x "${MOCK_BIN}/tmux"
 }
 
+# Healthy server that logs every invocation to $CCM_TEST_TMUX_LOG and
+# serves one window row matching $CCM_TEST_MATCH_DIR whose cached
+# session id is $CCM_TEST_ROW_SID (empty = unresolved window). The two
+# list-windows callers ask for different field sets, so the row shape
+# follows the requested format.
+write_logging_server_stub() {
+    cat > "${MOCK_BIN}/tmux" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$CCM_TEST_TMUX_LOG"
+case "$1" in
+    list-windows)
+        if [[ "$*" == *"@ccm_prev_state"* ]]; then
+            printf 'test:0\t%s\tguardproj\t\t%s\n' \
+                "$CCM_TEST_MATCH_DIR" "$CCM_TEST_ROW_SID"
+        else
+            printf 'test:0\t%s\tguardproj\t%s\n' \
+                "$CCM_TEST_MATCH_DIR" "$CCM_TEST_ROW_SID"
+        fi ;;
+esac
+exit 0
+EOF
+    chmod +x "${MOCK_BIN}/tmux"
+}
+
 setup() {
     SANDBOX="$(mktemp -d)"
     # The hooks canonicalize the payload cwd (macOS: /var →
@@ -48,10 +72,18 @@ setup() {
     mkdir -p "$MOCK_BIN"
     export PATH="${MOCK_BIN}:${PATH}"
     export CCM_TEST_MATCH_DIR="$SANDBOX"
+    export CCM_TEST_TMUX_LOG="${SANDBOX}/tmux.log"
+    export CCM_TEST_ROW_SID=""
     # Hooks resolve the pane from the environment tmux provides.
     export TMUX_PANE="%1"
     # Keep the backgrounded `ccm inject-status --fast` spawn inert.
     export CCM_BIN=/usr/bin/true
+    # Keep desktop notifications inert (mirrors test_notify_parity).
+    printf '#!/bin/bash\nexit 0\n' > "${MOCK_BIN}/osascript"
+    printf '#!/bin/bash\nexit 0\n' > "${MOCK_BIN}/notify-send"
+    printf '#!/bin/bash\nexit 0\n' > "${MOCK_BIN}/terminal-notifier"
+    chmod +x "${MOCK_BIN}/osascript" "${MOCK_BIN}/notify-send" \
+        "${MOCK_BIN}/terminal-notifier"
     HOOKS_DIR="${TMPDIR}/ccm-$(id -u)/hooks"
 }
 
@@ -94,4 +126,37 @@ run_hook() {
     run_hook on-stop.sh Stop
     [ "$status" -eq 0 ]
     [ ! -e "${HOOKS_DIR}/guard-test.events.jsonl" ]
+}
+
+@test "a same-cwd session outside tmux cannot paint an unresolved window" {
+    write_logging_server_stub
+    unset TMUX_PANE
+    run_hook on-prompt-submit.sh UserPromptSubmit
+    [ "$status" -eq 0 ]
+    # Its own session-keyed signal is still written — that part of the
+    # contract is unchanged for user-scope hooks.
+    [ -f "${HOOKS_DIR}/guard-test" ]
+    # …but the window it merely shares a directory with is untouched.
+    ! grep -q "rename-window" "$CCM_TEST_TMUX_LOG"
+    ! grep -q "set-option" "$CCM_TEST_TMUX_LOG"
+}
+
+@test "a same-cwd session outside tmux cannot schedule the window's COMPLETED notification" {
+    write_logging_server_stub
+    unset TMUX_PANE
+    run_hook on-stop.sh Stop
+    [ "$status" -eq 0 ]
+    [ ! -e "${HOOKS_DIR}/guard-test.pending" ]
+}
+
+@test "a tmux-resident session still paints and notifies an unresolved window" {
+    # The legitimate cold start: the window's own claude fires its
+    # first events before any session id is cached.
+    write_logging_server_stub
+    run_hook on-prompt-submit.sh UserPromptSubmit
+    [ "$status" -eq 0 ]
+    grep -q "rename-window" "$CCM_TEST_TMUX_LOG"
+    run_hook on-stop.sh Stop
+    [ "$status" -eq 0 ]
+    [ -e "${HOOKS_DIR}/guard-test.pending" ]
 }
