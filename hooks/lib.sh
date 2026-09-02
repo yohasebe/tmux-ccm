@@ -313,7 +313,7 @@ ccm_write_signal() {
             # `_ccm_instant_permit_icon`, so this `else` covers BUSY
             # signal writes (PreToolUse / PostToolUse / etc.) without
             # double-refreshing.
-            tmux refresh-client -S 2>/dev/null
+            tmux refresh-client -S 2>/dev/null || true  # headless: no attached client => rc 1, must not fail set -e hooks
         fi
 
         # Push the freshly written state into the rendered status bar
@@ -350,7 +350,7 @@ _ccm_instant_permit_icon() {
 
     # Force tmux to redraw status bar — this triggers #(ccm inject-status)
     # if status-interval has elapsed, giving faster pickup
-    tmux refresh-client -S 2>/dev/null
+    tmux refresh-client -S 2>/dev/null || true  # headless: no attached client => rc 1, must not fail set -e hooks
 }
 
 # Schedule a COMPLETED notification after a short grace period.

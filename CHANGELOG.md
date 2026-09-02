@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- State hooks no longer surface a "hook error" in Claude Code when the tmux
+  server has no attached client. `tmux refresh-client -S` exits 1 headless
+  (detached server — a network drop, scripted use), and hook scripts run
+  under `set -euo pipefail`, so every BUSY/IDLE transition reported a
+  visible hook failure even though all state writes had already succeeded.
 - `ccm send` is refused again when the `claude agents` view prefixes its
   footer with a mode chip. Backgrounding a session with `←` draws
   `⏵⏵ auto mode · enter to return · … · ? for shortcuts`, and the
