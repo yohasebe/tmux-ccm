@@ -316,7 +316,21 @@ def _fragment_text_is_dim(attributed_line):
     for m in _SGR_PARAM_RE.finditer(attributed_line):
         if not _scan(attributed_line[pos:m.start()]):
             return False
-        for p in m.group(1).split(";"):
+        params = m.group(1).split(";")
+        i = 0
+        while i < len(params):
+            p = params[i]
+            i += 1
+            if p in ("38", "48"):
+                # Extended colour operands are not independent SGR attributes.
+                if i >= len(params) or params[i] not in ("5", "2"):
+                    return False
+                count = 2 if params[i] == "5" else 4
+                operands = params[i:i + count]
+                if len(operands) != count or not all(v.isdigit() for v in operands):
+                    return False
+                i += count
+                continue
             if p in ("", "0"):
                 dim = False
             elif p == "2":

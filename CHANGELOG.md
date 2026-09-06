@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Coloured composer drafts are no longer mistaken for dim prompt suggestions.
+  Extended foreground/background colour arguments preserve the dim attribute.
 - `ccm send` checks for the agents TUI immediately before delivery, including
   `--force`, `--start`, and transitions during confirmation, preventing messages
   from dispatching unintended sessions.

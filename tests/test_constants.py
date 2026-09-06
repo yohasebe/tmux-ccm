@@ -627,3 +627,26 @@ class TestStaleReleaseWindows:
         window only governs the already-resolved case, where being
         slow is harmless."""
         assert ccm_constants.PERMIT_MAX_TIMEOUT == 600
+
+
+class TestComposerExtendedColours:
+    @pytest.mark.parametrize("colour", [
+        "38;5;2", "48;5;2", "38;2;100;100;100", "48;2;100;100;100",
+        "38;5;0", "48;5;22", "38;2;0;22;2", "48;2;22;0;2",
+    ])
+    @pytest.mark.parametrize("dim", [False, True])
+    def test_extended_colour_preserves_draft_or_suggestion(self, colour, dim):
+        plain = "──────────\n❯ text\n──────────"
+        prefix = "\x1b[2m" if dim else ""
+        attributed = f"──────────\n❯ {prefix}\x1b[{colour}mtext\x1b[0m\n──────────"
+        result = ccm_constants.composer_draft_fragment(plain, attributed)
+        assert result == (None if dim else "❯ text")
+
+    @pytest.mark.parametrize("reset", ["0", "22"])
+    def test_attribute_after_colour_still_clears_dim(self, reset):
+        line = f"❯ \x1b[2;38;2;100;100;100;{reset}mtext"
+        assert not ccm_constants._fragment_text_is_dim(line)
+
+    @pytest.mark.parametrize("colour", ["38", "48;2;100", "38;5;"])
+    def test_incomplete_colour_keeps_draft(self, colour):
+        assert not ccm_constants._fragment_text_is_dim(f"❯ \x1b[2;{colour}mtext")
