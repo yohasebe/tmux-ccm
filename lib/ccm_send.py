@@ -70,7 +70,10 @@ from ccm_constants import (
     SHELL_FOREGROUND_COMMANDS,
     external_agent_name,
 )
-from ccm_pane_state import detect_pane_state, enumerate_window_panes, read_work_clock
+from ccm_pane_state import (
+    capture_composer_snapshot, detect_pane_state, enumerate_window_panes,
+    read_work_clock,
+)
 
 
 # ─── Opt-in send trace ───
@@ -407,26 +410,8 @@ def _composer_draft_fragment(pane_target):
     Which line is the composer is the whole question — see
     `composer_draft_fragment`, which both this and the spool's
     delivery check call so they cannot answer it differently."""
-    alt = False
-    cap = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p") or ""
-    if not cap.strip():
-        cap = ccm_core.tmux_cmd(
-            "capture-pane", "-a", "-t", pane_target, "-p"
-        ) or ""
-        alt = True
-    if composer_draft_fragment(cap) is None:
-        return None
-    # A draft-shaped line may be Claude Code's next-prompt suggestion
-    # (rendered dim) rather than a real draft; only an attribute
-    # capture (-e) carries the difference. Fetched lazily — the bare
-    # composer, the common case, pays no extra subprocess — and judged
-    # by the same shared function, same line index. Unreadable
-    # attribute capture → the plain-text verdict stands (refuse side).
-    e_args = (("capture-pane", "-e", "-a", "-t", pane_target, "-p") if alt
-              else ("capture-pane", "-e", "-t", pane_target, "-p"))
-    cap_e = ccm_core.tmux_cmd(*e_args) or ""
-    return composer_draft_fragment(
-        cap, pane_text_attributed=cap_e if cap_e.strip() else None)
+    plain, attributed = capture_composer_snapshot(pane_target)
+    return composer_draft_fragment(plain, pane_text_attributed=attributed)
 
 
 _SEND_USAGE = (

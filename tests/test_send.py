@@ -1610,17 +1610,14 @@ class TestComposerDraftGuard:
             ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
 
-    def test_unreadable_attribute_capture_keeps_draft_verdict(
+    def test_unreadable_attribute_capture_uses_unreadable_composer_policy(
         self, monkeypatch
     ):
-        """When the `-e` capture fails, the plain-text verdict stands
-        (refuse side) — the dim discriminator is additive, never a new
-        failure mode."""
+        """Without a readable snapshot there is no draft observation to merge."""
         def capture(args):
             if "-e" in args:
                 return ""
             return composer_screen("❯ half-typed thought")
         calls = self._patch(monkeypatch, capture)
-        with pytest.raises(SystemExit):
-            ccm_send.cmd_send(["demo", "--now", "hello"])
-        assert not self._literal_sent(calls)
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls)

@@ -52,7 +52,10 @@ import ccm_constants
 import ccm_core
 import ccm_notify
 import ccm_send  # shared typing helpers (_send_keys / _type_body)
-from ccm_pane_state import detect_pane_state, enumerate_window_panes, read_work_clock
+from ccm_pane_state import (
+    capture_composer_snapshot, detect_pane_state, enumerate_window_panes,
+    read_work_clock,
+)
 
 SPOOL_ROOT = os.path.join(ccm_constants.CCM_DATA_DIR, "spool")
 
@@ -288,29 +291,14 @@ def _deliverable_pane(win_target):
                             stored_clock=read_work_clock(win_target))
     if raw != "IDLE":
         return None, f"raw state {raw}"
-    alt = False
-    cap = ccm_core.tmux_cmd("capture-pane", "-t", pane.pane_id, "-p") or ""
-    if not cap.strip():
-        cap = ccm_core.tmux_cmd(
-            "capture-pane", "-a", "-t", pane.pane_id, "-p") or ""
-        alt = True
+    cap, attributed = capture_composer_snapshot(pane.pane_id)
     if not cap.strip():
         return None, "capture unreadable"
     if ccm_core.is_agents_tui(cap):
         return None, "agents TUI"
-    if ccm_constants.composer_draft_fragment(cap) is not None:
-        # The draft-shaped line may be Claude Code's dim-rendered
-        # next-prompt suggestion rather than a real draft — only an
-        # attribute capture (-e) tells them apart. Same lazy fetch and
-        # same shared verdict as `ccm_send._composer_draft_fragment`.
-        e_args = (("capture-pane", "-e", "-a", "-t", pane.pane_id, "-p") if alt
-                  else ("capture-pane", "-e", "-t", pane.pane_id, "-p"))
-        cap_e = ccm_core.tmux_cmd(*e_args) or ""
-        if ccm_constants.composer_draft_fragment(
-                cap,
-                pane_text_attributed=cap_e if cap_e.strip() else None,
-        ) is not None:
-            return None, "composer holds a draft"
+    if ccm_constants.composer_draft_fragment(
+            cap, pane_text_attributed=attributed) is not None:
+        return None, "composer holds a draft"
     return pane.pane_id, None
 
 

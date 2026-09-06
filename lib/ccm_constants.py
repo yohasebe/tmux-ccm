@@ -250,8 +250,8 @@ def composer_draft_fragment(pane_text, pane_text_attributed=None):
     state, and answering that question twice, in two places, is how
     the two answers start to disagree.
 
-    `pane_text_attributed` is the same pane captured with
-    `capture-pane -e` (SGR attributes kept). Claude Code draws a
+    `pane_text` is derived by stripping SGR from `pane_text_attributed`,
+    a single `capture-pane -e` snapshot (SGR attributes kept). Claude Code draws a
     next-prompt SUGGESTION into the composer when a turn ends — the
     exact moment a send is meant to land — with the same `❯` line
     shape as a half-typed draft, but entirely in dim (SGR 2). A plain
@@ -276,6 +276,7 @@ def composer_draft_fragment(pane_text, pane_text_attributed=None):
             if pane_text_attributed is not None:
                 att_lines = pane_text_attributed.split("\n")
                 if (idx < len(att_lines)
+                        and strip_sgr(att_lines[idx]) == ln
                         and _fragment_text_is_dim(att_lines[idx])):
                     return None
             fragment = ln.strip()
@@ -284,6 +285,11 @@ def composer_draft_fragment(pane_text, pane_text_attributed=None):
 
 
 _SGR_PARAM_RE = re.compile(r"\x1b\[([0-9;]*)m")
+
+
+def strip_sgr(text):
+    """Remove SGR attributes without changing text or row positions."""
+    return _SGR_PARAM_RE.sub("", text)
 
 
 def _fragment_text_is_dim(attributed_line):

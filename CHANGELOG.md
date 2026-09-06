@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Send and spool derive composer text and dim attributes from one capture,
+  preventing screen changes between reads from hiding a real draft. Alternate
+  screen reads also preserve attributes.
 - Send, spool readiness, and auto-focus now share the periodic detector's saved
   work-clock history, so a frozen footer does not remain BUSY in those checks.
 - Coloured composer drafts are no longer mistaken for dim prompt suggestions.

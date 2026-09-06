@@ -46,6 +46,7 @@ from ccm_constants import (
     PATTERN_PERMIT_FOOTER,
     PATTERN_RETRY_BACKOFF,
     SPINNER_STALE_RELEASE_SEC,
+    strip_sgr,
 )
 # `import ccm_core` lives at the BOTTOM of this module (after the
 # function definitions) so that when `ccm_pane_state` is the entry
@@ -172,6 +173,16 @@ def capture_pane_bottom(pane_target, lines=8):
         return []
     non_empty = [l for l in raw.split("\n") if l.strip()]
     return non_empty[-lines:]
+
+
+def capture_composer_snapshot(pane_target):
+    """Return plain and attributed text from one readable pane snapshot."""
+    attributed = ccm_core.tmux_cmd(
+        "capture-pane", "-e", "-t", pane_target, "-p") or ""
+    if not strip_sgr(attributed).strip():
+        attributed = ccm_core.tmux_cmd(
+            "capture-pane", "-e", "-a", "-t", pane_target, "-p") or ""
+    return strip_sgr(attributed), attributed
 
 
 def capture_pane_visible(pane_target):
