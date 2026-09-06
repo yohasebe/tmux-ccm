@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- `ccm send` checks for the agents TUI immediately before delivery, including
+  `--force`, `--start`, and transitions during confirmation, preventing messages
+  from dispatching unintended sessions.
 - `ccm send` is refused again when the `claude agents` view prefixes its
   footer with a mode chip. Backgrounding a session with `←` draws
   `⏵⏵ auto mode · enter to return · … · ? for shortcuts`, and the

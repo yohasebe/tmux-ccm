@@ -453,6 +453,40 @@ class TestCmdSend:
                 pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
 
+    @pytest.mark.parametrize("state,flags", [
+        ("BUSY", ["--force"]), ("SHELL", ["--start"]),
+    ])
+    def test_agents_tui_blocks_all_delivery_paths(self, monkeypatch, state, flags):
+        self._patch_resolution(monkeypatch, project=self._make_project(state=state))
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
+                            lambda *a: ("%999", "bash"))
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle", lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
+        tail = "❯ \nenter to open · space to reply · ? for shortcuts"
+        with patch("ccm_core.tmux_cmd", return_value=tail), \
+                patch("ccm_send._type_body") as body, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", *flags, "hello"])
+        body.assert_not_called()
+
+    def test_agents_tui_opened_during_confirmation_is_refused(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+        tail = ["❯ "]
+
+        def confirm(_):
+            tail[0] = "❯ \nenter to return · ? for shortcuts"
+            return "y"
+
+        monkeypatch.setattr("builtins.input", confirm)
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
+        with patch("ccm_core.tmux_cmd", side_effect=lambda *a: tail[0]), \
+                patch("ccm_send._type_body") as body, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        body.assert_not_called()
+
     def test_send_busy_rejected_without_force(self, monkeypatch):
         project = self._make_project(state="BUSY")
         self._patch_resolution(monkeypatch, project=project)
