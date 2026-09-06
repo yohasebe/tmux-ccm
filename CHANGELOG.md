@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Send, spool readiness, and auto-focus now share the periodic detector's saved
+  work-clock history, so a frozen footer does not remain BUSY in those checks.
 - Coloured composer drafts are no longer mistaken for dim prompt suggestions.
   Extended foreground/background colour arguments preserve the dim attribute.
 - `ccm send` checks for the agents TUI immediately before delivery, including

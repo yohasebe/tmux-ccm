@@ -46,6 +46,13 @@ This rule satisfies two competing requirements simultaneously:
 - **Multi-pane Agent Teams** (and any deliberate `prefix " ` / `prefix %` split): the user can see all panes at once and wants the window's reported state to surface attention-needing panes even when focus is on a different teammate. A single PERMIT teammate shows `⚠ PERMIT` for the whole window.
 - **Sliver / orphan panes**: a 1-row pane holding a long-idle `claude --continue` falsely reads BUSY because the prompt cannot render in 1 row. Excluding it from aggregation prevents the invisible pane from infecting the visible window state.
 
+Work-clock history is stored in the window's `@ccm_work_clock` and
+`@ccm_work_clock_ts` options. Periodic detection, send rechecks, spool readiness,
+and auto-focus use the same reader and staleness rule. Unchanged clocks expire
+after `SPINNER_STALE_RELEASE_SEC` (default 30 s); missing or malformed history
+conservatively treats a visible clock as ticking. The detection pipeline persists
+observations; direct pane checks read without refreshing them.
+
 ### Auto-focus on attach
 
 `reset_window_after_attach` (called from every ccm-mediated attach path: `cmd_attach`, dashboard `_do_attach`, dashboard tree-mode attach) calls `auto_focus_attention_pane(win_target)` after its existing wipes. If the window has multiple eligible (non-sliver) panes and one is in PERMIT and the active pane is not, focus is switched to the PERMIT pane via `tmux select-pane`.

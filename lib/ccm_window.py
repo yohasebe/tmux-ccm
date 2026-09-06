@@ -29,7 +29,7 @@ from ccm_constants import (
     SHELL_FOREGROUND_COMMANDS,
     SLIVER_HEIGHT_THRESHOLD,
 )
-from ccm_pane_state import detect_pane_state, enumerate_window_panes
+from ccm_pane_state import detect_pane_state, enumerate_window_panes, read_work_clock
 
 
 def _resolve_launch_pane(win_target):
@@ -171,6 +171,7 @@ def auto_focus_attention_pane(win_target):
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
     own_pgid = str(os.getpgrp())
 
+    stored_clock = read_work_clock(win_target)
     permit_pane = None
     active_is_permit = False
     for pid, pane_id, cmd, is_active, height in rows:
@@ -180,7 +181,8 @@ def auto_focus_attention_pane(win_target):
         if height and height < SLIVER_HEIGHT_THRESHOLD:
             continue
         state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
-                                  current_command=cmd)
+                                  current_command=cmd,
+                                  stored_clock=stored_clock)
         if state != "PERMIT":
             continue
         if is_active:

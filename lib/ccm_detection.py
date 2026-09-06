@@ -50,7 +50,7 @@ import ccm_core  # late-bound for tmux_cmd / find_process_age
 import ccm_jsonl
 import ccm_signals
 from ccm_activity import derive_state_from_events
-from ccm_pane_state import detect_window_raw, find_claude_pid
+from ccm_pane_state import detect_window_raw, find_claude_pid, read_work_clock
 from ccm_rules import (
     Action,
     DetectionContext,
@@ -62,20 +62,6 @@ from ccm_rules import (
 def _set_win_state(win_target, state):
     """Write @ccm_prev_state to the window."""
     ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", state)
-
-
-def _parse_work_clock(clock_str, ts_str) -> Optional[tuple]:
-    """Parse the persisted `@ccm_work_clock` / `@ccm_work_clock_ts`
-    pair into a `(clock, unix_ts)` tuple, or None when unset or
-    malformed — an unparseable history must not judge anything, so
-    it degrades to "no history" (every clock reads as moved)."""
-    if not clock_str:
-        return None
-    try:
-        ts = int(ts_str)
-    except (TypeError, ValueError):
-        return None
-    return (clock_str, ts)
 
 
 def build_detection_context(win_target, project_dir, prev_state,
@@ -91,22 +77,7 @@ def build_detection_context(win_target, project_dir, prev_state,
     """
     now = int(time.time())
 
-    # The window's persisted work clock — the cross-process history
-    # the tick check compares against. Mirrors the `cached_session_id`
-    # arrangement: the bulk `list-windows` query in build_project_list
-    # already fetched it, so the periodic path pays no extra
-    # subprocess; a direct caller (None) falls back to one show-option.
-    if cached_work_clock is not None:
-        prev_work_clock = _parse_work_clock(*cached_work_clock)
-    elif win_target:
-        prev_work_clock = _parse_work_clock(
-            ccm_core.tmux_cmd(
-                "show-option", "-wqv", "-t", win_target, "@ccm_work_clock"),
-            ccm_core.tmux_cmd(
-                "show-option", "-wqv", "-t", win_target, "@ccm_work_clock_ts"),
-        )
-    else:
-        prev_work_clock = None
+    prev_work_clock = read_work_clock(win_target, cached=cached_work_clock)
 
     observed_clocks = []
     raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,

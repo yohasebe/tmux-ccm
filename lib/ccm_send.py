@@ -70,7 +70,7 @@ from ccm_constants import (
     SHELL_FOREGROUND_COMMANDS,
     external_agent_name,
 )
-from ccm_pane_state import detect_pane_state, enumerate_window_panes
+from ccm_pane_state import detect_pane_state, enumerate_window_panes, read_work_clock
 
 
 # ─── Opt-in send trace ───
@@ -384,6 +384,7 @@ def _recheck_delivery_state(win_target, pane_target):
     return detect_pane_state(
         pane.pane_pid, pane.pane_id, ps_lines, str(os.getpgrp()),
         current_command=pane.current_command,
+        stored_clock=read_work_clock(win_target),
     )
 
 

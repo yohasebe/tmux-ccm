@@ -52,7 +52,7 @@ import ccm_constants
 import ccm_core
 import ccm_notify
 import ccm_send  # shared typing helpers (_send_keys / _type_body)
-from ccm_pane_state import detect_pane_state, enumerate_window_panes
+from ccm_pane_state import detect_pane_state, enumerate_window_panes, read_work_clock
 
 SPOOL_ROOT = os.path.join(ccm_constants.CCM_DATA_DIR, "spool")
 
@@ -284,7 +284,8 @@ def _deliverable_pane(win_target):
         return None, "delivery pane ambiguous"
     raw = detect_pane_state(pane.pane_pid, pane.pane_id, ps_lines,
                             str(os.getpgrp()),
-                            current_command=pane.current_command)
+                            current_command=pane.current_command,
+                            stored_clock=read_work_clock(win_target))
     if raw != "IDLE":
         return None, f"raw state {raw}"
     alt = False

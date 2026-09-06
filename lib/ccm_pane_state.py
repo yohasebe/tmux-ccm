@@ -260,6 +260,30 @@ def _work_clock(line) -> Optional[str]:
     return None
 
 
+def read_work_clock(win_target, cached=None):
+    """Read the window's clock history, or use an already-fetched pair.
+
+    Missing or malformed history returns None so every caller keeps the
+    same conservative ticking verdict. An empty cached pair skips I/O.
+    """
+    if cached is None:
+        if not win_target:
+            return None
+        cached = (
+            ccm_core.tmux_cmd(
+                "show-option", "-wqv", "-t", win_target, "@ccm_work_clock"),
+            ccm_core.tmux_cmd(
+                "show-option", "-wqv", "-t", win_target, "@ccm_work_clock_ts"),
+        )
+    clock_str, ts_str = cached
+    if not clock_str:
+        return None
+    try:
+        return clock_str, int(ts_str)
+    except (TypeError, ValueError):
+        return None
+
+
 def _clock_is_ticking(clock, stored, now) -> bool:
     """Believe `clock` when it moved, or has not stood still for long.
 
