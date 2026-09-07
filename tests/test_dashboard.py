@@ -1448,3 +1448,63 @@ class TestEveryKeyAndOperationIsFindable:
             assert action in actions, (
                 f"the menu does not offer '{action}' — the menu is where "
                 f"a reader learns what ccm can do")
+
+
+class TestInitialProjectSelection:
+    def _open(self, monkeypatch, index="2", projects=True, failure=None, bg=True):
+        from types import SimpleNamespace
+        import ccm_core
+
+        _stub_dashboard_environment(monkeypatch)
+        d = Dashboard()
+        d.running = False
+        d.bg_visible = bg
+        rows = [ccm_core.Project("other:2", "2", "alpha", "/tmp/a", "PERMIT"),
+                ccm_core.Project("popup:2", "2", "beta", "/tmp/b", "IDLE")]
+        monkeypatch.setattr(dashboard, "build_project_list",
+                            lambda fast=False: rows if projects else [])
+        monkeypatch.setattr(dashboard, "get_session", lambda: "popup")
+
+        def tmux(*args):
+            assert args == ("display-message", "-p", "#{window_index}")
+            if failure:
+                raise RuntimeError("window query unavailable")
+            return index
+
+        monkeypatch.setattr(dashboard, "tmux_cmd", tmux)
+        monkeypatch.setattr(dashboard, "log_caught_exception", lambda *a: None)
+        for name in ("curs_set", "use_default_colors", "set_escdelay"):
+            monkeypatch.setattr(dashboard.curses, name, lambda *a: None)
+        monkeypatch.setattr(d, "_init_colors", lambda: None)
+        monkeypatch.setattr(dashboard.threading, "Thread",
+                            lambda **kw: SimpleNamespace(start=lambda: None))
+        monkeypatch.setattr(d, "_fetch_bg_sessions", lambda: [SimpleNamespace()])
+        painted = []
+        monkeypatch.setattr(d, "_render_current", lambda s: painted.append(d.selected))
+        d.run(_make_mock_stdscr())
+        return d, painted
+
+    def test_first_paint_selects_opening_project_in_popup(self, monkeypatch):
+        d, painted = self._open(monkeypatch)
+        assert painted == [1]
+        assert d.projects[d.selected].win_target == "popup:2"
+        assert d._display_order == ["other:2", "popup:2"]
+        assert d._selected_bg_index() is None
+
+    @pytest.mark.parametrize("kwargs", [
+        {"index": "9"}, {"index": ""}, {"projects": False}, {"failure": True},
+    ])
+    def test_unlisted_or_unreadable_window_falls_back_to_zero(self, monkeypatch, kwargs):
+        d, painted = self._open(monkeypatch, **kwargs)
+        assert painted == [0]
+        assert d.selected == 0
+
+    def test_refresh_keeps_user_selection_and_background_indices(self, monkeypatch):
+        d, _ = self._open(monkeypatch)
+        d.selected = 0
+        d._set_projects_stable(list(reversed(d.projects)))
+        assert d.selected == 0
+        assert d.projects[d.selected].win_target == "other:2"
+        d.selected = len(d.projects)
+        d._set_projects_stable(list(reversed(d.projects)))
+        assert d._selected_bg_index() == 0

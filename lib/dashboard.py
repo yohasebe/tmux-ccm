@@ -217,6 +217,7 @@ class Dashboard:
         # Instant first paint from cached state. This first build
         # establishes the frozen display order for the popup's lifetime.
         self._set_projects_stable(build_project_list(fast=True))
+        self._select_current_project()
         # Fetch bg sessions synchronously on initial paint when the
         # section is visible, so the user doesn't see "Background
         # sessions (0)" flicker into the actual list 300 ms later.
@@ -1996,6 +1997,22 @@ class Dashboard:
                          curses.color_pair(C_DIM))
 
         stdscr.refresh()
+
+    def _select_current_project(self):
+        """Select the opening window once, after the initial display order is set."""
+        self.selected = 0
+        try:
+            session = get_session()
+            index = tmux_cmd("display-message", "-p", "#{window_index}")
+            if not session or not index:
+                return
+            target = f"{session}:{index}"
+            self.selected = next(
+                (i for i, p in enumerate(self.projects) if p.win_target == target),
+                0,
+            )
+        except Exception:
+            log_caught_exception("dashboard._select_current_project")
 
     def _set_projects_stable(self, projects):
         """Assign `self.projects` while (a) holding the row order stable

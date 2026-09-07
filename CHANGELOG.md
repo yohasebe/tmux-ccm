@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- The dashboard initially selects the project in the opening window instead of
+  the first state-sorted row. Unlisted windows retain the first-row fallback.
 - Send and spool derive composer text and dim attributes from one capture,
   preventing screen changes between reads from hiding a real draft. Alternate
   screen reads also preserve attributes.
