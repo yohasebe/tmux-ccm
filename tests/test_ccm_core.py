@@ -323,7 +323,7 @@ class TestBuildProjectListSubprocessCount:
         windows_out = self._windows_raw(n_projects)
         calls = []
         def fake_tmux(*args, **kwargs):
-            calls.append(args[0] if args else "")
+            calls.append(args)
             if args and args[0] == "list-windows":
                 return windows_out
             return ""
@@ -337,7 +337,7 @@ class TestBuildProjectListSubprocessCount:
         # The N+1 bug would have produced 10 list-windows calls
         # (one per project via _session_id_from_tmux). The fix
         # makes it exactly 1.
-        list_windows_calls = [c for c in calls if c == "list-windows"]
+        list_windows_calls = [c for c in calls if c and c[0] == "list-windows"]
         assert len(list_windows_calls) == 1, (
             f"fast path issued {len(list_windows_calls)} list-windows "
             f"calls for {n_projects} projects — N+1 regression"
@@ -352,7 +352,10 @@ class TestBuildProjectListSubprocessCount:
         windows_out = self._windows_raw(n_projects)
         calls = []
         def fake_tmux(*args, **kwargs):
-            calls.append(args[:3] if len(args) >= 3 else args)
+            # The whole argv: the option name is the last argument,
+            # and a per-project `show-option -w -t <target> -qv
+            # @ccm_session_id` was invisible to a prefix-only record.
+            calls.append(args)
             if args and args[0] == "list-windows":
                 return windows_out
             return ""
@@ -371,14 +374,74 @@ class TestBuildProjectListSubprocessCount:
         # bounded; we count only @ccm_session_id specifically.
         sid_show_options = [
             c for c in calls
-            if len(c) >= 3 and c[0] == "show-option"
-            and "@ccm_session_id" in str(c)
+            if c and c[0] == "show-option" and "@ccm_session_id" in c
         ]
         assert len(sid_show_options) == 0, (
             f"slow path issued {len(sid_show_options)} show-option "
             f"@ccm_session_id calls for {n_projects} projects — "
             "cached_session_id wasn't threaded through"
         )
+
+    def _run_real_detection(self, monkeypatch, n_projects):
+        """Drive `build_project_list(fast=False)` through the real
+        detection pipeline with only the external answers faked:
+        `n_projects` single-pane windows, each pane's foreground is
+        claude (a child of the pane's shell), the prompt is visible,
+        no hooks, no transcripts, and the windows' cached columns
+        (session id, work clock) are empty and stay so — a steady
+        state, so no per-window option writes are provoked. Returns
+        the recorded tmux argv list."""
+        windows_out = "\n".join(
+            f"0:{i+1}\tproj-{i}\t/p/{i}\tIDLE\t0\t1234567890\t\t\t\t\t"
+            for i in range(n_projects))
+        panes_out = "\n".join(
+            f"0:{i+1}\t{1000+i}\t%{i}\tclaude\t1\t40\t" for i in range(n_projects))
+        ps_out = "\n".join(
+            f"{1000+i} 1 {1000+i} zsh 00:10:00\n{2000+i} {1000+i} {2000+i} claude 00:05:00"
+            for i in range(n_projects)) + "\n"
+        calls = []
+        def fake_tmux(*args, **kwargs):
+            calls.append(args)
+            if args and args[0] == "list-windows":
+                return windows_out
+            if args and args[0] == "list-panes":
+                return panes_out
+            if args and args[0] == "capture-pane":
+                return "some text\n\u276f \n"
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: ps_out)
+        ccm_core.build_project_list(fast=False)
+        return calls
+
+    def test_slow_path_real_detection_stays_linear_in_panes(self, monkeypatch):
+        """The dispatch tests above stub detection; this one runs it.
+        The bulk queries (`list-windows`, `list-panes -a`) are issued
+        once regardless of N; what grows with N is the per-pane
+        `capture-pane` reads (a bounded number per pane). Any other
+        per-project tmux call — the N+1 class this guards against —
+        shows up as growth beyond that."""
+        one = self._run_real_detection(monkeypatch, 1)
+        ten = self._run_real_detection(monkeypatch, 10)
+
+        def count(calls, name):
+            return sum(1 for c in calls if c and c[0] == name)
+        for calls in (one, ten):
+            assert count(calls, "list-windows") == 1
+            assert count(calls, "list-panes") == 1
+            assert not any(c and c[0] == "show-option" and "@ccm_session_id" in c
+                           for c in calls)
+        per_pane_captures = count(ten, "capture-pane") - count(one, "capture-pane")
+        assert per_pane_captures <= 9 * 3, per_pane_captures  # ≤ 3 reads per extra pane
+        others_one = [c for c in one if c and c[0] not in ("capture-pane",)]
+        others_ten = [c for c in ten if c and c[0] not in ("capture-pane",)]
+        # In a steady state nothing but the per-pane captures grows
+        # with N. (A state transition costs a few option writes per
+        # window; the fixture provokes none.)
+        assert len(others_ten) == len(others_one), (
+            f"non-capture tmux calls grew from {len(others_one)} to "
+            f"{len(others_ten)} for 1 → 10 projects:\n"
+            + "\n".join(str(c) for c in others_ten))
 
 
 # ─── validate_name ───
