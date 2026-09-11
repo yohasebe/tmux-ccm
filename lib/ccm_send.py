@@ -302,6 +302,34 @@ def _type_body(win_target, lines):
 # commands). Resolving the actual claude-hosting pane and targeting
 # it directly makes state and delivery refer to the same pane.
 
+def _resolve_claude_pane_strict(win_target):
+    """The pane that hosts claude in `win_target`, or None — with no
+    window-target fallback.
+
+    Used after `launch_claude` reported claude already running: the
+    message is about to be typed into that pane, so the pane must be
+    pinned as a specific id whose process is claude. "Could not list
+    the panes" or "no pane hosts claude" is None here, never the
+    window target (which would deliver to whatever pane is active,
+    past the self-delivery guard and the final state check that both
+    key on a pane id). The active pane wins when it hosts claude;
+    otherwise a single claude pane; two or more without an active one
+    is ambiguous — None."""
+    ps_raw = ccm_core.ps_snapshot().strip()
+    if not ps_raw:
+        return None
+    panes = enumerate_window_panes(win_target, ps_raw.split("\n"))
+    live = [p for p in panes if not p.ignored and p.claude_pid]
+    if not live:
+        return None
+    active = next((p for p in live if p.active), None)
+    if active:
+        return active.pane_id
+    if len(live) == 1:
+        return live[0].pane_id
+    return None
+
+
 def _resolve_delivery_pane(win_target):
     """Return `(pane_target, active_cmd)` for the pane that should
     receive the keystrokes.
@@ -792,7 +820,18 @@ def cmd_send(args):
             ccm_core.ccm_info(
                 f"Claude is already running in {project_name}; delivering "
                 "to it without launching.")
-            pane_target, _ = _resolve_delivery_pane(win_target)
+            # Pin the pane the message will go to. No window-target
+            # fallback here: the self-delivery guard below and the
+            # final state check before typing both key on a pane id,
+            # and a window target would slip past both.
+            pane_target = _resolve_claude_pane_strict(win_target)
+            if pane_target is None:
+                ccm_core.ccm_die(
+                    f"Claude was found running in {project_name} a moment "
+                    "ago, but no pane can be pinned as its host now (the "
+                    "panes could not be read, or none hosts claude) — "
+                    "nothing sent. Retry."
+                )
             if caller_pane and caller_pane == pane_target:
                 ccm_core.ccm_die(
                     f"{project_name}'s Claude pane IS this pane "

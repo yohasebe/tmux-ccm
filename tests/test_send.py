@@ -601,9 +601,9 @@ class TestCmdSend:
         resolutions = iter([("%1", "zsh"), ("%2", "claude")])
         monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
                             lambda *a: next(resolutions))
-        monkeypatch.setattr(
-            ccm_window, "enumerate_window_panes",
-            lambda wt, ps: [PaneInfo("%2", "200", True, "zsh", False, "300")])
+        claude_pane = [PaneInfo("%2", "200", True, "zsh", False, "300")]
+        monkeypatch.setattr(ccm_window, "enumerate_window_panes", lambda wt, ps: claude_pane)
+        monkeypatch.setattr(ccm_send, "enumerate_window_panes", lambda wt, ps: claude_pane)
         monkeypatch.setattr(ccm_send, "_wait_for_target_idle", lambda *a, **k: "IDLE")
         monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
@@ -611,6 +611,47 @@ class TestCmdSend:
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
+
+    def _already_running_setup(self, monkeypatch, panes_at_reresolve):
+        """SHELL at first, claude found already running by the launch
+        step; `panes_at_reresolve` is what the strict re-resolution
+        sees. Delivery checks answer IDLE so only the pane pinning
+        decides the outcome."""
+        initial = self._make_project(state="SHELL")
+        idle = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, idle)
+        monkeypatch.setenv("TMUX_PANE", "%2")
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane", lambda *a: ("%1", "zsh"))
+        monkeypatch.setattr(
+            ccm_window, "enumerate_window_panes",
+            lambda wt, ps: [PaneInfo("%1", "100", False, "zsh", False, "300"),
+                            PaneInfo("%2", "200", True, "zsh", False, None)])
+        monkeypatch.setattr(ccm_send, "enumerate_window_panes",
+                            lambda wt, ps: panes_at_reresolve)
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle", lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
+
+    def test_already_running_with_unlistable_panes_sends_nothing(self, monkeypatch):
+        """Re-resolution fails (panes unreadable for a moment): no
+        window-target fallback — the body is not typed anywhere."""
+        self._already_running_setup(monkeypatch, [])
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
+
+    def test_already_running_delivers_to_the_pinned_claude_pane(self, monkeypatch):
+        self._already_running_setup(
+            monkeypatch,
+            [PaneInfo("%1", "100", False, "zsh", False, "300"),
+             PaneInfo("%2", "200", True, "zsh", False, None)])
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "%1", "-l", "--", "hello") in calls
+        assert not any(ccm_constants.CLAUDE_CMD in c for c in calls)
 
     def test_send_shell_with_start_launches_claude_first(self, monkeypatch):
         initial = self._make_project(state="SHELL")
