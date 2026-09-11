@@ -1144,3 +1144,62 @@ class TestValidatedSessionInfoIsPassedThrough:
                             lambda pid, ps_lines=None: {"kind": "interactive",
                                                        "sessionId": "exact-session", "cwd": proj})
         assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42) == exact
+
+
+
+class TestCwdProbeBudget:
+    """`JSONL_CWD_PROBE_BYTES` bounds what the probe reads, in bytes,
+    regardless of line structure."""
+
+    def _reads(self, monkeypatch):
+        sizes = []
+        real_open = open
+
+        class Counting:
+            def __init__(self, f): self.f = f
+            def read(self, n=-1):
+                data = self.f.read(n); sizes.append(len(data)); return data
+            def __enter__(self): return self
+            def __exit__(self, *a): self.f.close()
+
+        def counting_open(path, mode="r", *a, **k):
+            f = real_open(path, mode, *a, **k)
+            return Counting(f) if "b" in mode else f
+        monkeypatch.setattr("builtins.open", counting_open)
+        return sizes
+
+    def test_a_giant_first_line_is_not_read_in_full(self, tmp_path, monkeypatch):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"x","pad":"' + b"x" * (8 * 1024 * 1024) + b'"}\n'
+                      + b'{"type":"user","cwd":"/w"}\n')
+        sizes = self._reads(monkeypatch)
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None
+        assert sum(sizes) <= ccm_jsonl.JSONL_CWD_PROBE_BYTES + 1
+
+    def test_cwd_within_budget_is_found(self, tmp_path, monkeypatch):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"x"}\n{"type":"user","cwd":"/w"}\n' + b"y" * (2 * 1024 * 1024))
+        sizes = self._reads(monkeypatch)
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) == ccm_jsonl._canonical("/w")
+        assert sum(sizes) <= ccm_jsonl.JSONL_CWD_PROBE_BYTES + 1
+
+    def test_line_cut_by_the_budget_is_not_interpreted(self, tmp_path, monkeypatch):
+        """A `cwd` record that straddles the budget boundary is
+        unknown, not a guess from its readable half."""
+        p = tmp_path / "t.jsonl"
+        filler = b'{"type":"x","pad":"' + b"x" * (ccm_jsonl.JSONL_CWD_PROBE_BYTES - 40) + b'"}\n'
+        p.write_bytes(filler + b'{"type":"user","cwd":"/straddles-the-budget-boundary-here"}\n')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None
+
+    def test_budget_is_bytes_not_characters(self, tmp_path):
+        """Multi-byte text: a character budget would admit more bytes
+        than the constant says."""
+        p = tmp_path / "t.jsonl"
+        wide = ("\u3042" * (ccm_jsonl.JSONL_CWD_PROBE_BYTES // 3 + 64)).encode("utf-8")
+        p.write_bytes(b'{"type":"x","pad":"' + wide + b'"}\n{"type":"user","cwd":"/w"}\n')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None
+
+    def test_short_file_without_cwd(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"x"}\n')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None

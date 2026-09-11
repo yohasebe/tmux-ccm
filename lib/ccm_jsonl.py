@@ -335,23 +335,32 @@ def _jsonl_recorded_cwd(path: str) -> Optional[str]:
     read. A property of the file alone — what a caller compares it
     against is the caller's business, so this is what may be cached.
     """
-    read = 0
+    # Read the budget as bytes, up front, and only then look at
+    # lines: iterating lines first would read a whole line before
+    # its length could be checked, so a single multi-megabyte record
+    # at the head would be read in full. A line cut off by the
+    # budget is not interpreted — it may be a `cwd` record, but that
+    # is unknown, and unknown reads as "names none".
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                read += len(line)
-                if read > JSONL_CWD_PROBE_BYTES:
-                    break
-                if '"cwd"' not in line:
-                    continue
-                try:
-                    cwd = json.loads(line).get("cwd")
-                except (ValueError, TypeError):
-                    continue
-                if cwd:
-                    return _canonical(cwd)
+        with open(path, "rb") as f:
+            head = f.read(JSONL_CWD_PROBE_BYTES + 1)
     except OSError:
         return None
+    truncated = len(head) > JSONL_CWD_PROBE_BYTES
+    if truncated:
+        head = head[:JSONL_CWD_PROBE_BYTES]
+    lines = head.split(b"\n")
+    if truncated:
+        lines = lines[:-1]  # the last piece is cut mid-line
+    for raw in lines:
+        if b'"cwd"' not in raw:
+            continue
+        try:
+            cwd = json.loads(raw.decode("utf-8", errors="replace")).get("cwd")
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if cwd:
+            return _canonical(cwd)
     return None
 
 
