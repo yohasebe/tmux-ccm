@@ -17,9 +17,6 @@ CCM_HOOK_DIR="${CCM_HOOK_DIR:-${CCM_TMP_DIR}/hooks}"
 # Timeout for hook commands in Claude Code settings (milliseconds)
 CCM_HOOK_CMD_TIMEOUT="${CCM_HOOK_CMD_TIMEOUT:-5000}"
 
-# Commands to start Claude Code
-CCM_CLAUDE_CMD="claude --continue 2>/dev/null || claude"
-
 # Colors for terminal output (using $'...' for real escape characters)
 COLOR_RED=$'\033[0;31m'
 COLOR_GREEN=$'\033[0;32m'
@@ -91,7 +88,13 @@ _ccm_should_reconcile() {
 ccm_init_dirs() {
     mkdir -p "$CCM_SNAPSHOT_DIR" "$CCM_STATE_DIR" "$CCM_TMP_DIR" "$CCM_HOOK_DIR" \
              "${CCM_TMP_DIR}/port-cache" "${CCM_TMP_DIR}/git-cache" 2>/dev/null
+}
 
+# Housekeeping, separate from directory creation: the hook-driven
+# `inject-status --fast` runs on every state transition and needs the
+# directories, not a sweep of them. The periodic poll (already
+# rate-limited by the reconcile gate) is the place for the sweep.
+ccm_gc_tmp() {
     # Age out disposable caches only. Everything else under the tmp
     # dir is either control state whose age means nothing (the
     # dashboard pid marker, the inject lock, the popup-session file —

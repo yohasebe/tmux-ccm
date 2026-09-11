@@ -40,8 +40,14 @@ if [[ "${1:-}" == "inject-status" && "$*" != *--fast* ]]     && ! _ccm_should_re
     exit 0
 fi
 
-# Initialize runtime directories
+# Initialize runtime directories. The cache sweep is skipped on the
+# hook-driven fast path: it fires on every state transition, and two
+# find(1) walks per transition buy nothing the periodic poll's sweep
+# does not.
 ccm_init_dirs
+if [[ "$*" != *--fast* ]]; then
+    ccm_gc_tmp
+fi
 
 ccm_usage() {
     cat <<'USAGE'
