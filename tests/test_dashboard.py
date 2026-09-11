@@ -977,6 +977,46 @@ class TestDoAttachAutoStart:
         ), f"launch command bypassed auto_start_claude: {captured}"
 
 
+    def test_unlaunched_attach_is_announced_on_the_message_line(self, monkeypatch):
+        """The popup is gone by the time the user would notice an
+        empty shell, so the outcome that needs their hand — nothing
+        could be launched — is put on the tmux message line."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_window
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "SHELL")]
+        d.selected = 0
+        monkeypatch.setattr("dashboard.auto_start_claude",
+                            lambda wt: ccm_window.LaunchResult(ccm_window.UNAVAILABLE))
+        monkeypatch.setattr("dashboard.reset_window_after_attach", lambda wt: None)
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+        captured = []
+        monkeypatch.setattr("dashboard.tmux_cmd",
+                            lambda *a, **k: captured.append(a) or "")
+        d._do_attach(_make_mock_stdscr())
+        msgs = [c for c in captured if c and c[0] == "display-message"]
+        assert len(msgs) == 1 and "not auto-started" in msgs[0][-1]
+
+    @pytest.mark.parametrize("outcome", ["launched", "already-running", "disabled"])
+    def test_other_launch_outcomes_are_silent(self, monkeypatch, outcome):
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_window
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "SHELL")]
+        d.selected = 0
+        monkeypatch.setattr("dashboard.auto_start_claude",
+                            lambda wt: ccm_window.LaunchResult(outcome))
+        monkeypatch.setattr("dashboard.reset_window_after_attach", lambda wt: None)
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+        captured = []
+        monkeypatch.setattr("dashboard.tmux_cmd",
+                            lambda *a, **k: captured.append(a) or "")
+        d._do_attach(_make_mock_stdscr())
+        assert not any(c and c[0] == "display-message" for c in captured)
+
+
 # ─── Interactive handlers: rename / remove / ignore / add / register / search ───
 #
 # These exercise the representative dialog flows behind the

@@ -52,7 +52,7 @@ class LaunchResult(NamedTuple):
     pane: Optional[str] = None     # the pane typed into, when LAUNCHED
 
 
-def _pick_shell_pane(panes):
+def _pick_shell_pane(panes, exclude_pane=None):
     """The pane that is safe to type the launch command into, or None.
 
     `send-keys -t <window>` delivers to the window's ACTIVE pane. In a
@@ -65,8 +65,12 @@ def _pick_shell_pane(panes):
         case);
       - else the single non-ignored shell-foreground pane;
       - else None — refuse. Not auto-starting beats typing into an
-        unknown foreground."""
-    live = [p for p in panes if not p.ignored]
+        unknown foreground.
+
+    `exclude_pane` names a pane that must never be chosen — the
+    caller's own, for `ccm send`, whose launch would otherwise land
+    in the sender's composer."""
+    live = [p for p in panes if not p.ignored and p.pane_id != exclude_pane]
     active = next((p for p in live if p.active), None)
     if active and active.current_command in SHELL_FOREGROUND_COMMANDS:
         return active.pane_id
@@ -77,7 +81,7 @@ def _pick_shell_pane(panes):
     return None
 
 
-def launch_claude(win_target, honour_setting=True) -> LaunchResult:
+def launch_claude(win_target, honour_setting=True, exclude_pane=None) -> LaunchResult:
     """Type the Claude launch command into `win_target`, after looking
     at the window as it is NOW — the one place every launch path
     (`ccm attach`, the dashboard, `ccm send --start`) goes through.
@@ -90,12 +94,17 @@ def launch_claude(win_target, honour_setting=True) -> LaunchResult:
     is re-read here, from a fresh process snapshot and pane listing,
     and the command is typed only when:
 
+      - the process snapshot was taken (`UNAVAILABLE` when `ps`
+        failed: without it every pane reads as claude-less, and a
+        launch into a window that does host claude would follow),
       - no non-ignored pane hosts claude (`ALREADY_RUNNING` otherwise —
         a second `claude --continue` would open the same conversation
         twice), and
       - a pane can be positively identified as a shell foreground
         (`UNAVAILABLE` otherwise — including when the panes cannot be
         listed at all: "could not look" is not "nothing there").
+
+    `exclude_pane` is never typed into (see `_pick_shell_pane`).
 
     The hand-off notice is judged first, before the launch is typed
     (the new session's own transcript would otherwise be the newest
@@ -105,13 +114,15 @@ def launch_claude(win_target, honour_setting=True) -> LaunchResult:
         if setting != "on":
             return LaunchResult(DISABLED)
     notice = continue_blocker_notice(win_target)
-    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
-    panes = enumerate_window_panes(win_target, ps_lines)
+    ps_raw = ccm_core.ps_snapshot().strip()
+    if not ps_raw:
+        return LaunchResult(UNAVAILABLE, notice)
+    panes = enumerate_window_panes(win_target, ps_raw.split("\n"))
     if not panes:
         return LaunchResult(UNAVAILABLE, notice)
     if any(p.claude_pid for p in panes if not p.ignored):
         return LaunchResult(ALREADY_RUNNING, notice)
-    pane = _pick_shell_pane(panes)
+    pane = _pick_shell_pane(panes, exclude_pane)
     if pane is None:
         return LaunchResult(UNAVAILABLE, notice)
     # Leave copy-mode if the pane is in it; a no-op otherwise. Without

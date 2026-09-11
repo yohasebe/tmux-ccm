@@ -59,6 +59,19 @@ from ccm_pane_state import enumerate_window_panes
 import ccm_agentview
 import ccm_spool
 from ccm_window import auto_start_claude, reset_window_after_attach
+import ccm_window
+
+
+def _announce_unlaunched(result):
+    """After an attach that meant to start Claude: when nothing could
+    be started, say so on the tmux message line — the dashboard is
+    the main attach path and the popup is gone by the time the user
+    would otherwise notice an empty shell. Silent for the outcomes
+    that need no action (launched, already running, auto-start off)."""
+    if result is not None and result.outcome == ccm_window.UNAVAILABLE:
+        tmux_cmd("display-message", "-d", "8000",
+                 "ccm: Claude not auto-started — no pane could be "
+                 "verified as a shell prompt. Start it by hand.")
 from ccm_canaries import (
     disable_all_hooks_warning,
     errors_log_burst_warning,
@@ -1516,7 +1529,7 @@ class Dashboard:
         # a bare `send-keys -t <window>` would type it into the active
         # pane, which in a split window may be an editor or pager.
         if p.state == "SHELL":
-            auto_start_claude(p.win_target)
+            _announce_unlaunched(auto_start_claude(p.win_target))
         reset_window_after_attach(p.win_target)
         # Cross-session switch
         session = get_session()
@@ -2593,7 +2606,7 @@ class Dashboard:
                     with self.lock:
                         for p in self.projects:
                             if p.win_target == wt and p.state == "SHELL":
-                                auto_start_claude(wt)
+                                _announce_unlaunched(auto_start_claude(wt))
                                 break
                     reset_window_after_attach(wt)
                     target_session = wt.split(":")[0]

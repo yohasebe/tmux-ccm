@@ -44,10 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   already hosts Claude (a second `claude --continue` would open the
   same conversation twice, as happens when Claude relaunches in place
   after an update), and nothing when no pane can be verified as a
-  shell prompt, including when the panes cannot be listed at all. The
-  outcome is reported: `ccm attach` says when nothing was started, and
-  `ccm send --start` refuses with the reason instead of typing the
-  message into an unverified pane.
+  shell prompt, including when the panes or the process list cannot
+  be read at all. `ccm send --start` never launches into the sender's
+  own pane and re-applies its self-delivery guard to the pane the
+  message will actually go to. The outcome is reported: `ccm attach`
+  and the dashboard say when nothing was started, and `ccm send
+  --start` refuses with the reason instead of typing the message into
+  an unverified pane.
 - The cluster-SHELL warning now says what it observed — Claude left the
   pane repeatedly — and lists the causes that look identical from ccm's
   side (an update relaunching in place, manual exits, unexpected

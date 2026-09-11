@@ -185,7 +185,10 @@ class TestAutoStartClaudeLaunchPane:
     pane_id \\t pane_pid \\t pane_active \\t current_command \\t @ccm_ignore.
     """
 
-    def _run(self, monkeypatch, panes_raw, auto_start="on", ps_output=""):
+    # A process snapshot in which every pane pid is a plain shell.
+    SHELL_PS = "100 1 100 zsh 00:05\n200 1 200 zsh 00:05\n300 1 300 bash 00:05\n"
+
+    def _run(self, monkeypatch, panes_raw, auto_start="on", ps_output=SHELL_PS):
         """Returns the launch keystrokes sent (the copy-mode cancel
         that precedes a launch is not counted) and the result."""
         sent = []
@@ -265,6 +268,38 @@ class TestAutoStartClaudeLaunchPane:
         assert sent == []
         assert self.result.outcome == ccm_window.ALREADY_RUNNING
 
+    def test_ps_failure_sends_nothing_even_with_a_shell_pane(self, monkeypatch):
+        """`ps_snapshot` returns "" when ps fails. Without the
+        snapshot every pane reads as claude-less, so a launch would
+        double-start a window that does host claude. No snapshot, no
+        launch — no copy-mode cancel either."""
+        sent = self._run(monkeypatch,
+                         "%1\t100\t1\tzsh\t\n%2\t200\t0\tclaude\t",
+                         ps_output="")
+        assert sent == []
+        assert self.result.outcome == ccm_window.UNAVAILABLE
+
+    def test_excluded_pane_is_never_typed_into(self, monkeypatch):
+        """`ccm send` passes its own pane; when that is the only shell
+        pane, nothing is launched rather than launching into the
+        sender's composer."""
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return "on"
+            if args[0] == "list-panes":
+                return "%0\t100\t1\tzsh\t"
+            if args[0] == "send-keys":
+                sent.append(args)
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: self.SHELL_PS)
+        result = ccm_window.launch_claude("0:5", exclude_pane="%0")
+        assert sent == [] and result.outcome == ccm_window.UNAVAILABLE
+        result = ccm_window.launch_claude("0:5", exclude_pane="%9")
+        assert result.outcome == ccm_window.LAUNCHED and result.pane == "%0"
+
     def test_launch_outcome_names_the_pane(self, monkeypatch):
         sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t")
         assert self.result.outcome == ccm_window.LAUNCHED
@@ -299,7 +334,7 @@ class TestAutoStartHandoffNotice:
             return ""
 
         monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
         def fake_blocker(project_dir, bg_sessions=None):
             sent.append(("continue_blocker", project_dir))
             return blocker
@@ -349,7 +384,7 @@ class TestAutoStartHandoffNotice:
                 sent.append(args[-1])
             return ""
         monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
         bg = ccm_agentview.BgSession(
             short="0b900000", pid=1, cwd="/w/proj", name="n", state="DONE",
             raw_state="done", tempo="", cli_version="",
@@ -379,7 +414,7 @@ class TestAutoStartHandoffNotice:
                 sent.append(a)
             return ""
         monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 vim 00:05\n")
         result = ccm_window.auto_start_claude("0:5")
         assert result.outcome == ccm_window.UNAVAILABLE and result.notice is None
         assert sent == []

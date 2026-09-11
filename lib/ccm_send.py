@@ -775,7 +775,13 @@ def cmd_send(args):
         # can be verified as a shell, and judges the hand-off notice
         # before typing. The message body is never typed unless the
         # launch happened or claude was found already running.
-        result = ccm_window.launch_claude(win_target, honour_setting=False)
+        # The sender's own pane is excluded from the launch, and the
+        # self-delivery guard is applied again to whatever pane the
+        # message will now go to — the pane chosen here can differ
+        # from the one checked at the top.
+        result = ccm_window.launch_claude(
+            win_target, honour_setting=False,
+            exclude_pane=caller_pane or None)
         if result.outcome == ccm_window.LAUNCHED:
             ccm_core.ccm_info(f"Starting Claude in {project_name}...")
             did_launch = True
@@ -787,6 +793,12 @@ def cmd_send(args):
                 f"Claude is already running in {project_name}; delivering "
                 "to it without launching.")
             pane_target, _ = _resolve_delivery_pane(win_target)
+            if caller_pane and caller_pane == pane_target:
+                ccm_core.ccm_die(
+                    f"{project_name}'s Claude pane IS this pane "
+                    f"({pane_target}) — refusing to send a message to "
+                    "yourself."
+                )
         else:
             ccm_core.ccm_die(
                 f"{project_name} is in SHELL state but no pane could be "

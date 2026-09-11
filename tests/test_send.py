@@ -65,7 +65,10 @@ class TestCmdSend:
         # to "" pane enumeration comes back empty either way, so an
         # empty snapshot preserves the window-target fallback these
         # tests assert against.
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        # A non-empty snapshot: `launch_claude` refuses to type when
+        # ps failed. The window-target fallback these tests assert
+        # against still applies to delivery, since tmux_cmd is "".
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
         # `launch_claude` (the --start path) reads the window itself
         # and refuses when the panes cannot be listed; give it one
         # shell pane whose id matches the delivery target above.
@@ -557,6 +560,58 @@ class TestCmdSend:
         assert not any(ccm_constants.CLAUDE_CMD in c for c in calls)
         assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
 
+    def test_start_with_failed_ps_types_nothing(self, monkeypatch):
+        """ps failed: every pane would read as claude-less. Neither
+        the launch command nor the body is typed."""
+        initial = self._make_project(state="SHELL")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, initial)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(c[0] == "send-keys" for c in calls)
+
+    def test_start_never_launches_into_the_senders_own_pane(self, monkeypatch):
+        """The sender's pane is the only shell pane in the window:
+        nothing is launched (it would land in the sender's composer)
+        and nothing is sent."""
+        initial = self._make_project(state="SHELL")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, initial)
+        monkeypatch.setenv("TMUX_PANE", "0:5")
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
+                            lambda *a: ("%1", "zsh"))
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(c[0] == "send-keys" for c in calls)
+
+    def test_already_running_reresolved_to_the_senders_pane_is_refused(self, monkeypatch):
+        """First resolution: another pane. By the time claude is
+        found already running, delivery resolves to the sender's own
+        pane — the self-delivery guard applies again; no body typed."""
+        initial = self._make_project(state="SHELL")
+        idle = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, idle)
+        monkeypatch.setenv("TMUX_PANE", "%2")
+        resolutions = iter([("%1", "zsh"), ("%2", "claude")])
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
+                            lambda *a: next(resolutions))
+        monkeypatch.setattr(
+            ccm_window, "enumerate_window_panes",
+            lambda wt, ps: [PaneInfo("%2", "200", True, "zsh", False, "300")])
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle", lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
+
     def test_send_shell_with_start_launches_claude_first(self, monkeypatch):
         initial = self._make_project(state="SHELL")
         after_start = self._make_project(state="IDLE")
@@ -635,7 +690,7 @@ class TestCmdSend:
             ccm_core, "build_project_list",
             lambda fast=False: [next(states)],
         )
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
         monkeypatch.setattr(
             ccm_window, "enumerate_window_panes",
             lambda wt, ps: [PaneInfo("0:5", "100", True, "zsh", False, None)])
@@ -1297,7 +1352,7 @@ class TestSendPreTypeRecheck:
         monkeypatch.setattr(
             ccm_core, "build_project_list", lambda fast=False: [project],
         )
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
         monkeypatch.setattr("sys.stdin.isatty", lambda: interactive)
         monkeypatch.setattr("sys.stdout.isatty", lambda: interactive)
         panes = ([] if recheck_state is None
