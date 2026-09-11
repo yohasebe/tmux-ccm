@@ -343,10 +343,11 @@ ccm_write_signal() {
 # instant visual feedback via window name + fast status-right update.
 _ccm_instant_permit_icon() {
     local win_target="$1" project="$2"
-    local win_idx="${win_target##*:}"
 
-    # Set flag with project info for inject-status to consume
-    tmux set -g @ccm-permit-pending "${win_idx}:${project}" 2>/dev/null
+    # Set the flag with the full window target (`session:index`) so
+    # the reader matches one window, not every window that shares an
+    # index across tmux sessions.
+    tmux set -g @ccm-permit-pending "${win_target}" 2>/dev/null
 
     # Force tmux to redraw status bar — this triggers #(ccm inject-status)
     # if status-interval has elapsed, giving faster pickup

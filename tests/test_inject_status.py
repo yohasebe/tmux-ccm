@@ -1059,3 +1059,30 @@ class TestDeclaredAmbiguousWidth:
         assert gap == inject_status.LEFT_PLACEMENT_GAP, (
             f"{gap} columns after status-left although the terminal's "
             f"width was declared; the layout is still hedging")
+
+
+class TestPermitPendingTargetsOneWindow:
+    """The hook's instant PERMIT flag is matched against the full
+    window target, not the bare index — windows in different tmux
+    sessions share indexes."""
+
+    def _projects(self):
+        import ccm_core
+        return [ccm_core.Project("A:1", "1", "alpha", "/a", "IDLE"),
+                ccm_core.Project("B:1", "1", "beta", "/b", "IDLE")]
+
+    def test_only_the_named_window_turns_permit(self):
+        ps = self._projects()
+        inject_status._apply_permit_pending(ps, "B:1")
+        assert [p.state for p in ps] == ["IDLE", "PERMIT"]
+
+    def test_legacy_index_form_matches_nothing(self):
+        ps = self._projects()
+        inject_status._apply_permit_pending(ps, "1:beta")
+        assert [p.state for p in ps] == ["IDLE", "IDLE"]
+
+    def test_already_permit_is_left_alone(self):
+        ps = self._projects()
+        ps[0].state = "PERMIT"
+        inject_status._apply_permit_pending(ps, "A:1")
+        assert ps[0].state == "PERMIT" and ps[1].state == "IDLE"

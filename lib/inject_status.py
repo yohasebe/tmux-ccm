@@ -479,6 +479,19 @@ def inject_status(force_fast=False):
                 pass
 
 
+def _apply_permit_pending(projects, pending):
+    """Force PERMIT on the one window the hook named, if detection has
+    not caught up yet. `pending` is the window target the hook wrote
+    (`session:index`); it is compared whole, so two tmux sessions
+    with a window at the same index cannot be confused. A value in
+    the older `index:name` form matches nothing and is dropped."""
+    for p in projects:
+        if p.win_target == pending:
+            if p.state != "PERMIT":
+                p.state = "PERMIT"
+            return
+
+
 def _inject_status_impl(force_fast=False):
     # Detect external status-right changes
     detect_external_status_change()
@@ -510,14 +523,7 @@ def _inject_status_impl(force_fast=False):
     permit_pending = tmux_cmd("show-option", "-gqv", "@ccm-permit-pending")
     if permit_pending:
         tmux_cmd("set", "-g", "-u", "@ccm-permit-pending")  # Clear flag
-        # Force PERMIT state on the matching project if not already detected
-        parts = permit_pending.split(":", 1)
-        if len(parts) == 2:
-            pending_idx, pending_name = parts
-            for p in projects:
-                if p.win_idx == pending_idx and p.state != "PERMIT":
-                    p.state = "PERMIT"
-                    break
+        _apply_permit_pending(projects, permit_pending)
 
     # Maintenance side effects run ONLY on the periodic (non-fast)
     # path. The fast path bypasses the flock precisely so it can run

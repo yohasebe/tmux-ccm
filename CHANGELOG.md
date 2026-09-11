@@ -66,6 +66,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Detection reuses the session record it validated against the live
+  process when resolving the transcript, instead of reading the file a
+  second time without the check; a record rejected as belonging to a
+  recycled pid can no longer come back through the transcript path,
+  and a cached transcript path resolved from such a record is not
+  reused either.
+- The probe that reads a transcript's recorded directory is bounded in
+  bytes: a single multi-megabyte record at the head was read in full
+  past the 512 KiB limit.
+- The hourly cleanup of the temp directory is limited to the disposable
+  caches (git, ports, notification markers); it no longer deletes the
+  dashboard's pid marker, whose absence let periodic polls run full
+  detection alongside an open dashboard.
+- The instant PERMIT flag names the full window (`session:index`), so a
+  permission prompt in one tmux session no longer paints a window with
+  the same index in another session.
 - The dashboard initially selects the project in the opening window instead of
   the first state-sorted row. Unlisted windows retain the first-row fallback.
 - Send and spool derive composer text and dim attributes from one capture,
