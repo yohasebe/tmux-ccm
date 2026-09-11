@@ -546,6 +546,10 @@ class TestCmdSend:
                             lambda wt, ps: panes_now)
         monkeypatch.setattr(ccm_agentview, "continue_blocker",
                             lambda *a, **kw: None)
+        # The already-running case goes on to wait for IDLE; answer
+        # at once so the test does not sit out the real timeout.
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
+                            lambda *a, **k: "SHELL")
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
                 pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--start", "hello"])
@@ -942,6 +946,8 @@ class TestDeliveryPaneResolution:
         self._patch_resolution(monkeypatch, project, self._PS_NO_CLAUDE)
         panes = "%72\t81413\t1\tvim\n%51\t12077\t0\tzsh"
         stub, calls = self._tmux_stub(panes)
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
+                            lambda *a, **k: "SHELL")
         with patch("ccm_core.tmux_cmd", side_effect=stub), \
                 pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--start", "hi"])
