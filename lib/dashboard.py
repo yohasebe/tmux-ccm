@@ -2298,7 +2298,8 @@ class Dashboard:
             with self.lock:
                 bg_visible = self.bg_visible
             bg_sessions = self._fetch_bg_sessions() if bg_visible else []
-            handoff_warnings = self._fetch_handoff_warnings(projects)
+            handoff_warnings = self._fetch_handoff_warnings(
+                projects, bg_sessions if bg_visible else None)
             with self.lock:
                 self._set_projects_stable(projects)
                 self.bg_sessions = bg_sessions
@@ -2326,7 +2327,8 @@ class Dashboard:
                 bg_sessions = (
                     self._fetch_bg_sessions() if bg_visible else []
                 )
-                handoff_warnings = self._fetch_handoff_warnings(projects)
+                handoff_warnings = self._fetch_handoff_warnings(
+                    projects, bg_sessions if bg_visible else None)
                 with self.lock:
                     self._set_projects_stable(projects)
                     self.bg_sessions = bg_sessions
@@ -2401,13 +2403,15 @@ class Dashboard:
             if dirty:
                 self.data_dirty = True
 
-    def _fetch_handoff_warnings(self, projects):
+    def _fetch_handoff_warnings(self, projects, bg_sessions=None):
         """Hand-off notices for the project list, read on the refresh
         thread. Independent of the bg-section toggle: the reader is
         about to attach, and the empty session that would follow has
-        no other explanation on this screen. Never raises."""
+        no other explanation on this screen. When the bg section is
+        shown, its roster snapshot from this same cycle is reused
+        rather than read again. Never raises."""
         try:
-            return ccm_agentview.continue_blocker_warnings(projects)
+            return ccm_agentview.continue_blocker_warnings(projects, bg_sessions)
         except Exception:
             log_caught_exception("dashboard._fetch_handoff_warnings")
             return []

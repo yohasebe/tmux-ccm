@@ -164,11 +164,6 @@ def read_roster() -> dict:
     return _safe_load_json(DAEMON_ROSTER_PATH)
 
 
-def read_daemon_status() -> dict:
-    """Return parsed `~/.claude/daemon.status.json`, or `{}`."""
-    return _safe_load_json(DAEMON_STATUS_PATH)
-
-
 def job_record_exists(short: str) -> bool:
     """True when the daemon has written a job document for `short`.
 
@@ -672,14 +667,15 @@ def continue_blockers(projects, bg_sessions=None) -> dict:
     very background session, attached in the foreground — has no
     launch coming, and a notice there would say "starts fresh" over
     a conversation that is on screen."""
+    shell_projects = [p for p in projects if p.state == "SHELL"]
+    if not shell_projects:
+        return {}
     sessions = list_bg_sessions() if bg_sessions is None else bg_sessions
     if not sessions:
         return {}
     live_ids = _LiveIds()
     out = {}
-    for p in projects:
-        if p.state != "SHELL":
-            continue
+    for p in shell_projects:
         s = continue_blocker(p.dir, sessions, live_ids)
         if s is not None:
             out[p.win_target] = s
@@ -697,7 +693,7 @@ def format_continue_blocker(project_name: str, s: BgSession) -> str:
     )
 
 
-def continue_blocker_warnings(projects, bg_sessions=None) -> list:
+def continue_blocker_warnings(projects, bg_sessions=None) -> list:  # noqa: E302
     """Warning lines for `ccm status` / dashboard / `ccm doctor`.
     Never raises: a notice is not worth interrupting the report it
     decorates, so any failure reads as "nothing to report" and is
