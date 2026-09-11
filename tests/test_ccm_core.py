@@ -382,15 +382,35 @@ class TestBuildProjectListSubprocessCount:
             "cached_session_id wasn't threaded through"
         )
 
-    def _run_real_detection(self, monkeypatch, n_projects):
+    def _isolate_runtime(self, monkeypatch, tmp_path):
+        """Point every on-disk source the slow path reads (session
+        registry, transcripts, hook signals / events, git and port
+        caches, attention markers) at empty directories under
+        `tmp_path`. Without this the fixture's fake pids can hit real
+        records on the machine running the suite — a matching
+        registry record adds a session-id write and the count
+        changes with the host, not the code."""
+        import ccm_jsonl
+        for mod, name in (
+            (ccm_jsonl, "CLAUDE_SESSIONS_DIR"), (ccm_jsonl, "CLAUDE_PROJECTS_DIR"),
+            (ccm_core, "CCM_HOOK_DIR"), (ccm_core, "CCM_GIT_CACHE_DIR"),
+            (ccm_core, "CCM_PORT_CACHE_DIR"), (ccm_core, "CCM_ATTENTION_DIR"),
+        ):
+            d = tmp_path / "runtime" / name.lower()
+            d.mkdir(parents=True, exist_ok=True)
+            monkeypatch.setattr(mod, name, str(d))
+        ccm_jsonl._jsonl_path_cache.clear()
+
+    def _run_real_detection(self, monkeypatch, tmp_path, n_projects):
         """Drive `build_project_list(fast=False)` through the real
         detection pipeline with only the external answers faked:
         `n_projects` single-pane windows, each pane's foreground is
         claude (a child of the pane's shell), the prompt is visible,
-        no hooks, no transcripts, and the windows' cached columns
-        (session id, work clock) are empty and stay so — a steady
-        state, so no per-window option writes are provoked. Returns
-        the recorded tmux argv list."""
+        no hooks, no transcripts (see `_isolate_runtime`), and the
+        windows' cached columns (session id, work clock) are empty
+        and stay so — a steady state, so no per-window option writes
+        are provoked. Returns the recorded tmux argv list."""
+        self._isolate_runtime(monkeypatch, tmp_path)
         windows_out = "\n".join(
             f"0:{i+1}\tproj-{i}\t/p/{i}\tIDLE\t0\t1234567890\t\t\t\t\t"
             for i in range(n_projects))
@@ -414,15 +434,15 @@ class TestBuildProjectListSubprocessCount:
         ccm_core.build_project_list(fast=False)
         return calls
 
-    def test_slow_path_real_detection_stays_linear_in_panes(self, monkeypatch):
+    def test_slow_path_real_detection_stays_linear_in_panes(self, monkeypatch, tmp_path):
         """The dispatch tests above stub detection; this one runs it.
         The bulk queries (`list-windows`, `list-panes -a`) are issued
         once regardless of N; what grows with N is the per-pane
         `capture-pane` reads (a bounded number per pane). Any other
         per-project tmux call — the N+1 class this guards against —
         shows up as growth beyond that."""
-        one = self._run_real_detection(monkeypatch, 1)
-        ten = self._run_real_detection(monkeypatch, 10)
+        one = self._run_real_detection(monkeypatch, tmp_path, 1)
+        ten = self._run_real_detection(monkeypatch, tmp_path, 10)
 
         def count(calls, name):
             return sum(1 for c in calls if c and c[0] == name)
@@ -442,6 +462,25 @@ class TestBuildProjectListSubprocessCount:
             f"non-capture tmux calls grew from {len(others_one)} to "
             f"{len(others_ten)} for 1 → 10 projects:\n"
             + "\n".join(str(c) for c in others_ten))
+
+    def test_real_detection_fixture_ignores_the_host_registry(self, monkeypatch, tmp_path):
+        """A record on the host for one of the fixture's fake pids
+        must not reach the measurement: the helper reads only its
+        own empty directories. (Simulated by pointing the registry
+        at a directory holding such a record before the helper runs.)"""
+        import json, time
+        import ccm_jsonl
+        host = tmp_path / "host-sessions"
+        host.mkdir()
+        (host / "2001.json").write_text(json.dumps({
+            "pid": 2001, "sessionId": "live-test-session", "kind": "interactive",
+            "cwd": "/p/1", "startedAt": int(time.time() * 1000) - 300_000}))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(host))
+        one = self._run_real_detection(monkeypatch, tmp_path, 1)
+        ten = self._run_real_detection(monkeypatch, tmp_path, 10)
+        non_capture = lambda calls: [c for c in calls if c and c[0] != "capture-pane"]
+        assert len(non_capture(ten)) == len(non_capture(one))
+        assert not any(c and c[0] == "set-option" and "@ccm_session_id" in c for c in ten)
 
 
 # ─── validate_name ───
