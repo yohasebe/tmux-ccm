@@ -185,7 +185,9 @@ class TestAutoStartClaudeLaunchPane:
     pane_id \\t pane_pid \\t pane_active \\t current_command \\t @ccm_ignore.
     """
 
-    def _run(self, monkeypatch, panes_raw, auto_start="on"):
+    def _run(self, monkeypatch, panes_raw, auto_start="on", ps_output=""):
+        """Returns the launch keystrokes sent (the copy-mode cancel
+        that precedes a launch is not counted) and the result."""
         sent = []
 
         def fake_tmux(*args):
@@ -193,13 +195,13 @@ class TestAutoStartClaudeLaunchPane:
                 return auto_start
             if args[0] == "list-panes":
                 return panes_raw
-            if args[0] == "send-keys":
+            if args[0] == "send-keys" and "-X" not in args:
                 sent.append(args)
             return ""
 
         monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
-        ccm_window.auto_start_claude("0:5")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: ps_output)
+        self.result = ccm_window.auto_start_claude("0:5")
         return sent
 
     def test_active_shell_pane_receives_launch(self, monkeypatch):
@@ -244,16 +246,30 @@ class TestAutoStartClaudeLaunchPane:
         )
         assert sent == []
 
-    def test_enumeration_failure_falls_back_to_window_target(
-        self, monkeypatch
-    ):
-        """tmux error → empty enumeration → preserve the old
-        defensive fallback (send to the window target), matching
-        `_resolve_delivery_pane`'s policy of skipping the guard when
-        pane info is unavailable."""
+    def test_enumeration_failure_sends_nothing(self, monkeypatch):
+        """tmux error → the panes could not be listed. "Could not
+        look" is not "nothing there": no launch, and the outcome says
+        why. (The old window-target fallback typed into whatever pane
+        was active.)"""
         sent = self._run(monkeypatch, "")
+        assert sent == []
+        assert self.result.outcome == ccm_window.UNAVAILABLE
+
+    def test_pane_hosting_claude_sends_nothing(self, monkeypatch):
+        """The caller's SHELL verdict is stale: by now a pane hosts
+        claude (an update relaunching in place, a hand start). A
+        second `claude --continue` would open the same conversation
+        twice, so nothing is typed."""
+        sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t",
+                         ps_output="100 1 100 zsh 00:05\n200 100 200 claude 00:01\n")
+        assert sent == []
+        assert self.result.outcome == ccm_window.ALREADY_RUNNING
+
+    def test_launch_outcome_names_the_pane(self, monkeypatch):
+        sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t")
+        assert self.result.outcome == ccm_window.LAUNCHED
+        assert self.result.pane == "%0"
         assert len(sent) == 1
-        assert sent[0][:3] == ("send-keys", "-t", "0:5")
 
     def test_auto_start_setting_off_sends_nothing(self, monkeypatch):
         sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t",
@@ -278,7 +294,7 @@ class TestAutoStartHandoffNotice:
                 return {"@ccm_dir": "/w/proj", "@ccm_project": "proj"}.get(args[-1], "")
             if args[0] == "list-panes":
                 return "%0\t100\t1\tzsh\t"
-            if args[0] in ("send-keys", "display-message"):
+            if args[0] in ("send-keys", "display-message") and "-X" not in args:
                 sent.append(args)
             return ""
 
@@ -289,7 +305,7 @@ class TestAutoStartHandoffNotice:
             return blocker
 
         monkeypatch.setattr(ccm_agentview, "continue_blocker", fake_blocker)
-        return ccm_window.auto_start_claude("0:5"), sent
+        return ccm_window.auto_start_claude("0:5").notice, sent
 
     def test_nothing_blocking_is_silent(self, monkeypatch):
         notice, sent = self._run(monkeypatch, None)
@@ -340,7 +356,7 @@ class TestAutoStartHandoffNotice:
             session_id="0b900000-0000-4000-8000-000000000001",
             created_at=None, updated_at=None, source="slash")
         monkeypatch.setattr(ccm_agentview, "continue_blocker", lambda *a, **kw: bg)
-        notice = ccm_window.auto_start_claude("0:5")
+        notice = ccm_window.auto_start_claude("0:5").notice
         assert notice.startswith("p#{session_name}q: ")
         assert sent == ["ccm: " + notice.replace("#", "##")]
         assert "#{" not in sent[0].replace("##", "")
@@ -364,5 +380,6 @@ class TestAutoStartHandoffNotice:
             return ""
         monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
-        assert ccm_window.auto_start_claude("0:5") is None
+        result = ccm_window.auto_start_claude("0:5")
+        assert result.outcome == ccm_window.UNAVAILABLE and result.notice is None
         assert sent == []

@@ -22,6 +22,7 @@ test mocks working uniformly.
 """
 
 import os
+from typing import NamedTuple, Optional
 
 import ccm_agentview
 import ccm_core  # late-bound for tmux_cmd / ps_snapshot
@@ -37,9 +38,22 @@ from ccm_pane_state import detect_pane_state, enumerate_window_panes, read_work_
 CONTINUE_NOTICE_MS = 12000
 
 
-def _resolve_launch_pane(win_target):
-    """Return the pane target that is safe to type the Claude launch
-    command into, or None when no pane can be resolved safely.
+#: Outcomes of `launch_claude`. Callers branch on these instead of
+#: inferring "did anything happen" from a return value.
+LAUNCHED = "launched"                # the launch command was typed
+ALREADY_RUNNING = "already-running"  # a pane in the window hosts claude; nothing typed
+UNAVAILABLE = "unavailable"          # no pane could be verified as a shell; nothing typed
+DISABLED = "disabled"                # `@ccm-auto-start` is off; nothing typed
+
+
+class LaunchResult(NamedTuple):
+    outcome: str
+    notice: Optional[str] = None   # hand-off notice, when one applies
+    pane: Optional[str] = None     # the pane typed into, when LAUNCHED
+
+
+def _pick_shell_pane(panes):
+    """The pane that is safe to type the launch command into, or None.
 
     `send-keys -t <window>` delivers to the window's ACTIVE pane. In a
     split window that pane may be running an editor or pager, and
@@ -50,16 +64,8 @@ def _resolve_launch_pane(win_target):
       - the active pane, if its foreground is a shell (the common
         case);
       - else the single non-ignored shell-foreground pane;
-      - else None — refuse to send. Not auto-starting beats typing
-        into an unknown foreground.
-
-    When pane enumeration fails entirely (tmux error) the window
-    target is returned, preserving the pre-resolution defensive
-    fallback (`ccm send` skips its guard on the same condition)."""
-    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
-    panes = enumerate_window_panes(win_target, ps_lines)
-    if not panes:
-        return win_target
+      - else None — refuse. Not auto-starting beats typing into an
+        unknown foreground."""
     live = [p for p in panes if not p.ignored]
     active = next((p for p in live if p.active), None)
     if active and active.current_command in SHELL_FOREGROUND_COMMANDS:
@@ -71,24 +77,46 @@ def _resolve_launch_pane(win_target):
     return None
 
 
-def auto_start_claude(win_target):
-    """Auto-start Claude Code if `@ccm-auto-start` is on (default).
+def launch_claude(win_target, honour_setting=True) -> LaunchResult:
+    """Type the Claude launch command into `win_target`, after looking
+    at the window as it is NOW — the one place every launch path
+    (`ccm attach`, the dashboard, `ccm send --start`) goes through.
 
-    The launch command is typed into a shell-foreground pane only
-    (see `_resolve_launch_pane`); when no such pane can be resolved
-    safely, nothing is sent."""
-    setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
-    if setting != "on":
-        return
-    # Judged before the launch is typed: once `claude` starts it
-    # creates its own transcript, and a scan after that would see a
-    # fresh session where there was a hand-off. Judged before the
-    # pane is resolved, too, so the foreground check is the last
-    # thing before the keys go out.
+    The caller's reason for launching is a SHELL verdict taken some
+    time ago. Between that verdict and this call the window can have
+    changed: Claude relaunching in place after an update briefly
+    shows no process, then has one again; a user can start Claude
+    by hand; the active pane can switch to an editor. So the window
+    is re-read here, from a fresh process snapshot and pane listing,
+    and the command is typed only when:
+
+      - no non-ignored pane hosts claude (`ALREADY_RUNNING` otherwise —
+        a second `claude --continue` would open the same conversation
+        twice), and
+      - a pane can be positively identified as a shell foreground
+        (`UNAVAILABLE` otherwise — including when the panes cannot be
+        listed at all: "could not look" is not "nothing there").
+
+    The hand-off notice is judged first, before the launch is typed
+    (the new session's own transcript would otherwise be the newest
+    one scanned), and shown after."""
+    if honour_setting:
+        setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
+        if setting != "on":
+            return LaunchResult(DISABLED)
     notice = continue_blocker_notice(win_target)
-    pane = _resolve_launch_pane(win_target)
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    panes = enumerate_window_panes(win_target, ps_lines)
+    if not panes:
+        return LaunchResult(UNAVAILABLE, notice)
+    if any(p.claude_pid for p in panes if not p.ignored):
+        return LaunchResult(ALREADY_RUNNING, notice)
+    pane = _pick_shell_pane(panes)
     if pane is None:
-        return None
+        return LaunchResult(UNAVAILABLE, notice)
+    # Leave copy-mode if the pane is in it; a no-op otherwise. Without
+    # this the keys would be read as copy-mode bindings.
+    ccm_core.tmux_cmd("send-keys", "-t", pane, "-X", "cancel")
     ccm_core.tmux_cmd("send-keys", "-t", pane, CLAUDE_CMD, "Enter")
     if notice:
         # `display-message` expands tmux formats in its argument:
@@ -98,7 +126,13 @@ def auto_start_claude(win_target):
         # before it is shown.
         ccm_core.tmux_cmd("display-message", "-d", str(CONTINUE_NOTICE_MS),
                           "ccm: " + notice.replace("#", "##"))
-    return notice
+    return LaunchResult(LAUNCHED, notice, pane)
+
+
+def auto_start_claude(win_target) -> LaunchResult:
+    """Auto-start Claude Code if `@ccm-auto-start` is on (default).
+    See `launch_claude` for what is checked before anything is typed."""
+    return launch_claude(win_target, honour_setting=True)
 
 
 def continue_blocker_notice(win_target):

@@ -10,6 +10,8 @@ import pytest
 
 import ccm_constants
 import ccm_core
+import ccm_window
+from ccm_pane_state import PaneInfo
 import ccm_send
 
 
@@ -64,6 +66,12 @@ class TestCmdSend:
         # empty snapshot preserves the window-target fallback these
         # tests assert against.
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        # `launch_claude` (the --start path) reads the window itself
+        # and refuses when the panes cannot be listed; give it one
+        # shell pane whose id matches the delivery target above.
+        monkeypatch.setattr(
+            ccm_window, "enumerate_window_panes",
+            lambda wt, ps: [PaneInfo("0:5", "100", True, "zsh", False, None)])
         # Non-interactive by default so the confirmation prompt is skipped
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
@@ -519,19 +527,23 @@ class TestCmdSend:
         monkeypatch.setattr(ccm_core, "build_project_list", stub_build)
         monkeypatch.setattr("time.sleep", lambda _s: None)
 
-    @pytest.mark.parametrize("second", [("%5", "vim"), ("%6", "zsh")])
-    def test_start_reverifies_the_pane_after_the_handoff_check(
-            self, monkeypatch, second):
-        """The hand-off judgment takes time; the pane is resolved
-        again afterwards and the launch is refused when its foreground
-        or identity changed in between. Nothing is typed."""
+    @pytest.mark.parametrize("panes_now", [
+        [PaneInfo("0:5", "100", True, "vim", False, None)],           # editor took the foreground
+        [PaneInfo("0:5", "100", True, "zsh", False, "200")],          # claude appeared by itself
+        [],                                                           # panes could not be listed
+    ])
+    def test_start_types_nothing_when_the_window_changed_under_it(
+            self, monkeypatch, panes_now):
+        """The SHELL verdict is stale by the time --start acts;
+        `launch_claude` re-reads the window and types the launch
+        command only when a shell pane is there and no pane hosts
+        claude. In every other case nothing is launched."""
         import ccm_agentview
         initial = self._make_project(state="SHELL")
         self._patch_resolution(monkeypatch, project=initial)
         self._patch_start_polling(monkeypatch, initial, initial)
-        resolutions = iter([("%5", "zsh"), second])
-        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
-                            lambda *a: next(resolutions))
+        monkeypatch.setattr(ccm_window, "enumerate_window_panes",
+                            lambda wt, ps: panes_now)
         monkeypatch.setattr(ccm_agentview, "continue_blocker",
                             lambda *a, **kw: None)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
@@ -539,6 +551,7 @@ class TestCmdSend:
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         assert not any(ccm_constants.CLAUDE_CMD in c for c in calls)
+        assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
 
     def test_send_shell_with_start_launches_claude_first(self, monkeypatch):
         initial = self._make_project(state="SHELL")
@@ -619,6 +632,9 @@ class TestCmdSend:
             lambda fast=False: [next(states)],
         )
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(
+            ccm_window, "enumerate_window_panes",
+            lambda wt, ps: [PaneInfo("0:5", "100", True, "zsh", False, None)])
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         monkeypatch.setattr("time.sleep", lambda _s: None)
@@ -916,10 +932,12 @@ class TestDeliveryPaneResolution:
                 ccm_constants.CLAUDE_CMD, "Enter") in calls
         assert ("send-keys", "-t", "%72", "-l", "--", "hi") in calls
 
-    def test_shell_start_refuses_when_active_pane_is_editor(self, monkeypatch):
+    def test_shell_start_never_types_into_the_editor_pane(self, monkeypatch):
         """SHELL window whose active pane runs vim (a claude-less
         pane reads SHELL regardless of its foreground): typing the
-        launch command would edit text, not start Claude. Refuse."""
+        launch command there would edit text, not start Claude. The
+        shared launch path picks the single shell pane instead, as
+        the dashboard's auto-start always has."""
         project = self._make_project(state="SHELL")
         self._patch_resolution(monkeypatch, project, self._PS_NO_CLAUDE)
         panes = "%72\t81413\t1\tvim\n%51\t12077\t0\tzsh"
@@ -927,10 +945,10 @@ class TestDeliveryPaneResolution:
         with patch("ccm_core.tmux_cmd", side_effect=stub), \
                 pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--start", "hi"])
-        assert not any(
-            c[0] == "send-keys" and ccm_constants.CLAUDE_CMD in c
-            for c in calls
-        ), "launch command was typed into a non-shell pane"
+        launches = [c for c in calls
+                    if c[0] == "send-keys" and ccm_constants.CLAUDE_CMD in c]
+        assert [c[2] for c in launches] == ["%51"], (
+            f"launch must go to the shell pane only: {launches}")
 
     def test_multiple_claude_panes_active_wins(self, monkeypatch):
         """Agent Teams split: two claude panes, active one hosts
@@ -1279,6 +1297,10 @@ class TestSendPreTypeRecheck:
         panes = ([] if recheck_state is None
                  else [self._pane(command=pane_command, claude=pane_claude)])
         monkeypatch.setattr(ccm_send, "enumerate_window_panes",
+                            lambda win, ps: panes)
+        # `launch_claude` (the --start path) reads the window through
+        # its own import of the same helper.
+        monkeypatch.setattr(ccm_window, "enumerate_window_panes",
                             lambda win, ps: panes)
         monkeypatch.setattr(ccm_send, "detect_pane_state",
                             lambda *a, **k: recheck_state)

@@ -997,72 +997,34 @@ class TestCmdAttach:
         monkeypatch.setattr(ccm_window, "reset_window_after_attach", reset)
         return auto_start, reset, tmux_mock
 
-    def test_claude_in_second_pane_skips_autostart(self, monkeypatch):
-        """Regression: pane 1 is a shell, claude runs in pane 2. The
-        old code checked only the first list-panes line and wrongly
-        auto-started a duplicate claude."""
-        auto_start, _, tmux_mock = self._stub_attach(
-            monkeypatch,
-            pane_pids="1001\n1002",
-            ps_stdout=b"  PPID COMM\n  1001 zsh\n  1002 claude\n",
-        )
+    def test_attach_goes_through_the_shared_launch_path(self, monkeypatch):
+        """`cmd_attach` no longer inspects processes itself: whether
+        a pane already hosts claude is decided by `launch_claude`,
+        from a fresh snapshot of every pane, the same way the
+        dashboard and `ccm send --start` decide it."""
+        auto_start, reset, tmux_mock = self._stub_attach(monkeypatch)
         ccm_commands.cmd_attach("proj")
-        auto_start.assert_not_called()
-        # Still switches to the window.
+        auto_start.assert_called_once_with("main:2")
+        reset.assert_called_once_with("main:2")
         select_calls = [c for c in tmux_mock.call_args_list
                         if c.args[:1] == ("select-window",)]
         assert len(select_calls) == 1
         assert "main:2" in select_calls[0].args
 
-    def test_no_claude_in_any_pane_autostarts(self, monkeypatch):
-        auto_start, reset, _ = self._stub_attach(
-            monkeypatch,
-            pane_pids="1001\n1002",
-            ps_stdout=b"  PPID COMM\n  1001 zsh\n  1002 vim\n",
-        )
+    def test_attach_reports_when_nothing_could_be_launched(self, monkeypatch, capsys):
+        auto_start, _, _ = self._stub_attach(monkeypatch)
+        auto_start.return_value = ccm_window.LaunchResult(ccm_window.UNAVAILABLE)
         ccm_commands.cmd_attach("proj")
-        auto_start.assert_called_once_with("main:2")
-        reset.assert_called_once_with("main:2")
+        out = capsys.readouterr()
+        assert "not auto-started" in (out.out + out.err)
 
-    def test_ps_timeout_assumes_running(self, monkeypatch):
-        """Safe side: a ps exception must not trigger auto-start."""
-        auto_start, _, _ = self._stub_attach(
-            monkeypatch,
-            ps_exc=subprocess.TimeoutExpired("ps", 5),
-        )
+    def test_attach_prints_the_handoff_notice_after_a_launch(self, monkeypatch, capsys):
+        auto_start, _, _ = self._stub_attach(monkeypatch)
+        auto_start.return_value = ccm_window.LaunchResult(
+            ccm_window.LAUNCHED, "proj: hand-off notice", "%0")
         ccm_commands.cmd_attach("proj")
-        auto_start.assert_not_called()
-
-    def test_ps_oserror_assumes_running(self, monkeypatch):
-        auto_start, _, _ = self._stub_attach(
-            monkeypatch,
-            ps_exc=OSError("ps blew up"),
-        )
-        ccm_commands.cmd_attach("proj")
-        auto_start.assert_not_called()
-
-    def test_ps_nonzero_rc_assumes_running(self, monkeypatch):
-        """Regression: ps exiting non-zero with empty stdout used to
-        fall through to has_claude=False and wrongly auto-start."""
-        auto_start, _, _ = self._stub_attach(
-            monkeypatch,
-            ps_stdout=b"",
-            ps_returncode=1,
-        )
-        ccm_commands.cmd_attach("proj")
-        auto_start.assert_not_called()
-
-    def test_already_in_window_returns_early(self, monkeypatch, capsys):
-        auto_start, _, tmux_mock = self._stub_attach(
-            monkeypatch, current_idx="2",
-        )
-        ccm_commands.cmd_attach("proj")
-        out = capsys.readouterr().out
-        assert "Already in this window" in out
-        auto_start.assert_not_called()
-        select_calls = [c for c in tmux_mock.call_args_list
-                        if c.args[:1] == ("select-window",)]
-        assert not select_calls
+        out = capsys.readouterr()
+        assert "hand-off notice" in (out.out + out.err)
 
     def test_attach_by_window_index(self, monkeypatch):
         auto_start, _, tmux_mock = self._stub_attach(
@@ -1071,7 +1033,7 @@ class TestCmdAttach:
             ps_stdout=b"  PPID COMM\n  1001 claude\n",
         )
         ccm_commands.cmd_attach("2")
-        auto_start.assert_not_called()
+        auto_start.assert_called_once()
         select_calls = [c for c in tmux_mock.call_args_list
                         if c.args[:1] == ("select-window",)]
         assert len(select_calls) == 1

@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session; the check is read-only.
 
 ### Changed
+- Every path that starts Claude in a project window — `ccm attach`, the
+  dashboard, `ccm send --start` — now goes through one launch step that
+  re-reads the window at that moment: it types nothing when any pane
+  already hosts Claude (a second `claude --continue` would open the
+  same conversation twice, as happens when Claude relaunches in place
+  after an update), and nothing when no pane can be verified as a
+  shell prompt, including when the panes cannot be listed at all. The
+  outcome is reported: `ccm attach` says when nothing was started, and
+  `ccm send --start` refuses with the reason instead of typing the
+  message into an unverified pane.
 - The cluster-SHELL warning now says what it observed — Claude left the
   pane repeatedly — and lists the causes that look identical from ccm's
   side (an update relaunching in place, manual exits, unexpected

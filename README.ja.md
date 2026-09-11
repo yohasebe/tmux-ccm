@@ -479,7 +479,7 @@ set -g @ccm-preview-position "right"  # または "bottom"
 
 ### Claude Code自動起動
 
-SHELL状態（Claude Codeが終了済み）のプロジェクトウィンドウに切り替えると、ccmが自動的に `--continue` 付きでClaude Codeを再起動し、会話を再開します。
+SHELL状態（Claude Codeが終了済み）のプロジェクトウィンドウに切り替えると、ccmが自動的に `--continue` 付きでClaude Codeを再起動し、会話を再開します。コマンドを打つ直前にウィンドウを読み直し、その時点で既にClaude Codeを載せたペインがある場合（アップデートによるその場での再起動など）や、シェルプロンプトと確認できるペインが無い場合は何も打ちません。
 
 ```tmux
 set -g @ccm-auto-start "on"     # デフォルト: on（"off"で無効化）

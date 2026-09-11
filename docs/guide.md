@@ -252,7 +252,7 @@ The state check is not the only gate. State detection cannot see a half-typed dr
 | `--no-enter` | Send the text without the final Enter (useful for prefilling a prompt) |
 | `--now` | Fail instead of queueing when the target cannot take the message now |
 | `--force` | Allow sending to a BUSY target (queues into Claude's input buffer) |
-| `--start` | Auto-launch Claude if the target is in SHELL state |
+| `--start` | Auto-launch Claude if the target is in SHELL state. The launch re-reads the window first: nothing is typed when a pane already hosts Claude (the message is then delivered to it) or when no pane can be verified as a shell prompt (the send is refused with the reason) |
 | `-y`, `--yes` | Skip the interactive confirmation prompt |
 | `--` | End of flag parsing (for messages that start with `-`) |
 

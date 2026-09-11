@@ -437,40 +437,18 @@ def cmd_attach(target):
 
     win_target = f"{session}:{idx}"
 
-    # Auto-start Claude if SHELL state. Claude may live in ANY pane of
-    # the window (split-pane layouts), not just the first — check all
-    # pane pids before deciding to auto-start.
-    pane_pids_raw = ccm_core.tmux_cmd("list-panes", "-t", win_target, "-F", "#{pane_pid}")
-    if pane_pids_raw:
-        pane_pids = {p.strip() for p in pane_pids_raw.split("\n") if p.strip()}
-        # Check if claude is running as child of any pane
-        try:
-            ps_out = subprocess.run(["ps", "-eo", "ppid,comm"],
-                                    capture_output=True, timeout=5)
-            if ps_out.returncode != 0:
-                # ps exited non-zero: stdout is untrustworthy. Assume
-                # claude is running rather than risk a duplicate
-                # auto-start into a live session.
-                has_claude = True
-            else:
-                # macOS truncates `comm` mid-codepoint for apps with
-                # multi-byte names — see ccm_core.ps_snapshot for the
-                # full rationale. Decode permissively so the truncated
-                # row does not abort the scan.
-                ps_text = ps_out.stdout.decode("utf-8", errors="replace")
-                has_claude = False
-                for line in ps_text.strip().split("\n"):
-                    fields = line.split()
-                    if len(fields) >= 2 and fields[0] in pane_pids and fields[1] == "claude":
-                        has_claude = True
-                        break
-        except (subprocess.TimeoutExpired, OSError):
-            has_claude = True  # Assume running on error
-
-        if not has_claude:
-            notice = ccm_window.auto_start_claude(win_target)
-            if notice:
-                ccm_core.ccm_warn(notice)
+    # Auto-start Claude unless a pane already hosts it. The check of
+    # the window as it is now — every pane, from a fresh process
+    # snapshot — lives in `launch_claude`, shared with the dashboard
+    # and `ccm send --start`.
+    result = ccm_window.auto_start_claude(win_target)
+    if result.outcome == ccm_window.UNAVAILABLE:
+        ccm_core.ccm_info(
+            "Claude not auto-started: no pane could be verified as a "
+            "shell prompt. Start it by hand in the window."
+        )
+    if result.outcome == ccm_window.LAUNCHED and result.notice:
+        ccm_core.ccm_warn(result.notice)
 
     ccm_window.reset_window_after_attach(win_target)
     ccm_core.tmux_cmd("select-window", "-t", f"{session}:{idx}")
