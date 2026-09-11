@@ -259,3 +259,110 @@ class TestAutoStartClaudeLaunchPane:
         sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t",
                          auto_start="off")
         assert sent == []
+
+
+class TestAutoStartHandoffNotice:
+    """After typing the launch command, `auto_start_claude` names the
+    background session that will make `claude --continue` start
+    fresh — on the tmux message line, and as its return value for
+    callers with a stdout."""
+
+    def _run(self, monkeypatch, blocker):
+        import ccm_agentview
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return "on"
+            if args[:2] == ("show-option", "-wqv"):
+                return {"@ccm_dir": "/w/proj", "@ccm_project": "proj"}.get(args[-1], "")
+            if args[0] == "list-panes":
+                return "%0\t100\t1\tzsh\t"
+            if args[0] in ("send-keys", "display-message"):
+                sent.append(args)
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        def fake_blocker(project_dir, bg_sessions=None):
+            sent.append(("continue_blocker", project_dir))
+            return blocker
+
+        monkeypatch.setattr(ccm_agentview, "continue_blocker", fake_blocker)
+        return ccm_window.auto_start_claude("0:5"), sent
+
+    def test_nothing_blocking_is_silent(self, monkeypatch):
+        notice, sent = self._run(monkeypatch, None)
+        assert notice is None
+        assert [a[0] for a in sent] == ["continue_blocker", "send-keys"]
+
+    def test_blocker_is_announced_after_launch(self, monkeypatch):
+        import ccm_agentview
+        bg = ccm_agentview.BgSession(
+            short="0b900000", pid=1, cwd="/w/proj", name="n", state="DONE",
+            raw_state="done", tempo="", cli_version="",
+            session_id="0b900000-0000-4000-8000-000000000001",
+            created_at=None, updated_at=None, source="slash")
+        notice, sent = self._run(monkeypatch, bg)
+        assert notice and notice.startswith("proj: ")
+        assert "claude stop 0b900000" in notice
+        # Judged BEFORE the launch is typed (the new session's own
+        # transcript would otherwise be the newest one), announced
+        # after.
+        assert [a[0] for a in sent] == [
+            "continue_blocker", "send-keys", "display-message"]
+        assert sent[0][1:] == ("/w/proj",)
+        assert sent[2][1:3] == ("-d", str(ccm_window.CONTINUE_NOTICE_MS))
+        assert sent[2][-1] == "ccm: " + notice
+
+    def test_display_message_text_has_formats_escaped(self, monkeypatch):
+        """tmux expands `#{...}` and runs `#(...)` inside the
+        display-message argument; a project name is not guaranteed
+        free of `#`, so it must arrive doubled."""
+        import ccm_agentview
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return "on"
+            if args[:2] == ("show-option", "-wqv"):
+                return {"@ccm_dir": "/w/proj", "@ccm_project": "p#{session_name}q"}.get(args[-1], "")
+            if args[0] == "list-panes":
+                return "%0\t100\t1\tzsh\t"
+            if args[0] == "display-message":
+                sent.append(args[-1])
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        bg = ccm_agentview.BgSession(
+            short="0b900000", pid=1, cwd="/w/proj", name="n", state="DONE",
+            raw_state="done", tempo="", cli_version="",
+            session_id="0b900000-0000-4000-8000-000000000001",
+            created_at=None, updated_at=None, source="slash")
+        monkeypatch.setattr(ccm_agentview, "continue_blocker", lambda *a, **kw: bg)
+        notice = ccm_window.auto_start_claude("0:5")
+        assert notice.startswith("p#{session_name}q: ")
+        assert sent == ["ccm: " + notice.replace("#", "##")]
+        assert "#{" not in sent[0].replace("##", "")
+
+    def test_no_launch_no_notice(self, monkeypatch):
+        """No shell pane to type into → nothing launched, nothing
+        announced, no keys sent. The foreground check is the last
+        step before the keys, after the (cheap) notice judgment."""
+        import ccm_agentview
+        sent = []
+        monkeypatch.setattr(ccm_agentview, "continue_blocker",
+                            lambda *a, **kw: None)
+
+        def fake_tmux(*a):
+            if a[:2] == ("show-option", "-gqv"):
+                return "on"
+            if a[0] == "list-panes":
+                return "%0\t100\t1\tvim\t"
+            if a[0] in ("send-keys", "display-message"):
+                sent.append(a)
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        assert ccm_window.auto_start_claude("0:5") is None
+        assert sent == []

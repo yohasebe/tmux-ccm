@@ -18,6 +18,7 @@ import pytest
 
 import ccm_core
 import ccm_activity
+import ccm_agentview
 import ccm_canaries
 import ccm_commands
 import ccm_detection
@@ -134,6 +135,8 @@ class TestCmdDoctor:
                             lambda *a, **kw: disable_warning)
         monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
                             lambda *a, **kw: managed_warning)
+        monkeypatch.setattr(ccm_agentview, "continue_blocker_warnings",
+                            lambda projects, bg_sessions=None: [])
         monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
                             lambda p: list(cluster_warnings))
         monkeypatch.setattr(ccm_core, "build_project_list",

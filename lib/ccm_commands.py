@@ -33,6 +33,7 @@ from datetime import datetime
 # constants the test suite mutates. See module docstring.
 import ccm_core  # late-bound for tmux_cmd / ccm_die / build_project_list / etc.
 import ccm_window
+import ccm_agentview
 import ccm_canaries
 import ccm_commands
 import ccm_detection
@@ -467,7 +468,9 @@ def cmd_attach(target):
             has_claude = True  # Assume running on error
 
         if not has_claude:
-            ccm_window.auto_start_claude(win_target)
+            notice = ccm_window.auto_start_claude(win_target)
+            if notice:
+                ccm_core.ccm_warn(notice)
 
     ccm_window.reset_window_after_attach(win_target)
     ccm_core.tmux_cmd("select-window", "-t", f"{session}:{idx}")
@@ -961,6 +964,18 @@ def cmd_doctor():
     else:
         row(OK, "hook-silence",
             "off (opt in with `tmux set -g @ccm-hook-silence on`)")
+
+    # Background hand-offs: a project whose newest transcript was
+    # continued in a background session the daemon still lists.
+    # `claude --continue` starts fresh there, which reads as a lost
+    # conversation until someone names the cause.
+    handoff_msgs = ccm_agentview.continue_blocker_warnings(projects)
+    if handoff_msgs:
+        for msg in handoff_msgs:
+            row(WARN, "bg hand-off", msg)
+    else:
+        row(OK, "bg hand-off",
+            "no blocking hand-off found in SHELL projects' newest transcripts")
 
     exited = ccm_runtime.auto_exit_log_count()
     if exited:

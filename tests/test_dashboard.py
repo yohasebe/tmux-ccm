@@ -50,6 +50,8 @@ def _stub_dashboard_environment(monkeypatch):
     monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda *a, **kw: "")
     monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
     monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
+    monkeypatch.setattr("dashboard.ccm_agentview.continue_blocker_warnings",
+                        lambda p, bg_sessions=None: [])
     monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
     monkeypatch.setattr("dashboard.get_session", lambda: "0")
     monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)

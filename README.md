@@ -499,7 +499,7 @@ Claude Code 2.1.139 introduced an agent view (`claude agents`, `claude --bg`, `c
 set -g @ccm-bg-section "always"   # default: off
 ```
 
-Off by default — window-as-project workflows are unaffected. Press `b` in the dashboard to toggle on demand without persisting the setting, or set `always` (also reachable from the dashboard menu `m`) to keep it visible across opens. Pressing `Enter` on a bg row opens a fresh tmux window (not a ccm project) and runs `claude attach <short>` — using a non-ccm window prevents the auto-start path from racing your attach. ccm only observes the daemon's `roster.json` and per-session `state.json`; dispatch and stop stay with the `claude` CLI itself. Outside the dashboard, `ccm bg list` prints the same data.
+Off by default — window-as-project workflows are unaffected. Press `b` in the dashboard to toggle on demand without persisting the setting, or set `always` (also reachable from the dashboard menu `m`) to keep it visible across opens. Pressing `Enter` on a bg row opens a fresh tmux window (not a ccm project) and runs `claude attach <short>` — using a non-ccm window prevents the auto-start path from racing your attach. ccm only observes the daemon's `roster.json` and per-session `state.json`; dispatch and stop stay with the `claude` CLI itself. Outside the dashboard, `ccm bg list` prints the same data. When a project's newest conversation was handed to a background session with `/bg` and the CLI still counts that session as live, `claude --continue` starts fresh there; ccm says so — on the dashboard, in `ccm status` / `ccm doctor`, and right after it types the launch command on attach — and names the `claude attach` / `claude stop` exits.
 
 ### Anti-Flicker
 

@@ -7,7 +7,10 @@ its roster to `~/.claude/daemon/roster.json` and each session's
 job state to `~/.claude/jobs/<short>/state.json`.
 
 ccm reads these files to surface the background-session list in the
-dashboard. This module is strictly read-only: it never writes to
+dashboard, and to tell when a project's `claude --continue` will not
+resume its conversation because the newest transcript was handed to
+a session that is still live (see the hand-off check at the end of
+this module, which reads the CLI's session registry for that). This module is strictly read-only: it never writes to
 `~/.claude` and never sends signals to the daemon. The display in
 ccm's dashboard is a passive observer; dispatch / lifecycle stays
 the responsibility of Claude Code's own CLI (`claude attach`,
@@ -47,9 +50,12 @@ roster so only currently-active sessions surface — matching the
 behavior of `claude agents` itself.
 """
 
+import glob
 import json
 import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -317,3 +323,390 @@ def daemon_running() -> bool:
     if os.path.exists(DAEMON_STATUS_PATH):
         return True
     return False
+
+
+# ─── `claude --continue` handoff check ───
+#
+# A session sent to the background with `/bg` leaves a hand-off
+# record at the end of its transcript:
+#
+#   {"type":"continued-in","sessionId":<old>,"continuedInSessionId":<bg>}
+#
+# `claude --continue` walks the directory's transcripts newest first,
+# and when the newest one hands off to a session the daemon still
+# lists as live, it stops there: nothing is resumed, a notice names
+# the background session, and a fresh session starts. Older
+# transcripts are not considered. The background worker counts as
+# live for as long as it sits in the roster — including after its
+# task is `done` — so the launch command ccm types on attach can
+# quietly produce an empty session for a project whose conversation
+# is intact on disk.
+#
+# ccm cannot ask `claude --continue` what it would do (there is no
+# dry run), so this reads the same two facts the CLI reads: the
+# newest transcript's hand-off, and the roster. The check is
+# narrower than the CLI's on purpose — it names a session only when
+# the hand-off is the last conversation record — so a mismatch costs
+# a missed notice, never a false one.
+
+#: How much of the transcript tail to read for the hand-off record.
+#: The records after a hand-off are housekeeping (cost, last prompt)
+#: and small. A hand-off further back than this is not judged — the
+#: miss side, by design.
+CONTINUED_IN_TAIL_BYTES = 64 * 1024
+
+# Line-level pre-filters. The CLI writes compact JSON, but the record's
+# parsed `type` decides — the literal only chooses which lines to parse.
+_CONTINUED_IN_RE = re.compile(r'"type"\s*:\s*"continued-in"')
+_CONVERSATION_RE = re.compile(r'"type"\s*:\s*"(?:user|assistant)"')
+
+#: Per-file parse results, keyed by path and valid for one
+#: (mtime_ns, size). Only statements a file makes about itself are
+#: kept — the directory it records, the session its tail hands off
+#: to — never anything relative to a project or to the roster.
+#: Which transcript is newest, whose directory it names, and whether
+#: its hand-off target is in the roster are decided from live stats
+#: and the live roster on every call. A positive answer that
+#: outlived the state it described was the failure this design
+#: replaces; the cost that remains is one stat per transcript per
+#: call, for SHELL projects that have a worker in the roster.
+#:
+#: Known limits of the (mtime_ns, size) key: a rewrite that keeps
+#: both is not seen, so either parse result — the recorded cwd or
+#: the hand-off target, positive or None — can go stale until the
+#: file's signature moves; a transient tail-read failure is
+#: remembered as "no hand-off" the same way. The recorded cwd is
+#: also a canonical path, so a re-pointed symlink stales it without
+#: the file changing. None of these is a shape the CLI has been seen
+#: to produce; they are named so the key's reach is not overstated.
+_claim_cache = {}      # path → (mtime_ns, size, recorded cwd or None)
+_handoff_cache = {}    # path → (mtime_ns, size, target or None)
+
+#: Registry root: the CLI's config home. `CLAUDE_CONFIG_DIR` moves it;
+#: ccm's transcript readers are anchored at `~/.claude`, so when the
+#: two differ the notice has no matching pair of facts to read and is
+#: withheld (see `continue_blocker`).
+DEFAULT_CLAUDE_HOME = os.path.expanduser("~/.claude")
+
+
+def claude_config_home_is_default() -> bool:
+    """True when the CLI's config home is `~/.claude`: the variable
+    is unset, or is an absolute path whose real location is that
+    directory. The CLI takes the variable's string as-is — no `~`
+    expansion, an empty string is not "unset", a relative path is
+    resolved against the launching process's cwd, which ccm does not
+    know — so every one of those forms reads as "not default" here,
+    and the notice is withheld. Read from ccm's own environment; the
+    launching shell's is not visible from here."""
+    if "CLAUDE_CONFIG_DIR" not in os.environ:
+        return True
+    override = os.environ["CLAUDE_CONFIG_DIR"]
+    if not override or not os.path.isabs(override):
+        return False
+    try:
+        return os.path.realpath(override) == os.path.realpath(DEFAULT_CLAUDE_HOME)
+    except OSError:
+        return False
+
+
+#: The session kinds the CLI's registry reader recognises. Any other
+#: value normalises to "no kind" there, which makes the CLI treat the
+#: whole live set as unknown.
+REGISTRY_KINDS = frozenset({"interactive", "bg", "daemon", "daemon-worker"})
+_ASCII_DIGITS = re.compile(r"[0-9]+")
+
+
+def own_pid_domain() -> Optional[str]:
+    """The pid domain the CLI records for processes on this host, or
+    None when ccm cannot derive it. macOS records the platform name;
+    elsewhere the CLI derives it from machine and pid-namespace ids
+    that ccm does not reproduce."""
+    return "darwin" if sys.platform == "darwin" else None
+
+
+def process_start_token(pid) -> Optional[str]:
+    """The process start time in the form the CLI records as
+    `procStart` (`LC_ALL=C TZ=UTC ps -o lstart= -p <pid>`), or None
+    when it cannot be read."""
+    try:
+        r = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, timeout=5,
+            env={"LC_ALL": "C", "TZ": "UTC", "PATH": "/bin:/usr/bin:/usr/sbin"})
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    token = r.stdout.decode("utf-8", errors="replace").strip()
+    return token or None
+
+
+def _process_is_live(pid) -> bool:
+    """The CLI's own existence test: pid > 1 and `kill(pid, 0)` raises
+    nothing. Any error — a missing process, or one ccm may not signal
+    — counts as not live, as it does for the CLI."""
+    if not isinstance(pid, int) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (OSError, OverflowError, ValueError):
+        # OverflowError: a number too large for a pid — no process.
+        return False
+    return True
+
+
+def live_noninteractive_session_ids():
+    """Session ids of the non-interactive Claude sessions that are
+    live right now — the set a hand-off target is checked against —
+    or None when that set cannot be known.
+
+    Read from the CLI's own session registry, `<config home>/sessions/
+    <pid>.json`, which is what `claude --continue` consults
+    (`listAllLiveSessions`): a record per running process. Not from
+    the daemon's roster — that outlives the daemon and lists dead
+    workers — and not from `claude agents --json`, which folds saved
+    jobs into its output and, being the CLI, may sweep the registry
+    as a side effect.
+
+    The CLI does not answer with a partial set: a record it cannot
+    read, or a live record without a session id or with a kind it
+    does not recognise, makes it treat the whole set as unknown, and
+    `--continue` then does not stop at a hand-off. So does this: any
+    such record → None, and the caller reports nothing. The process
+    is the one the file is named after (a canonical `<pid>.json`;
+    the CLI ignores other spellings, and a body that names a
+    different pid is a record ccm cannot vouch for → None). A record
+    counts as live only on the CLI's own terms — the process exists
+    (`kill(pid, 0)`, pid > 1, no error of any kind) and its start
+    time still matches the record (`procStartFt` when present, else
+    `procStart`, as the CLI chooses) — and, more strictly than the
+    CLI, only when that start time can be read and compared: an
+    unreadable token, a record without one, or a record from another
+    pid domain is not counted (a missed notice, never a false one).
+    Read-only.
+    """
+    import ccm_jsonl
+    try:
+        entries = os.listdir(ccm_jsonl.CLAUDE_SESSIONS_DIR)
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        return None
+    live = set()
+    domain = own_pid_domain()
+    for entry in entries:
+        if not entry.endswith(".json"):
+            continue
+        stem = entry[:-len(".json")]
+        # The CLI enumerates /^\d+\.json$/ — ASCII digits only
+        # (`str.isdigit` would also accept superscripts and the like)
+        # — and adopts only the canonical spelling of the number.
+        if not _ASCII_DIGITS.fullmatch(stem) or stem != str(int(stem)):
+            continue
+        pid = int(stem)
+        path = os.path.join(ccm_jsonl.CLAUDE_SESSIONS_DIR, entry)
+        try:
+            with open(path, encoding="utf-8") as f:
+                info = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(info, dict):
+            return None
+        kind = info.get("kind")
+        if not isinstance(kind, str) or kind not in REGISTRY_KINDS:
+            return None
+        if kind == "interactive":
+            continue
+        sid = info.get("sessionId")
+        if not isinstance(sid, str) or not sid:
+            return None
+        body_pid = info.get("pid")
+        if body_pid is not None and body_pid != pid:
+            return None
+        record_domain = info.get("pidDomain")
+        if record_domain is not None and (domain is None or record_domain != domain):
+            continue
+        if not _process_is_live(pid):
+            continue
+        recorded = info.get("procStartFt")
+        if recorded is None:
+            recorded = info.get("procStart")
+        if not isinstance(recorded, str) or not recorded:
+            continue
+        token = process_start_token(pid)
+        if token is None or token != recorded:
+            continue
+        live.add(sid)
+    return live
+
+
+def continued_in_target(jsonl_path) -> Optional[str]:
+    """Session id the transcript hands off to, or None.
+
+    Reads the tail and walks it backwards. A hand-off record wins
+    only when no conversation record (user / assistant) follows it —
+    a hand-off that has since been talked past does not block the
+    CLI, and is not reported here. Unreadable → None (miss side).
+    """
+    try:
+        st = os.stat(jsonl_path)
+    except OSError:
+        return None
+    hit = _handoff_cache.get(jsonl_path)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2]
+    target = _read_continued_in_target(jsonl_path, st.st_size)
+    _handoff_cache[jsonl_path] = (st.st_mtime_ns, st.st_size, target)
+    return target
+
+
+def _read_continued_in_target(jsonl_path, size) -> Optional[str]:
+    try:
+        with open(jsonl_path, "rb") as f:
+            f.seek(max(0, size - CONTINUED_IN_TAIL_BYTES))
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    if not _CONTINUED_IN_RE.search(tail):
+        return None
+    for line in reversed(tail.split("\n")):
+        if _CONTINUED_IN_RE.search(line):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                rec = None
+            if isinstance(rec, dict) and rec.get("type") == "continued-in":
+                target = rec.get("continuedInSessionId")
+                return target if isinstance(target, str) and target else None
+        # A conversation record after the hand-off (or a message that
+        # merely quotes the marker) ends the walk: the CLI stops here too.
+        if _CONVERSATION_RE.search(line):
+            return None
+    return None
+
+
+class _LiveIds:
+    """Reads the registry once, on first need, and remembers the
+    answer (a set, or None for unknown) for the rest of one
+    `continue_blockers` pass."""
+    __slots__ = ("_ids", "_asked")
+
+    def __init__(self, ids=None):
+        self._ids, self._asked = ids, ids is not None
+
+    def get(self):
+        if not self._asked:
+            self._ids, self._asked = live_noninteractive_session_ids(), True
+        return self._ids
+
+
+def continue_blocker(project_dir: str, bg_sessions=None,
+                     live_ids=None) -> Optional[BgSession]:
+    """The live background session that will make `claude --continue`
+    in `project_dir` start a fresh session, or None.
+
+    Three facts, from three places, in the order that keeps the
+    expensive one last:
+
+      1. the roster (`bg_sessions`, read here when omitted) — a
+         worker for this directory must be listed. Necessary, not
+         sufficient: the roster outlives the daemon, so a listed
+         worker may be long dead. Used only to decide whether the
+         rest is worth doing, and to name the session in the notice;
+      2. the newest transcript's tail — it must hand off to that
+         worker's session;
+      3. the CLI's own session registry (`live_ids`, a `_LiveIds`,
+         read only when 1 and 2 hold) — the hand-off target must be
+         a live non-interactive session there. This is the check
+         `claude --continue` makes; when the registry cannot be
+         read as a whole (None), nothing is reported.
+
+    Withheld entirely when `CLAUDE_CONFIG_DIR` moves the CLI's home:
+    the transcripts and registry ccm reads live under `~/.claude`,
+    and facts from one home say nothing about a launch in another.
+
+    Only per-file parse results are cached (see `_claim_cache`). The
+    reads are not atomic with each other, so an answer describes the
+    disk, roster and registry as they were during this call.
+    """
+    import ccm_jsonl  # lazy: ccm_jsonl pulls ccm_core, not needed by the readers above
+
+    if not project_dir or not claude_config_home_is_default():
+        return None
+    sessions = list_bg_sessions() if bg_sessions is None else bg_sessions
+    listed = {s.session_id: s for s in sessions if s.session_id}
+    if not listed:
+        return None
+
+    want = ccm_jsonl._canonical(os.path.expanduser(project_dir))
+    if not any(ccm_jsonl._canonical(s.cwd) == want for s in listed.values() if s.cwd):
+        return None
+
+    # The workers' own transcripts sit in the same directory and can
+    # be the newest file there; the CLI does not offer them to
+    # `--continue`, so they are not the newest for this question
+    # either. Plain mtime order otherwise: a newer transcript that
+    # names no directory is still the one the CLI walks first, and it
+    # must be the one judged here.
+    newest = ccm_jsonl.scan_newest_jsonl(
+        project_dir, exclude_stems=frozenset(listed), prefer_claim=False,
+        claim_cache=_claim_cache)
+    if newest is None:
+        return None
+    target = continued_in_target(newest)
+    if not target or target not in listed:
+        return None
+    live = (live_ids or _LiveIds()).get()
+    if live is None or target not in live:
+        return None
+    return listed[target]
+
+
+def continue_blockers(projects, bg_sessions=None) -> dict:
+    """Map `win_target` → blocking BgSession for every project whose
+    `claude --continue` would start fresh. Reads the roster once.
+
+    Only SHELL projects are considered: the notice is about the
+    launch command ccm types on attach, and that is typed into a
+    shell pane only. A window already running Claude — often the
+    very background session, attached in the foreground — has no
+    launch coming, and a notice there would say "starts fresh" over
+    a conversation that is on screen."""
+    sessions = list_bg_sessions() if bg_sessions is None else bg_sessions
+    if not sessions:
+        return {}
+    live_ids = _LiveIds()
+    out = {}
+    for p in projects:
+        if p.state != "SHELL":
+            continue
+        s = continue_blocker(p.dir, sessions, live_ids)
+        if s is not None:
+            out[p.win_target] = s
+    return out
+
+
+def format_continue_blocker(project_name: str, s: BgSession) -> str:
+    """One-line notice for a project whose launch command will not
+    resume its conversation. Names the exits the CLI provides."""
+    state = s.state.lower() if s.state and s.state != "UNKNOWN" else "live"
+    return (
+        f"{project_name}: last conversation moved to background session "
+        f"{s.short} ({state}) — `claude --continue` starts fresh. "
+        f"`claude attach {s.short}` opens it, `claude stop {s.short}` releases it"
+    )
+
+
+def continue_blocker_warnings(projects, bg_sessions=None) -> list:
+    """Warning lines for `ccm status` / dashboard / `ccm doctor`.
+    Never raises: a notice is not worth interrupting the report it
+    decorates, so any failure reads as "nothing to report" and is
+    logged for `ccm errors`."""
+    try:
+        blockers = continue_blockers(projects, bg_sessions)
+    except Exception:
+        import ccm_core
+        ccm_core.log_caught_exception("continue_blocker_warnings")
+        return []
+    return [format_continue_blocker(p.name, blockers[p.win_target])
+            for p in projects if p.win_target in blockers]

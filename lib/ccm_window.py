@@ -23,6 +23,7 @@ test mocks working uniformly.
 
 import os
 
+import ccm_agentview
 import ccm_core  # late-bound for tmux_cmd / ps_snapshot
 from ccm_constants import (
     CLAUDE_CMD,
@@ -30,6 +31,10 @@ from ccm_constants import (
     SLIVER_HEIGHT_THRESHOLD,
 )
 from ccm_pane_state import detect_pane_state, enumerate_window_panes, read_work_clock
+
+#: How long the hand-off notice stays on the tmux message line. Long
+#: enough to read after the eye has moved to the launching pane.
+CONTINUE_NOTICE_MS = 12000
 
 
 def _resolve_launch_pane(win_target):
@@ -75,10 +80,55 @@ def auto_start_claude(win_target):
     setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
     if setting != "on":
         return
+    # Judged before the launch is typed: once `claude` starts it
+    # creates its own transcript, and a scan after that would see a
+    # fresh session where there was a hand-off. Judged before the
+    # pane is resolved, too, so the foreground check is the last
+    # thing before the keys go out.
+    notice = continue_blocker_notice(win_target)
     pane = _resolve_launch_pane(win_target)
     if pane is None:
-        return
+        return None
     ccm_core.tmux_cmd("send-keys", "-t", pane, CLAUDE_CMD, "Enter")
+    if notice:
+        # `display-message` expands tmux formats in its argument:
+        # `#{...}` substitutes and `#(...)` runs a shell command. The
+        # notice carries a project name, which is not required to be
+        # free of `#`, so every `#` is doubled — the format escape —
+        # before it is shown.
+        ccm_core.tmux_cmd("display-message", "-d", str(CONTINUE_NOTICE_MS),
+                          "ccm: " + notice.replace("#", "##"))
+    return notice
+
+
+def continue_blocker_notice(win_target):
+    """The hand-off notice for this window's project, or None: the
+    line to show when `claude --continue` is about to start a fresh
+    session because the newest transcript was handed to a background
+    session the daemon still lists.
+
+    Decided from the disk, roster and session registry as they are
+    now — this runs at the moment the launch command is about to be
+    typed. The fresh session itself prints the CLI's own notice, which names
+    the session but not the project or the state it is in; this one
+    is what the reader sees while the launch is still on screen.
+    Callers with a stdout of their own (`ccm attach`) print it too."""
+    proj_dir = ccm_core.tmux_cmd(
+        "show-option", "-wqv", "-t", win_target, "@ccm_dir"
+    )
+    if not proj_dir:
+        return None
+    try:
+        blocker = ccm_agentview.continue_blocker(proj_dir)
+    except Exception:
+        ccm_core.log_caught_exception("auto_start_claude.continue_blocker")
+        return None
+    if blocker is None:
+        return None
+    name = ccm_core.tmux_cmd(
+        "show-option", "-wqv", "-t", win_target, "@ccm_project"
+    ) or proj_dir
+    return ccm_agentview.format_continue_blocker(name, blocker)
 
 
 def reset_window_after_attach(win_target):

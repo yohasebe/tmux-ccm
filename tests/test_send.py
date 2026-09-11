@@ -519,6 +519,27 @@ class TestCmdSend:
         monkeypatch.setattr(ccm_core, "build_project_list", stub_build)
         monkeypatch.setattr("time.sleep", lambda _s: None)
 
+    @pytest.mark.parametrize("second", [("%5", "vim"), ("%6", "zsh")])
+    def test_start_reverifies_the_pane_after_the_handoff_check(
+            self, monkeypatch, second):
+        """The hand-off judgment takes time; the pane is resolved
+        again afterwards and the launch is refused when its foreground
+        or identity changed in between. Nothing is typed."""
+        import ccm_agentview
+        initial = self._make_project(state="SHELL")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, initial)
+        resolutions = iter([("%5", "zsh"), second])
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
+                            lambda *a: next(resolutions))
+        monkeypatch.setattr(ccm_agentview, "continue_blocker",
+                            lambda *a, **kw: None)
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(ccm_constants.CLAUDE_CMD in c for c in calls)
+
     def test_send_shell_with_start_launches_claude_first(self, monkeypatch):
         initial = self._make_project(state="SHELL")
         after_start = self._make_project(state="IDLE")

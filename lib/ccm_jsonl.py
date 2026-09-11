@@ -317,13 +317,11 @@ JSONL_CWD_PROBE_BYTES = 512 * 1024
 CWD_MINE, CWD_FOREIGN, CWD_SILENT = "mine", "foreign", "silent"
 
 
-def _jsonl_cwd_claim(path: str, want: str) -> str:
-    """Whether this transcript claims `want`, claims somewhere else,
-    or says nothing.
-
-    Three answers, not two: a file that positively names another
-    directory is evidence against itself, and treating that the same
-    as silence is what lets the wrong project's transcript through.
+def _jsonl_recorded_cwd(path: str) -> Optional[str]:
+    """The (canonical) directory this transcript records as its own,
+    or None when it names none within the probe window or cannot be
+    read. A property of the file alone — what a caller compares it
+    against is the caller's business, so this is what may be cached.
     """
     read = 0
     try:
@@ -339,10 +337,27 @@ def _jsonl_cwd_claim(path: str, want: str) -> str:
                 except (ValueError, TypeError):
                     continue
                 if cwd:
-                    return CWD_MINE if _canonical(cwd) == want else CWD_FOREIGN
+                    return _canonical(cwd)
     except OSError:
+        return None
+    return None
+
+
+def _claim_from_cwd(recorded: Optional[str], want: str) -> str:
+    if recorded is None:
         return CWD_SILENT
-    return CWD_SILENT
+    return CWD_MINE if recorded == want else CWD_FOREIGN
+
+
+def _jsonl_cwd_claim(path: str, want: str) -> str:
+    """Whether this transcript claims `want`, claims somewhere else,
+    or says nothing.
+
+    Three answers, not two: a file that positively names another
+    directory is evidence against itself, and treating that the same
+    as silence is what lets the wrong project's transcript through.
+    """
+    return _claim_from_cwd(_jsonl_recorded_cwd(path), want)
 
 
 def _find_newest_jsonl(project_dir: str, claude_pid=None):
@@ -375,12 +390,45 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
             return path
         # cached path vanished — fall through to re-scan
 
+    chosen = scan_newest_jsonl(project_dir)
+    _jsonl_path_cache[project_dir] = (chosen, now + JSONL_CACHE_TTL)
+    return chosen
+
+
+def scan_newest_jsonl(project_dir: str, exclude_stems=frozenset(),
+                      prefer_claim=True, claim_cache=None):
+    """Scan the project's slug directory and return the newest
+    transcript that belongs to it, or None. Uncached; the mtime and
+    cwd probe run on every call, so callers on a polling path go
+    through `_find_newest_jsonl`.
+
+    `exclude_stems` drops transcripts by session id (the filename
+    stem) before the newest is chosen — a caller that knows some
+    files in the directory are not candidates for what it is asking
+    (a background worker's own transcript, say) names them here
+    rather than re-implementing the scan.
+
+    `prefer_claim` is the detection policy: a transcript that names
+    this directory beats a newer one that names none. A caller
+    predicting what `claude --continue` will pick wants plain mtime
+    order among the non-foreign files instead — the CLI does not
+    demote a silent transcript — and passes False.
+
+    `claim_cache`, when given, is a dict the caller keeps across
+    calls: path → (mtime_ns, size, recorded cwd). A file whose mtime
+    and size are unchanged reuses the directory it recorded instead
+    of re-reading its head, so a caller that scans often pays one
+    stat per file. What is cached is the file's own statement; the
+    comparison against `project_dir` is made on every call, so two
+    projects that share a slug directory (`a-b` and `a_b` do) never
+    see each other's answer. The scan itself is never cached — which
+    file is newest is decided from live stats every time.
+    """
     slug = _project_slug(project_dir)
     session_dir = os.path.join(CLAUDE_PROJECTS_DIR, slug)
     try:
         entries = os.listdir(session_dir)
     except OSError:
-        _jsonl_path_cache[project_dir] = (None, now + JSONL_CACHE_TTL)
         return None
 
     # The slug is lossy: every non-alphanumeric character becomes a
@@ -397,12 +445,24 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     for entry in entries:
         if not entry.endswith(".jsonl"):
             continue
+        if entry[:-len(".jsonl")] in exclude_stems:
+            continue
         full = os.path.join(session_dir, entry)
         try:
-            mt = os.path.getmtime(full)
+            st = os.stat(full)
         except OSError:
             continue
-        claim = _jsonl_cwd_claim(full, want)
+        mt = st.st_mtime
+        if claim_cache is None:
+            claim = _jsonl_cwd_claim(full, want)
+        else:
+            hit = claim_cache.get(full)
+            if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+                recorded = hit[2]
+            else:
+                recorded = _jsonl_recorded_cwd(full)
+                claim_cache[full] = (st.st_mtime_ns, st.st_size, recorded)
+            claim = _claim_from_cwd(recorded, want)
         if claim == CWD_MINE:
             if mt > mine_mtime:
                 mine_mtime, mine = mt, full
@@ -416,9 +476,9 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     # release a BUSY that is still running — and auto-exit acts on
     # that one. Silence is not disqualifying; a claim to somewhere
     # else is.
-    chosen = mine or quiet
-    _jsonl_path_cache[project_dir] = (chosen, now + JSONL_CACHE_TTL)
-    return chosen
+    if not prefer_claim and quiet is not None and quiet_mtime > mine_mtime:
+        return quiet
+    return mine or quiet
 
 
 # ─── JSONL tail parser ───

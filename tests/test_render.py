@@ -17,6 +17,7 @@ import pytest
 
 import ccm_core
 import ccm_activity
+import ccm_agentview
 import ccm_canaries
 import ccm_commands
 import ccm_detection
@@ -335,6 +336,8 @@ class TestPrintStatus:
                             lambda projects_arg: [])
         monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",
                             lambda projects_arg: [])
+        monkeypatch.setattr(ccm_agentview, "continue_blocker_warnings",
+                            lambda projects_arg, bg_sessions=None: [])
         # signal_age_suffix reads the per-project hook signal, which
         # resolves @ccm_session_id through live tmux; stub "no signal".
         monkeypatch.setattr(ccm_signals, "read_hook_signal",

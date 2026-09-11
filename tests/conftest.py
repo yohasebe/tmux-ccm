@@ -30,6 +30,7 @@ import ccm_spool
 #: `ps_snapshot`, `ccm_notify.notify`, ...).
 BLOCKED_SUBPROCESS_COMMANDS = frozenset({
     "tmux",
+    "claude",
     "ps",
     "jq",
     "osascript",
@@ -154,6 +155,27 @@ def block_live_subprocess(request, monkeypatch):
     # exercise pane identity set it explicitly.
     monkeypatch.delenv("TMUX_PANE", raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def isolate_agentview_home(tmp_path, monkeypatch):
+    """Point ccm_agentview's daemon / jobs paths at an empty tmp tree
+    so no test reads the developer's real `~/.claude` roster. A test
+    that wants a roster writes one under this tree (see the
+    `fake_claude_home` fixture in test_agentview.py, which re-points
+    the same constants)."""
+    import ccm_agentview
+    home = tmp_path / "agentview-home" / ".claude"
+    (home / "daemon").mkdir(parents=True)
+    (home / "jobs").mkdir(parents=True)
+    monkeypatch.setattr(ccm_agentview, "DAEMON_DIR", str(home / "daemon"))
+    monkeypatch.setattr(ccm_agentview, "DAEMON_ROSTER_PATH",
+                        str(home / "daemon" / "roster.json"))
+    monkeypatch.setattr(ccm_agentview, "DAEMON_STATUS_PATH",
+                        str(home / "daemon.status.json"))
+    monkeypatch.setattr(ccm_agentview, "JOBS_DIR", str(home / "jobs"))
+    monkeypatch.setattr(ccm_agentview, "_claim_cache", {})
+    monkeypatch.setattr(ccm_agentview, "_handoff_cache", {})
 
 
 @pytest.fixture(autouse=True)

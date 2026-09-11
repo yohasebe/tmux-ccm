@@ -15,6 +15,7 @@ import time
 import unicodedata
 
 import ccm_core
+import ccm_agentview
 import ccm_canaries
 import ccm_signals
 import ccm_spool
@@ -366,6 +367,11 @@ def print_status():
         print(f"\033[33m⚠ {cluster_msg}\033[0m")
     for silence_msg in ccm_canaries.hook_silence_warnings(projects):
         print(f"\033[33m⚠ {silence_msg}\033[0m")
+    # A project whose launch command will not resume its conversation:
+    # the newest transcript hands off to a background session the
+    # daemon still lists, so `claude --continue` starts fresh there.
+    for handoff_msg in ccm_agentview.continue_blocker_warnings(projects):
+        print(f"\033[33m⚠ {handoff_msg}\033[0m")
     # A message that expired without arriving is a loss, not a queue
     # length — the same weight the dashboard gives it. Left in the dim
     # summary below it read as routine to anyone (or anything) that

@@ -62,6 +62,7 @@ import os
 import sys
 import time
 
+import ccm_agentview
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 import ccm_spool  # store-and-forward queue for undeliverable sends
 from ccm_constants import (
@@ -775,6 +776,28 @@ def cmd_send(args):
         # launch command into vim would edit text, not start Claude —
         # refuse instead. `active_cmd is None` (pane enumeration
         # failed) skips the guard to preserve the defensive fallback.
+        # The launch resumes nothing when the project's newest
+        # transcript was handed to a background session that is still
+        # live; the message below would then land in a fresh session.
+        # Say so — the sender chose `--start` expecting the
+        # conversation it knows. Judged before the launch is typed
+        # (the new session's own transcript would otherwise be the
+        # newest one scanned) and before the foreground guard, so
+        # that guard is the last check before the keys go out.
+        try:
+            blocker = ccm_agentview.continue_blocker(matched.dir)
+        except Exception:
+            ccm_core.log_caught_exception("cmd_send.continue_blocker")
+            blocker = None
+        # The judgment above took time; what the pane runs may have
+        # changed. Resolve again and guard on what is there NOW.
+        launch_pane, active_cmd = _resolve_delivery_pane(win_target)
+        if launch_pane != pane_target:
+            ccm_core.ccm_die(
+                f"{project_name}'s delivery pane changed while preparing "
+                f"the launch ({pane_target} → {launch_pane}) — nothing "
+                "sent. Retry."
+            )
         if active_cmd is not None and active_cmd not in SHELL_FOREGROUND_COMMANDS:
             ccm_core.ccm_die(
                 f"{project_name} is in SHELL state but its active pane "
@@ -787,6 +810,9 @@ def cmd_send(args):
         ccm_core.tmux_cmd("send-keys", "-t", pane_target, "-X", "cancel")
         ccm_core.tmux_cmd("send-keys", "-t", pane_target, CLAUDE_CMD, "Enter")
         did_launch = True
+        if blocker is not None:
+            ccm_core.ccm_warn(ccm_agentview.format_continue_blocker(
+                project_name, blocker))
         # Wait for the target to reach the input prompt. A fixed
         # sleep would mis-deliver the message when `claude
         # --continue` triggers a follow-on action — most commonly

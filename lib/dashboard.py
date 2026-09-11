@@ -197,6 +197,10 @@ class Dashboard:
         self.bg_section_setting = bg_setting if bg_setting in ("off", "always") else "off"
         self.bg_visible = self.bg_section_setting == "always"
         self.bg_sessions = []
+        # Hand-off notices (`claude --continue` would start fresh),
+        # computed on the refresh thread alongside the project list so
+        # render never scans transcripts on the key-handling thread.
+        self.handoff_warnings = []
 
     def run(self, stdscr):
         # Curses setup
@@ -824,6 +828,16 @@ class Dashboard:
             # operator who asked to watch it during calibration.
             for silence_msg in hook_silence_warnings(projects):
                 self._addstr(stdscr, row, 2, "⚠ " + silence_msg, curses.color_pair(C_YELLOW))
+                row += 1
+
+            # A project whose `claude --continue` would start fresh:
+            # its newest transcript hands off to a background session
+            # the daemon still lists. Computed by the refresh thread
+            # (`_fetch_handoff_warnings`); read here.
+            with self.lock:
+                handoff_warnings = list(self.handoff_warnings)
+            for handoff_msg in handoff_warnings:
+                self._addstr(stdscr, row, 2, "⚠ " + handoff_msg, curses.color_pair(C_YELLOW))
                 row += 1
 
             # Silent-exception burst canary — surfaces poll-cycle bugs
@@ -2271,9 +2285,11 @@ class Dashboard:
             with self.lock:
                 bg_visible = self.bg_visible
             bg_sessions = self._fetch_bg_sessions() if bg_visible else []
+            handoff_warnings = self._fetch_handoff_warnings(projects)
             with self.lock:
                 self._set_projects_stable(projects)
                 self.bg_sessions = bg_sessions
+                self.handoff_warnings = handoff_warnings
                 self.initial_load = False
                 self.data_dirty = True
         except Exception:
@@ -2297,9 +2313,11 @@ class Dashboard:
                 bg_sessions = (
                     self._fetch_bg_sessions() if bg_visible else []
                 )
+                handoff_warnings = self._fetch_handoff_warnings(projects)
                 with self.lock:
                     self._set_projects_stable(projects)
                     self.bg_sessions = bg_sessions
+                    self.handoff_warnings = handoff_warnings
                     self.data_dirty = True
                 # Refresh preview content if enabled
                 if self.preview_enabled and self.mode == "dashboard":
@@ -2369,6 +2387,17 @@ class Dashboard:
                     dirty = True
             if dirty:
                 self.data_dirty = True
+
+    def _fetch_handoff_warnings(self, projects):
+        """Hand-off notices for the project list, read on the refresh
+        thread. Independent of the bg-section toggle: the reader is
+        about to attach, and the empty session that would follow has
+        no other explanation on this screen. Never raises."""
+        try:
+            return ccm_agentview.continue_blocker_warnings(projects)
+        except Exception:
+            log_caught_exception("dashboard._fetch_handoff_warnings")
+            return []
 
     def _fetch_bg_sessions(self):
         """Read the agent-view roster. Returns `[]` on any failure

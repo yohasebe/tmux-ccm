@@ -495,7 +495,7 @@ Claude Code 2.1.139 で導入された agent view（`claude agents` / `claude --
 set -g @ccm-bg-section "always"   # デフォルト: off
 ```
 
-デフォルトはオフ（「window = project」運用には影響なし）。ダッシュボードで `b` を押すと一時的にトグル（設定は永続化しない）、`always` にすると常時表示されます（ダッシュボードメニュー `m` からも切替可能）。bg 行で `Enter` を押すと新規 tmux ウィンドウ（ccm 管理外）が開き `claude attach <short>` が自動実行されます — ccm 管理外のウィンドウを使うことで auto-start による attach 横取り（Issue 6）を構造的に回避します。ccm は daemon の `roster.json` と各セッションの `state.json` を観察するだけで、dispatch / stop などのライフサイクル操作は `claude` CLI の責務のまま残しています。ダッシュボード外では `ccm bg list` で同じ情報を取得できます。
+デフォルトはオフ（「window = project」運用には影響なし）。ダッシュボードで `b` を押すと一時的にトグル（設定は永続化しない）、`always` にすると常時表示されます（ダッシュボードメニュー `m` からも切替可能）。bg 行で `Enter` を押すと新規 tmux ウィンドウ（ccm 管理外）が開き `claude attach <short>` が自動実行されます — ccm 管理外のウィンドウを使うことで auto-start による attach 横取り（Issue 6）を構造的に回避します。ccm は daemon の `roster.json` と各セッションの `state.json` を観察するだけで、dispatch / stop などのライフサイクル操作は `claude` CLI の責務のまま残しています。ダッシュボード外では `ccm bg list` で同じ情報を取得できます。プロジェクトの最新の会話が `/bg` でバックグラウンドセッションに引き継がれ、CLI がそのセッションをまだ生きていると判断する間は、`claude --continue` はそこで新規セッションを始めます。ccm はそれをダッシュボード・`ccm status` / `ccm doctor`・attach 時に起動コマンドを打った直後に知らせ、`claude attach` / `claude stop` という出口を示します。
 
 ### アンチフリッカー
 

@@ -763,6 +763,18 @@ claude stop <short>           # terminate a session
 
 Outside the dashboard, `ccm bg list` prints the same data as a coloured table for shell use.
 
+### When `claude --continue` starts fresh
+
+Sending a session to the background with `/bg` leaves a hand-off record at the end of its transcript. `claude --continue` walks a directory's transcripts newest first, and when the newest one hands off to a session the CLI still counts as live, it resumes nothing: a notice names the background session and a fresh session starts. The CLI can still count a background worker as live after its task is `done` so the launch command ccm types on attach can produce an empty session for a project whose conversation is intact on disk. (`claude --resume`'s picker hides the handed-off transcript too; `claude --resume <full session id>` still opens it.)
+
+ccm checks three things, cheapest first: the daemon's roster must list a worker for the project (necessary, not sufficient — the roster outlives the daemon, so after a crash or reboot every worker is still listed with a dead pid), the newest transcript's tail must hand off to that worker's session, and then the CLI's own session registry (`~/.claude/sessions/<pid>.json`, one record per running process — the list `claude --continue` consults) must hold a live, non-interactive record for that session — live on the CLI's own terms: the process exists and its start time still matches the record's `procStart`. Where the CLI would not commit to a set (a record it cannot read, or a live record missing its kind or session id), `claude --continue` walks past the hand-off, and so the notice is withheld; it is also withheld when ccm cannot verify what the CLI verifies (no readable start time, a record from another pid domain), and when `CLAUDE_CONFIG_DIR` moves the CLI's home away from `~/.claude`, where ccm reads transcripts and registry. The notice appears wherever the launch is about to happen or has just happened:
+
+- a `⚠` line on the dashboard and in `ccm status`, naming the project, the background session, its state, and the exits — for projects in SHELL state only, since a window already running Claude (often the background session itself, attached) has no launch coming;
+- a `bg hand-off` row in `ccm doctor`;
+- on the tmux message line right after `ccm attach` or a dashboard attach types the launch command, and in the output of `ccm attach` and `ccm send --start`.
+
+The exits are the CLI's own: `claude attach <short>` opens the background conversation (it holds the work done since the hand-off), `claude stop <short>` releases the hand-off so `--continue` / `--resume` move on, `claude rm <short>` removes a finished session from the roster. This notice never runs any of them for you — the check is read-only (the dashboard's `Enter` on a bg row, which types `claude attach`, is a separate, explicit action). A newer interactive session in the directory clears the notice on the next refresh.
+
 ### Data sources
 
 The reader joins two files, both written by the daemon (read-only on the ccm side):

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- A hand-off notice for projects whose `claude --continue` will not
+  resume their conversation. When a session is sent to the background
+  with `/bg`, its transcript ends with a hand-off to the background
+  session, and `claude --continue` starts a fresh session for as long
+  as the CLI still counts that background session as live — including
+  after its task is done. ccm reads the CLI's own session registry
+  for that, on the CLI's own terms (process alive, start time
+  matching the record), using the daemon's roster only to decide when
+  to look, since the roster outlives the daemon; where the registry
+  cannot be read as a whole, or `CLAUDE_CONFIG_DIR` moves the CLI's
+  home, nothing is reported. ccm names the background session, its state,
+  and the `claude attach` / `claude stop` exits: as a warning line on
+  the dashboard and `ccm status`, a `bg hand-off` row in `ccm doctor`,
+  and on the tmux message line (plus `ccm attach` / `ccm send --start`
+  output) right after the launch command is typed. Shown for SHELL
+  projects only — a window already running Claude has no launch
+  coming. The notice itself never stops or attaches a background
+  session; the check is read-only.
+
 ### Changed
 - The external-agent presence badge is now `▸<name>` instead of
   `⚙<name>` on the dashboard, `ccm status`, and the status bar. The
