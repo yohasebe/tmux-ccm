@@ -257,15 +257,27 @@ def _project_slug(project_dir: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", expanded)
 
 
-def _jsonl_from_session_info(claude_pid):
+#: Default for the `session_info` parameters below: the caller has not
+#: consulted the session registry, so the resolver reads it itself
+#: (without the pid-reuse check, which needs a `ps` snapshot the
+#: resolver does not have). A caller that has consulted it passes the
+#: validated record, or None when it found nothing usable — and then
+#: the registry is not read again here: a record the caller rejected
+#: as another process's must not come back through this door.
+UNCHECKED = object()
+
+
+def _jsonl_from_session_info(claude_pid, session_info=UNCHECKED):
     """Resolve the exact JSONL path via ~/.claude/sessions/{pid}.json.
 
     Returns the path to the session's JSONL file, or None if the
     runtime session file is missing or does not point at an existing
     JSONL. Skips non-interactive sessions (e.g. `claude -p` headless
     runs) — they are not user-facing and ccm should ignore them.
+
+    `session_info`: see `UNCHECKED`.
     """
-    info = read_session_info(claude_pid)
+    info = read_session_info(claude_pid) if session_info is UNCHECKED else session_info
     if not info:
         return None
     if info.get("kind") != "interactive":
@@ -360,7 +372,7 @@ def _jsonl_cwd_claim(path: str, want: str) -> str:
     return _claim_from_cwd(_jsonl_recorded_cwd(path), want)
 
 
-def _find_newest_jsonl(project_dir: str, claude_pid=None):
+def _find_newest_jsonl(project_dir: str, claude_pid=None, session_info=UNCHECKED):
     """Return the path to the newest *.jsonl file for this project,
     or None if there is none.
 
@@ -369,19 +381,30 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     Falls back to slug-based directory scanning for older Claude Code
     versions or when the pid mapping cannot be resolved.
 
+    `session_info` (see `UNCHECKED`): a validated registry record from
+    the caller, or None when the caller consulted the registry and
+    found nothing usable. In the latter case the exact mapping is
+    skipped — and so is a cached exact path, which may have been
+    resolved from the record the caller has since rejected.
+
     Result is cached for JSONL_CACHE_TTL seconds; the file's mtime is
     read live each call.
     """
     now = time.time()
 
     # Fast path: runtime session file gives us the exact JSONL.
-    if claude_pid:
-        exact = _jsonl_from_session_info(claude_pid)
+    if claude_pid and session_info is not None:
+        exact = _jsonl_from_session_info(claude_pid, session_info)
         if exact:
-            _jsonl_path_cache[project_dir] = (exact, now + JSONL_CACHE_TTL)
+            _jsonl_path_cache[project_dir] = (exact, now + JSONL_CACHE_TTL, "exact")
             return exact
 
     cached = _jsonl_path_cache.get(project_dir)
+    if cached and session_info is None and cached[2] == "exact":
+        # The caller consulted the registry and found nothing usable
+        # for this pid; an exact path cached from an earlier record
+        # is exactly what it may have just rejected.
+        cached = None
     if cached and now < cached[1]:
         path = cached[0]
         if path is None:
@@ -391,7 +414,7 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
         # cached path vanished — fall through to re-scan
 
     chosen = scan_newest_jsonl(project_dir)
-    _jsonl_path_cache[project_dir] = (chosen, now + JSONL_CACHE_TTL)
+    _jsonl_path_cache[project_dir] = (chosen, now + JSONL_CACHE_TTL, "scan")
     return chosen
 
 
@@ -711,7 +734,8 @@ def _cache_jsonl_activity(path: str, key: Tuple[int, int],
 
 # ─── Public read API ───
 
-def read_jsonl_tail_info(project_dir: str, claude_pid=None) -> Tuple[int, Optional[str]]:
+def read_jsonl_tail_info(project_dir: str, claude_pid=None,
+                         session_info=UNCHECKED) -> Tuple[int, Optional[str]]:
     """Return `(age_seconds, last_assistant_stop_reason)` for the project's
     newest JSONL file.
 
@@ -735,10 +759,14 @@ def read_jsonl_tail_info(project_dir: str, claude_pid=None) -> Tuple[int, Option
 
     When claude_pid is provided, the exact session file is resolved
     via `~/.claude/sessions/{pid}.json` (authoritative, no slug guess).
+    A caller that already read and validated that file passes it as
+    `session_info` (see `UNCHECKED`) so it is neither read twice nor
+    read without the validation.
     """
     if not project_dir:
         return -1, None
-    newest = _find_newest_jsonl(project_dir, claude_pid=claude_pid)
+    newest = _find_newest_jsonl(project_dir, claude_pid=claude_pid,
+                                session_info=session_info)
     if newest is None:
         return -1, None
     try:

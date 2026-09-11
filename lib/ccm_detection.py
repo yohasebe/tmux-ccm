@@ -113,12 +113,19 @@ def build_detection_context(win_target, project_dir, prev_state,
     # repeating the pid chain. Re-write only when the value changes
     # to avoid pointless tmux churn on every scan.
     session_id = None
+    # What this cycle learned from the session registry: a validated
+    # record, or None when the pid has no usable record — including
+    # the pid-reuse rejection below. Passed on to the JSONL resolver
+    # so it neither reads the file a second time nor reads it without
+    # the check. Stays UNCHECKED when there is no claude pid at all.
+    session_info = ccm_jsonl.UNCHECKED
     if claude_pid is not None:
         # Pass `ps_lines` so `read_session_info` can verify the
         # session_info file's `startedAt` against the live process's
         # etime — defends against pid recycling where a prior
         # claude session's json file lingers under the same pid.
         info = ccm_jsonl.read_session_info(claude_pid, ps_lines=ps_lines)
+        session_info = info or None
         if info:
             session_id = info.get("sessionId") or info.get("session_id")
     if win_target:
@@ -170,7 +177,7 @@ def build_detection_context(win_target, project_dir, prev_state,
 
     if project_dir:
         jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(
-            project_dir, claude_pid=claude_pid
+            project_dir, claude_pid=claude_pid, session_info=session_info
         )
     else:
         jsonl_age, jsonl_last_stop_reason = -1, None

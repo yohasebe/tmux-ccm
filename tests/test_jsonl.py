@@ -1091,3 +1091,56 @@ class TestJsonlEscInterruptRecord:
         ])
         _age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
         assert stop == ccm_constants.JSONL_INTERRUPTED
+
+
+
+class TestValidatedSessionInfoIsPassedThrough:
+    """The detection cycle validates `~/.claude/sessions/<pid>.json`
+    against the live process (pid-reuse defence) and then resolves the
+    JSONL. The resolver must use that validated record — not read the
+    file again without the check, and not fall back to an exact path
+    it cached from a record the caller has since rejected."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        projects = tmp_path / "projects"
+        slug = ccm_jsonl._project_slug(str(tmp_path / "proj"))
+        (projects / slug).mkdir(parents=True)
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        ccm_jsonl._jsonl_path_cache.clear()
+        exact = projects / slug / "exact-session.jsonl"
+        exact.write_text('{"type":"user","cwd":"%s"}\n' % (tmp_path / "proj"))
+        newest = projects / slug / "newer-by-scan.jsonl"
+        newest.write_text('{"type":"user","cwd":"%s"}\n' % (tmp_path / "proj"))
+        os.utime(exact, (1000, 1000)); os.utime(newest, (2000, 2000))
+        return str(tmp_path / "proj"), str(exact), str(newest)
+
+    def test_validated_record_is_used_without_a_second_read(self, tmp_path, monkeypatch):
+        proj, exact, _ = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(ccm_jsonl, "read_session_info",
+                            lambda *a, **k: pytest.fail("registry read twice"))
+        info = {"kind": "interactive", "sessionId": "exact-session", "cwd": proj}
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42, session_info=info) == exact
+
+    def test_rejected_record_does_not_come_back_unvalidated(self, tmp_path, monkeypatch):
+        """The caller rejected the pid's record (pid reuse): the
+        resolver must not read the registry itself and adopt it."""
+        proj, exact, newest = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(ccm_jsonl, "read_session_info",
+                            lambda *a, **k: pytest.fail("registry read after rejection"))
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42, session_info=None) == newest
+
+    def test_rejected_record_ignores_a_cached_exact_path(self, tmp_path, monkeypatch):
+        """Cycle 1 validated the record and cached its exact path;
+        cycle 2 rejects it (the pid now belongs to another process).
+        The cached exact path is the rejected session's file."""
+        proj, exact, newest = self._setup(tmp_path, monkeypatch)
+        info = {"kind": "interactive", "sessionId": "exact-session", "cwd": proj}
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42, session_info=info) == exact
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42, session_info=None) == newest
+
+    def test_unchecked_caller_keeps_the_old_behaviour(self, tmp_path, monkeypatch):
+        proj, exact, _ = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(ccm_jsonl, "read_session_info",
+                            lambda pid, ps_lines=None: {"kind": "interactive",
+                                                       "sessionId": "exact-session", "cwd": proj})
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42) == exact
