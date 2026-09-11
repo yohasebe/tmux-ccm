@@ -234,9 +234,14 @@ class TestAutoExitIdle:
         "1001 1000 1001 claude 00:00:30\n"
     )
 
+    # What `capture-pane` returns by default: an ordinary conversation
+    # with the input prompt visible. Tests about the agent view pass
+    # their own sequence (one entry per capture; the last repeats).
+    DEFAULT_CAPTURES = ["\u276f \n"]
+
     @staticmethod
     def _build_tmux_side_effect(post_exit_cmd, panes_listing,
-                               self_session_id=SESSION_ID):
+                               self_session_id=SESSION_ID, captures=None):
         """Wire `tmux_cmd` so it returns the right value for each
         query auto_exit_idle makes during a single past-timeout pass.
 
@@ -249,8 +254,15 @@ class TestAutoExitIdle:
                                     `post_exit_cmd` (parameterised:
                                     zsh / "claude" / empty / version)
         - send-keys / set-option  → ""  (side effects only)
+        - capture-pane            → `captures` (default: an ordinary
+                                    conversation prompt)
         """
+        captures = list(captures if captures is not None
+                        else TestAutoExitIdle.DEFAULT_CAPTURES)
+
         def side_effect(*args):
+            if args[0] == "capture-pane":
+                return captures.pop(0) if len(captures) > 1 else captures[0]
             if args[:2] == ("show-option", "-gqv"):
                 return ""
             if args[:2] == ("display-message", "-p"):
@@ -275,13 +287,14 @@ class TestAutoExitIdle:
         return side_effect
 
     def _run(self, post_exit_cmd, panes_listing=None, ps_output=None,
-             return_side_effects=False):
+             return_side_effects=False, captures=None):
         if panes_listing is None:
             panes_listing = self.DEFAULT_PANES_LISTING
         if ps_output is None:
             ps_output = self.DEFAULT_PS_OUTPUT
         send_calls = []
-        tmux_se = self._build_tmux_side_effect(post_exit_cmd, panes_listing)
+        tmux_se = self._build_tmux_side_effect(post_exit_cmd, panes_listing,
+                                               captures=captures)
 
         def tmux_recorder(*args):
             if args and args[0] == "send-keys":
@@ -731,3 +744,113 @@ class TestAutoExitEvidenceLog:
         ccm_runtime._log_auto_exit("demo", "abc", 600, 1)
         assert (tmp_path / "state" / "auto-exit.log.1").exists()
         assert len(self._records()) == 1
+
+
+AGENTS_VIEW_TAIL = (
+    "Claude Code v9.9.9 \u00b7 nothing running\n"
+    "Your conversation moved to the background \u2014 enter opens it "
+    "\u00b7 esc returns to it \u00b7 ctrl+c twice quits\n"
+    "enter to open \u00b7 space to reply \u00b7 ctrl+x to delete \u00b7 ? for shortcuts\n"
+)
+
+
+class TestAutoExitAgentsView:
+    """IDLE says the conversation is at rest; it does not say the
+    screen takes a slash command. A pane showing the agent view —
+    where a session lands after `/background`, `\u2190 \u2190`, or
+    `/exit` inside an attached background session — can start a new
+    session from typed text, and Escape there moves between views.
+    Auto-exit therefore looks before it types, and records why it
+    did not.
+    """
+
+    def _declined(self):
+        try:
+            with open(ccm_runtime.auto_exit_declined_log_path(),
+                      encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except OSError:
+            return []
+
+    def _exits(self):
+        try:
+            with open(ccm_runtime.auto_exit_log_path(), encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except OSError:
+            return []
+
+    def test_agent_view_before_send_types_nothing(self):
+        """Escape included: it would return the conversation to the
+        foreground, and `/exit` after it would detach it again."""
+        send_calls, set_state, autosave, notify = TestAutoExitIdle()._run(
+            "claude", return_side_effects=True, captures=[AGENTS_VIEW_TAIL])
+        assert send_calls == []
+        set_state.assert_not_called()
+        autosave.assert_not_called()
+        notify.notify.assert_not_called()
+        records = self._declined()
+        assert [r["outcome"] for r in records] == [ccm_runtime.DECLINED_AGENTS_VIEW]
+        assert records[0]["project"] == TestAutoExitIdle.PROJECT_NAME
+        assert records[0]["session"] == TestAutoExitIdle.SESSION_ID
+        assert self._exits() == []
+
+    def test_unreadable_pane_types_nothing(self):
+        """"Cannot read the pane" is not "an ordinary conversation":
+        an autonomous keystroke needs a positive reason."""
+        for blank in ("", "   \n"):
+            send_calls = TestAutoExitIdle()._run("zsh", captures=[blank])
+            assert send_calls == [], repr(blank)
+        assert [r["outcome"] for r in self._declined()] == [
+            ccm_runtime.DECLINED_CAPTURE_UNREADABLE]
+
+    def test_ordinary_conversation_still_exits(self):
+        send_calls = TestAutoExitIdle()._run("zsh")
+        assert any("/exit" in c for c in send_calls)
+        assert self._declined() == []
+        assert len(self._exits()) == 1
+
+    def test_agent_view_after_send_is_recorded_and_nothing_else_happens(self):
+        """The foreground stays `claude` and the pane shows the agent
+        view after `/exit` — what an attached background session does
+        (it detaches). Not an exit — no SHELL write, no clear, no
+        autosave, no success notification, no further keys — but
+        recorded as what was seen."""
+        send_calls, set_state, autosave, notify = TestAutoExitIdle()._run(
+            "claude", return_side_effects=True,
+            captures=["\u276f \n", AGENTS_VIEW_TAIL])
+        sent = [c[3] for c in send_calls if len(c) >= 4]
+        assert "/exit" in sent and "clear" not in sent
+        assert len(send_calls) == 2  # Escape, /exit — nothing after
+        set_state.assert_not_called()
+        autosave.assert_not_called()
+        notify.notify.assert_not_called()
+        assert [r["outcome"] for r in self._declined()] == [
+            ccm_runtime.DECLINED_AGENTS_VIEW_AFTER]
+        assert self._exits() == []
+
+    def test_slow_exit_is_not_called_a_detach(self):
+        """Foreground still `claude`, pane still a conversation: a slow
+        shutdown, as before. Unconfirmed, not declined."""
+        TestAutoExitIdle()._run("claude")
+        assert self._declined() == []
+        assert self._exits() == []
+
+    def test_declined_records_are_rate_limited_per_project_and_outcome(self):
+        runner = TestAutoExitIdle()
+        runner._run("claude", captures=[AGENTS_VIEW_TAIL])
+        runner._run("claude", captures=[AGENTS_VIEW_TAIL])
+        assert len(self._declined()) == 1
+        runner._run("zsh", captures=[""])
+        assert [r["outcome"] for r in self._declined()] == [
+            ccm_runtime.DECLINED_AGENTS_VIEW, ccm_runtime.DECLINED_CAPTURE_UNREADABLE]
+        assert ccm_runtime.auto_exit_declined_log_count() == 2
+
+    def test_declined_records_carry_no_pane_content(self):
+        TestAutoExitIdle()._run("claude", captures=[AGENTS_VIEW_TAIL + "SECRET-LINE\n"])
+        raw = open(ccm_runtime.auto_exit_declined_log_path(), encoding="utf-8").read()
+        assert "SECRET" not in raw and "enter to open" not in raw
+        assert set(json.loads(raw)) == {"ts", "project", "session", "outcome"}
+
+    def test_an_unwritable_declined_log_does_not_break_the_pass(self, monkeypatch):
+        monkeypatch.setenv("CCM_AUTO_EXIT_DECLINED_LOG", "/proc/nonexistent/x.log")
+        TestAutoExitIdle()._run("claude", captures=[AGENTS_VIEW_TAIL])  # must not raise

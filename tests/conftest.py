@@ -85,6 +85,8 @@ def isolate_runtime_state(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("CCM_AUTO_EXIT_LOG",
                        str(tmp_path / "state" / "auto-exit.log"))
+    monkeypatch.setenv("CCM_AUTO_EXIT_DECLINED_LOG",
+                       str(tmp_path / "state" / "auto-exit-declined.log"))
     # `SPOOL_ROOT` is resolved at import, so the env var alone would
     # not move it — patch the resolved value.
     monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", str(tmp_path / "spool"))

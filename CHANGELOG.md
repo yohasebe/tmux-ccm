@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Auto-exit looks at the target pane before typing and types nothing
+  when it shows the agent view (where a session lands after
+  `/background`, `←` twice, or `/exit` inside an attached background
+  session) or cannot be read. When the pane shows the agent view
+  after `/exit` — an attached background session detaches instead of
+  ending — that is recorded as such, with no SHELL state, autosave,
+  completion notice, or further keys. Both outcomes go to a separate, rate-limited
+  `auto-exit-declined.log` (`CCM_AUTO_EXIT_DECLINED_LOG`,
+  `CCM_AUTO_EXIT_DECLINED_LOG_INTERVAL`), shown by `ccm doctor`, so
+  `auto-exit.log` keeps counting only real exits.
 - A hand-off notice for projects whose `claude --continue` will not
   resume their conversation. When a session is sent to the background
   with `/bg`, its transcript ends with a hand-off to the background

@@ -984,6 +984,15 @@ def cmd_doctor():
             f"{ccm_runtime.auto_exit_log_path()}")
     else:
         row(OK, "auto-exit log", "no sessions closed by ccm")
+    declined = ccm_runtime.auto_exit_declined_log_count()
+    if declined:
+        row(OK, "auto-exit declined",
+            f"{declined} record(s) — a pane showing the agent view or "
+            f"unreadable before `/exit`, or showing the agent view after "
+            f"it (a detach, most likely); inspect "
+            f"{ccm_runtime.auto_exit_declined_log_path()}")
+    else:
+        row(OK, "auto-exit declined", "no records")
 
     spool = ccm_spool.spool_summary()
     if spool["pending"] or spool["expired"]:

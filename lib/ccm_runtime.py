@@ -214,6 +214,77 @@ def _log_auto_exit(project_name, session_id, idle_timeout, now) -> None:
         pass
 
 
+#: Where auto-exit records the exits it declined or could not confirm
+#: as clean. Separate from `auto-exit.log`, whose count answers "has
+#: ccm been closing my sessions?" and must not absorb non-exits.
+AUTO_EXIT_DECLINED_LOG_INTERVAL = int(
+    os.environ.get("CCM_AUTO_EXIT_DECLINED_LOG_INTERVAL", "600")
+)
+
+#: Outcomes recorded in the declined log.
+DECLINED_AGENTS_VIEW = "agents_view"            # pane shows the agent view; nothing typed
+DECLINED_CAPTURE_UNREADABLE = "capture_unreadable"  # pane could not be read; nothing typed
+DECLINED_AGENTS_VIEW_AFTER = "agents_view_after_exit"  # `/exit` was typed; the pane shows the agent view after
+
+
+def auto_exit_declined_log_path() -> str:
+    return os.environ.get(
+        "CCM_AUTO_EXIT_DECLINED_LOG",
+        os.path.join(ccm_core.CCM_DATA_DIR, "state", "auto-exit-declined.log"),
+    )
+
+
+def _log_auto_exit_declined(project_name, session_id, outcome, now) -> None:
+    """Record an auto-exit that did not happen, or did not end in a
+    shell — rate-limited per project and outcome so a window that
+    stays in the same state is recorded once per interval, not once
+    per poll. Best-effort like the exit log; never raises. Records
+    carry the outcome and identifiers only, never pane content."""
+    try:
+        path = auto_exit_declined_log_path()
+        marker_dir = path + ".markers"
+        os.makedirs(marker_dir, exist_ok=True)
+        marker = os.path.join(
+            marker_dir, ccm_core.md5_hash(f"{project_name}\n{outcome}"))
+        try:
+            if now - os.path.getmtime(marker) < AUTO_EXIT_DECLINED_LOG_INTERVAL:
+                return
+        except OSError:
+            pass
+        try:
+            if os.path.getsize(path) >= AUTO_EXIT_LOG_MAX_BYTES:
+                os.replace(path, path + ".1")
+        except OSError:
+            pass
+        record = {
+            "ts": int(now),
+            "project": project_name,
+            "session": session_id or "",
+            "outcome": outcome,
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(str(int(now)))
+    except Exception:
+        pass
+
+
+def auto_exit_declined_log_count() -> int:
+    """Records in the active declined log. Returns 0 when absent."""
+    try:
+        with open(auto_exit_declined_log_path(), encoding="utf-8") as f:
+            return sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+
+
+def _pane_tail(pane) -> str:
+    """The last lines of the pane, or "" when they cannot be read."""
+    tail = ccm_core.tmux_cmd("capture-pane", "-t", pane, "-p", "-S", "-10")
+    return tail if isinstance(tail, str) else ""
+
+
 def auto_exit_log_count() -> int:
     """Records in the active log (rotated `.1` not counted). `ccm
     doctor` shows this so "has ccm been closing my sessions?" is one
@@ -406,6 +477,28 @@ def auto_exit_idle(projects):
                 # Defensive skip; the next polling cycle re-evaluates.
                 continue
 
+            # What the pane shows decides whether `/exit` may be typed
+            # at all. IDLE is an activity verdict, not proof that the
+            # screen takes a slash command: after a session is sent to
+            # the background (`/background`, `←` twice, or `/exit`
+            # inside an attached background session, which detaches
+            # rather than exits) the pane shows the agent view, where
+            # text typed into the input box can start a new session
+            # and Escape moves between views rather than cancelling
+            # input. Neither is what auto-exit means to do. A pane
+            # that cannot be read is not assumed to be a conversation
+            # either; this is an autonomous keystroke into someone's
+            # terminal, and the cost of skipping one poll is nothing.
+            tail = _pane_tail(claude_pane)
+            if not tail.strip():
+                _log_auto_exit_declined(
+                    project, session_id, DECLINED_CAPTURE_UNREADABLE, now)
+                continue
+            if ccm_core.is_agents_tui(tail):
+                _log_auto_exit_declined(
+                    project, session_id, DECLINED_AGENTS_VIEW, now)
+                continue
+
             # Cancel any partial input, then cleanly exit Claude Code.
             ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "Escape")
             time.sleep(0.1)
@@ -453,6 +546,17 @@ def auto_exit_idle(projects):
                 # Written after the same gate as the notification, so
                 # the log can never claim an exit that did not land.
                 _log_auto_exit(project, session_id, idle_timeout, now)
+            elif ccm_core.is_agents_tui(_pane_tail(claude_pane)):
+                # The pane shows the agent view after `/exit` — what
+                # an attached background session does when told to
+                # exit (it detaches; the worker keeps running), though
+                # only the screen is observed here, not the cause. Not
+                # an exit either way — no SHELL write, no autosave, no
+                # success notification, and no further keys into that
+                # view. Recorded so the silence has an explanation;
+                # the pre-send check above keeps the next poll off it.
+                _log_auto_exit_declined(
+                    project, session_id, DECLINED_AGENTS_VIEW_AFTER, now)
 
 
 # ─── Autosave ───
