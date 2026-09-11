@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session; the check is read-only.
 
 ### Changed
+- The hook-driven `inject-status --fast` no longer sweeps the temp
+  directory's caches on every state transition; the sweep runs with
+  the periodic poll only. Directory creation is unchanged.
+- The hand-off check reads the daemon's roster only when a project is
+  in SHELL state, and the dashboard reuses the roster it already read
+  for its background-sessions section instead of reading it again.
 - Every path that starts Claude in a project window — `ccm attach`, the
   dashboard, `ccm send --start` — now goes through one launch step that
   re-reads the window at that moment: it types nothing when any pane

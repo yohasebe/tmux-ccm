@@ -236,6 +236,15 @@ class TestSidekickSend:
         the command must fail loudly instead of printing Sent."""
         monkeypatch.setattr(ccm_send, "_SIDEKICK_VERIFY_TIMEOUT_SEC", 0.2)
         monkeypatch.setattr(ccm_send, "_SIDEKICK_VERIFY_POLL_SEC", 0.05)
+        # Drive the deadline from a controlled clock: each read
+        # advances it past one poll, so the wait ends after a few
+        # iterations instead of spinning on the real clock.
+        clock = [1000.0]
+
+        def tick():
+            clock[0] += 0.06
+            return clock[0]
+        monkeypatch.setattr(ccm_send.time, "time", tick)
         self._stub(monkeypatch, capture="")
         with pytest.raises(SystemExit):
             ccm_send.cmd_sidekick_send([_MSG])
