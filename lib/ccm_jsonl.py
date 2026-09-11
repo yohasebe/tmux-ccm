@@ -344,32 +344,55 @@ def _jsonl_recorded_cwd(path: str) -> Optional[str]:
     read. A property of the file alone — what a caller compares it
     against is the caller's business, so this is what may be cached.
     """
-    # Read the budget as bytes, up front, and only then look at
-    # lines: iterating lines first would read a whole line before
-    # its length could be checked, so a single multi-megabyte record
-    # at the head would be read in full. A line cut off by the
-    # budget is not interpreted — it may be a `cwd` record, but that
-    # is unknown, and unknown reads as "names none".
+    # Bytes are read in bounded chunks and interpreted a complete
+    # line at a time, stopping at the first record that names a
+    # directory: most transcripts answer within their first line,
+    # and the budget is a ceiling, not an amount to read. Iterating
+    # lines instead would read a whole line before its length could
+    # be checked, so one multi-megabyte record at the head would be
+    # read in full. A line cut off by the budget is not interpreted —
+    # it may be a `cwd` record, but that is unknown, and unknown
+    # reads as "names none".
+    buf = b""
+    read = 0
     try:
         with open(path, "rb") as f:
-            head = f.read(JSONL_CWD_PROBE_BYTES + 1)
+            while read < JSONL_CWD_PROBE_BYTES:
+                chunk = f.read(min(_CWD_PROBE_CHUNK, JSONL_CWD_PROBE_BYTES - read))
+                if not chunk:
+                    # EOF: a final line without a newline is complete.
+                    cwd = _cwd_of_record(buf)
+                    return cwd
+                read += len(chunk)
+                buf += chunk
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    line, buf = buf[:nl], buf[nl + 1:]
+                    cwd = _cwd_of_record(line)
+                    if cwd is not None:
+                        return cwd
     except OSError:
         return None
-    truncated = len(head) > JSONL_CWD_PROBE_BYTES
-    if truncated:
-        head = head[:JSONL_CWD_PROBE_BYTES]
-    lines = head.split(b"\n")
-    if truncated:
-        lines = lines[:-1]  # the last piece is cut mid-line
-    for raw in lines:
-        if b'"cwd"' not in raw:
-            continue
-        try:
-            cwd = json.loads(raw.decode("utf-8", errors="replace")).get("cwd")
-        except (ValueError, TypeError, AttributeError):
-            continue
-        if cwd:
-            return _canonical(cwd)
+    return None  # budget reached with the answer not yet seen
+
+
+_CWD_PROBE_CHUNK = 64 * 1024
+
+
+def _cwd_of_record(raw: bytes) -> Optional[str]:
+    """The canonical `cwd` a transcript record names, or None. Only a
+    non-empty string counts; anything else the record carries under
+    that key is not a directory."""
+    if b'"cwd"' not in raw:
+        return None
+    try:
+        cwd = json.loads(raw.decode("utf-8", errors="replace")).get("cwd")
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if isinstance(cwd, str) and cwd:
+        return _canonical(cwd)
     return None
 
 

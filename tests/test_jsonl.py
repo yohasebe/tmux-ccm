@@ -1203,3 +1203,23 @@ class TestCwdProbeBudget:
         p = tmp_path / "t.jsonl"
         p.write_bytes(b'{"type":"x"}\n')
         assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None
+
+    def test_answer_on_the_first_line_stops_the_read_early(self, tmp_path, monkeypatch):
+        """The budget is a ceiling. A large transcript whose first
+        line names the directory is read only as far as that line's
+        chunk, not to the budget."""
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"user","cwd":"/w"}\n' + b"y" * (1024 * 1024))
+        sizes = self._reads(monkeypatch)
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) == ccm_jsonl._canonical("/w")
+        assert sum(sizes) <= ccm_jsonl._CWD_PROBE_CHUNK
+
+    def test_last_line_without_newline_is_read_at_eof(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"x"}\n{"type":"user","cwd":"/w"}')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) == ccm_jsonl._canonical("/w")
+
+    def test_non_string_cwd_values_are_not_directories(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"cwd":["/w"]}\n{"cwd":7}\n{"cwd":""}\n{"cwd":{"a":1}}\n{"type":"user","cwd":"/w"}\n')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) == ccm_jsonl._canonical("/w")
