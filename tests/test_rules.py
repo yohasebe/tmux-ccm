@@ -332,3 +332,69 @@ class TestFastPath:
         assert ccm_rules.evaluate_fast("BUSY", "") == "BUSY"
 
 
+
+
+
+class TestFastContextReadsTheKnownSession:
+    """With a cached session id, the fast path reads that session's
+    transcript directly instead of scanning the directory for the
+    newest file — which costs a read per past conversation and can
+    pick another session's file when several share the directory."""
+
+    def _dir(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        projects = tmp_path / "projects"
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        slug_dir = projects / ccm_jsonl._project_slug(str(proj))
+        slug_dir.mkdir(parents=True)
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        ccm_jsonl._jsonl_path_cache.clear()
+        monkeypatch.setattr("ccm_signals.read_hook_signal", lambda *a, **k: None)
+        return proj, slug_dir
+
+    def _write(self, path, stop_reason, mtime):
+        import json, os
+        ts = "2026-01-01T00:00:00.000Z"
+        path.write_text(json.dumps({"type": "assistant", "timestamp": ts,
+                                    "message": {"role": "assistant", "stop_reason": stop_reason}}) + "\n")
+        os.utime(path, (mtime, mtime))
+
+    def test_known_session_wins_over_a_newer_sibling(self, tmp_path, monkeypatch):
+        import ccm_rules, ccm_jsonl
+        proj, slug_dir = self._dir(tmp_path, monkeypatch)
+        self._write(slug_dir / "mine.jsonl", "tool_use", 1000)
+        self._write(slug_dir / "other.jsonl", "end_turn", 2000)
+        monkeypatch.setattr(ccm_jsonl, "scan_newest_jsonl",
+                            lambda *a, **k: pytest.fail("directory scanned despite a known session"))
+        ctx = ccm_rules.build_fast_context("BUSY", str(proj), session_id="mine")
+        assert ctx.jsonl_last_stop_reason == "tool_use"
+
+    def test_without_a_session_id_the_newest_file_is_used(self, tmp_path, monkeypatch):
+        import ccm_rules
+        proj, slug_dir = self._dir(tmp_path, monkeypatch)
+        self._write(slug_dir / "mine.jsonl", "tool_use", 1000)
+        self._write(slug_dir / "other.jsonl", "end_turn", 2000)
+        ctx = ccm_rules.build_fast_context("BUSY", str(proj), session_id=None)
+        assert ctx.jsonl_last_stop_reason == "end_turn"
+
+    def test_unknown_session_falls_back_to_the_newest_file(self, tmp_path, monkeypatch):
+        """The cached id names a transcript that does not exist (yet):
+        the old behaviour applies rather than nothing."""
+        import ccm_rules
+        proj, slug_dir = self._dir(tmp_path, monkeypatch)
+        self._write(slug_dir / "other.jsonl", "end_turn", 2000)
+        ctx = ccm_rules.build_fast_context("BUSY", str(proj), session_id="gone")
+        assert ctx.jsonl_last_stop_reason == "end_turn"
+
+    def test_session_under_a_custom_project_dir_name_is_found(self, tmp_path, monkeypatch):
+        """A host may name the project directory itself
+        (CLAUDE_CODE_PROJECT_DIR_NAME): the session's file is then
+        found by id across project directories."""
+        import ccm_rules, ccm_jsonl
+        proj, slug_dir = self._dir(tmp_path, monkeypatch)
+        custom = slug_dir.parent / "custom-name"
+        custom.mkdir()
+        self._write(custom / "mine.jsonl", "tool_use", 1000)
+        ctx = ccm_rules.build_fast_context("BUSY", str(proj), session_id="mine")
+        assert ctx.jsonl_last_stop_reason == "tool_use"

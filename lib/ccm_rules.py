@@ -26,6 +26,7 @@ evaluator still scans rules in priority order — but it makes
 about scope.
 """
 
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -368,11 +369,18 @@ def build_fast_context(prev_state, project_dir,
     """Build a DetectionContext for the read-only statusline path.
 
     Does not call ps/capture-pane/tmux queries for process tree info.
-    Derives `raw` from prev_state and reads the hook signal only.
+    Derives `raw` from prev_state and reads the hook signal and the
+    transcript tail.
 
     `session_id` may be passed in (cached value from the same tmux
     query that built the project list) to avoid an O(N) tmux
-    subprocess per fast-path refresh.
+    subprocess per fast-path refresh. It also names the transcript:
+    with it, the session's own file is read directly (one stat and
+    one tail read), and the hook signal and the transcript describe
+    the same session. Without it, the newest transcript in the
+    directory is used — a scan whose cost grows with the number of
+    past conversations there, and which can pick another session's
+    file when several share the directory.
     """
     import ccm_jsonl   # deferred — see top-of-file note
     import ccm_signals
@@ -394,10 +402,16 @@ def build_fast_context(prev_state, project_dir,
             else:
                 hook_age = now - hook_ts
 
+    jsonl_age, jsonl_last_stop_reason = -1, None
     if project_dir:
-        jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(project_dir)
-    else:
-        jsonl_age, jsonl_last_stop_reason = -1, None
+        known = (ccm_jsonl.jsonl_path_for_session(
+            os.path.expanduser(project_dir), session_id)
+                 if session_id else None)
+        if known is not None:
+            jsonl_age, jsonl_last_stop_reason = (
+                ccm_jsonl.read_jsonl_tail_info_for_session(project_dir, session_id))
+        else:
+            jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(project_dir)
 
     return DetectionContext(
         raw=raw,

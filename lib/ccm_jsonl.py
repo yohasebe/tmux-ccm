@@ -286,6 +286,15 @@ def _jsonl_from_session_info(claude_pid, session_info=UNCHECKED):
     cwd = info.get("cwd")
     if not session_id or not cwd:
         return None
+    return jsonl_path_for_session(cwd, session_id)
+
+
+def jsonl_path_for_session(cwd: str, session_id: str) -> Optional[str]:
+    """The transcript path for one session id, or None when no such
+    file exists: `<slug(cwd)>/<session_id>.jsonl` first, then any
+    project directory that holds `<session_id>.jsonl` — see below."""
+    if not cwd or not session_id:
+        return None
     # Same sanitisation as _project_slug — Claude Code dashes every
     # non-alphanumeric character, not just `/`.
     slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
@@ -802,10 +811,10 @@ def read_jsonl_tail_info_for_session(project_dir: str, session_id: str
     it against that session's event log) would cross-contaminate and
     misfire. Scoping the JSONL read to the same session_id keeps the
     comparison honest. Returns `(-1, None)` when the file is absent."""
-    if not project_dir or not session_id:
+    path = jsonl_path_for_session(os.path.expanduser(project_dir), session_id) \
+        if project_dir and session_id else None
+    if path is None:
         return -1, None
-    path = os.path.join(CLAUDE_PROJECTS_DIR,
-                        _project_slug(project_dir), f"{session_id}.jsonl")
     try:
         st = os.stat(path)
     except OSError:

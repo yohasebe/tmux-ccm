@@ -748,8 +748,10 @@ def build_project_list(fast=False):
 
     Two paths:
       - fast=True  → statusline path. Uses `@ccm_prev_state` plus a
-                     hook-signal read; skips ps / capture-pane /
-                     git/port cache I/O. Forced when CCM_MOCK_STATE=1
+                     hook-signal read and a transcript tail read;
+                     skips ps / capture-pane and the git/port
+                     refresh (the cached values are still read, mode
+                     2 shows them). Forced when CCM_MOCK_STATE=1
                      or `@ccm-mock-state` tmux option is set (used by
                      screenshots so visual state is reproducible).
       - fast=False → slow path. Runs the full detection pipeline
