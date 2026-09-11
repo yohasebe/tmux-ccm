@@ -92,9 +92,17 @@ ccm_init_dirs() {
     mkdir -p "$CCM_SNAPSHOT_DIR" "$CCM_STATE_DIR" "$CCM_TMP_DIR" "$CCM_HOOK_DIR" \
              "${CCM_TMP_DIR}/port-cache" "${CCM_TMP_DIR}/git-cache" 2>/dev/null
 
-    # Clean up stale cache/lock files (older than 1 hour)
-    find "$CCM_TMP_DIR" -maxdepth 2 -type f -mmin +60 -delete 2>/dev/null || true
-    find "$CCM_TMP_DIR" -maxdepth 2 -type d -empty -mmin +60 -delete 2>/dev/null || true
+    # Age out disposable caches only. Everything else under the tmp
+    # dir is either control state whose age means nothing (the
+    # dashboard pid marker, the inject lock, the popup-session file —
+    # an idle dashboard's marker is over an hour old and still the
+    # thing that keeps periodic polls from racing it) or per-session
+    # hook files that outlive their session on purpose. A blanket
+    # sweep deleted the dashboard marker, and with it the guard.
+    local cache_dir
+    for cache_dir in git-cache port-cache notified; do
+        find "${CCM_TMP_DIR}/${cache_dir}" -mindepth 1 -maxdepth 1 -type f -mmin +60 -delete 2>/dev/null || true
+    done
 }
 
 # Print an error message and exit
