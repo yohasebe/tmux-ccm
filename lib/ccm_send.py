@@ -67,9 +67,7 @@ import ccm_window
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 import ccm_spool  # store-and-forward queue for undeliverable sends
 from ccm_constants import (
-    CLAUDE_CMD,
     composer_draft_fragment,
-    SHELL_FOREGROUND_COMMANDS,
     external_agent_name,
 )
 from ccm_pane_state import (
