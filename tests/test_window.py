@@ -9,6 +9,7 @@ file owns the auto-focus pane-selection logic.
 
 from unittest.mock import patch
 
+import os
 import pytest
 
 import ccm_core
@@ -418,3 +419,200 @@ class TestAutoStartHandoffNotice:
         result = ccm_window.auto_start_claude("0:5")
         assert result.outcome == ccm_window.UNAVAILABLE and result.notice is None
         assert sent == []
+
+
+
+class TestLaunchCommandChoice:
+    """`claude --continue` exits 1 when it has nothing to resume, so a
+    new project's first launch must type plain `claude`; every launch
+    into an existing shell types `--continue` with no fallback, so a
+    failure to resume stays on screen instead of becoming a new
+    conversation. Plain `claude` is typed only into a window ccm has
+    just created, and only when ccm has looked everywhere the CLI
+    would and found nothing — not when it could not look."""
+
+    @pytest.fixture(autouse=True)
+    def _default_cli_home(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_PROJECT_DIR_NAME", raising=False)
+        # tmux environments that set nothing relevant, unless a test
+        # replaces them.
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "PATH=/usr/bin\n-UNSET_ONE")
+
+    def _projects_dir(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        projects = tmp_path / "projects"
+        projects.mkdir()
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        ccm_jsonl._jsonl_path_cache.clear()
+        return projects
+
+    def _transcript(self, projects, directory, name="s.jsonl", cwd=None):
+        import ccm_jsonl
+        slug = projects / ccm_jsonl._project_slug(str(directory)); slug.mkdir(exist_ok=True)
+        (slug / name).write_text('{"type":"user","cwd":"%s"}\n' % (cwd or directory))
+        return slug
+
+    def test_no_conversation_means_a_fresh_launch(self, tmp_path, monkeypatch):
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.NO_HISTORY
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD_FRESH
+
+    def test_an_empty_transcript_directory_is_no_history(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        (projects / ccm_jsonl._project_slug(str(proj))).mkdir()
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD_FRESH
+
+    def test_a_conversation_means_resume(self, tmp_path, monkeypatch):
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        self._transcript(projects, proj)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.HISTORY
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    def test_a_transcript_claiming_elsewhere_still_means_resume(self, tmp_path, monkeypatch):
+        """The CLI picks by mtime within the directory and does not read
+        the recorded cwd, so a transcript that names another directory
+        is still something `--continue` will open."""
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        self._transcript(projects, proj, cwd="/elsewhere/entirely")
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    def test_no_directory_means_resume(self, tmp_path, monkeypatch):
+        self._projects_dir(tmp_path, monkeypatch)
+        assert ccm_window.conversation_history("", "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command("", "main") == ccm_window.CLAUDE_CMD
+
+    @pytest.mark.parametrize("var", ["CLAUDE_CODE_PROJECT_DIR_NAME", "CLAUDE_CONFIG_DIR"])
+    def test_a_transcript_location_variable_in_ccms_environment_means_resume(
+            self, tmp_path, monkeypatch, var):
+        """With either variable the CLI keeps transcripts somewhere ccm
+        does not derive; nothing under the slug is no evidence of
+        nothing."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setenv(var, "custom-name")
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    @pytest.mark.parametrize("scope", ["-g", "-t"])
+    @pytest.mark.parametrize("var", ["CLAUDE_CODE_PROJECT_DIR_NAME", "CLAUDE_CONFIG_DIR"])
+    def test_a_transcript_location_variable_in_the_tmux_environment_means_resume(
+            self, tmp_path, monkeypatch, scope, var):
+        """ccm's own environment is clean, but the new window's shell
+        inherits tmux's global or session environment, and that one
+        sets the variable."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        seen = []
+
+        def fake_tmux(*args):
+            seen.append(args)
+            if args[0] == "show-environment" and args[1] == scope:
+                return f"PATH=/usr/bin\n{var}=custom"
+            return "PATH=/usr/bin"
+        monkeypatch.setattr(ccm_core, "tmux_query", fake_tmux)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+        assert ("show-environment", "-t", "main") in seen
+
+    def test_an_unset_marker_in_the_tmux_environment_is_not_a_setting(self, tmp_path, monkeypatch):
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setattr(ccm_core, "tmux_query",
+                            lambda *a: "-CLAUDE_CONFIG_DIR\n-CLAUDE_CODE_PROJECT_DIR_NAME")
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD_FRESH
+
+    def test_an_unreadable_tmux_environment_means_resume(self, tmp_path, monkeypatch):
+        """A failed query (None) is not an empty environment."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: None)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    def test_an_empty_tmux_environment_is_no_setting(self, tmp_path, monkeypatch):
+        """A session environment can legitimately be empty; that is an
+        answer, not a failure."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "")
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.NO_HISTORY
+
+    def test_the_tmux_environment_is_read_with_a_failure_aware_query(self, tmp_path, monkeypatch):
+        """`tmux_cmd` answers "" for both an empty listing and a failed
+        one; the environment must be read through `tmux_query`, whose
+        failure is None."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *a: pytest.fail("environment read through tmux_cmd"))
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: None)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+
+    def test_an_unreadable_transcript_directory_means_resume(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        slug = projects / ccm_jsonl._project_slug(str(proj)); slug.mkdir()
+        real_listdir = os.listdir
+
+        def denied(path):
+            if str(path) == str(slug):
+                raise PermissionError(13, "denied", str(path))
+            return real_listdir(path)
+        monkeypatch.setattr(os, "listdir", denied)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    def test_a_slug_the_cli_would_hash_means_resume(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        self._projects_dir(tmp_path, monkeypatch)
+        deep = tmp_path / ("d" * (ccm_jsonl.PROJECT_SLUG_MAX + 1)); deep.mkdir()
+        assert ccm_window.conversation_history(str(deep), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(deep), "main") == ccm_window.CLAUDE_CMD
+
+    def test_a_conversation_under_the_resolved_path_means_resume(self, tmp_path, monkeypatch):
+        """The shell may report the directory through a symlink or
+        resolved; the transcript directory may be under either
+        spelling."""
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        real = tmp_path / "real"; real.mkdir()
+        link = tmp_path / "link"; link.symlink_to(real)
+        self._transcript(projects, real)
+        assert ccm_window.conversation_history(str(link), "main") == ccm_window.HISTORY
+        assert ccm_window.launch_command(str(link), "main") == ccm_window.CLAUDE_CMD
+
+    @pytest.mark.parametrize("has_history", [True, False])
+    def test_launch_into_an_existing_shell_always_resumes(self, tmp_path, monkeypatch, has_history):
+        """An existing shell's exports are invisible from here, so ccm
+        never claims it has nothing to resume: `--continue` with no
+        fallback, whatever the default transcript directory holds."""
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        if has_history:
+            self._transcript(projects, proj)
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return "on"
+            if args[:2] == ("show-option", "-wqv"):
+                return {"@ccm_dir": str(proj), "@ccm_project": "proj"}.get(args[-1], "")
+            if args[0] == "list-panes":
+                return "%0\t100\t1\tzsh\t"
+            if args[0] == "send-keys" and "-X" not in args:
+                sent.append(args)
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
+        import ccm_agentview
+        monkeypatch.setattr(ccm_agentview, "continue_blocker", lambda *a, **k: None)
+        result = ccm_window.launch_claude("0:5")
+        assert result.outcome == ccm_window.LAUNCHED
+        assert sent == [("send-keys", "-t", "%0", ccm_window.CLAUDE_CMD, "Enter")]
+        assert "||" not in ccm_window.CLAUDE_CMD and "2>" not in ccm_window.CLAUDE_CMD

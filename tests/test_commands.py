@@ -21,6 +21,7 @@ import ccm_activity
 import ccm_agentview
 import ccm_canaries
 import ccm_commands
+import ccm_constants
 import ccm_detection
 import ccm_jsonl
 import ccm_notify
@@ -410,6 +411,12 @@ class TestCmdDoctor:
 # ─── cmd_add ───
 
 class TestCmdAdd:
+    @pytest.fixture(autouse=True)
+    def _no_tmux_environment(self, monkeypatch):
+        """The launch-command verdict reads tmux's environment through
+        `tmux_query`; answer "nothing set" unless a test says otherwise."""
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "")
+
     @patch("ccm_commands._autosave_trigger")
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
@@ -438,6 +445,49 @@ class TestCmdAdd:
         tag_names = [a[3] for a in batch_args if len(a) > 3]
         assert "@ccm_project" in tag_names
         assert "@ccm_dir" in tag_names
+
+    @pytest.mark.parametrize("has_history", [True, False])
+    @patch("ccm_commands._autosave_trigger")
+    @patch("ccm_core.hooks_configured", return_value=True)
+    @patch("ccm_core.tmux_batch")
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.get_session", return_value="main")
+    def test_add_types_the_command_for_the_new_windows_history(
+            self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto,
+            tmp_path, monkeypatch, has_history):
+        """A new project starts fresh; a directory with a conversation
+        resumes. The verdict reads the tmux environment the new
+        window's shell inherits, for the session the window is in."""
+        import ccm_jsonl
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_PROJECT_DIR_NAME", raising=False)
+        projects = tmp_path / "projects"; projects.mkdir()
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        proj_dir = tmp_path / "my-project"; proj_dir.mkdir()
+        if has_history:
+            slug = projects / ccm_jsonl._project_slug(str(proj_dir)); slug.mkdir()
+            (slug / "s.jsonl").write_text("{}\n")
+        typed = []
+
+        def tmux_side_effect(*args, **kwargs):
+            if args[0] == "new-window":
+                return "3"
+            if args[0] == "send-keys":
+                typed.append(args)
+            return ""
+        mock_tmux.side_effect = tmux_side_effect
+        queried = []
+
+        def fake_query(*args):
+            queried.append(args)
+            return "PATH=/usr/bin"
+        monkeypatch.setattr(ccm_core, "tmux_query", fake_query)
+
+        ccm_commands.cmd_add(str(proj_dir), "my-project")
+
+        expected = ccm_constants.CLAUDE_CMD if has_history else ccm_constants.CLAUDE_CMD_FRESH
+        assert typed == [("send-keys", "-t", "main:3", expected, "Enter")]
+        assert ("show-environment", "-t", "main") in queried
 
     def test_add_missing_dir_exits(self):
         with pytest.raises(SystemExit):

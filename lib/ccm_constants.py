@@ -832,7 +832,19 @@ def external_agent_name(command):
             return prefix.rstrip("-")
     return ""
 
-CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
+#: The two launch commands. Which one a window gets is decided at
+#: launch time from whether its directory holds a conversation to
+#: resume (`ccm_window.launch_command`). There is deliberately no
+#: `--continue || claude` chain: `claude --continue` exits 1 when it
+#: has nothing to resume — a fresh project — but also when the
+#: newest conversation was handed to a live background session, or
+#: when it cannot start for any other reason, and a chained fallback
+#: turned every one of those into a silently new conversation with
+#: the reason hidden. Now the reason stays on screen and the pane
+#: returns to the shell.
+CLAUDE_CMD = "claude --continue"
+CLAUDE_CMD_FRESH = "claude"
+LAUNCH_COMMANDS = (CLAUDE_CMD, CLAUDE_CMD_FRESH)
 
 
 # ─── Hook scripts + state metadata ───

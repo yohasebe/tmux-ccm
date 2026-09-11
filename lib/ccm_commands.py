@@ -45,7 +45,7 @@ import ccm_spool
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
-from ccm_constants import (CCM_VERSION, CLAUDE_CMD,
+from ccm_constants import (CCM_VERSION,
                            external_agent_name)
 from ccm_core import _C_BOLD, _C_RESET
 
@@ -186,7 +186,8 @@ def cmd_add(directory, name="", start_claude=True, _loading=False,
     )
 
     if start_claude:
-        ccm_core.tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
+        ccm_core.tmux_cmd("send-keys", "-t", win_target,
+                          ccm_window.launch_command(directory, session), "Enter")
 
     ccm_core.ccm_info(f"Added project: {name} ({directory})")
 

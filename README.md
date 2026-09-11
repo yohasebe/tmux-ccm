@@ -483,7 +483,7 @@ The preview updates when you move the cursor and refreshes automatically. ANSI c
 
 ### Auto-Start Claude Code
 
-When you switch to a project window where Claude Code has exited (SHELL state), ccm automatically restarts it with `--continue` to resume the conversation. Right before typing the command it re-reads the window: nothing is typed if a pane already hosts Claude by then (for example after an update relaunched it in place), or if no pane can be verified as a shell prompt.
+When you switch to a project window where Claude Code has exited (SHELL state), ccm automatically restarts it with `--continue` to resume the conversation (always `--continue` for an existing shell; only `ccm add` types plain `claude`, and only when ccm can see that the directory has no conversation yet. Nothing is chained behind `--continue`, so a failure to resume stays on screen instead of silently starting a new conversation). Right before typing the command it re-reads the window: nothing is typed if a pane already hosts Claude by then (for example after an update relaunched it in place), or if no pane can be verified as a shell prompt.
 
 ```tmux
 set -g @ccm-auto-start "on"     # default: on (set to "off" to disable)

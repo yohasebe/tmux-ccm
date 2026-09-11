@@ -865,15 +865,17 @@ def cmd_send(args):
             tail_lines = [l for l in tail.split("\n") if l.strip()]
             lines = [
                 f"{project_name} did not reach IDLE within "
-                f"{START_WAIT_SEC}s after `claude --continue`.",
+                f"{START_WAIT_SEC}s after the launch command.",
                 f"  Last observed state: {ready_state}",
-                "  Likely cause: Claude resumed into an auto-action",
+                "  Possible causes: Claude resumed into an auto-action",
                 "    (e.g. `/compact` on a long session, or a",
-                "    session-resume picker). The message would land",
-                "    in the middle of that action and be eaten,",
-                "    so the send is refused.",
-                "  Switch to the target window, let the action",
-                "    finish (or dismiss the modal), then retry.",
+                "    session-resume picker), or the launch did not",
+                "    reach the prompt at all (the pane tail below",
+                "    shows what the CLI said). The message would",
+                "    not land in a conversation, so the send is refused.",
+                "  Switch to the target window, let the action finish",
+                "    (or dismiss the modal, or start Claude by hand),",
+                "    then retry.",
             ]
             if tail_lines:
                 lines.append("  Pane tail:")

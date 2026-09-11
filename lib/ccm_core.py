@@ -101,6 +101,22 @@ def tmux_cmd(*args, timeout=5):
         return ""
 
 
+def tmux_query(*args, timeout=5):
+    """Like `tmux_cmd`, but a failure is None rather than "" — for a
+    reader that must tell "tmux answered with nothing" from "tmux
+    could not be asked" (a listing that is legitimately empty, say),
+    because the two lead to different conclusions."""
+    try:
+        r = subprocess.run(
+            ["tmux"] + list(args), capture_output=True, timeout=timeout
+        )
+        if r.returncode != 0:
+            return None
+        return r.stdout.decode("utf-8", errors="replace").strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
 def tmux_batch(*commands):
     """Run multiple tmux commands in a single subprocess call.
     Each command is a tuple of args. Commands are joined with ';' separator.

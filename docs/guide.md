@@ -46,7 +46,7 @@ tmux new-session -s work
 ccm add ~/code/my-project
 ```
 
-This creates a new tmux window, changes to the project directory, and launches Claude Code with `claude --continue` (so you can pick up the most recent conversation in that directory if one exists).
+This creates a new tmux window, changes to the project directory, and launches Claude Code — with `claude --continue` (so you pick up the most recent conversation in that directory), or plain `claude` when ccm can see that the directory has no conversation yet: the CLI's config home is the default, no custom transcript-directory name (`CLAUDE_CODE_PROJECT_DIR_NAME`) is set in ccm's environment or in the tmux environment the new window's shell inherits, and the transcript directory for the path is absent or empty. Whatever ccm cannot check resolves to `--continue`. The check covers what ccm's and tmux's environments show; a shell startup file that moves the transcript location is outside it, so with such a file `ccm add` can open a new conversation for a directory whose conversation lives at that other location.
 
 ### 3. Add more projects
 
@@ -65,7 +65,7 @@ ccm attach 2             # by number
 ```
 
 > [!TIP]
-> When you switch to a project window where Claude Code isn't running, ccm automatically starts it with `claude --continue` to resume your last conversation.
+> When you switch to a project window where Claude Code isn't running, ccm automatically starts it with `claude --continue` — always, for a shell that already exists: that shell may keep its transcripts somewhere ccm cannot see (its own exports are invisible from outside), so ccm never claims it has nothing to resume. Only `ccm add`, whose window ccm creates itself, types plain `claude` for a directory with no conversation yet. There is no fallback chained behind `--continue`: if it cannot resume — there was nothing to resume after all (a project added with auto-start off, say), or its newest conversation was handed to a live background session — its message stays on screen and the pane returns to the shell, so you decide what to open next.
 
 ### 5. Check status
 

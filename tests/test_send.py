@@ -12,6 +12,12 @@ import ccm_constants
 import ccm_core
 import ccm_window
 from ccm_pane_state import PaneInfo
+
+
+def _is_launch(call):
+    """True for a send-keys call that types one of the launch commands."""
+    return bool(call) and call[0] == "send-keys" and any(
+        cmd in call for cmd in ccm_constants.LAUNCH_COMMANDS)
 import ccm_send
 
 
@@ -557,7 +563,7 @@ class TestCmdSend:
                 pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
-        assert not any(ccm_constants.CLAUDE_CMD in c for c in calls)
+        assert not any(_is_launch(c) for c in calls)
         assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
 
     def test_start_with_failed_ps_types_nothing(self, monkeypatch):
@@ -651,7 +657,7 @@ class TestCmdSend:
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "%1", "-l", "--", "hello") in calls
-        assert not any(ccm_constants.CLAUDE_CMD in c for c in calls)
+        assert not any(_is_launch(c) for c in calls)
 
     def test_send_shell_with_start_launches_claude_first(self, monkeypatch):
         initial = self._make_project(state="SHELL")
@@ -664,7 +670,7 @@ class TestCmdSend:
         # Claude launch command appears before the message payload.
         # The call tuple is ("send-keys", "-t", target, CLAUDE_CMD, "Enter").
         claude_i = next(
-            (i for i, c in enumerate(calls) if ccm_constants.CLAUDE_CMD in c),
+            (i for i, c in enumerate(calls) if _is_launch(c)),
             None,
         )
         literal_i = next(
@@ -1028,6 +1034,8 @@ class TestDeliveryPaneResolution:
         stub, calls = self._tmux_stub(self._PANES_CLAUDE_INACTIVE)
         with patch("ccm_core.tmux_cmd", side_effect=stub):
             ccm_send.cmd_send(["demo", "--start", "hi"])
+        # A launch into an existing shell always resumes; only
+        # `ccm add` ever types plain `claude`.
         assert ("send-keys", "-t", "%72",
                 ccm_constants.CLAUDE_CMD, "Enter") in calls
         assert ("send-keys", "-t", "%72", "-l", "--", "hi") in calls
@@ -1048,7 +1056,7 @@ class TestDeliveryPaneResolution:
                 pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--start", "hi"])
         launches = [c for c in calls
-                    if c[0] == "send-keys" and ccm_constants.CLAUDE_CMD in c]
+                    if _is_launch(c)]
         assert [c[2] for c in launches] == ["%51"], (
             f"launch must go to the shell pane only: {launches}")
 

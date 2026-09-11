@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session; the check is read-only.
 
 ### Changed
+- A launch into an existing shell (attach, the dashboard,
+  `ccm send --start`) always types `claude --continue`. Only `ccm add`
+  types plain `claude`, and only when ccm has looked where the CLI
+  keeps the new window's transcripts and found none: default config
+  home, no custom transcript-directory name in ccm's or tmux's
+  environment, no transcript under the directory's slug. Whatever ccm
+  cannot check resolves to `--continue`. The former
+  `claude --continue 2>/dev/null || claude` chain is gone: `--continue` exits with status 1 not only when there is
+  nothing to resume but also when the newest conversation was handed
+  to a live background session, and the chain turned every such case
+  into a silently new conversation with the CLI's explanation hidden.
+  Now the message stays on screen and the pane returns to the shell.
 - The hook-driven `inject-status --fast` no longer sweeps the temp
   directory's caches on every state transition; the sweep runs with
   the periodic poll only. Directory creation is unchanged.

@@ -28,6 +28,7 @@ import ccm_agentview
 import ccm_core  # late-bound for tmux_cmd / ps_snapshot
 from ccm_constants import (
     CLAUDE_CMD,
+    CLAUDE_CMD_FRESH,
     SHELL_FOREGROUND_COMMANDS,
     SLIVER_HEIGHT_THRESHOLD,
 )
@@ -81,6 +82,105 @@ def _pick_shell_pane(panes, exclude_pane=None):
     return None
 
 
+#: What `conversation_history` could establish about a directory.
+HISTORY = "history"        # a transcript directory with at least one transcript
+NO_HISTORY = "no-history"  # looked where the CLI would, found nothing
+UNKNOWN = "unknown"        # could not look where the CLI would
+
+#: Environment variables that move where the CLI keeps or names a
+#: directory's transcripts. Set anywhere the launching shell could
+#: have inherited them from, ccm cannot say where the CLI will look.
+_TRANSCRIPT_LOCATION_VARS = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_PROJECT_DIR_NAME")
+
+
+def _tmux_environment_names(session):
+    """The variable names set in tmux's global and `session`
+    environments — what a shell started in a new window inherits.
+    None when either listing could not be read — asked through
+    `tmux_query`, since an empty session environment is a valid
+    answer and must not read as a failure, nor a failure as "nothing
+    set"."""
+    names = set()
+    for args in (("show-environment", "-g"), ("show-environment", "-t", session)):
+        out = ccm_core.tmux_query(*args)
+        if out is None:
+            return None
+        for line in out.split("\n"):
+            if line and not line.startswith("-") and "=" in line:
+                names.add(line.split("=", 1)[0])
+    return names
+
+
+def conversation_history(project_dir, session=None) -> str:
+    """Whether `project_dir` holds a conversation for `claude --continue`
+    to resume — as far as ccm can see from here.
+
+    `NO_HISTORY` is a positive claim, so it is made only when every
+    place the CLI would look has been looked at: nothing in ccm's own
+    environment or in the tmux environment a new window's shell
+    inherits (`session`, when given) moves the CLI's config home or
+    names the transcript directory, the slug is short enough to be
+    spelled the way the CLI spells it, and the transcript directory
+    for the path — as given and as resolved, since the launching
+    shell may report either — is absent or holds no transcript.
+    Anything ccm cannot check (another config home, a custom
+    directory name, an unreadable directory, a slug the CLI would
+    truncate and hash) is `UNKNOWN`, not "none". A shell's own
+    exports are not visible from here at all, which is why only a
+    window ccm has just created is judged this way (see
+    `launch_command`)."""
+    import ccm_jsonl
+    if not project_dir:
+        return UNKNOWN
+    if any(name in os.environ for name in _TRANSCRIPT_LOCATION_VARS):
+        return UNKNOWN
+    if session is not None:
+        tmux_names = _tmux_environment_names(session)
+        if tmux_names is None or tmux_names & set(_TRANSCRIPT_LOCATION_VARS):
+            return UNKNOWN
+    literal = os.path.expanduser(project_dir)
+    try:
+        resolved = os.path.realpath(literal)
+    except OSError:
+        return UNKNOWN
+    for candidate in {literal, resolved}:
+        slug = ccm_jsonl._project_slug(candidate)
+        if len(slug) > ccm_jsonl.PROJECT_SLUG_MAX:
+            return UNKNOWN
+        try:
+            entries = os.listdir(os.path.join(ccm_jsonl.CLAUDE_PROJECTS_DIR, slug))
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return UNKNOWN
+        if any(entry.endswith(".jsonl") for entry in entries):
+            return HISTORY
+    return NO_HISTORY
+
+
+def launch_command(project_dir, session) -> str:
+    """The command `ccm add` types into the window it has just created
+    in `session` for `project_dir`: plain `claude` only when ccm has
+    seen for itself that there is no conversation to resume (a new
+    project), `claude --continue` otherwise — including when ccm
+    could not look. Only a window ccm created is judged: its shell
+    inherits the tmux environment ccm can read. A launch into an
+    existing shell (`launch_claude`) always types `--continue`, since
+    that shell's own exports are invisible from here and a relaunch
+    almost always has something to resume.
+
+    Decided here rather than by chaining the two with `||`: the chain
+    also fired on every other non-zero exit of `--continue` — a
+    hand-off to a live background session, a startup failure — and
+    started a new conversation over the CLI's own explanation of what
+    went wrong. The remaining failure is the visible one: `--continue`
+    with nothing to resume says so and returns the pane to the
+    shell."""
+    if conversation_history(project_dir, session) == NO_HISTORY:
+        return CLAUDE_CMD_FRESH
+    return CLAUDE_CMD
+
+
 def launch_claude(win_target, honour_setting=True, exclude_pane=None) -> LaunchResult:
     """Type the Claude launch command into `win_target`, after looking
     at the window as it is NOW — the one place every launch path
@@ -106,9 +206,14 @@ def launch_claude(win_target, honour_setting=True, exclude_pane=None) -> LaunchR
 
     `exclude_pane` is never typed into (see `_pick_shell_pane`).
 
-    The hand-off notice is judged first, before the launch is typed
-    (the new session's own transcript would otherwise be the newest
-    one scanned), and shown after."""
+    The command is always `claude --continue`: the pane's shell may
+    keep its transcripts somewhere ccm cannot see (its own exports
+    are invisible from here), so ccm never claims it has nothing to
+    resume. When that is nonetheless so, the CLI says it and returns
+    the pane to the shell; see `launch_command`. The hand-off notice
+    is judged first, before the launch is typed (the new session's
+    own transcript would otherwise be the newest one scanned), and
+    shown after."""
     if honour_setting:
         setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
         if setting != "on":

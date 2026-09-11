@@ -94,6 +94,10 @@ JSONL_TAIL_BYTES = 32768
 JSONL_TAIL_MAX_LINES = 200
 
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+#: Longest slug the CLI writes as-is. A longer one is cut here and a
+#: hash of the path appended; ccm does not reproduce the hash, so a
+#: directory whose slug exceeds this is one ccm cannot look up.
+PROJECT_SLUG_MAX = 200
 CLAUDE_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 JSONL_CACHE_TTL = int(os.environ.get("CCM_JSONL_CACHE_TTL", "60"))
 
