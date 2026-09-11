@@ -13,9 +13,12 @@ Three independent canary classes:
   - **Settings flags**: `disableAllHooks: true` and
     `allowManagedHooksOnly: true` in `~/.claude/settings.json`
     silently disable user-scope hooks (every ccm hook is user-scope).
-  - **Cluster-SHELL transitions**: rapid SHELL → BUSY → SHELL loops
-    likely mean the macOS silent-exit regression
-    (anthropics/claude-code#48069) is recycling Claude.
+  - **Cluster-SHELL transitions**: several transitions into SHELL
+    within a short window. What it observes is that Claude left the
+    pane repeatedly; why is not observed — an update relaunching in
+    place, manual exits, or unexpected exits all look the same here.
+    One known cause of unexpected exits is anthropics/claude-code#48069
+    (macOS silent exit), named in the warning as a lead, not a verdict.
 
 Cross-module discipline: this module imports `ccm_core` for
 late-bound access to `tmux_cmd` (so test mocks via
@@ -377,12 +380,17 @@ def _push_shell_transition(win_target: str) -> None:
 
 
 def _format_cluster_warning(history_len: int, project_name: str) -> str:
+    """Say what was seen — repeated transitions into SHELL — and list
+    the causes that look identical from here. The upstream issue is
+    one of them, offered as a lead; the wording must not promise a
+    cause, nor that `claude --continue` restores the conversation."""
     label = f"{project_name}: " if project_name else ""
     return (
-        f"{label}Claude Code exited {history_len}+ times in "
-        f"{SHELL_CLUSTER_WINDOW // 60} min — likely "
-        f"{SHELL_CLUSTER_ISSUE} ({SHELL_CLUSTER_ISSUE_NOTE}). "
-        f"The conversation auto-restores via `claude --continue`."
+        f"{label}Claude left the pane {history_len}+ times in "
+        f"{SHELL_CLUSTER_WINDOW // 60} min — an update relaunching, manual "
+        f"exits, or unexpected exits look the same here. If unintended, "
+        f"see `ccm doctor`; one known cause of unexpected exits is "
+        f"{SHELL_CLUSTER_ISSUE} ({SHELL_CLUSTER_ISSUE_NOTE})."
     )
 
 

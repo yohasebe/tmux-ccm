@@ -820,7 +820,7 @@ ccm exposes several tuning knobs via environment variables. Defaults are chosen 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CCM_HOOKS_LOG_WARN_BYTES` | `104857600` (100 MB) | Size threshold for the `~/.claude/hooks.log` bloat canary. Claude Code does not rotate this file and bloated logs silently disable hook firing (anthropics/claude-code#16047) |
-| `CCM_SHELL_CLUSTER_COUNT` | `3` | How many SHELL transitions within the window triggers the silent-exit canary (anthropics/claude-code#48069) |
+| `CCM_SHELL_CLUSTER_COUNT` | `3` | How many transitions into SHELL within the window trigger the cluster-SHELL warning. The warning reports what was seen — Claude left the pane repeatedly — and names the causes that look identical from here (an update relaunching in place, manual exits, unexpected exits); anthropics/claude-code#48069 (macOS silent exit) is offered as one known cause of the last, not as a diagnosis |
 | `CCM_SHELL_CLUSTER_WINDOW` | `600` (seconds) | Time window for counting SHELL transitions |
 | `CCM_ERRORS_BURST_THRESHOLD` | `20` | How many `errors.log` records within the burst window triggers the silent-fail-loop canary. A poll-cycle bug (e.g. an exception fired by every `inject_status` refresh) accumulates roughly 30 records/min, so this threshold reliably distinguishes a runaway loop from one-off noise |
 | `CCM_HOOK_SILENCE_FRESH` | `90` (seconds) | Opt-in hook-silence canary: how recent a session's transcript activity must be before a lagging hook log counts as silence |

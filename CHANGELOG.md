@@ -38,6 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session; the check is read-only.
 
 ### Changed
+- The cluster-SHELL warning now says what it observed — Claude left the
+  pane repeatedly — and lists the causes that look identical from ccm's
+  side (an update relaunching in place, manual exits, unexpected
+  exits), naming anthropics/claude-code#48069 as one known cause of
+  the last rather than as the likely diagnosis. It no longer promises
+  that `claude --continue` restores the conversation. Detection and
+  thresholds are unchanged.
 - The external-agent presence badge is now `▸<name>` instead of
   `⚙<name>` on the dashboard, `ccm status`, and the status bar. The
   gear read as "settings"; the triangle reads as "someone is next to
