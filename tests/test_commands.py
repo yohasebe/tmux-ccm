@@ -1528,3 +1528,32 @@ class TestResolveTraceTarget:
             ccm_core, "tmux_cmd",
             self._tmux(windows="", display="probe:0\t/tmp/p"))
         assert ccm_commands._resolve_trace_target("%1")[0] == "probe:0"
+
+
+
+# ─── cmd_open ───
+
+class TestCmdOpen:
+    @pytest.mark.parametrize("has_history", [True, False])
+    def test_open_always_resumes(self, tmp_path, monkeypatch, has_history):
+        """The command runs after a `cd` in the caller's shell, where a
+        directory-change hook can move the CLI's transcript location
+        before it starts; ccm never claims there is nothing to
+        resume, so `ccm open` types `--continue` with no fallback."""
+        import ccm_jsonl
+        projects = tmp_path / "projects"; projects.mkdir()
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        proj_dir = tmp_path / "my-project"; proj_dir.mkdir()
+        if has_history:
+            slug = projects / ccm_jsonl._project_slug(str(proj_dir.resolve())); slug.mkdir()
+            (slug / "s.jsonl").write_text("{}\n")
+        typed = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a: typed.append(a) or "")
+        monkeypatch.setattr(ccm_core, "tmux_query",
+                            lambda *a: pytest.fail("ccm open consulted the tmux environment"))
+
+        ccm_commands.cmd_open(str(proj_dir))
+
+        assert len(typed) == 1 and typed[0][0] == "send-keys"
+        assert typed[0][1].endswith(f" && {ccm_constants.CLAUDE_CMD}")
+        assert "||" not in typed[0][1] and "2>" not in typed[0][1]

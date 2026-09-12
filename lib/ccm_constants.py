@@ -832,9 +832,10 @@ def external_agent_name(command):
             return prefix.rstrip("-")
     return ""
 
-#: The two launch commands. Which one a window gets is decided at
-#: launch time from whether its directory holds a conversation to
-#: resume (`ccm_window.launch_command`). There is deliberately no
+#: The two launch commands. A launch into an existing shell always
+#: types the first; `ccm add` types the second only when ccm has
+#: seen that the directory holds no conversation to resume
+#: (`ccm_window.launch_command`). There is deliberately no
 #: `--continue || claude` chain: `claude --continue` exits 1 when it
 #: has nothing to resume — a fresh project — but also when the
 #: newest conversation was handed to a live background session, or

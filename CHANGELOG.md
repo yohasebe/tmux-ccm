@@ -39,9 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - A launch into an existing shell (attach, the dashboard,
-  `ccm send --start`) always types `claude --continue`. Only `ccm add`
-  types plain `claude`, and only when ccm has looked where the CLI
-  keeps the new window's transcripts and found none: default config
+  `ccm send --start`, `ccm open`) always types `claude --continue`.
+  Only `ccm add` types plain `claude`, and only when ccm has looked
+  where the CLI keeps the new window's transcripts and found none: default config
   home, no custom transcript-directory name in ccm's or tmux's
   environment, no transcript under the directory's slug. Whatever ccm
   cannot check resolves to `--continue`. The former

@@ -45,7 +45,7 @@ import ccm_spool
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
-from ccm_constants import (CCM_VERSION,
+from ccm_constants import (CCM_VERSION, CLAUDE_CMD,
                            external_agent_name)
 from ccm_core import _C_BOLD, _C_RESET
 
@@ -217,9 +217,13 @@ def cmd_open(directory, name=""):
     if not name:
         name = os.path.basename(directory)
 
-    # shlex.quote for safety
+    # Always `--continue`: the command runs after a `cd` in the
+    # caller's shell, and a directory-change hook there (chpwd,
+    # direnv) can move the CLI's transcript location before the CLI
+    # starts, so what ccm sees from here is not what the CLI will
+    # see. See `ccm_window.launch_command`.
     ccm_core.tmux_cmd("send-keys",
-                      f"cd {shlex.quote(directory)} && (claude --continue 2>/dev/null || claude)",
+                      f"cd {shlex.quote(directory)} && {CLAUDE_CMD}",
                       "Enter")
 
 
