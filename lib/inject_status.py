@@ -663,15 +663,19 @@ def _inject_status_impl(force_fast=False):
 
         entries = build_detail_entries(all_projects, current_win_target=current_win_target)
 
+        # The terminal width bounds the entry budget below and, after
+        # the write, the `status-right-length` floor — the latter on
+        # every write, entries or not, so it is read before the branch.
+        term_width = 120
+        try:
+            term_width = int(tmux_cmd("display-message", "-p", "#{client_width}") or "120")
+        except ValueError:
+            pass
+
         if not entries:
             new_status = f"#[fg=#666666]≡#[default] {original}{refresh}"
         else:
             # Calculate available width for ccm entries
-            term_width = 120
-            try:
-                term_width = int(tmux_cmd("display-message", "-p", "#{client_width}") or "120")
-            except ValueError:
-                pass
             orig_visible = original_status_right_width(original)
             # What the block spends outside the entries, measured from
             # the very strings it will draw rather than guessed at: the

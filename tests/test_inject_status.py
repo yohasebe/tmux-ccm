@@ -795,6 +795,18 @@ class TestMode1WidthBudget:
         inject_status._inject_status_impl(force_fast=True)
         return written[-1] if written else None
 
+    def test_no_entries_still_writes_and_extends_the_length(self, monkeypatch):
+        """With nothing to list — no managed windows — mode 1 writes the
+        idle marker and still floors `status-right-length` on the
+        terminal width, which must therefore be known on that path
+        too (it used to be read only when entries existed, and the
+        write then died on an unbound name)."""
+        calls = []
+        written = self._render(monkeypatch, n_projects=0, term_width=150,
+                               length_calls=calls)
+        assert written is not None and "≡" in written
+        assert calls and calls[-1].get("minimum") == 150
+
     def _drawn_width(self, status_right, ambiguous=1):
         """Columns the written status-right occupies on screen.
 

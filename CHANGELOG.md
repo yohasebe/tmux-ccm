@@ -84,6 +84,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Status-line mode 1 no longer fails to write the bar when there is
+  no project window to list; the idle marker is written and the
+  `status-right-length` floor is applied as on every other write.
 - The dashboard's background-session block now appears when `b` is
   pressed even with more projects than the popup has rows: the block's
   rows are reserved first and the project list scrolls within the
