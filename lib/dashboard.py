@@ -652,7 +652,12 @@ class Dashboard:
         its own rows when it gets less than it asked for."""
         wanted = 2 + max(len(bg_sessions), 1)
         room = available - self._BG_MIN_PROJECT_ROWS
-        return max(0, min(wanted, room))
+        # Fewer rows than spacer, header and one line show nothing
+        # (the block draws only once both header rows fit), so they
+        # are not taken from the list either.
+        if room < 3:
+            return 0
+        return min(wanted, room)
 
     def _render_bg_section(self, stdscr, start_row, bg_sessions,
                            list_height, effective_width):
@@ -904,10 +909,11 @@ class Dashboard:
             with self.lock:
                 bg_sessions = list(self.bg_sessions)
             # Rows below `row` (header and banners drawn) down to the
-            # help line, less one kept back for the help line's second
-            # line. Banners come out of this too — a reservation made
-            # against the popup height alone would let them push the
-            # block, or the selected project, off the bottom.
+            # help line, estimated one row short so the layout errs
+            # towards leaving the help line room. Banners come out of
+            # this too — a reservation made against the popup height
+            # alone would let them push the block, or the selected
+            # project, off the bottom.
             available = max(0, (list_height - 3) - row - 1)
             bg_reserved = (self._bg_section_rows(bg_sessions, available)
                            if self.bg_visible else 0)

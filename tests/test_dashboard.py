@@ -319,6 +319,10 @@ class TestRenderSmoke:
         assert d._bg_section_rows([], 15) == 3
         assert d._bg_section_rows([object()] * 4, 15) == 6
         assert d._bg_section_rows([object()] * 40, 15) == 15 - Dashboard._BG_MIN_PROJECT_ROWS
+        # Room for one or two rows shows nothing, so nothing is taken.
+        assert d._bg_section_rows([], 6) == 3
+        assert d._bg_section_rows([], 5) == 0
+        assert d._bg_section_rows([object()] * 40, 4) == 0
         assert d._bg_section_rows([object()] * 40, 3) == 0
         assert d._bg_section_rows([object()] * 40, 0) == 0
 
