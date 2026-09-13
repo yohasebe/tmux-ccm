@@ -36,8 +36,9 @@ Schema (observed on Claude Code 2.1.139):
 
   jobs/<short>/state.json
     {
-      "state": "working|idle|done|failed|needs_input|...",
-      "tempo": "active|idle",
+      "state": "working|blocked|done|failed|stopped|...",
+      "tempo": "active|idle|blocked",
+      "needs": "the exact ask, when blocked",
       "name": "auto-generated label",
       "cwd": "...", "sessionId": "<uuid>",
       "createdAt": "<ISO-8601>", "updatedAt": "<ISO-8601>", ...
@@ -96,9 +97,18 @@ JOBS_DIR = os.path.expanduser("~/.claude/jobs")
 
 STATE_LABEL_MAP = {
     "working": "WORKING",
+    # `blocked` is the CLI's "someone other than the agent owns the
+    # next step": a reply or approval it is waiting for, or a login,
+    # billing or rate-limit condition the person has to clear. All
+    # of those want the person's attention, so they read as NEEDS;
+    # the `needs` field carries the exact ask.
+    "blocked": "NEEDS",
     "needs_input": "NEEDS",
     "idle": "IDLE",
     "done": "DONE",
+    # A stopped session was ended, not finished: it is neither a
+    # success nor a failure, and reads as neither.
+    "stopped": "STOPPED",
     "failed": "FAILED",
 }
 
@@ -111,6 +121,7 @@ STATE_ICONS = {
     "IDLE": "●",
     "DONE": "✓",
     "FAILED": "✕",
+    "STOPPED": "■",
     "UNKNOWN": "?",
 }
 
@@ -123,7 +134,8 @@ STATE_PRIORITY = {
     "IDLE": 2,
     "DONE": 3,
     "FAILED": 4,
-    "UNKNOWN": 5,
+    "STOPPED": 5,
+    "UNKNOWN": 6,
 }
 
 
@@ -134,7 +146,7 @@ class BgSession:
     pid: int                 # worker process pid (0 if missing)
     cwd: str                 # absolute cwd
     name: str                # human-readable label
-    state: str               # normalized: WORKING / NEEDS / IDLE / DONE / FAILED / UNKNOWN
+    state: str               # normalized: WORKING / NEEDS / IDLE / DONE / FAILED / STOPPED / UNKNOWN
     raw_state: str           # lowercase string from state.json (debug aid)
     tempo: str               # "active" / "idle" / ""
     cli_version: str         # e.g. "2.1.139"
@@ -142,6 +154,7 @@ class BgSession:
     created_at: Optional[float]   # unix seconds (None if unparseable)
     updated_at: Optional[float]   # unix seconds (None if unparseable)
     source: str              # dispatch.source: "slash" / "bg" / "attach" / ""
+    needs: str = ""          # the exact ask when blocked (state.json `needs`), else ""
 
 
 def _safe_load_json(path):
@@ -294,6 +307,7 @@ def list_bg_sessions() -> List[BgSession]:
             state=_normalize_state(raw_state),
             raw_state=str(raw_state) if raw_state else "",
             tempo=str(state_doc.get("tempo") or ""),
+            needs=" ".join(str(state_doc.get("needs") or "").split()),
             cli_version=str(info.get("cliVersion") or ""),
             session_id=str(info.get("sessionId") or state_doc.get("sessionId") or ""),
             created_at=created_at,

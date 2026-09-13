@@ -742,7 +742,7 @@ Off by default — agent-view non-users see no clutter. There are three ways to 
 - Set `@ccm-bg-section "always"` in `~/.tmux.conf` — keeps it visible across opens.
 - Toggle the `Background sessions: …` row in the dashboard menu (`m`) — writes the same option back to `~/.tmux.conf`.
 
-The section appears below the project list and lists each active worker with its short ID, normalised state (`✽ WORKING` / `✻ NEEDS` / `● IDLE` / `✓ DONE` / `✕ FAILED`), human-readable name, age, and working directory.
+The section appears below the project list and lists each active worker with its short ID, normalised state (`✽ WORKING` / `✻ NEEDS` / `● IDLE` / `✓ DONE` / `✕ FAILED` / `■ STOPPED`), human-readable name, age, and working directory. A blocked session — the CLI's word for one whose next step belongs to you: a reply or an approval it waits for, or a condition to act on or wait out (a login, a usage limit, a rate limit) — reads `✻ NEEDS`, and what it waits for is shown in place of the directory. A session ended with `claude stop` reads `■ STOPPED`: neither finished nor failed.
 
 ### Attaching from the dashboard
 
@@ -780,7 +780,7 @@ The exits are the CLI's own: `claude attach <short>` opens the background conver
 The reader joins two files, both written by the daemon (read-only on the ccm side):
 
 - `~/.claude/daemon/roster.json` — currently-active workers (pid, sessionId, cwd, cliVersion, dispatch metadata). Sessions are removed from this file after ~1 hour idle (`settled (done)`), matching what `claude agents` itself shows.
-- `~/.claude/jobs/<short>/state.json` — per-session live state (`working` / `needs_input` / `idle` / `done` / `failed`), tempo, in-flight task counts, and an auto-generated name.
+- `~/.claude/jobs/<short>/state.json` — per-session live state (`working` / `blocked` / `done` / `failed` / `stopped`; `needs_input` and `idle` from earlier releases are still read), the ask when blocked (`needs`), tempo, in-flight task counts, and an auto-generated name.
 
 Missing files, malformed JSON, or a daemon-down state all gracefully resolve to "no background sessions" — agent view's absence never crashes the dashboard.
 

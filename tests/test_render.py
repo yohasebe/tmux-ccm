@@ -496,6 +496,40 @@ class TestPrintBgSessions:
         # Hint to start one
         assert "claude --bg" in plain or "claude agents" in plain
 
+    def test_blocked_shows_the_ask_in_the_last_column(self, monkeypatch, capsys):
+        """A blocked session's ask replaces its directory, under a
+        header that says so, and a long ask is cut to one line."""
+        import ccm_agentview
+        long_ask = "確認してください " * 20
+        sessions = [
+            ccm_agentview.BgSession(
+                short="abc00001", pid=1, cwd="/w/proj", name="s1", state="NEEDS",
+                raw_state="blocked", tempo="blocked", cli_version="", session_id="",
+                created_at=None, updated_at=None, source="", needs="go-ahead for plan A or B"),
+            ccm_agentview.BgSession(
+                short="abc00002", pid=2, cwd="/w/proj", name="s2", state="NEEDS",
+                raw_state="blocked", tempo="blocked", cli_version="", session_id="",
+                created_at=None, updated_at=None, source="", needs=long_ask),
+        ]
+        plain = _strip_ansi(self._run(monkeypatch, capsys, sessions))
+        assert "DIRECTORY / NEEDS" in plain
+        assert "go-ahead for plan A or B" in plain
+        assert "/w/proj" not in plain.split("abc00001", 1)[1].split("\n")[0]
+        long_line = next(l for l in plain.split("\n") if "abc00002" in l)
+        assert long_line.rstrip().endswith("…")
+        assert ccm_render.display_width(long_line.split("s2", 1)[1].strip()) <= \
+            8 + ccm_render.BG_NEEDS_MAX_WIDTH
+
+    def test_stopped_is_neither_done_nor_failed(self, monkeypatch, capsys):
+        import ccm_agentview
+        sessions = [ccm_agentview.BgSession(
+            short="abc00001", pid=1, cwd="/w", name="s1", state="STOPPED",
+            raw_state="stopped", tempo="idle", cli_version="", session_id="",
+            created_at=None, updated_at=None, source="")]
+        plain = _strip_ansi(self._run(monkeypatch, capsys, sessions))
+        line = next(l for l in plain.split("\n") if "abc00001" in l)
+        assert "■ STOPPED" in line and "✓" not in line and "✕" not in line
+
     def test_populated_renders_short_state_name(self, monkeypatch, capsys):
         import ccm_agentview
         now = time.time()
@@ -534,12 +568,12 @@ class TestPrintBgSessions:
                 created_at=None, updated_at=None, source="",
             )
             for i, state in enumerate(["WORKING", "NEEDS", "IDLE",
-                                       "DONE", "FAILED", "UNKNOWN"])
+                                       "DONE", "FAILED", "STOPPED", "UNKNOWN"])
         ]
         out = self._run(monkeypatch, capsys, sessions)
         plain = _strip_ansi(out)
         # Icons defined in ccm_agentview.STATE_ICONS
-        for icon in ("✽", "✻", "●", "✓", "✕", "?"):
+        for icon in ("✽", "✻", "●", "✓", "✕", "■", "?"):
             assert icon in plain, (
                 f"missing icon {icon!r} in bg list output: {plain!r}"
             )

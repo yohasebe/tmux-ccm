@@ -143,12 +143,26 @@ class TestListBgSessions:
         assert s.state == "UNKNOWN"
         assert s.raw_state == "future_state_we_haven_t_seen"
 
+    def test_blocked_carries_the_ask(self, fake_claude_home):
+        """A blocked job records what it waits for in `needs`; the
+        session carries it verbatim (whitespace collapsed) so the
+        listing can say what would unblock it. Absent → ""."""
+        _write_roster(fake_claude_home, {"abcd1234": {"pid": 1, "cwd": "/x"}})
+        _write_job_state(fake_claude_home, "abcd1234",
+                         {"state": "blocked", "needs": "go-ahead for\n plan A or B"})
+        s = ccm_agentview.list_bg_sessions()[0]
+        assert (s.state, s.needs) == ("NEEDS", "go-ahead for plan A or B")
+        _write_job_state(fake_claude_home, "abcd1234", {"state": "working"})
+        assert ccm_agentview.list_bg_sessions()[0].needs == ""
+
     def test_state_normalization_known_values(self, fake_claude_home):
         cases = {
             "working": "WORKING",
             "needs_input": "NEEDS",
+            "blocked": "NEEDS",
             "idle": "IDLE",
             "done": "DONE",
+            "stopped": "STOPPED",
             "failed": "FAILED",
         }
         # Use distinct 8-char hex shorts per case so the
@@ -156,8 +170,10 @@ class TestListBgSessions:
         case_shorts = {
             "working": "abcd0001",
             "needs_input": "abcd0002",
+            "blocked": "abcd0006",
             "idle": "abcd0003",
             "done": "abcd0004",
+            "stopped": "abcd0007",
             "failed": "abcd0005",
         }
         for raw, expected in cases.items():

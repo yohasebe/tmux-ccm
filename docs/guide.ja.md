@@ -735,7 +735,7 @@ Claude Code 2.1.139 で導入された [agent view](https://claude.com/blog/agen
 - `~/.tmux.conf` に `set -g @ccm-bg-section "always"` を追加 — 毎回開くたびに表示。
 - ダッシュボードメニュー（`m`）で `Background sessions: …` 行をトグル — 上記オプションを `~/.tmux.conf` に書き込みます。
 
-セクションはプロジェクト一覧の下に表示され、各アクティブワーカーの short ID、正規化された状態（`✽ WORKING` / `✻ NEEDS` / `● IDLE` / `✓ DONE` / `✕ FAILED`）、可読な名前、経過時間、作業ディレクトリを一覧します。
+セクションはプロジェクト一覧の下に表示され、各アクティブワーカーの short ID、正規化された状態（`✽ WORKING` / `✻ NEEDS` / `● IDLE` / `✓ DONE` / `✕ FAILED` / `■ STOPPED`）、可読な名前、経過時間、作業ディレクトリを一覧します。blocked のセッション — CLI の用語で「次の一手があなたの側にある」もの: 返答や承認の待ち、あるいは対処か待機後の再試行が必要な状態（ログイン、利用上限、レート制限） — は `✻ NEEDS` と表示され、作業ディレクトリの代わりに何を待っているかが表示されます。`claude stop` で終了したセッションは `■ STOPPED` で、完了でも失敗でもありません。
 
 ### ダッシュボードから attach する
 
@@ -773,7 +773,7 @@ ccm は 3 つを安い順に確かめます。daemon の roster にそのプロ�
 リーダーは daemon が書き出す 2 つのファイルを結合します（ccm 側は read-only）:
 
 - `~/.claude/daemon/roster.json` — 現在アクティブなワーカー（pid / sessionId / cwd / cliVersion / dispatch メタデータ）。idle 1 時間程度で `settled (done)` となり roster から外れるため、ccm が表示する範囲は `claude agents` 自身が表示するものと一致します。
-- `~/.claude/jobs/<short>/state.json` — セッションごとのライブ状態（`working` / `needs_input` / `idle` / `done` / `failed`）、tempo、進行中タスク数、自動生成された name。
+- `~/.claude/jobs/<short>/state.json` — セッションごとのライブ状態（`working` / `blocked` / `done` / `failed` / `stopped`。以前のリリースの `needs_input` / `idle` も引き続き読みます）、blocked 時の要求内容（`needs`）、tempo、進行中タスク数、自動生成された name。
 
 ファイル欠落・JSON 破損・daemon 未起動はすべて「アクティブなバックグラウンドセッションなし」として安全に解決されるため、agent view の不在がダッシュボードを壊すことはありません。
 

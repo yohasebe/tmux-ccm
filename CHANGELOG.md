@@ -90,6 +90,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Background sessions the CLI marks `blocked` — waiting for a reply,
+  an approval, or a condition to act on or wait out — now read
+  `✻ NEEDS` in the dashboard and `ccm bg list` instead of `? UNKNOWN`,
+  with what they wait for shown in place of the directory; a session
+  ended with `claude stop` reads `■ STOPPED`.
 - Status-line mode 1 no longer fails to write the bar when there is
   no project window to list; the idle marker is written and the
   `status-right-length` floor is applied as on every other write.

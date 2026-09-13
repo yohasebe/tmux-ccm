@@ -622,12 +622,16 @@ def print_tree():
 # intent of `C_STATE` for ccm projects: NEEDS demands attention
 # (yellow), WORKING is in-progress (cyan), IDLE is at-rest (blue),
 # DONE / FAILED are terminal (dim / red).
+#: Widest a blocked session's ask is printed in `ccm bg list`.
+BG_NEEDS_MAX_WIDTH = 60
+
 _BG_STATE_COLOR = {
     "NEEDS": "\033[1;33m",       # bold yellow
     "WORKING": "\033[36m",       # cyan
     "IDLE": "\033[0;34m",        # blue
     "DONE": "\033[2m",           # dim
     "FAILED": "\033[31m",        # red
+    "STOPPED": "\033[2m",       # dim
     "UNKNOWN": "\033[2m",        # dim
 }
 
@@ -658,9 +662,9 @@ def print_bg_sessions():
         return
 
     print(f"{C_BOLD}{'SHORT':<10} {'STATE':<11} {'NAME':<38} "
-          f"{'AGE':<7} {'DIRECTORY'}{C_RESET}")
+          f"{'AGE':<7} {'DIRECTORY / NEEDS'}{C_RESET}")
     print(f"{'-----':<10} {'-----':<11} {'----':<38} "
-          f"{'---':<7} {'---------'}")
+          f"{'---':<7} {'-----------------'}")
 
     for s in sessions:
         from ccm_agentview import STATE_ICONS as BG_ICONS
@@ -689,13 +693,22 @@ def print_bg_sessions():
             else:
                 age_str = f"{age // 86400}d"
 
-        d = ccm_core.shorten_home(s.cwd) if s.cwd else ""
+        # A blocked session's ask says more than its directory; it
+        # takes the last column, in the state's colour, cut to one
+        # line's worth so the table stays a table.
+        needs = getattr(s, "needs", "")
+        if needs:
+            if display_width(needs) > BG_NEEDS_MAX_WIDTH:
+                needs = truncate_to_width(needs, BG_NEEDS_MAX_WIDTH - 1) + "…"
+            d = f"{color}{needs}{C_RESET}"
+        else:
+            d = ccm_core.shorten_home(s.cwd) if s.cwd else ""
 
         short_field = pad_to_width(s.short, 10)
         age_field = pad_to_width(age_str, 7)
 
         print(f"{short_field} {state_field:<{state_w}} {name_padded} "
-              f"{age_field} {C_DIM}{d}{C_RESET}")
+              f"{age_field} {C_DIM}{d}{C_RESET}")  # a coloured ask resets inside
 
 
 def print_statusline():

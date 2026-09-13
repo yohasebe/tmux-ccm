@@ -634,6 +634,7 @@ class Dashboard:
         "IDLE": C_IDLE,
         "DONE": C_DIM,
         "FAILED": C_BUSY,        # use BUSY's salmon for failed
+        "STOPPED": C_DIM,
         "UNKNOWN": C_DIM,
     }
 
@@ -736,7 +737,18 @@ class Dashboard:
                              curses.color_pair(C_DIM))
 
             cwd_col = after_name + AGE_W
-            if s.cwd and cwd_col < effective_width - 4:
+            if s.needs and cwd_col < effective_width - 4:
+                # What the session is waiting for is worth more than
+                # where it runs: shown in the directory's slot, so a
+                # blocked row says what would unblock it.
+                room = effective_width - cwd_col - 1
+                if display_width(s.needs) <= room:
+                    ask = s.needs
+                else:
+                    ask = truncate_to_width(s.needs, room - 1) + "…"
+                self._addstr(stdscr, row, cwd_col, ask,
+                             curses.color_pair(self._BG_STATE_PAIR.get(s.state, C_DIM)))
+            elif s.cwd and cwd_col < effective_width - 4:
                 cwd_str = format_dir(s.cwd, cwd_col, effective_width)
                 if cwd_str:
                     self._addstr(stdscr, row, cwd_col, cwd_str,

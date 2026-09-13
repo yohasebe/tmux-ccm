@@ -286,6 +286,31 @@ class TestRenderSmoke:
             assert any(t == f"p{selected:02d}" for t in drawn), selected
             assert any(t.startswith("Background sessions (1)") for t in drawn), selected
 
+    def test_bg_row_shows_a_long_ask_cut_by_width(self, monkeypatch):
+        """A blocked row shows its ask in the directory slot; a wide
+        (CJK) ask is cut by display width, so the ellipsis survives
+        the drawing and nothing overruns the row."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = []
+        d.bg_visible = True
+        d.bg_sessions = [ccm_agentview.BgSession(
+            short="abcd1234", pid=100, cwd="/w/proj", name="job", state="NEEDS",
+            raw_state="blocked", tempo="blocked", cli_version="2.1.270",
+            session_id="00000000-0000-0000-0000-000000000000",
+            created_at=1.0, updated_at=2.0, source="slash",
+            needs="確認してください " * 20)]
+        stdscr = _make_mock_stdscr(width=80, height=20)
+        d.render(stdscr)
+        drawn = self._drawn_strings(stdscr)
+        ask = next(t for t in drawn if t.startswith("確認"))
+        assert ask.endswith("…")
+        from ccm_render import display_width
+        assert display_width(ask) < 80
+        assert not any(t.startswith("/w/proj") or t.startswith("~/") for t in drawn)
+
     def test_bg_section_reservation_leaves_project_rows(self):
         """The block asks for spacer + header + one row per session
         out of the rows available, but never more than leaves the
