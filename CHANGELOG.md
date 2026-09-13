@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session; the check is read-only.
 
 ### Changed
+- Pressing `Enter` on a dashboard background-session row whose attach
+  window is already open switches to that window instead of opening
+  another. The window is recognised by a tag (`@ccm_bg_short`) set
+  when it is opened, and only while it still hosts claude. When two
+  are live, or whether one is open cannot be told, none is opened and
+  the message says so.
 - A launch into an existing shell (attach, the dashboard,
   `ccm send --start`, `ccm open`) always types `claude --continue`.
   Only `ccm add` types plain `claude`, and only when ccm has looked

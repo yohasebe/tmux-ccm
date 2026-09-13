@@ -53,9 +53,14 @@ from ccm_core import (
     read_cache_file,
     save_tmux_conf_setting,
     tmux_cmd,
+    tmux_query,
     touch_popup_session,
 )
 from ccm_pane_state import enumerate_window_panes
+
+#: Window option marking a window the dashboard opened to attach to a
+#: background session; its value is the session's short id.
+BG_ATTACH_TAG = "@ccm_bg_short"
 import ccm_agentview
 import ccm_spool
 from ccm_window import auto_start_claude, reset_window_after_attach
@@ -1523,6 +1528,29 @@ class Dashboard:
         if not session:
             self._show_message(stdscr, "Cannot attach: no tmux session", 2)
             return ""
+        # A window this dashboard already opened for the session is
+        # switched to, not duplicated: every extra `claude attach` is
+        # another client drawing the same conversation, and enough of
+        # them garble it. The window is recognised by the tag set
+        # below, not by its name (names can be changed), and only
+        # while it still hosts claude — an attach that has since
+        # ended leaves a plain shell, into which a fresh attach is
+        # typed instead.
+        verdict, windows = self._find_bg_attach_windows(session, s.short)
+        if verdict == "one":
+            tmux_cmd("select-window", "-t", windows[0])
+            return "attached"
+        if verdict == "many":
+            # Two live attach windows already draw this conversation;
+            # a third would only add to the garbling. Name them and
+            # let the person pick.
+            self._show_message(
+                stdscr, f"Already attached in {', '.join(windows)} — switch there", 3)
+            return ""
+        if verdict == "unknown":
+            self._show_message(
+                stdscr, "Cannot tell whether an attach window is open — not opening another", 3)
+            return ""
         # `new-window -t <session>:` (no index) places the window at
         # the next available index. `-P -F` makes tmux print the new
         # window's resolved target (`session:idx`), which we then
@@ -1531,6 +1559,8 @@ class Dashboard:
         args = ["new-window", "-t", f"{session}:", "-P",
                 "-F", "#{session_name}:#{window_index}",
                 "-n", f"bg-{s.short}"]
+        # Tagged as this session's attach window so a later Enter on
+        # the same row finds it (see `_find_bg_attach_windows`).
         cwd = os.path.expanduser(s.cwd) if s.cwd else ""
         # Reject cwd values that could be mis-parsed by tmux as a
         # flag (e.g. "-x"). tmux's `new-window -c <path>` does not
@@ -1546,10 +1576,46 @@ class Dashboard:
             self._show_message(stdscr, "Failed to open attach window", 2)
             return ""
         new_target = new_target.strip()
+        tmux_cmd("set-option", "-wt", new_target, BG_ATTACH_TAG, s.short)
         tmux_cmd("send-keys", "-t", new_target,
                  f"claude attach {s.short}", "Enter")
         tmux_cmd("select-window", "-t", new_target)
         return "attached"
+
+    def _find_bg_attach_windows(self, session, short):
+        """Windows in `session` tagged as attach windows for `short`
+        and still hosting claude — the ones drawing its conversation.
+        Returns `(verdict, targets)`: `("one", [t])` when exactly one
+        live window was found, `("many", [...])` for more, `("none",
+        [])` when there is none (tagged windows whose attach has
+        ended are shells now, and do not count), and `("unknown",
+        [])` when the answer could not be established — the listing
+        or the process snapshot could not be read, or a tagged
+        window's panes could not be listed. Liveness is checked
+        before counting: a tagged window left behind by a finished
+        attach must not make the live one ambiguous."""
+        raw = tmux_query("list-windows", "-t", f"{session}:", "-F",
+                         "#{session_name}:#{window_index}\t#{" + BG_ATTACH_TAG + "}")
+        if raw is None:
+            return "unknown", []
+        tagged = [line.split("\t")[0] for line in raw.split("\n")
+                  if line.count("\t") == 1 and line.split("\t")[1] == short]
+        if not tagged:
+            return "none", []
+        ps_raw = ps_snapshot().strip()
+        if not ps_raw:
+            return "unknown", []
+        ps_lines = ps_raw.split("\n")
+        live = []
+        for target in tagged:
+            panes = enumerate_window_panes(target, ps_lines)
+            if not panes:
+                return "unknown", []
+            if any(p.claude_pid for p in panes):
+                live.append(target)
+        if not live:
+            return "none", []
+        return ("one" if len(live) == 1 else "many"), live
 
     def _do_attach(self, stdscr):
         p = self.projects[self.selected]

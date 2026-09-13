@@ -739,7 +739,7 @@ Claude Code 2.1.139 で導入された [agent view](https://claude.com/blog/agen
 
 ### ダッシュボードから attach する
 
-`↑/↓` で bg 行に選択を移動して（プロジェクト一覧と bg セクション間をシームレスに行き来できます）`Enter` を押すと、ccm が現在の tmux セッションに新規ウィンドウを作成し、その中で `claude attach <short>` を実行します。ウィンドウの作業ディレクトリは bg セッションのものを継承し、ウィンドウ名は `bg-<short>` になるので `prefix + w`（choose-tree）から見つけやすい構成です。
+`↑/↓` で bg 行に選択を移動して（プロジェクト一覧と bg セクション間をシームレスに行き来できます）`Enter` を押すと、ccm が現在の tmux セッションに新規ウィンドウを作成し、その中で `claude attach <short>` を実行します。ウィンドウの作業ディレクトリは bg セッションのものを継承し、ウィンドウ名は `bg-<short>` になるので `prefix + w`（choose-tree）から見つけやすい構成です。ウィンドウにはセッションの短縮 id がタグ（`@ccm_bg_short`）として付くので、同じ行でもう一度 `Enter` を押すと新しいウィンドウを開かずにそのウィンドウへ切り替わります — `claude attach` を重ねるたびに同じ会話を描くクライアントが増え、数が増えると表示が乱れるためです。照合するのは名前ではなくタグで、そのウィンドウにまだ claude がいる間だけです。attach が終わった後は、次の `Enter` で新しいウィンドウを開きます。そのようなウィンドウが 2 つ生きている場合や、ccm が判断できない場合（ウィンドウ一覧・プロセス表・ペイン一覧のいずれかが読めない）は、ウィンドウを開かずに理由をメッセージで表示します。探すのは現在の tmux セッション内だけです。
 
 新規ウィンドウは ccm プロジェクトとして登録 **されません** — `@ccm_project` / `@ccm_dir` タグを持たないため、ccm の `auto_start_claude` が `claude --continue` を injection で先回りすることがありません。これが attach と auto-start の競合（Issue 6）に対する構造的回避策です。これなしに ccm 管理ウィンドウから attach すると、`claude attach <short>` がシェルコマンドではなく既存の `claude --continue` への user message として届いてしまいます。claude から detach した後はそのウィンドウを `prefix + &` で閉じてください。
 

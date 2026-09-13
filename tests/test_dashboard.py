@@ -406,6 +406,150 @@ class TestRenderSmoke:
         monkeypatch.setattr("ccm_agentview.daemon_running", lambda: False)
         d.render(_make_mock_stdscr())  # must not raise
 
+    def _bg_dashboard(self, monkeypatch, captured, listing, panes_by_target=None,
+                      ps="100 1 100 zsh 00:05\n", queries=None):
+        """A dashboard with one bg row selected, tmux stubbed. `listing`
+        is what `list-windows` answers (None = failure) — but only to a
+        query whose format reads the real user option, so a format that
+        drops the `@` gets an empty listing, as tmux would give.
+        `panes_by_target` maps a window target to the PaneInfo list the
+        liveness check sees there (missing = listing failure)."""
+        _stub_dashboard_environment(monkeypatch)
+        from ccm_pane_state import PaneInfo
+
+        def fake_tmux(*args, **kwargs):
+            captured.append(args)
+            if args and args[0] == "new-window":
+                return "0:9"
+            return ""
+
+        def fake_query(*args):
+            if queries is not None:
+                queries.append(args)
+            if args[0] == "list-windows" and "#{@ccm_bg_short}" not in args[-1]:
+                return ""
+            return listing
+        monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
+        monkeypatch.setattr("dashboard.tmux_query", fake_query)
+        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        monkeypatch.setattr("dashboard.ps_snapshot", lambda: ps)
+        monkeypatch.setattr(
+            "dashboard.enumerate_window_panes",
+            lambda target, ps_lines: (panes_by_target or {}).get(target, []))
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = []
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/w/proj",
+                name="my agent", state="WORKING", raw_state="working",
+                tempo="active", cli_version="2.1.139",
+                session_id="x", created_at=1.0, updated_at=2.0,
+                source="slash",
+            ),
+        ]
+        d.selected = 0
+        return d, PaneInfo
+
+    @staticmethod
+    def _live(PaneInfo):
+        return [PaneInfo("%7", "300", True, "claude", False, 301)]
+
+    @staticmethod
+    def _shell(PaneInfo):
+        return [PaneInfo("%7", "300", True, "zsh", False, None)]
+
+    def test_bg_attach_tags_the_window_it_opens(self, monkeypatch):
+        """The new window carries the session's short as a window
+        option, so a later Enter on the same row can find it by tag
+        rather than by its (renameable) name."""
+        captured = []
+        d, _ = self._bg_dashboard(monkeypatch, captured, listing="")
+        assert d._handle_key(13, _make_mock_stdscr()) == "attached"
+        assert ("set-option", "-wt", "0:9", dashboard.BG_ATTACH_TAG, "abcd1234") in captured
+
+    def test_bg_attach_switches_to_the_existing_window(self, monkeypatch):
+        """Enter on a row whose attach window is open and still hosts
+        claude switches to that window; no second `claude attach` is
+        typed, since every extra client draws the same conversation.
+        The listing is asked for the user option by its full name."""
+        from ccm_pane_state import PaneInfo
+        captured, queries = [], []
+        d, _ = self._bg_dashboard(
+            monkeypatch, captured, queries=queries,
+            listing="0:3\tabcd1234\n0:4\t",
+            panes_by_target={"0:3": self._live(PaneInfo)})
+        assert d._handle_key(13, _make_mock_stdscr()) == "attached"
+        names = [c[0] for c in captured if c]
+        assert "new-window" not in names and "send-keys" not in names
+        assert ("select-window", "-t", "0:3") in captured
+        assert any(q[0] == "list-windows" and "#{@ccm_bg_short}" in q[-1] for q in queries)
+
+    def test_bg_attach_opens_anew_when_the_tagged_window_lost_claude(self, monkeypatch):
+        """A tagged window whose attach has ended is a plain shell; a
+        fresh attach goes into a new window rather than into it."""
+        from ccm_pane_state import PaneInfo
+        captured = []
+        d, _ = self._bg_dashboard(
+            monkeypatch, captured, listing="0:3\tabcd1234",
+            panes_by_target={"0:3": self._shell(PaneInfo)})
+        assert d._handle_key(13, _make_mock_stdscr()) == "attached"
+        assert "new-window" in [c[0] for c in captured if c]
+
+    def test_bg_attach_reuses_the_live_window_beside_a_finished_one(self, monkeypatch):
+        """A finished attach leaves its tagged shell window behind; it
+        must not make the one live attach window ambiguous — liveness
+        is settled before counting, so the live one is switched to."""
+        from ccm_pane_state import PaneInfo
+        captured = []
+        d, _ = self._bg_dashboard(
+            monkeypatch, captured, listing="0:3\tabcd1234\n0:5\tabcd1234",
+            panes_by_target={"0:3": self._shell(PaneInfo), "0:5": self._live(PaneInfo)})
+        assert d._handle_key(13, _make_mock_stdscr()) == "attached"
+        names = [c[0] for c in captured if c]
+        assert "new-window" not in names
+        assert ("select-window", "-t", "0:5") in captured
+
+    def test_bg_attach_names_the_windows_when_two_are_live(self, monkeypatch):
+        """Two live attach windows already draw the conversation; a
+        third is not opened, and the message names the two."""
+        from ccm_pane_state import PaneInfo
+        captured = []
+        d, _ = self._bg_dashboard(
+            monkeypatch, captured, listing="0:3\tabcd1234\n0:5\tabcd1234",
+            panes_by_target={"0:3": self._live(PaneInfo), "0:5": self._live(PaneInfo)})
+        shown = []
+        monkeypatch.setattr(d, "_show_message", lambda st, msg, *a: shown.append(msg))
+        assert d._handle_key(13, _make_mock_stdscr()) == ""
+        names = [c[0] for c in captured if c]
+        assert "new-window" not in names and "send-keys" not in names
+        assert shown and "0:3" in shown[-1] and "0:5" in shown[-1]
+
+    @pytest.mark.parametrize("case", ["listing", "ps", "panes"])
+    def test_bg_attach_opens_nothing_when_it_cannot_tell(self, monkeypatch, case):
+        """When the listing, the process snapshot, or a tagged window's
+        panes cannot be read, whether an attach window is open is
+        unknown; no window is opened and the person is told."""
+        from ccm_pane_state import PaneInfo
+        captured = []
+        kw = dict(listing="0:3\tabcd1234", panes_by_target={"0:3": self._live(PaneInfo)})
+        if case == "listing":
+            kw["listing"] = None
+        elif case == "ps":
+            kw["ps"] = ""
+        else:
+            kw["panes_by_target"] = {}
+        d, _ = self._bg_dashboard(monkeypatch, captured, **kw)
+        shown = []
+        monkeypatch.setattr(d, "_show_message", lambda st, msg, *a: shown.append(msg))
+        assert d._handle_key(13, _make_mock_stdscr()) == ""
+        names = [c[0] for c in captured if c]
+        assert "new-window" not in names and "send-keys" not in names
+        assert shown and "not opening another" in shown[-1]
+
     def test_bg_row_enter_opens_new_window_and_attaches(self, monkeypatch):
         """Enter on a bg row must create a non-ccm tmux window and
         dispatch `claude attach <short>` to it. We capture every
@@ -425,6 +569,7 @@ class TestRenderSmoke:
             return ""
 
         monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
+        monkeypatch.setattr("dashboard.tmux_query", lambda *a: "")
         monkeypatch.setattr("dashboard.get_session", lambda: "0")
         monkeypatch.setattr("os.path.isdir", lambda p: True)
 
@@ -478,6 +623,7 @@ class TestRenderSmoke:
                 return "0:5"
             return ""
         monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
+        monkeypatch.setattr("dashboard.tmux_query", lambda *a: "")
         monkeypatch.setattr("dashboard.get_session", lambda: "0")
         monkeypatch.setattr("os.path.isdir", lambda p: True)
 
