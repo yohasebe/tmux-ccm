@@ -287,13 +287,87 @@ class TestRenderSmoke:
             assert any(t.startswith("Background sessions (1)") for t in drawn), selected
 
     def test_bg_section_reservation_leaves_project_rows(self):
-        """The block asks for spacer + header + one row per session,
-        but never more than leaves the minimum project rows."""
+        """The block asks for spacer + header + one row per session
+        out of the rows available, but never more than leaves the
+        minimum project rows."""
         d = Dashboard.__new__(Dashboard)
-        assert d._bg_section_rows([], 20) == 3
-        assert d._bg_section_rows([object()] * 4, 20) == 6
-        assert d._bg_section_rows([object()] * 40, 20) == 20 - 5 - Dashboard._BG_MIN_PROJECT_ROWS
-        assert d._bg_section_rows([object()] * 40, 6) == 0
+        assert d._bg_section_rows([], 15) == 3
+        assert d._bg_section_rows([object()] * 4, 15) == 6
+        assert d._bg_section_rows([object()] * 40, 15) == 15 - Dashboard._BG_MIN_PROJECT_ROWS
+        assert d._bg_section_rows([object()] * 40, 3) == 0
+        assert d._bg_section_rows([object()] * 40, 0) == 0
+
+    def test_many_banners_keep_the_selected_project_and_the_block(self, monkeypatch):
+        """Banners take rows out of the same budget as the list and
+        the block. With enough of them that a height-only reservation
+        would overrun, the selected project is still drawn and the
+        block still appears while the minimum project rows fit."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_agentview
+        monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "hooks.log is large")
+        monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda: "hooks disabled")
+        monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda: "managed only")
+        monkeypatch.setattr("dashboard.shell_cluster_warnings",
+                            lambda p: [f"cluster {i}" for i in range(4)])
+
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = [ccm_core.Project(f"0:{i}", str(i), f"p{i:02d}", f"/w/p{i}", "IDLE")
+                      for i in range(40)]
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/w/proj",
+                name="agent demo", state="NEEDS", raw_state="needs_input",
+                tempo="active", cli_version="2.1.139",
+                session_id="00000000-0000-0000-0000-000000000000",
+                created_at=1.0, updated_at=2.0, source="slash",
+            )
+        ]
+        # 7 banners + header on a 20-row popup leave 8 rows for list
+        # and block: 3 project rows minimum, then the block's 3.
+        for selected in (0, 12, 39):
+            d.selected = selected
+            stdscr = _make_mock_stdscr(height=20)
+            d.render(stdscr)
+            drawn = self._drawn_strings(stdscr)
+            assert any(t == f"p{selected:02d}" for t in drawn), selected
+            assert any(t.startswith("Background sessions (1)") for t in drawn), selected
+
+    def test_a_popup_too_short_for_the_block_keeps_the_project_rows(self, monkeypatch):
+        """When banners leave fewer rows than the minimum project rows
+        plus the block, the block yields entirely and the selected
+        project is still drawn; nothing is scrolled off into a
+        non-existent row."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_agentview
+        monkeypatch.setattr("dashboard.shell_cluster_warnings",
+                            lambda p: [f"cluster {i}" for i in range(13)])
+
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = [ccm_core.Project(f"0:{i}", str(i), f"p{i:02d}", f"/w/p{i}", "IDLE")
+                      for i in range(40)]
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/w/proj",
+                name="agent demo", state="NEEDS", raw_state="needs_input",
+                tempo="active", cli_version="2.1.139",
+                session_id="00000000-0000-0000-0000-000000000000",
+                created_at=1.0, updated_at=2.0, source="slash",
+            )
+        ]
+        # 13 banners + header on a 20-row popup leave 2 rows: fewer
+        # than the minimum project rows, so the block gets none.
+        d.selected = 25
+        stdscr = _make_mock_stdscr(height=20)
+        d.render(stdscr)  # must not raise
+        drawn = self._drawn_strings(stdscr)
+        assert any(t == "p25" for t in drawn)
+        assert not any(t.startswith("Background sessions") for t in drawn)
 
     def test_render_with_bg_section_visible(self, monkeypatch):
         """`b` key reveals the background-sessions block below the

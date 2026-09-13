@@ -89,9 +89,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `status-right-length` floor is applied as on every other write.
 - The dashboard's background-session block now appears when `b` is
   pressed even with more projects than the popup has rows: the block's
-  rows are reserved first and the project list scrolls within the
-  rest. It used to be skipped for want of space, so the toggle showed
-  nothing.
+  rows are reserved out of what is left below the header and any
+  warning banners, a few project rows are always kept, and the
+  project list scrolls within the rest. It used to be skipped for
+  want of space, so the toggle showed nothing; on a popup too short
+  for both, the project rows win.
 - Detection reuses the session record it validated against the live
   process when resolving the transcript, instead of reading the file a
   second time without the check; a record rejected as belonging to a

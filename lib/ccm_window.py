@@ -116,7 +116,7 @@ def conversation_history(project_dir, session=None) -> str:
     to resume — as far as ccm can see from here.
 
     `NO_HISTORY` is a positive claim, so it is made only when every
-    place the CLI would look has been looked at: nothing in ccm's own
+    place ccm can observe has been looked at: nothing in ccm's own
     environment or in the tmux environment a new window's shell
     inherits (`session`, when given) moves the CLI's config home or
     names the transcript directory, the slug is short enough to be
@@ -125,9 +125,10 @@ def conversation_history(project_dir, session=None) -> str:
     shell may report either — is absent or holds no transcript.
     Anything ccm cannot check (another config home, a custom
     directory name, an unreadable directory, a slug the CLI would
-    truncate and hash) is `UNKNOWN`, not "none". A shell's own
-    exports are not visible from here at all, which is why only a
-    window ccm has just created is judged this way (see
+    truncate and hash) is `UNKNOWN`, not "none". What ccm cannot
+    observe at all — a shell's own exports, a startup file that
+    moves the transcript location — is outside the claim, which is
+    why only a window ccm has just created is judged this way (see
     `launch_command`)."""
     import ccm_jsonl
     if not project_dir:

@@ -635,14 +635,17 @@ class Dashboard:
     #: Project rows the background block may never push out.
     _BG_MIN_PROJECT_ROWS = 3
 
-    def _bg_section_rows(self, bg_sessions, list_height):
-        """Rows the background-session block needs below the project
-        list: a spacer, the header, and one row per session (or the
-        one-line hint when there are none). Capped so at least
-        `_BG_MIN_PROJECT_ROWS` project rows stay visible; the block
-        itself clips its rows when it gets less than it asked for."""
+    def _bg_section_rows(self, bg_sessions, available):
+        """Rows the background-session block gets out of `available` —
+        the rows left for the list and the block together, below the
+        header and whatever banners were drawn. It asks for a spacer,
+        the header, and one row per session (or the one-line hint
+        when there are none), and gets that only after
+        `_BG_MIN_PROJECT_ROWS` project rows are kept: the list is
+        what the dashboard is for, so it yields last. The block clips
+        its own rows when it gets less than it asked for."""
         wanted = 2 + max(len(bg_sessions), 1)
-        room = list_height - 5 - self._BG_MIN_PROJECT_ROWS
+        room = available - self._BG_MIN_PROJECT_ROWS
         return max(0, min(wanted, room))
 
     def _render_bg_section(self, stdscr, start_row, bg_sessions,
@@ -883,7 +886,13 @@ class Dashboard:
             # scrolls within what is left.
             with self.lock:
                 bg_sessions = list(self.bg_sessions)
-            bg_reserved = (self._bg_section_rows(bg_sessions, list_height)
+            # Rows below `row` (header and banners drawn) down to the
+            # help line, less one kept back for the help line's second
+            # line. Banners come out of this too — a reservation made
+            # against the popup height alone would let them push the
+            # block, or the selected project, off the bottom.
+            available = max(0, (list_height - 3) - row - 1)
+            bg_reserved = (self._bg_section_rows(bg_sessions, available)
                            if self.bg_visible else 0)
 
             if not projects:
@@ -891,16 +900,16 @@ class Dashboard:
                 row += 3
             else:
                 # Scrolling: ensure selected project is visible. The
-                # rows the list can use start at `row` — below the
-                # header and whatever warning banners were drawn —
-                # and end where the loop below stops, so the count
-                # is derived from both rather than assumed; a fixed
-                # count would let the selected row scroll off the
-                # bottom whenever banners are showing. One row is
-                # kept back for the help line's second line.
-                visible_lines = max(1, (list_height - 3 - bg_reserved) - row - 1)
+                # count is what is actually left after the block's
+                # reservation — derived, not assumed, so banners never
+                # scroll the selected row off the bottom. It can be
+                # zero on a very short popup; then nothing is drawn
+                # and the offset simply follows the selection.
+                visible_lines = available - bg_reserved
                 scroll_offset = getattr(self, '_scroll_offset', 0)
-                if self.selected >= scroll_offset + visible_lines:
+                if visible_lines <= 0:
+                    scroll_offset = self.selected
+                elif self.selected >= scroll_offset + visible_lines:
                     scroll_offset = self.selected - visible_lines + 1
                 if self.selected < scroll_offset:
                     scroll_offset = self.selected
