@@ -409,6 +409,43 @@ def _fragment_text_is_dim(attributed_line):
 PATTERN_ACTIVE_SPINNER = re.compile(
     r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·[^)\n]*(?:\)|$)"
 )
+# The same footer with the elapsed time left out. The footer gives
+# its thinking hint (`thinking`, `still thinking`, `deep in thought`,
+# `picking the thought back up`) precedence over the elapsed time
+# when the pane is too narrow for both, so a narrow pane in a long
+# thinking phase shows `✻ Thinking… (deep in thought)` and nothing
+# that counts. What still moves there is the glyph, which the CLI
+# animates through its spinner frames (`· ✢ ✳ ✶ ✻ ✽`) on a fixed
+# two-second cycle while the session is alive. That cycle is why
+# the glyph cannot be a persisted clock: a poll every 2 s (or 20 s)
+# reads the same phase every time and would call a live spinner
+# static. Instead, movement is looked for within one pass — the
+# pane is captured again a fraction of a second later (see
+# `THINKING_HINT_RESAMPLE_SEC`), and a glyph that changed between
+# the captures is the evidence. A frozen frame does not change and
+# earns nothing. The verb between glyph and hint is opaque; the
+# hint must begin with a letter, which is what separates it from
+# the elapsed form above, and the glyph is restricted to the CLI's
+# own frames to keep prose out of it. With `prefersReducedMotion`
+# the CLI draws a fixed `●` instead, and then nothing on a narrow
+# pane moves during such a phase: that form is deliberately not
+# matched, and reads as idle — a known limit, see the guide.
+PATTERN_THINKING_HINT = re.compile(
+    r"^\s*(?P<glyph>[·✢✳✶✻✽])\s+\S[^\n]*?…\s*\((?P<hint>[A-Za-z][^)\n]*)(?:\)|$)"
+)
+#: Seconds between the captures that look for the spinner glyph
+#: moving. The CLI's frame index follows a cosine over a two-second
+#: period, which passes each frame twice per cycle, so two captures
+#: half a second apart can coincide on a symmetric phase (about one
+#: start phase in ten; more where the top frames share a glyph, as
+#: they do under Ghostty). Captures at +0.5 s AND +1.0 s cannot both
+#: coincide with the first — the second resample is what makes the
+#: check sound, not a rounding margin. An interval that is a
+#: multiple of the period (2 s) would read the same phase every
+#: time and defeat the check.
+THINKING_HINT_RESAMPLE_SEC = float(
+    os.environ.get("CCM_THINKING_HINT_RESAMPLE_SEC", "0.5"))
+THINKING_HINT_RESAMPLES = 2
 # Connection / rate-limit retries REPLACE the spinner footer with a
 # line of their own — measured against an unreachable endpoint:
 #

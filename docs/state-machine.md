@@ -50,8 +50,15 @@ Work-clock history is stored in the window's `@ccm_work_clock` and
 `@ccm_work_clock_ts` options. Periodic detection, send rechecks, spool readiness,
 and auto-focus use the same reader and staleness rule. Unchanged clocks expire
 after `SPINNER_STALE_RELEASE_SEC` (default 30 s); missing or malformed history
-conservatively treats a visible clock as ticking. The detection pipeline persists
-observations; direct pane checks read without refreshing them.
+conservatively treats a visible clock as ticking. The clock is the footer's
+parenthesised elapsed time (or a retry countdown). When a narrow pane drops the
+elapsed time in favour of the thinking hint (`(deep in thought)`), there is no
+clock to persist: the spinner glyph is what still moves, but it cycles on a fixed
+two-second period that a poll interval can sit on, so movement is looked for
+within one pass instead — the pane is captured again half a second later and a
+changed glyph marks the turn as running (`_spinner_moves`). A frozen frame, or
+the fixed `●` of reduced motion, never changes and earns nothing. The detection
+pipeline persists observations; direct pane checks read without refreshing them.
 
 ### Auto-focus on attach
 

@@ -90,6 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- A narrow pane in a long thinking phase no longer reads as idle: when
+  the spinner footer drops its elapsed time to make room for the
+  thinking hint (`(deep in thought)`), ccm captures the pane again
+  half a second later (twice at most) and takes the spinner glyph
+  moving, or an elapsed time that has come back, as the sign of a
+  running turn. A frozen frame does not move; nor does the fixed
+  glyph of Claude Code's reduced-motion setting, which such a pane
+  cannot tell from idle (see the guide's known limitations).
 - Background sessions the CLI marks `blocked` — waiting for a reply,
   an approval, or a condition to act on or wait out — now read
   `✻ NEEDS` in the dashboard and `ccm bg list` instead of `? UNKNOWN`,

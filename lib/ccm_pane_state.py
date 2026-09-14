@@ -42,6 +42,9 @@ from ccm_constants import (
     IGNORED_CHILDREN,
     PATTERN_ACCEPT_EDITS,
     PATTERN_ACTIVE_SPINNER,
+    PATTERN_THINKING_HINT,
+    THINKING_HINT_RESAMPLES,
+    THINKING_HINT_RESAMPLE_SEC,
     PATTERN_INPUT_PROMPT,
     PATTERN_PERMIT_FOOTER,
     PATTERN_RETRY_BACKOFF,
@@ -260,8 +263,12 @@ def _work_clock(line) -> Optional[str]:
     identical across passes means static. The spinning glyph and
     verb stay OUTSIDE the matched segment on purpose — they change
     even in a frame grabbed mid-animation, and including them would
-    make a frozen frame look alive. Tabs are stripped so the value
-    is safe to persist through a tab-separated tmux format."""
+    make a frozen frame look alive. The footer that carries no
+    elapsed time at all (a narrow pane in a long thinking phase) is
+    not a clock and is handled by `_spinner_moves`, which looks for
+    the glyph moving within one pass instead. Tabs are stripped so
+    the value is safe to persist through a tab-separated tmux
+    format."""
     m = PATTERN_ACTIVE_SPINNER.search(line)
     if m:
         return m.group(0).replace("\t", " ")
@@ -269,6 +276,65 @@ def _work_clock(line) -> Optional[str]:
     if m:
         return m.group(0).replace("\t", " ")
     return None
+
+
+#: Indirection so tests can skip the resample wait.
+_sleep = time.sleep
+
+
+def _hint_frames(lines):
+    """The (hint, glyph) pairs of the elapsed-less spinner footers in
+    `lines`, in order — the shape a narrow pane shows in a long
+    thinking phase (see `PATTERN_THINKING_HINT`)."""
+    out = []
+    for line in lines:
+        m = PATTERN_THINKING_HINT.match(line)
+        if m:
+            out.append((m.group("hint"), m.group("glyph")))
+    return out
+
+
+def _spinner_moves(pane_target, lines, stored_clock, now, clock_out) -> bool:
+    """True when an elapsed-less spinner footer in `lines` is seen to
+    animate — or when a later capture shows a ticking clock outright.
+
+    The pane is captured again, up to `THINKING_HINT_RESAMPLES` times
+    `THINKING_HINT_RESAMPLE_SEC` apart. Each recapture is first read
+    for the ordinary clocks (`_scan_work_clock`): the footer may have
+    regained its elapsed time meanwhile (the pane widened, the hint
+    changed), and that evidence must not be thrown away for having
+    arrived on the second look. Failing that, the recapture's
+    elapsed-less footers are compared with the previous capture's
+    LINE BY LINE, in order: movement is the same sequence of hints
+    with a glyph that differs at some position. A screen identical
+    on both looks — including two static lines with the same hint,
+    quoted in a transcript — is not movement, and a pair whose hints
+    do not line up (scrolled, or a hint that changed across a
+    threshold in the meantime) is not judged; the next pair, or the
+    next pass, will.
+
+    The CLI cycles the glyph through its frames on a fixed
+    two-second cosine period. Half a second apart, two captures of a
+    live spinner can still coincide on the cycle's symmetric phase
+    (about one start phase in ten); half a second and a full second
+    apart, they cannot both coincide — which is why the second
+    recapture exists. The comparison is made inside one pass on
+    purpose: across passes the poll interval can sit on the period
+    and read the same phase every time. Nothing is persisted."""
+    prev = _hint_frames(lines)
+    if not prev:
+        return False
+    for _ in range(THINKING_HINT_RESAMPLES):
+        _sleep(THINKING_HINT_RESAMPLE_SEC)
+        again = capture_pane_visible(pane_target)
+        if _scan_work_clock(again, stored_clock, now, clock_out):
+            return True
+        later = _hint_frames(again)
+        if [h for h, _ in later] == [h for h, _ in prev] and \
+                any(a != b for (_, a), (_, b) in zip(prev, later)):
+            return True
+        prev = later
+    return False
 
 
 def read_work_clock(win_target, cached=None):
@@ -440,6 +506,11 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
             # not a reason to skip the gate.
             if _scan_work_clock(visible, stored_clock, _now(), clock_out):
                 return "BUSY"
+            # A narrow pane may have squeezed the elapsed time out of
+            # the footer; the glyph still animates, and that is
+            # looked for within this pass (see `_spinner_moves`).
+            if _spinner_moves(pane_target, visible, stored_clock, _now(), clock_out):
+                return "BUSY"
             return "IDLE"
         return "BUSY"
 
@@ -454,8 +525,10 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
     # The claim is gated on the clock ticking because raw=BUSY has no
     # release path: a static footer (frozen frame, quoted text) must
     # age out on its own — see `_clock_is_ticking`.
-    if _scan_work_clock(capture_pane_visible(pane_target),
-                        stored_clock, _now(), clock_out):
+    visible = capture_pane_visible(pane_target)
+    if _scan_work_clock(visible, stored_clock, _now(), clock_out):
+        return "BUSY"
+    if _spinner_moves(pane_target, visible, stored_clock, _now(), clock_out):
         return "BUSY"
 
     return "IDLE"

@@ -759,6 +759,136 @@ class TestWorkClock:
             mock_tmux, self._frame("(9s · ↓ 402 tokens)"),
             at=1000 + 10 * w, stored=stored) == "BUSY"
 
+    @staticmethod
+    def _narrow(glyph, hint):
+        """A 36-column pane in a long thinking phase: the footer keeps
+        its hint and drops the elapsed time (Claude Code 2.1.271, the
+        hint has precedence when both do not fit)."""
+        return (f"{glyph} Thinking… ({hint})\n"
+                "❯ \n"
+                "  ~/…/ccm  main  Fable 5.1")
+
+    def _state_frames(self, mock_tmux, frames, at=1000, stored=None):
+        """A detection pass whose successive pane captures return
+        `frames` in order (the last one repeats); the resample wait
+        is skipped."""
+        it = iter(frames)
+        last = [frames[0]]
+
+        def capture(*args, **kwargs):
+            # Only the visible-area capture advances the frames; the
+            # PERMIT footer's bottom capture sees the current one.
+            if args == ("capture-pane", "-t", "%0", "-p"):
+                try:
+                    last[0] = next(it)
+                except StopIteration:
+                    pass
+            return last[0]
+        mock_tmux.side_effect = capture
+        with patch.object(ccm_pane_state, "_now", lambda: at), \
+             patch.object(ccm_pane_state, "_sleep", lambda s: None):
+            return ccm_pane_state.detect_pane_state(
+                "100", "%0", self._ps(), "99999", stored_clock=stored)
+
+    @patch("ccm_core.tmux_cmd")
+    def test_footer_without_elapsed_time_is_busy_when_the_glyph_moves(self, mock_tmux):
+        """The elapsed time squeezed out, the glyph is what moves — and
+        it is looked for within the pass: the poll interval can sit on
+        the animation's two-second period, so the stored history may
+        show the same glyph on every pass of a live spinner. Here the
+        first capture matches the stored glyph exactly; the resample
+        half a second later differs, and that is the evidence."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        stored = ("· (deep in thought", 1000)
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("·", "deep in thought"), self._narrow("✽", "deep in thought")],
+            at=1000 + 10 * w, stored=stored) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_footer_without_elapsed_time_is_idle_when_nothing_moves(self, mock_tmux):
+        """A frozen frame, and the fixed glyph of reduced motion, show
+        the same footer on every capture; neither is evidence of a
+        running turn, from the first sighting — there is no history
+        to age, because nothing is persisted for this form."""
+        frozen = self._narrow("✻", "deep in thought")
+        assert self._state_frames(mock_tmux, [frozen, frozen, frozen]) == "IDLE"
+        reduced = self._narrow("●", "deep in thought")
+        assert self._state_frames(mock_tmux, [reduced, reduced, reduced]) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_two_static_lines_with_the_same_hint_are_not_movement(self, mock_tmux):
+        """A transcript can hold two quoted footers with the same hint
+        and different glyphs. Captured twice, the screen is identical;
+        comparing line by line, nothing moved. (Matching by hint alone
+        would pair the first line with the second and call it
+        movement on every pass, with no release.)"""
+        two = ("✻ Thinking… (deep in thought)\n"
+               "✽ Thinking… (deep in thought)\n"
+               "❯ \n"
+               "  ~/…/ccm  main  Fable 5.1")
+        assert self._state_frames(mock_tmux, [two, two, two]) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_elapsed_time_returning_on_the_recapture_is_busy(self, mock_tmux):
+        """Between the captures the footer may regain its elapsed time
+        (the pane widened, the hint changed); the recapture is read
+        for the ordinary clock first, so that evidence counts."""
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("✻", "deep in thought"),
+             self._frame("(46s · deep in thought)")]) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_a_hint_that_changed_is_judged_from_the_next_pair(self, mock_tmux):
+        """A capture whose hints differ from the previous one's (the
+        hint crossed a threshold, the screen scrolled) pairs no lines
+        with it; each capture is compared with the one before, so the
+        following pair can still show movement."""
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("✻", "thinking more"),
+             self._narrow("✽", "thinking some more"),
+             self._narrow("·", "thinking some more")]) == "BUSY"
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("✻", "thinking"),
+             self._narrow("✽", "thinking more"),
+             self._narrow("·", "thinking some more")]) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_footer_with_elapsed_time_is_not_resampled(self, mock_tmux):
+        """The resample is for the elapsed-less form only; with a
+        clock on screen the single capture decides."""
+        screen = self._frame("(7s · ↓ 380 tokens)")
+        mock_tmux.return_value = screen
+        visible_calls = []
+        real = ccm_pane_state.capture_pane_visible
+
+        def counting(pane_target):
+            visible_calls.append(pane_target); return real(pane_target)
+        with patch.object(ccm_pane_state, "_now", lambda: 1000), \
+             patch.object(ccm_pane_state, "_sleep", lambda s: None), \
+             patch.object(ccm_pane_state, "capture_pane_visible", counting):
+            assert ccm_pane_state.detect_pane_state(
+                "100", "%0", self._ps(), "99999") == "BUSY"
+        assert len(visible_calls) == 1
+
+    def test_work_clock_forms(self):
+        """The elapsed form is the clock (glyph excluded, as a
+        mid-animation frame must not look alive); the hint form is
+        not a clock at all; a finished line and prose are neither."""
+        wc = ccm_pane_state._work_clock
+        assert wc("✳ Slithering… (45s · deep in thought)") == "(45s · deep in thought)"
+        assert wc("✻ Thinking… (deep in thought)") is None
+        assert wc("✻ Crunched for 8s") is None
+        hf = ccm_pane_state._hint_frames
+        assert hf(["✻ Thinking… (deep in thought)"]) == [("deep in thought", "✻")]
+        assert hf(["· Thinking… (picking the thought back up (2 of 3))"]) == \
+            [("picking the thought back up (2 of 3", "·")]
+        assert hf(["  ✻ Thinking… (still thinking"]) == [("still thinking", "✻")]
+        assert hf(["⏺ Note… (see below)", "● Thinking… (deep in thought)"]) == []
+
     @patch("ccm_core.tmux_cmd")
     def test_two_static_clocks_fail_safe(self, mock_tmux):
         """One stored slot per window: a second footer string on
