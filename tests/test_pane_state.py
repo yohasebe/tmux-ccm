@@ -771,7 +771,12 @@ class TestWorkClock:
     def _state_frames(self, mock_tmux, frames, at=1000, stored=None):
         """A detection pass whose successive pane captures return
         `frames` in order (the last one repeats); the resample wait
-        is skipped."""
+        is skipped.
+
+        `_sleep` is patched with `create=True` so the harness also runs
+        against code that predates it: a regression test that cannot
+        even set up on the old code fails with AttributeError, which
+        says nothing about the behaviour it claims to pin."""
         it = iter(frames)
         last = [frames[0]]
 
@@ -786,7 +791,7 @@ class TestWorkClock:
             return last[0]
         mock_tmux.side_effect = capture
         with patch.object(ccm_pane_state, "_now", lambda: at), \
-             patch.object(ccm_pane_state, "_sleep", lambda s: None):
+             patch.object(ccm_pane_state, "_sleep", lambda s: None, create=True):
             return ccm_pane_state.detect_pane_state(
                 "100", "%0", self._ps(), "99999", stored_clock=stored)
 
@@ -834,23 +839,32 @@ class TestWorkClock:
         assert self._state(mock_tmux, self._frame("(2s)"), at=1000 + w + 1,
                            stored=("(2s)", 1000)) == "IDLE"
 
-    def test_timer_alone_is_read_only_on_a_spinner_line(self):
-        """A bare `(2s)` is ordinary in prose, and this form has nothing
-        else to tell it apart, so it counts only where it cannot be
-        prose: after the glyph, the verb and its ellipsis. What
-        follows the seconds must still be the closing paren or the
-        line's end."""
-        wc = ccm_pane_state._work_clock
-        assert wc("✻ Thinking… (2s)") == "(2s)"
-        assert wc("✻ Thinking... (2s)") == "(2s)"
-        assert wc("✻ Thinking… (2s") == "(2s)"          # clipped by a narrow pane
-        assert wc("✻ Thinking… (3h 11m 16s)") == "(3h 11m 16s)"
-        # Prose, with and without the bracketed span on its own line.
-        assert wc("the first run took (2s)") is None
-        assert wc("(45s)") is None
-        assert wc("✻ Thinking… (2 seconds later)") is None
-        assert wc("✻ Thinking… (2s, 3s)") is None
-        assert wc("✻ Crunched for 8s") is None
+    @pytest.mark.parametrize("line,clock", [
+        ("✻ Thinking… (2s)", "(2s)"),
+        ("✻ Thinking... (2s)", "(2s)"),
+        ("✻ Thinking… (2s", "(2s)"),                 # clipped by a narrow pane
+        ("✻ Thinking… (3h 11m 16s)", "(3h 11m 16s)"),
+    ])
+    def test_timer_alone_on_a_spinner_line_is_a_clock(self, line, clock):
+        """On the spinner's own line the lone time is the clock, clipped
+        or not, whichever ellipsis the verb ends in."""
+        assert ccm_pane_state._work_clock(line) == clock
+
+    @pytest.mark.parametrize("line", [
+        "the first run took (2s)",
+        "(45s)",
+        "✻ Thinking… (2 seconds later)",
+        "✻ Thinking… (2s, 3s)",
+        "✻ Crunched for 8s",
+    ])
+    def test_timer_alone_off_a_spinner_line_is_not_a_clock(self, line):
+        """A bare `(2s)` is ordinary in prose and this form has nothing
+        else to tell it apart, so off the spinner's line it counts for
+        nothing; on it, the seconds must be followed by the closing
+        paren or the line's end. Kept apart from the acceptance cases:
+        together, a regression that loosens the pattern stopped the
+        test at an acceptance assertion before these were reached."""
+        assert ccm_pane_state._work_clock(line) is None
 
     @patch("ccm_core.tmux_cmd")
     def test_two_bracketed_spans_in_prose_stay_idle(self, mock_tmux):
@@ -898,6 +912,38 @@ class TestWorkClock:
         # The hint form is still not read there, and still is elsewhere.
         assert ccm_pane_state._hint_frames(["● Thinking… (deep in thought)"]) == []
         assert ccm_pane_state._hint_frames(["✻ Thinking… (deep in thought)"]) != []
+
+    @patch("ccm_core.tmux_cmd")
+    def test_resample_waits_between_captures(self, mock_tmux):
+        """The resample is only evidence because time passes between the
+        captures: without the wait, two captures land on the same
+        animation frame and a live spinner reads as still.
+
+        Patched WITHOUT `create=True` on purpose. The harness above
+        creates the attribute so it can run against code that predates
+        it; this test must instead fail if `_sleep` is renamed (the
+        patch would silently miss and a real sleep would run) or if the
+        call is dropped (the captures would no longer be apart)."""
+        frames = iter([self._narrow("·", "deep in thought"),
+                       self._narrow("·", "deep in thought"),
+                       self._narrow("·", "deep in thought")])
+        last = [None]
+        events = []
+
+        def capture(*args, **kwargs):
+            if args == ("capture-pane", "-t", "%0", "-p"):
+                events.append("capture")
+                last[0] = next(frames, last[0])
+            return last[0]
+        mock_tmux.side_effect = capture
+        with patch.object(ccm_pane_state, "_now", lambda: 1000), \
+             patch.object(ccm_pane_state, "_sleep",
+                          lambda s: events.append(("wait", s))):
+            ccm_pane_state.detect_pane_state("100", "%0", self._ps(), "99999")
+        # Every recapture follows a wait: the evidence is two captures
+        # apart in time, not two captures after the waits are done.
+        wait = ("wait", ccm_pane_state.THINKING_HINT_RESAMPLE_SEC)
+        assert events == ["capture"] + [wait, "capture"] * ccm_pane_state.THINKING_HINT_RESAMPLES
 
     @patch("ccm_core.tmux_cmd")
     def test_two_static_lines_with_the_same_hint_are_not_movement(self, mock_tmux):
@@ -951,7 +997,7 @@ class TestWorkClock:
         def counting(pane_target):
             visible_calls.append(pane_target); return real(pane_target)
         with patch.object(ccm_pane_state, "_now", lambda: 1000), \
-             patch.object(ccm_pane_state, "_sleep", lambda s: None), \
+             patch.object(ccm_pane_state, "_sleep", lambda s: None, create=True), \
              patch.object(ccm_pane_state, "capture_pane_visible", counting):
             assert ccm_pane_state.detect_pane_state(
                 "100", "%0", self._ps(), "99999") == "BUSY"
