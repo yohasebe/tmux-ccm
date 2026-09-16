@@ -807,3 +807,170 @@ class TestSaveTmuxConfSetting:
         text = conf.read_text(encoding="utf-8")
         assert "@ccm-notify permit" in text
         assert "status-interval 1" in text
+
+class TestHookTimeoutWarning:
+    """The hook `timeout` field is in seconds — Claude Code multiplies
+    it by 1000 — and earlier ccm versions wrote milliseconds into it.
+    An install still carrying that value is named, with a remedy that
+    actually rewrites it."""
+
+    def _settings(self, tmp_path, monkeypatch, settings):
+        import json
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(settings))
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: str(path) if p.endswith("settings.json") else p)
+        return ccm_core.hook_timeout_warning()
+
+    @staticmethod
+    def _ccm_hook(timeout, script=None):
+        import os
+        script = script or ccm_core.HOOK_SCRIPTS[0]
+        return {"type": "command",
+                "command": os.path.join(ccm_core.CCM_ROOT, "hooks", script),
+                "timeout": timeout}
+
+    def _hooks(self, *hook_dicts):
+        return {"hooks": {"Stop": [{"hooks": list(hook_dicts)}]}}
+
+    def test_the_millisecond_value_is_named_with_a_remedy_that_works(self, tmp_path, monkeypatch):
+        """The remedy is `ccm setup-hooks`, which on an existing install
+        sets ccm's own timeouts and nothing else. A remove-then-setup
+        would also work, but is more than the fix needs."""
+        msg = self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook(5000)))
+        assert "5000s" in msg
+        assert "`ccm setup-hooks`" in msg
+        assert "remove-hooks" not in msg
+
+    def test_the_second_value_is_quiet(self, tmp_path, monkeypatch):
+        assert self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook(5))) == ""
+
+    @pytest.mark.parametrize("timeout,warns", [(120, False), (121, True)])
+    def test_the_threshold_boundary(self, tmp_path, monkeypatch, timeout, warns):
+        msg = self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook(timeout)))
+        assert bool(msg) is warns
+        assert ccm_core.HOOK_TIMEOUT_WARN_ABOVE == 120
+
+    def test_the_largest_timeout_decides_regardless_of_order(self, tmp_path, monkeypatch):
+        """A large value followed by a small one must still warn: the scan
+        keeps the maximum, not the last value seen."""
+        msg = self._settings(tmp_path, monkeypatch,
+                             self._hooks(self._ccm_hook(5000), self._ccm_hook(5)))
+        assert "5000s" in msg
+
+    def test_another_tool_s_hook_is_not_ccm_s_business(self, tmp_path, monkeypatch):
+        """Only ccm's own entries are judged — a peer tool may have its
+        own reason for a long timeout, and `ccm setup-hooks` would not
+        rewrite it."""
+        peer = {"type": "command", "command": "/x/bin/peer hook", "timeout": 570000}
+        assert self._settings(tmp_path, monkeypatch, self._hooks(peer)) == ""
+
+    def test_a_peer_script_sharing_ccm_s_basename_is_not_ccm(self, tmp_path, monkeypatch):
+        """The script names are generic; the directory decides."""
+        script = ccm_core.HOOK_SCRIPTS[0]
+        peer = {"type": "command", "command": f"/peer/hooks/{script}", "timeout": 600}
+        assert self._settings(tmp_path, monkeypatch, self._hooks(peer)) == ""
+
+    @pytest.mark.parametrize("settings", [
+        [],                                              # root is a list
+        {"hooks": []},                                   # hooks is a list
+        {"hooks": {"Stop": 5}},                          # entries not iterable
+        {"hooks": {"Stop": None}},                       # entries not iterable
+        {"hooks": {"Stop": [None]}},                     # an entry that is not a dict
+        {"hooks": {"Stop": [{"hooks": {"a": 1}}]}},      # inner hooks a dict
+        {"hooks": {"Stop": [{"hooks": 5}]}},             # inner hooks not iterable
+        {"hooks": {"Stop": [{"hooks": True}]}},          # inner hooks a boolean
+        {"hooks": {"Stop": [{"hooks": [5]}]}},           # a hook that is not a dict
+    ], ids=["root-list", "hooks-list", "entries-int", "entries-none", "entry-none",
+            "inner-dict", "inner-int", "inner-bool", "hook-not-dict"])
+    def test_malformed_settings_stay_quiet(self, tmp_path, monkeypatch, settings):
+        """Each shape reaches a different guard, and each is its own case,
+        so the first shape to trip a missing guard cannot hide the rest."""
+        assert self._settings(tmp_path, monkeypatch, settings) == ""
+
+    def test_a_non_numeric_timeout_is_quiet(self, tmp_path, monkeypatch):
+        assert self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook("5000"))) == ""
+
+    def test_missing_settings_file_stays_quiet(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: str(tmp_path / "nope.json"))
+        assert ccm_core.hook_timeout_warning() == ""
+
+
+class TestHookLookalikeWarning:
+    """Hooks named like ccm's outside this ccm's hooks directory are
+    never edited; doctor names where they are so the user can decide."""
+
+    def _warn(self, tmp_path, monkeypatch, settings):
+        import json
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(settings))
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: str(path) if p.endswith("settings.json") else p)
+        return ccm_core.hook_lookalike_warning()
+
+    @staticmethod
+    def _stop(*commands):
+        return {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": c} for c in commands]}]}}
+
+    @staticmethod
+    def _entry(*commands, matcher=None):
+        entry = {"hooks": [{"type": "command", "command": c} for c in commands]}
+        if matcher is not None:
+            entry["matcher"] = matcher
+        return entry
+
+    def test_each_registration_is_counted_per_directory(self, tmp_path, monkeypatch):
+        """What the count means is the work of removing them by hand: a
+        command registered under two events, or twice in one matcher
+        entry, is two entries to delete."""
+        import os
+        s0, s1 = ccm_core.HOOK_SCRIPTS[0], ccm_core.HOOK_SCRIPTS[1]
+        old0, old1, peer = f"/old/ccm/hooks/{s0}", f"/old/ccm/hooks/{s1}", f"/peer/hooks/{s0}"
+        own = os.path.join(ccm_core.CCM_ROOT, "hooks", s0)
+        settings = {"hooks": {
+            "Stop": [self._entry(old0, old0, matcher="m"), self._entry(own, "/peer/independent.sh")],
+            "SubagentStop": [self._entry(old0), self._entry(old1, peer)],
+            "SessionEnd": [{"hooks": [{"command": ["not", "a", "string"]}, {"type": "command"}]}],
+        }}
+        msg = self._warn(tmp_path, monkeypatch, settings)
+        assert "/old/ccm/hooks (4 entries)" in msg
+        assert "/peer/hooks (1 entry)" in msg
+        assert "independent" not in msg and os.path.join(ccm_core.CCM_ROOT, "hooks") not in msg
+        assert msg.index("/old/ccm/hooks") < msg.index("/peer/hooks")
+        assert "by hand" not in msg and "only those you know" in msg
+
+    def test_this_ccm_s_hooks_and_unrelated_hooks_are_quiet(self, tmp_path, monkeypatch):
+        import os
+        own = os.path.join(ccm_core.CCM_ROOT, "hooks", ccm_core.HOOK_SCRIPTS[0])
+        assert self._warn(tmp_path, monkeypatch, self._stop(own, "/peer/independent.sh")) == ""
+
+    def test_missing_settings_file_stays_quiet(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "nope.json"))
+        assert ccm_core.hook_lookalike_warning() == ""
+
+
+class TestOwnHookEntryCount:
+
+    def _count(self, tmp_path, monkeypatch, settings):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(settings))
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: str(path) if p.endswith("settings.json") else p)
+        return ccm_core.own_hook_entry_count()
+
+    def test_counts_registrations_of_this_ccm_s_hooks_only(self, tmp_path, monkeypatch):
+        own = os.path.join(ccm_core.CCM_ROOT, "hooks", ccm_core.HOOK_SCRIPTS[0])
+        other = f"/old/ccm/hooks/{ccm_core.HOOK_SCRIPTS[0]}"
+        hook = lambda c: {"hooks": [{"type": "command", "command": c}]}
+        settings = {"hooks": {"Stop": [hook(own), hook(other)], "SubagentStop": [hook(own)]}}
+        assert self._count(tmp_path, monkeypatch, settings) == 2
+
+    def test_only_another_ccm_s_hooks_count_zero(self, tmp_path, monkeypatch):
+        other = f"/old/ccm/hooks/{ccm_core.HOOK_SCRIPTS[0]}"
+        settings = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": other}]}]}}
+        assert self._count(tmp_path, monkeypatch, settings) == 0
+
+    def test_unreadable_settings_are_unknown_not_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "nope.json"))
+        assert ccm_core.own_hook_entry_count() is None

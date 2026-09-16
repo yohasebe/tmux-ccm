@@ -869,11 +869,26 @@ def cmd_doctor():
             "add `set -g focus-events on` to ~/.tmux.conf")
 
     section("Setup")
-    if ccm_core.hooks_configured():
-        row(OK, "Hooks installed")
-    else:
+    # `hooks_configured` only finds ccm's script names somewhere in the
+    # settings; a ccm at a previous path satisfies it too. So an install
+    # with none of the entries in this ccm's hooks directory is not
+    # reported as installed. The two warnings below are independent of
+    # both answers: each helper says whether it has something to report.
+    if not ccm_core.hooks_configured():
         row(WARN, "Hooks not installed",
             "run `ccm setup-hooks` for full state detection")
+    elif ccm_core.own_hook_entry_count() == 0:
+        row(WARN, "Hooks not from this ccm",
+            "ccm's hook script names are in ~/.claude/settings.json, but none "
+            "is in this ccm's hooks directory — run `ccm setup-hooks`")
+    else:
+        row(OK, "Hooks installed")
+    stale_timeout = ccm_core.hook_timeout_warning()
+    if stale_timeout:
+        row(WARN, "Hook timeout", stale_timeout)
+    lookalikes = ccm_core.hook_lookalike_warning()
+    if lookalikes:
+        row(WARN, "Other hooks", lookalikes)
     claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
     if os.path.exists(claude_md):
         with open(claude_md, encoding="utf-8") as f:

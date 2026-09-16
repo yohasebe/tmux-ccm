@@ -90,6 +90,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- `ccm remove-hooks`, and `ccm setup-hooks` when it rebuilds an install,
+  no longer remove another tool's hooks. Both dropped any matcher entry
+  holding a hook whose command merely contained a ccm script's name, so
+  another tool's hook in the same entry, or a same-named script in
+  another directory, went with it. ccm now edits only its own hooks, one
+  hook at a time: a bare path to a ccm script in this ccm's hooks
+  directory, however the directory is spelled (through a symlink, or in
+  another case on a filesystem that ignores case). Every other hook
+  named like a ccm script is left in place and named in the command's
+  output and by `ccm doctor`, with the number of entries in each
+  directory. This includes the hooks of a ccm at a previous path: after
+  moving ccm, `ccm setup-hooks` installs hooks from the new path and
+  leaves the old ones for you to delete by hand, since from the settings
+  alone they cannot be told apart from another tool's. When `ccm doctor`
+  can read the settings and finds none of the hooks in this ccm's hooks
+  directory, it says so instead of reporting them as installed.
+- `ccm setup-hooks` now writes a hook timeout of 5 seconds instead of
+  5000. The field is in seconds, not milliseconds, so the old value
+  gave a hook that hangs 83 minutes to do it in. At session end Claude
+  Code waits for the largest SessionEnd hook timeout, capped at 60
+  seconds, so the old value also held that wait at the cap. On an
+  existing install, `ccm setup-hooks` now sets the timeout of ccm's own
+  hook commands and changes nothing else, other tools' hooks included;
+  `ccm doctor` names an install still carrying the old value. Change any
+  `CCM_HOOK_CMD_TIMEOUT` you set in milliseconds before running it.
 - A pane whose spinner footer shows only the elapsed time — the pane
   too narrow for the thinking hint beside it, or a tool phase that has
   produced no tokens yet — no longer reads as idle. That form is read

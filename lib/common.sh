@@ -14,8 +14,12 @@ CCM_TMP_DIR="${CCM_TMP_DIR:-${TMPDIR:-/tmp}/ccm-${UID}}"
 
 # Hook signal directory
 CCM_HOOK_DIR="${CCM_HOOK_DIR:-${CCM_TMP_DIR}/hooks}"
-# Timeout for hook commands in Claude Code settings (milliseconds)
-CCM_HOOK_CMD_TIMEOUT="${CCM_HOOK_CMD_TIMEOUT:-5000}"
+# Timeout for hook commands in Claude Code settings, in SECONDS: Claude
+# Code multiplies the field by 1000, and its own default is 60. Earlier
+# versions of ccm set 5000 here meaning milliseconds, which Claude Code
+# read as 5000 seconds. This is the only default; `ccm_setup_hooks`
+# reads the variable and does not supply one of its own.
+CCM_HOOK_CMD_TIMEOUT="${CCM_HOOK_CMD_TIMEOUT:-5}"
 
 # Colors for terminal output (using $'...' for real escape characters)
 COLOR_RED=$'\033[0;31m'
@@ -340,82 +344,41 @@ ccm_init() {
 }
 
 # Remove ccm hook entries from a settings JSON string (helper)
+# The hooks directory of the ccm this file belongs to (or of CCM_ROOT).
+_ccm_hooks_dir() {
+    printf '%s\n' "${CCM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/hooks"
+}
+
+# lib/ccm_hook_owner.py holds the one definition of which hooks are ccm's,
+# shared with `ccm doctor`; these wrappers only pipe settings through it.
+_ccm_hook_owner() {
+    python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ccm_hook_owner.py" "$@"
+}
+
+# Remove ccm's hooks from settings JSON on stdin, hook by hook: another
+# tool's hook in the same matcher entry, and a script that only shares a
+# ccm script's name, are left as they are. $1 is the hooks directory.
 _ccm_strip_hooks() {
-    jq '
-        if .hooks then
-            .hooks.UserPromptSubmit = [
-                .hooks.UserPromptSubmit[]? |
-                select(.hooks | any(.command | test("on-prompt-submit\\.sh")) | not)
-            ] |
-            .hooks.Stop = [
-                .hooks.Stop[]? |
-                select(.hooks | any(.command | test("on-stop\\.sh")) | not)
-            ] |
-            .hooks.StopFailure = [
-                .hooks.StopFailure[]? |
-                select(.hooks | any(.command | test("on-stop\\.sh")) | not)
-            ] |
-            .hooks.PreToolUse = [
-                .hooks.PreToolUse[]? |
-                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
-            ] |
-            .hooks.PostToolUse = [
-                .hooks.PostToolUse[]? |
-                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
-            ] |
-            .hooks.PostToolUseFailure = [
-                .hooks.PostToolUseFailure[]? |
-                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
-            ] |
-            .hooks.SubagentStart = [
-                .hooks.SubagentStart[]? |
-                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
-            ] |
-            .hooks.SubagentStop = [
-                .hooks.SubagentStop[]? |
-                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
-            ] |
-            .hooks.PreCompact = [
-                .hooks.PreCompact[]? |
-                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
-            ] |
-            .hooks.PostCompact = [
-                .hooks.PostCompact[]? |
-                select(.hooks | any(.command | test("on-pre-tool-use\\.sh")) | not)
-            ] |
-            .hooks.PermissionRequest = [
-                .hooks.PermissionRequest[]? |
-                select(.hooks | any(.command | test("on-permission-request\\.sh")) | not)
-            ] |
-            .hooks.PermissionDenied = [
-                .hooks.PermissionDenied[]? |
-                select(.hooks | any(.command | test("on-permission-denied\\.sh")) | not)
-            ] |
-            .hooks.Notification = [
-                .hooks.Notification[]? |
-                select(.hooks | any(.command | test("on-notification\\.sh")) | not)
-            ] |
-            .hooks.SessionEnd = [
-                .hooks.SessionEnd[]? |
-                select(.hooks | any(.command | test("on-session-end\\.sh")) | not)
-            ] |
-            if (.hooks.UserPromptSubmit | length) == 0 then del(.hooks.UserPromptSubmit) else . end |
-            if (.hooks.Stop | length) == 0 then del(.hooks.Stop) else . end |
-            if (.hooks.StopFailure | length) == 0 then del(.hooks.StopFailure) else . end |
-            if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end |
-            if (.hooks.PostToolUse | length) == 0 then del(.hooks.PostToolUse) else . end |
-            if (.hooks.PostToolUseFailure | length) == 0 then del(.hooks.PostToolUseFailure) else . end |
-            if (.hooks.SubagentStart | length) == 0 then del(.hooks.SubagentStart) else . end |
-            if (.hooks.SubagentStop | length) == 0 then del(.hooks.SubagentStop) else . end |
-            if (.hooks.PreCompact | length) == 0 then del(.hooks.PreCompact) else . end |
-            if (.hooks.PostCompact | length) == 0 then del(.hooks.PostCompact) else . end |
-            if (.hooks.PermissionRequest | length) == 0 then del(.hooks.PermissionRequest) else . end |
-            if (.hooks.PermissionDenied | length) == 0 then del(.hooks.PermissionDenied) else . end |
-            if (.hooks.Notification | length) == 0 then del(.hooks.Notification) else . end |
-            if (.hooks.SessionEnd | length) == 0 then del(.hooks.SessionEnd) else . end |
-            if (.hooks | length) == 0 then del(.hooks) else . end
-        else . end
-    '
+    _ccm_hook_owner strip "${1:-$(_ccm_hooks_dir)}"
+}
+
+# Set the `timeout` of ccm's own hooks to $2 in settings JSON on stdin,
+# changing nothing else. $1 is the hooks directory.
+_ccm_sync_hook_timeouts() {
+    _ccm_hook_owner sync "$1" "$2"
+}
+
+# Print a warning naming hooks that share a ccm script's name but are not
+# ccm's, so they were left in place. $1 is the hooks directory, $2 the
+# settings JSON.
+_ccm_warn_lookalike_hooks() {
+    local lookalikes
+    lookalikes=$(printf '%s' "$2" | _ccm_hook_owner lookalikes "$1" 2>/dev/null) || return 0
+    [[ -n "$lookalikes" ]] || return 0
+    ccm_warn "Left in place: hooks named like ccm's outside ${1}:"
+    printf '%s\n' "$lookalikes" | sed 's/^/    /'
+    echo "  ccm edits only hooks in its own directory. If these are left over from a ccm"
+    echo "  that was moved or removed, delete them from ~/.claude/settings.json by hand."
 }
 
 # Write JSON to settings file atomically
@@ -509,11 +472,27 @@ ccm_setup_hooks() {
         local stop_hook="${hooks_dir}/on-stop.sh"
         if grep -q "$prompt_hook" "$settings_file" 2>/dev/null && \
            grep -q "$stop_hook" "$settings_file" 2>/dev/null; then
-            ccm_info "Claude Code hooks are already installed."
-            echo "  To reinstall: ccm remove-hooks && ccm setup-hooks"
+            # Converge ccm's own entries on the current timeout: earlier
+            # versions wrote 5000 meaning milliseconds, which Claude Code
+            # reads as seconds. Only ccm's hook commands are edited, so
+            # a peer tool's hooks — even in the same matcher entry — are
+            # left exactly as they were.
+            local current synced
+            current=$(cat "$settings_file")
+            synced=$(printf '%s' "$current" | _ccm_sync_hook_timeouts "$hooks_dir" "$CCM_HOOK_CMD_TIMEOUT") \
+                || ccm_die "Could not read ${settings_file} to update hook timeouts"
+            if [[ "$(printf '%s' "$current" | jq -S .)" != "$(printf '%s' "$synced" | jq -S .)" ]]; then
+                cp "$settings_file" "${settings_file}.bak" 2>/dev/null || true
+                _ccm_write_settings "$settings_file" "$synced"
+                ccm_info "Updated ccm's hook timeouts to ${CCM_HOOK_CMD_TIMEOUT}s."
+            else
+                ccm_info "Claude Code hooks are already installed."
+                echo "  To reinstall: ccm remove-hooks && ccm setup-hooks"
+            fi
+            _ccm_warn_lookalike_hooks "$hooks_dir" "$synced"
             return 0
         fi
-        ccm_warn "Hook paths changed, updating..."
+        ccm_warn "ccm's hooks in ${hooks_dir} are incomplete or missing; installing them..."
     fi
 
     mkdir -p "$(dirname "$settings_file")" 2>/dev/null
@@ -531,7 +510,7 @@ ccm_setup_hooks() {
     local perm_hook="${hooks_dir}/on-permission-request.sh"
     local perm_denied_hook="${hooks_dir}/on-permission-denied.sh"
     local session_end_hook="${hooks_dir}/on-session-end.sh"
-    local timeout="${CCM_HOOK_CMD_TIMEOUT:-5000}"
+    local timeout="$CCM_HOOK_CMD_TIMEOUT"
 
     local notification_matchers
     notification_matchers=$(jq -nc \
@@ -542,7 +521,7 @@ ccm_setup_hooks() {
         ]')
 
     local new_settings
-    new_settings=$(echo "$existing" | _ccm_strip_hooks | jq \
+    new_settings=$(echo "$existing" | _ccm_strip_hooks "$hooks_dir" | jq \
         --arg prompt_cmd "$prompt_hook" \
         --arg stop_cmd "$stop_hook" \
         --arg pre_tool_cmd "$pre_tool_hook" \
@@ -585,6 +564,7 @@ ccm_setup_hooks() {
 
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "Claude Code hooks installed successfully."
+    _ccm_warn_lookalike_hooks "$hooks_dir" "$new_settings"
     echo "  Settings: ${settings_file}"
     if [[ -n "$claude_ver" ]]; then
         echo "  Claude Code: ${claude_ver}"
@@ -613,10 +593,13 @@ ccm_remove_hooks() {
     cp "$settings_file" "${settings_file}.bak" 2>/dev/null || true
 
     local new_settings
-    new_settings=$(cat "$settings_file" | _ccm_strip_hooks) || ccm_die "Failed to update settings JSON"
+    local hooks_dir
+    hooks_dir=$(_ccm_hooks_dir)
+    new_settings=$(cat "$settings_file" | _ccm_strip_hooks "$hooks_dir") || ccm_die "Failed to update settings JSON"
 
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "ccm hooks removed from Claude Code settings."
+    _ccm_warn_lookalike_hooks "$hooks_dir" "$new_settings"
     echo "  Restart Claude Code to apply changes."
 }
 

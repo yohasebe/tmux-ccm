@@ -900,6 +900,98 @@ def hooks_configured():
         return False
 
 
+#: Per-hook timeout, in seconds, above which ccm's own hook entries are
+#: named by `ccm doctor`. ccm's hooks are meant to finish in a few
+#: seconds and ccm writes 5; this is a warning threshold of ccm's
+#: choosing, not a limit Claude Code imposes.
+HOOK_TIMEOUT_WARN_ABOVE = 120
+
+
+def _read_user_settings():
+    """~/.claude/settings.json parsed, or None when it cannot be read."""
+    try:
+        with open(os.path.expanduser("~/.claude/settings.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _hook_entries_by_owner():
+    """(owned, lookalikes) as lists of the hook entries in the user's
+    settings — one item per registration, so a command registered under
+    two events appears twice — or None when the settings cannot be read.
+    Ownership is `ccm_hook_owner.classify`'s."""
+    settings = _read_user_settings()
+    if settings is None:
+        return None
+    import ccm_hook_owner
+    owned, lookalikes = ccm_hook_owner.classify(settings, os.path.join(CCM_ROOT, "hooks"))
+    owned, lookalikes = set(owned), set(lookalikes)
+    hooks = list(ccm_hook_owner._hooks(settings))
+    return ([h for h in hooks if h["command"] in owned],
+            [h for h in hooks if h["command"] in lookalikes])
+
+
+def own_hook_entry_count():
+    """How many hook entries in the user's settings are this ccm's, or
+    None when the settings cannot be read."""
+    entries = _hook_entries_by_owner()
+    return None if entries is None else len(entries[0])
+
+
+def hook_timeout_warning():
+    """A warning when ccm's installed hook entries carry a timeout far
+    above what ccm writes, or "" when they do not — or when the
+    settings cannot be read or are not in the expected shape.
+
+    The field is in seconds. Earlier versions of ccm wrote 5000 into it
+    meaning milliseconds, and Claude Code read that as 5000 seconds.
+    Which hooks count as ccm's is decided by `ccm_hook_owner.classify`,
+    the same definition `ccm setup-hooks` edits by, so every hook named
+    here is one that command will update — and update alone. An explicit
+    `CCM_HOOK_CMD_TIMEOUT` is written as given, so one set in
+    milliseconds has to be changed first."""
+    entries = _hook_entries_by_owner()
+    if entries is None:
+        return ""
+    worst = 0
+    for hook in entries[0]:
+        timeout = hook.get("timeout")
+        if isinstance(timeout, (int, float)) and timeout > worst:
+            worst = timeout
+    if worst <= HOOK_TIMEOUT_WARN_ABOVE:
+        return ""
+    return (f"ccm's hooks carry a {worst:g}s timeout; the field is in seconds, "
+            f"and earlier ccm versions wrote milliseconds into it. Run "
+            f"`ccm setup-hooks` to update it (if CCM_HOOK_CMD_TIMEOUT is set, "
+            f"give it in seconds or unset it first)")
+
+
+def hook_lookalike_warning():
+    """A warning naming the directories of hooks that are named like
+    ccm's scripts but are outside this ccm's hooks directory, or "" when
+    there are none or the settings cannot be read.
+
+    ccm never edits those (see `ccm_hook_owner`): they may be left over
+    from a ccm that was moved or removed, or belong to another tool that
+    names its scripts the same way, and only the user can tell which.
+    Each directory is shown as the settings spell it, with the number of
+    hook entries registered there — what removing them by hand involves."""
+    entries = _hook_entries_by_owner()
+    if not entries or not entries[1]:
+        return ""
+    counts = {}
+    for hook in entries[1]:
+        directory = hook["command"].rsplit("/", 1)[0]
+        counts[directory] = counts.get(directory, 0) + 1
+    where = ", ".join(f"{d} ({n} {'entry' if n == 1 else 'entries'})"
+                      for d, n in sorted(counts.items()))
+    return (f"hooks named like ccm's outside its hooks directory, left untouched: "
+            f"{where}. They may be another tool's; delete from "
+            f"~/.claude/settings.json only those you know are left over "
+            f"from a ccm that was moved or removed")
+
+
 def save_tmux_conf_setting(setting):
     """Persist a tmux setting to ~/.tmux.conf (before ccm/TPM load lines).
     setting: e.g., 'set -g @ccm-auto-restore on'

@@ -122,12 +122,25 @@ class TestCmdDoctor:
                     disable_warning="", managed_warning="",
                     cluster_warnings=(), projects=(),
                     errors_log_lines=0, ps_text="", panes_cache=(),
-                    focus_events="on"):
+                    focus_events="on", timeout_warning="",
+                    lookalike_warning="", own_hook_entries=16,
+                    real_hook_helpers=False):
         """Stub every external dependency cmd_doctor reads, returning
         controlled values so each test exercises a specific branch
-        without standing up real tmux / claude state."""
-        monkeypatch.setattr(ccm_core, "hooks_configured",
-                            lambda: hooks)
+        without standing up real tmux / claude state.
+
+        HOME points at an empty directory under tmp_path, so nothing
+        doctor reads from the home directory is the real user's. With
+        `real_hook_helpers` the settings-reading hook helpers run for
+        real against that HOME instead of being stubbed."""
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        if not real_hook_helpers:
+            monkeypatch.setattr(ccm_core, "hooks_configured", lambda: hooks)
+            monkeypatch.setattr(ccm_core, "hook_timeout_warning", lambda: timeout_warning)
+            monkeypatch.setattr(ccm_core, "hook_lookalike_warning", lambda: lookalike_warning)
+            monkeypatch.setattr(ccm_core, "own_hook_entry_count", lambda: own_hook_entries)
         monkeypatch.setattr(ccm_canaries, "hooks_log_warning",
                             lambda: hooks_log_warning)
         monkeypatch.setattr(ccm_canaries, "hooks_log_size",
@@ -215,6 +228,88 @@ class TestCmdDoctor:
         out = capsys.readouterr().out
         assert "Hooks not installed" in out
         assert "ccm setup-hooks" in out  # actionable guidance
+
+    @pytest.mark.parametrize("hooks", [True, False], ids=["installed", "not-installed"])
+    @pytest.mark.parametrize("which", ["timeout", "lookalike"])
+    def test_hook_warnings_show_whether_or_not_hooks_are_installed(
+            self, tmp_path, monkeypatch, capsys, hooks, which):
+        """Each warning's helper decides whether it has something to say;
+        a partial install, or only another ccm's hooks, must not hide it."""
+        texts = {"timeout": "TIMEOUT-BODY-7", "lookalike": "LOOKALIKE-BODY-3"}
+        labels = {"timeout": "Hook timeout", "lookalike": "Other hooks"}
+        self._stub_world(monkeypatch, tmp_path, hooks=hooks,
+                         **{f"{which}_warning": texts[which]})
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        other = "lookalike" if which == "timeout" else "timeout"
+        line = next(l for l in out.splitlines() if labels[which] in l)
+        assert texts[which] in line
+        assert labels[other] not in out and texts[other] not in out
+
+    @pytest.mark.parametrize("hooks", [True, False], ids=["installed", "not-installed"])
+    def test_both_hook_warnings_show_together(self, tmp_path, monkeypatch, capsys, hooks):
+        """ccm's own stale timeout and another directory's hooks are
+        independent facts; one must not hide the other."""
+        self._stub_world(monkeypatch, tmp_path, hooks=hooks,
+                         timeout_warning="TIMEOUT-BODY-7", lookalike_warning="LOOKALIKE-BODY-3")
+        ccm_commands.cmd_doctor()
+        lines = capsys.readouterr().out.splitlines()
+        assert any("Hook timeout" in l and "TIMEOUT-BODY-7" in l for l in lines)
+        assert any("Other hooks" in l and "LOOKALIKE-BODY-3" in l for l in lines)
+
+    @pytest.mark.parametrize("hooks", [True, False], ids=["installed", "not-installed"])
+    def test_hook_warnings_are_absent_when_their_helpers_are_quiet(
+            self, tmp_path, monkeypatch, capsys, hooks):
+        self._stub_world(monkeypatch, tmp_path, hooks=hooks)
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Hook timeout" not in out and "Other hooks" not in out
+
+    def test_hooks_found_but_none_from_this_ccm_are_not_called_installed(
+            self, tmp_path, monkeypatch, capsys):
+        self._stub_world(monkeypatch, tmp_path, hooks=True, own_hook_entries=0)
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Hooks not from this ccm" in out and "Hooks installed" not in out
+
+    @pytest.mark.parametrize("own_hook_entries", [16, None], ids=["some", "unreadable"])
+    def test_hooks_with_entries_of_this_ccm_are_installed(
+            self, tmp_path, monkeypatch, capsys, own_hook_entries):
+        self._stub_world(monkeypatch, tmp_path, hooks=True, own_hook_entries=own_hook_entries)
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Hooks installed" in out and "Hooks not from this ccm" not in out
+
+    @pytest.mark.parametrize("scripts", ["all", "one"])
+    def test_another_ccm_s_hooks_through_the_real_helpers(
+            self, tmp_path, monkeypatch, capsys, scripts):
+        """The settings hold only hooks at a previous ccm path — every
+        script, or a single one left over. Doctor, reading them for real,
+        does not call that this ccm's install, names the directory with
+        its entries, and has no timeout warning for hooks that are not
+        its own."""
+        root = tmp_path / "ccm-now"
+        (root / "hooks").mkdir(parents=True)
+        monkeypatch.setattr(ccm_core, "CCM_ROOT", str(root))
+        self._stub_world(monkeypatch, tmp_path, real_hook_helpers=True)
+        names = list(ccm_core.HOOK_SCRIPTS) if scripts == "all" else ["on-stop.sh"]
+        settings = {"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": f"/old/ccm/hooks/{n}", "timeout": 5000}
+            for n in names]}]}}
+        claude_dir = tmp_path / "home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        (claude_dir / "settings.json").write_text(json.dumps(settings))
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        if scripts == "all":
+            assert "Hooks not from this ccm" in out
+        else:
+            assert "Hooks not installed" in out
+        assert "Hooks installed" not in out
+        other = next(l for l in out.splitlines() if "Other hooks" in l)
+        n = len(names)
+        assert f"/old/ccm/hooks ({n} {'entry' if n == 1 else 'entries'})" in other
+        assert "Hook timeout" not in out
 
     def test_warns_on_hooks_log_bloat(self, tmp_path, monkeypatch, capsys):
         self._stub_world(
