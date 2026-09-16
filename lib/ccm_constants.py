@@ -406,6 +406,15 @@ def _fragment_text_is_dim(attributed_line):
 # layout splits windows into panes narrow enough to do that.
 # End of line therefore closes the match as well as `)`. The
 # finished line still fails — it has no opening paren at all.
+#
+# The separator and what follows it stay REQUIRED here, even
+# though the footer can render the time alone (see
+# `PATTERN_SPINNER_TIMER`): this pattern is matched anywhere on a
+# line, and `(2s)` or `(45s)` is ordinary enough in prose that
+# accepting it here would let a static screen holding two such
+# spans claim the window indefinitely — each differs from the one
+# stored value, so neither ever ages out. The lone time is read
+# only where it cannot be prose: on the spinner's own line.
 PATTERN_ACTIVE_SPINNER = re.compile(
     r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·[^)\n]*(?:\)|$)"
 )
@@ -427,11 +436,57 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 # hint must begin with a letter, which is what separates it from
 # the elapsed form above, and the glyph is restricted to the CLI's
 # own frames to keep prose out of it. With `prefersReducedMotion`
-# the CLI draws a fixed `●` instead, and then nothing on a narrow
-# pane moves during such a phase: that form is deliberately not
-# matched, and reads as idle — a known limit, see the guide.
+# the CLI draws a fixed `●` instead, and then nothing on the line
+# moves: the hint form is deliberately not matched there and reads
+# as idle — a known limit, see the guide. The timer form below is
+# not affected, since what ticks there is the time.
+# Both forms of the elapsed-less footer start the same way: the
+# animating glyph, the verb, its ellipsis, and the opening paren.
+# One definition, because the two patterns below must agree on
+# what a spinner line looks like.
+#
+# The ellipsis may be the character or three dots: the CLI appends
+# `…` to a verb that does not already end in one, and since 2.1.273
+# it counts ASCII `...` as one and leaves it alone. A verb can end
+# that way — `spinnerVerbs` takes whatever the user configures, and
+# a task's own wording is used as the verb too — so a pattern that
+# knows only the character reads such a footer as idle.
+#: The frames the CLI animates the spinner through.
+SPINNER_GLYPHS = "·✢✳✶✻✽"
+#: What it draws instead under `prefersReducedMotion` — one fixed
+#: character, never animated.
+SPINNER_GLYPH_STILL = "●"
+
+
+def _spinner_line_opens(glyphs):
+    return (r"^\s*(?P<glyph>[" + glyphs + r"])\s+\S[^\n]*?"
+            r"(?:…|\.{3})\s*\(")
+
+
+# The hint form takes the animated glyphs only: there the glyph is
+# the evidence, so a glyph that cannot move is no evidence at all.
 PATTERN_THINKING_HINT = re.compile(
-    r"^\s*(?P<glyph>[·✢✳✶✻✽])\s+\S[^\n]*?…\s*\((?P<hint>[A-Za-z][^)\n]*)(?:\)|$)"
+    _spinner_line_opens(SPINNER_GLYPHS) + r"(?P<hint>[A-Za-z][^)\n]*)(?:\)|$)"
+)
+# The footer with its time but nothing after it. The footer fits
+# its parts to the pane one at a time — hint, then timer, then
+# tokens — and drops what does not fit, so the time can end up
+# alone: on a pane too narrow for the hint beside it, and equally
+# on a wide one during a tool phase that has produced no tokens
+# (the footer starts showing itself once the turn passes ~16 s, or
+# straight away in verbose mode). Anchored to the spinner line,
+# unlike `PATTERN_ACTIVE_SPINNER`, because a bare `(2s)` is not
+# rare in prose and this form has nothing else to distinguish it.
+# A quoted spinner line still matches — the same bounded risk the
+# other patterns carry, and it ages out like any static clock.
+#
+# This form takes the still glyph as well. What ticks here is the
+# time, not the glyph, so whether the spinner animates does not
+# bear on it: under reduced motion this is the one elapsed-less
+# footer ccm can still read.
+PATTERN_SPINNER_TIMER = re.compile(
+    _spinner_line_opens(SPINNER_GLYPHS + SPINNER_GLYPH_STILL)
+    + r"(?P<clock>(?:\d+h\s+)?(?:\d+m\s+)?\d+s)\s*(?:\)|$)"
 )
 #: Seconds between the captures that look for the spinner glyph
 #: moving. The CLI's frame index follows a cosine over a two-second

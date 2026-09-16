@@ -817,6 +817,89 @@ class TestWorkClock:
         assert self._state_frames(mock_tmux, [reduced, reduced, reduced]) == "IDLE"
 
     @patch("ccm_core.tmux_cmd")
+    def test_timer_alone_is_a_clock(self, mock_tmux):
+        """The footer fits its parts one at a time and drops what does
+        not fit, so the timer can stand alone: a narrow pane with the
+        hint squeezed out, or a wide one in a tool phase that has
+        produced no tokens yet. Requiring the `·` separator read all
+        of those as idle."""
+        assert self._state(
+            mock_tmux, self._frame("(2s)"), at=1000) == "BUSY"
+        assert self._state(
+            mock_tmux, self._frame("(17s)"), at=1000) == "BUSY"
+        assert self._state(
+            mock_tmux, self._frame("(3h 11m 16s)"), at=1000) == "BUSY"
+        # Still ages out: one stored value, unchanged, past the window.
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        assert self._state(mock_tmux, self._frame("(2s)"), at=1000 + w + 1,
+                           stored=("(2s)", 1000)) == "IDLE"
+
+    def test_timer_alone_is_read_only_on_a_spinner_line(self):
+        """A bare `(2s)` is ordinary in prose, and this form has nothing
+        else to tell it apart, so it counts only where it cannot be
+        prose: after the glyph, the verb and its ellipsis. What
+        follows the seconds must still be the closing paren or the
+        line's end."""
+        wc = ccm_pane_state._work_clock
+        assert wc("✻ Thinking… (2s)") == "(2s)"
+        assert wc("✻ Thinking... (2s)") == "(2s)"
+        assert wc("✻ Thinking… (2s") == "(2s)"          # clipped by a narrow pane
+        assert wc("✻ Thinking… (3h 11m 16s)") == "(3h 11m 16s)"
+        # Prose, with and without the bracketed span on its own line.
+        assert wc("the first run took (2s)") is None
+        assert wc("(45s)") is None
+        assert wc("✻ Thinking… (2 seconds later)") is None
+        assert wc("✻ Thinking… (2s, 3s)") is None
+        assert wc("✻ Crunched for 8s") is None
+
+    @patch("ccm_core.tmux_cmd")
+    def test_two_bracketed_spans_in_prose_stay_idle(self, mock_tmux):
+        """The window stores one clock and compares every match against
+        it, so two DIFFERENT static clocks never age out. That is
+        tolerable for the footer's distinctive shape; it would not be
+        for prose, which is why the lone timer needs a spinner line."""
+        screen = ("the first run took (2s)\n"
+                  "the second took (45s)\n"
+                  "❯ \n"
+                  "  ~/…/ccm  main  Fable 5.1")
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        assert self._state(mock_tmux, screen, at=1000) == "IDLE"
+        assert self._state(mock_tmux, screen, at=1000 + 100 * w,
+                           stored=("(2s)", 1000)) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_an_ascii_ellipsis_footer_is_read_the_same(self, mock_tmux):
+        """Claude Code appends `…` only to a verb that does not already
+        end in an ellipsis, and counts ASCII `...` as one — a verb can
+        end that way, from `spinnerVerbs` or a task's own wording. The
+        hint form must be recognised either way, or such a pane reads
+        idle for the whole thinking phase."""
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("✻", "deep in thought").replace("…", "..."),
+             self._narrow("✽", "deep in thought").replace("…", "...")]) == "BUSY"
+        frozen = self._narrow("✻", "deep in thought").replace("…", "...")
+        assert self._state_frames(mock_tmux, [frozen, frozen, frozen]) == "IDLE"
+        assert ccm_pane_state._hint_frames(["✻ Thinking... (deep in thought)"]) == \
+            [("deep in thought", "✻")]
+
+    @patch("ccm_core.tmux_cmd")
+    def test_the_still_glyph_still_has_a_clock_when_the_time_shows(self, mock_tmux):
+        """Under reduced motion the glyph is a fixed `●`. The hint form
+        needs an animating glyph, because there the glyph is the
+        evidence — but the timer form does not, because the time is.
+        A reduced-motion pane showing its time is read like any
+        other, and only the hint-without-time footer stays
+        unreadable."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        assert self._state(mock_tmux, self._narrow("●", "2s"), at=1000) == "BUSY"
+        assert self._state(mock_tmux, self._narrow("●", "2s"), at=1000 + w + 1,
+                           stored=("(2s)", 1000)) == "IDLE"
+        # The hint form is still not read there, and still is elsewhere.
+        assert ccm_pane_state._hint_frames(["● Thinking… (deep in thought)"]) == []
+        assert ccm_pane_state._hint_frames(["✻ Thinking… (deep in thought)"]) != []
+
+    @patch("ccm_core.tmux_cmd")
     def test_two_static_lines_with_the_same_hint_are_not_movement(self, mock_tmux):
         """A transcript can hold two quoted footers with the same hint
         and different glyphs. Captured twice, the screen is identical;

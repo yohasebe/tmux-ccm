@@ -42,6 +42,7 @@ from ccm_constants import (
     IGNORED_CHILDREN,
     PATTERN_ACCEPT_EDITS,
     PATTERN_ACTIVE_SPINNER,
+    PATTERN_SPINNER_TIMER,
     PATTERN_THINKING_HINT,
     THINKING_HINT_RESAMPLES,
     THINKING_HINT_RESAMPLE_SEC,
@@ -275,6 +276,9 @@ def _work_clock(line) -> Optional[str]:
     m = PATTERN_RETRY_BACKOFF.search(line)
     if m:
         return m.group(0).replace("\t", " ")
+    m = PATTERN_SPINNER_TIMER.match(line)
+    if m:
+        return "(" + m.group("clock").replace("\t", " ") + ")"
     return None
 
 
