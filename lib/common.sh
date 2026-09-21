@@ -381,6 +381,15 @@ _ccm_warn_lookalike_hooks() {
     echo "  that was moved or removed, delete them from ~/.claude/settings.json by hand."
 }
 
+# Keep a copy of the settings about to be replaced. Called only once
+# the replacement has been worked out, which it cannot be from a file
+# that does not parse: copying first would overwrite the last good
+# backup with the broken file it is there to recover from.
+_ccm_backup_settings() {
+    [[ -f "$1" ]] || return 0
+    cp "$1" "$1.bak" 2>/dev/null || true
+}
+
 # Write JSON to settings file atomically
 _ccm_write_settings() {
     local settings_file="$1"
@@ -482,7 +491,7 @@ ccm_setup_hooks() {
             synced=$(printf '%s' "$current" | _ccm_sync_hook_timeouts "$hooks_dir" "$CCM_HOOK_CMD_TIMEOUT") \
                 || ccm_die "Could not read ${settings_file} to update hook timeouts"
             if [[ "$(printf '%s' "$current" | jq -S .)" != "$(printf '%s' "$synced" | jq -S .)" ]]; then
-                cp "$settings_file" "${settings_file}.bak" 2>/dev/null || true
+                _ccm_backup_settings "$settings_file"
                 _ccm_write_settings "$settings_file" "$synced"
                 ccm_info "Updated ccm's hook timeouts to ${CCM_HOOK_CMD_TIMEOUT}s."
             else
@@ -497,9 +506,15 @@ ccm_setup_hooks() {
 
     mkdir -p "$(dirname "$settings_file")" 2>/dev/null
 
+    # A path that is there but cannot be read as a file — a symlink
+    # whose target is gone, a directory — is not "no settings yet".
+    # Starting from `{}` would replace whatever it is with a plain file.
+    if [[ ! -f "$settings_file" && ( -e "$settings_file" || -L "$settings_file" ) ]]; then
+        ccm_die "${settings_file} exists but is not a readable file (a broken symlink?)"
+        return 1
+    fi
     local existing="{}"
     if [[ -f "$settings_file" ]]; then
-        cp "$settings_file" "${settings_file}.bak" 2>/dev/null || true
         existing=$(cat "$settings_file")
     fi
 
@@ -520,8 +535,19 @@ ccm_setup_hooks() {
             {"matcher": "elicitation_dialog", "hooks": [{"type": "command", "command": $cmd, "timeout": $timeout}]}
         ]')
 
+    # Strip first, on its own, and check it: in a pipeline its failure
+    # is visible only under `pipefail`, and without that jq reads the
+    # empty output of a failed strip, succeeds, and an empty settings
+    # file gets written under a message saying the hooks went in.
+    local stripped
+    # `return` after each `ccm_die`: nothing below may run once the
+    # new content could not be worked out, whatever `ccm_die` does.
+    stripped=$(printf '%s' "$existing" | _ccm_strip_hooks "$hooks_dir") \
+        || { ccm_die "Failed to update settings JSON"; return 1; }
+    [[ -n "$stripped" ]] || { ccm_die "Failed to update settings JSON"; return 1; }
+
     local new_settings
-    new_settings=$(echo "$existing" | _ccm_strip_hooks "$hooks_dir" | jq \
+    new_settings=$(printf '%s' "$stripped" | jq \
         --arg prompt_cmd "$prompt_hook" \
         --arg stop_cmd "$stop_hook" \
         --arg pre_tool_cmd "$pre_tool_hook" \
@@ -560,8 +586,10 @@ ccm_setup_hooks() {
         .hooks.PermissionDenied += [{"hooks": [{"type": "command", "command": $perm_denied_cmd, "timeout": $timeout}]}] |
         .hooks.Notification += $notification_matchers |
         .hooks.SessionEnd += [{"hooks": [{"type": "command", "command": $session_end_cmd, "timeout": $timeout}]}]
-    ') || ccm_die "Failed to update settings JSON"
+    ') || { ccm_die "Failed to update settings JSON"; return 1; }
+    [[ -n "$new_settings" ]] || { ccm_die "Failed to update settings JSON"; return 1; }
 
+    _ccm_backup_settings "$settings_file"
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "Claude Code hooks installed successfully."
     _ccm_warn_lookalike_hooks "$hooks_dir" "$new_settings"
@@ -585,18 +613,23 @@ ccm_setup_hooks() {
 ccm_remove_hooks() {
     local settings_file="${HOME}/.claude/settings.json"
 
+    if [[ ! -f "$settings_file" && ( -e "$settings_file" || -L "$settings_file" ) ]]; then
+        ccm_die "${settings_file} exists but is not a readable file (a broken symlink?)"
+        return 1
+    fi
     if [[ ! -f "$settings_file" ]]; then
         ccm_warn "No settings file found at ${settings_file}"
         return 0
     fi
 
-    cp "$settings_file" "${settings_file}.bak" 2>/dev/null || true
-
     local new_settings
     local hooks_dir
     hooks_dir=$(_ccm_hooks_dir)
-    new_settings=$(cat "$settings_file" | _ccm_strip_hooks "$hooks_dir") || ccm_die "Failed to update settings JSON"
+    new_settings=$(_ccm_strip_hooks "$hooks_dir" < "$settings_file") \
+        || { ccm_die "Failed to update settings JSON"; return 1; }
+    [[ -n "$new_settings" ]] || { ccm_die "Failed to update settings JSON"; return 1; }
 
+    _ccm_backup_settings "$settings_file"
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "ccm hooks removed from Claude Code settings."
     _ccm_warn_lookalike_hooks "$hooks_dir" "$new_settings"

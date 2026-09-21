@@ -298,6 +298,16 @@ class TestCli:
         r = _cli("strip", str(tmp_path), stdin="{not json")
         assert r.returncode == 1
 
+    @pytest.mark.parametrize("text", ["[]", "123", "null", '"text"'])
+    @pytest.mark.parametrize("action", ["strip", "sync", "lookalikes"])
+    def test_json_that_is_not_an_object_is_refused(self, tmp_path, action, text):
+        """It parses, and it is not settings. Handing it back would
+        let the caller back the file up and rewrite it as if edited."""
+        args = [action, str(tmp_path)] + (["5"] if action == "sync" else [])
+        r = _cli(*args, stdin=text)
+        assert r.returncode == 1 and r.stdout == ""
+        assert "not a JSON object" in r.stderr
+
     def test_non_ascii_and_large_integers_survive(self, tmp_path):
         settings = {"note": "日本語", "big": 9007199254740993, "hooks": {}}
         r = _cli("strip", str(tmp_path), stdin=json.dumps(settings, ensure_ascii=False))

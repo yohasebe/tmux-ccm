@@ -211,6 +211,25 @@ def _settings_sources(projects=None):
     yield ("user settings", CLAUDE_SETTINGS_FILE)
 
 
+def unreadable_settings(projects=None, managed_only=False):
+    """Labels of the settings files that are there but could not be
+    read as settings — not valid JSON, not an object, no permission.
+
+    A file that is absent sets nothing, and that is an answer. A file
+    that is present and unreadable is not: whatever it says, this
+    side did not see it, so "the flag is not set" is not something
+    the scan can say about it. Overlapping writers have left
+    `~/.claude/settings.json` cut off mid-object before now.
+    """
+    labels = []
+    for label, path in _settings_sources(projects):
+        if managed_only and label != MANAGED_SOURCE_LABEL:
+            continue
+        if os.path.lexists(path) and _read_settings_file(path) is None:
+            labels.append(label)
+    return labels
+
+
 def _flag_source(flag, projects=None) -> str:
     """Label of the first settings file setting `flag` true, else ""."""
     for label, path in _settings_sources(projects):

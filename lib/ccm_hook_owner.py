@@ -157,6 +157,14 @@ def _main(argv):
     except ValueError as exc:
         print(f"settings are not valid JSON: {exc}", file=sys.stderr)
         return 1
+    if not isinstance(settings, dict):
+        # `[]`, `123`, `null`: valid JSON, not settings. Passing them
+        # through would let a caller back the file up over a good copy
+        # and write it back as if it had been edited — and jq builds an
+        # object out of `null` without complaint.
+        print(f"settings are not a JSON object (found "
+              f"{type(settings).__name__})", file=sys.stderr)
+        return 1
     owned, lookalikes = classify(settings, hooks_dir)
     if action == "lookalikes":
         for command in lookalikes:

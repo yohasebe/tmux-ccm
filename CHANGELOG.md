@@ -90,6 +90,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- `ccm doctor` no longer ticks a settings flag it could not read. A
+  `settings.json` that is present but does not parse — overlapping
+  writers have left it cut off mid-object — reported
+  `disableAllHooks ✓ not set` and "Hooks not installed"; it now
+  reports the flag as unknown, naming the file, and says the settings
+  cannot be read as JSON.
+- `ccm setup-hooks` and `ccm remove-hooks` no longer overwrite the
+  backup with a settings file they then refuse to touch. The copy to
+  `settings.json.bak` was made before working out the new content, so
+  a broken file replaced the last good backup. It is now made only
+  when there is something to write. The write itself no longer
+  depends on the shell's `pipefail`: a failed step ends the command
+  there instead of going on to write an empty file. JSON that parses
+  but is not an object (`[]`, `null`) and a settings path that is a
+  broken symlink are refused the same way, where `null` used to get
+  hooks written over it and a broken symlink was replaced by a file.
 - `ccm send` no longer reports a message as sent when the session says
   it did not take it. Claude Code 2.1.277 removes characters it strips
   from a prompt and holds the cleaned text for the sender to confirm

@@ -311,6 +311,41 @@ class TestCmdDoctor:
         assert f"/old/ccm/hooks ({n} {'entry' if n == 1 else 'entries'})" in other
         assert "Hook timeout" not in out
 
+    def test_an_unreadable_settings_file_is_unknown_not_unset(
+            self, tmp_path, monkeypatch, capsys):
+        """A file cut off mid-object says nothing this side can read,
+        so neither "hooks not installed" nor "flag not set" is a
+        statement doctor can make about it. Runs the real canary
+        reader against a throwaway HOME."""
+        self._stub_world(monkeypatch, tmp_path, real_hook_helpers=True)
+        claude_dir = tmp_path / "home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        settings = claude_dir / "settings.json"
+        settings.write_text('{"hooks": {"Stop": [')
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(settings))
+        ccm_commands.cmd_doctor()
+        lines = capsys.readouterr().out.splitlines()
+        flag = next(l for l in lines if "disableAllHooks" in l)
+        assert "unknown" in flag and "user settings" in flag
+        assert "not set" not in flag
+        assert any("cannot be read as JSON" in l for l in lines)
+        assert not any("Hooks not installed" in l or "Hooks installed" in l
+                       for l in lines)
+
+    def test_an_absent_settings_file_is_simply_unset(
+            self, tmp_path, monkeypatch, capsys):
+        """Absent is an answer: nothing is set there."""
+        self._stub_world(monkeypatch, tmp_path, hooks=False)
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE",
+                            str(tmp_path / "home" / ".claude" / "settings.json"))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES", {})
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT",
+                            str(tmp_path / "no-managed.json"))
+        ccm_commands.cmd_doctor()
+        flag = next(l for l in capsys.readouterr().out.splitlines()
+                    if "disableAllHooks" in l)
+        assert "not set" in flag and "unknown" not in flag
+
     def test_warns_on_hooks_log_bloat(self, tmp_path, monkeypatch, capsys):
         self._stub_world(
             monkeypatch, tmp_path,

@@ -874,7 +874,15 @@ def cmd_doctor():
     # with none of the entries in this ccm's hooks directory is not
     # reported as installed. The two warnings below are independent of
     # both answers: each helper says whether it has something to report.
-    if not ccm_core.hooks_configured():
+    if "user settings" in ccm_canaries.unreadable_settings():
+        # Neither "installed" nor "not installed" can be read out of a
+        # file that does not parse, and Claude Code cannot load hooks
+        # from it either. `ccm setup-hooks` refuses to write over it.
+        row(WARN, "Hooks",
+            "~/.claude/settings.json cannot be read as JSON, so Claude "
+            "Code is loading no hooks from it; repair it (ccm keeps a "
+            "copy at settings.json.bak when it writes)")
+    elif not ccm_core.hooks_configured():
         row(WARN, "Hooks not installed",
             "run `ccm setup-hooks` for full state detection")
     elif ccm_core.own_hook_entry_count() == 0:
@@ -917,19 +925,34 @@ def cmd_doctor():
     # its FILE, not by the tier: MDM / OS policy and claude.ai-console
     # delivery leave no file to read, so a flag enforced either way is
     # invisible here and `/status` is the thing that knows.
+    # A settings file that is there but cannot be read is not a file
+    # with the flag unset: a tick over it would be a claim about
+    # something this scan never saw.
     dah = ccm_canaries.disable_all_hooks_warning(projects)
-    row(WARN if dah else OK,
-        "disableAllHooks",
-        dah or "not set (managed-settings.json, user and per-project settings; MDM / console policies: see /status)")
+    unread = ccm_canaries.unreadable_settings(projects)
+    if dah:
+        row(WARN, "disableAllHooks", dah)
+    elif unread:
+        row(WARN, "disableAllHooks",
+            f"unknown — could not read: {', '.join(unread)}")
+    else:
+        row(OK, "disableAllHooks",
+            "not set (managed-settings.json, user and per-project settings; MDM / console policies: see /status)")
     # This one is read from the administrator's file alone, because
     # that is the only place Claude Code honours it. Saying otherwise
     # would claim a scope the check does not have — and this flag is
     # the likeliest of the two to arrive by MDM or from the console,
     # the two managed paths that leave nothing on disk.
     mho = ccm_canaries.managed_hooks_only_warning()
-    row(WARN if mho else OK,
-        "allowManagedHooksOnly",
-        mho or "not set (managed-settings.json; MDM / console policies: see /status)")
+    unread_managed = ccm_canaries.unreadable_settings(managed_only=True)
+    if mho:
+        row(WARN, "allowManagedHooksOnly", mho)
+    elif unread_managed:
+        row(WARN, "allowManagedHooksOnly",
+            f"unknown — could not read: {', '.join(unread_managed)}")
+    else:
+        row(OK, "allowManagedHooksOnly",
+            "not set (managed-settings.json; MDM / console policies: see /status)")
 
     cluster_msgs = ccm_canaries.shell_cluster_warnings(projects)
     if cluster_msgs:

@@ -657,6 +657,72 @@ STUB
     [[ "$output" != *"/peer/independent.sh"* ]]
 }
 
+@test "setup-hooks and remove-hooks: a settings file that does not parse is left alone, and so is the backup" {
+    # An overlapping writer can leave the file cut off mid-object. The
+    # backup is what recovers from that, so copying the broken file
+    # over it first would destroy the one thing worth having.
+    local f="${MOCK_DIR}/.claude/settings.json"
+    mkdir -p "$(dirname "$f")"
+    printf '{"good": true}\n' > "$f.bak"
+    printf '{"hooks": {"Stop": [' > "$f"
+    local broken; broken=$(cat "$f")
+    run ccm_setup_hooks
+    [[ "$status" -ne 0 ]]
+    [[ "$(cat "$f")" == "$broken" ]]
+    [[ "$(cat "$f.bak")" == '{"good": true}' ]]
+    run ccm_remove_hooks
+    [[ "$status" -ne 0 ]]
+    [[ "$(cat "$f")" == "$broken" ]]
+    [[ "$(cat "$f.bak")" == '{"good": true}' ]]
+}
+
+_assert_untouched() {   # $1 = content expected in settings.json
+    local f="${MOCK_DIR}/.claude/settings.json"
+    [[ "$(cat "$f")" == "$1" ]] || { echo "settings changed: $(cat "$f")"; return 1; }
+    [[ "$(cat "$f.bak")" == '{"good": true}' ]] || { echo "backup changed: $(cat "$f.bak")"; return 1; }
+}
+
+@test "setup-hooks and remove-hooks: JSON that is not an object is not settings, and is left alone with its backup" {
+    # `[]`, `123` and `null` parse, and jq builds an object out of
+    # `null` without complaint — which is how a good backup got
+    # replaced by `null` and hooks written over it.
+    local f="${MOCK_DIR}/.claude/settings.json" content
+    mkdir -p "$(dirname "$f")"
+    for content in '[]' '123' 'null' '"text"'; do
+        printf '{"good": true}' > "$f.bak"
+        printf '%s' "$content" > "$f"
+        run ccm_setup_hooks
+        [[ "$status" -ne 0 ]] || { echo "setup accepted $content"; return 1; }
+        _assert_untouched "$content"
+        run ccm_remove_hooks
+        [[ "$status" -ne 0 ]] || { echo "remove accepted $content"; return 1; }
+        _assert_untouched "$content"
+    done
+}
+
+@test "setup-hooks and remove-hooks: a settings path that is a broken symlink is not replaced" {
+    local f="${MOCK_DIR}/.claude/settings.json"
+    mkdir -p "$(dirname "$f")"
+    printf '{"good": true}' > "$f.bak"
+    ln -s "${MOCK_DIR}/missing-target" "$f"
+    run ccm_setup_hooks
+    [[ "$status" -ne 0 ]]
+    [[ -L "$f" && ! -e "$f" ]]
+    run ccm_remove_hooks
+    [[ "$status" -ne 0 ]]
+    [[ -L "$f" && ! -e "$f" ]]
+    [[ "$(cat "$f.bak")" == '{"good": true}' ]]
+}
+
+@test "setup-hooks: the backup is the file as it was before this write" {
+    local f="${MOCK_DIR}/.claude/settings.json"
+    mkdir -p "$(dirname "$f")"
+    printf '{"model": "keep"}\n' > "$f"
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(jq -c . "$f.bak")" == '{"model":"keep"}' ]]
+}
+
 @test "remove-hooks: keeps another tool's hooks, even in ccm's matcher entry" {
     ccm_setup_hooks >/dev/null 2>&1
     _add_peers
