@@ -14,6 +14,7 @@ Layout per project (`<project>` is the registered project name):
     <project>/<ms>-<sender>.msg     pending, sorted oldest-first
     <project>/<ms>-<sender>.msg.delivering   claimed by a delivery pass
     <project>/delivered/            evidence of what went out
+    <project>/held/                 typed, submitted, not taken
     <project>/expired/              evidence of what outlived the TTL
     <project>.lock                  per-project mkdir lock (atomic)
 
@@ -78,7 +79,8 @@ _SPOOL_USAGE = (
     "Usage: ccm spool list [project]          List queued messages\n"
     "       ccm spool cancel <id> [project]   Withdraw a queued message\n"
     "       ccm spool cancel --all [project]  Withdraw all of them\n"
-    "       ccm spool clear-expired [project] Acknowledge undelivered ones"
+    "       ccm spool clear-expired [project] Acknowledge undelivered ones\n"
+    "       ccm spool clear-held [project]    Acknowledge held ones"
 )
 
 
@@ -173,6 +175,20 @@ def expired_counts():
     is how the record of a loss stays invisible in the places people
     actually look.
     """
+    return _subdir_counts("expired")
+
+
+def _in_subdir(pdir, sub):
+    """The message files a project keeps in `sub`, oldest first."""
+    try:
+        return sorted(n for n in os.listdir(os.path.join(pdir, sub))
+                      if n.endswith(".msg"))
+    except OSError:
+        return []
+
+
+def _subdir_counts(sub):
+    """`{project: n}` for the messages each project keeps in `sub`."""
     counts = {}
     try:
         entries = os.listdir(SPOOL_ROOT)
@@ -181,9 +197,9 @@ def expired_counts():
     for entry in entries:
         if entry.endswith(".lock"):
             continue
-        edir = os.path.join(SPOOL_ROOT, entry, "expired")
+        d = os.path.join(SPOOL_ROOT, entry, sub)
         try:
-            n = sum(1 for n_ in os.listdir(edir) if n_.endswith(".msg"))
+            n = sum(1 for n_ in os.listdir(d) if n_.endswith(".msg"))
         except OSError:
             continue
         if n:
@@ -191,10 +207,20 @@ def expired_counts():
     return counts
 
 
+def held_counts():
+    """`{project: n_held}` for projects whose message was typed into a
+    session that did not take it — it is sitting in that session's
+    input box, waiting for its user to confirm or clear it. Neither
+    pending (ccm will not send it again) nor delivered."""
+    return _subdir_counts("held")
+
+
 def spool_summary():
-    """{"pending": N, "expired": M} across all projects, for doctor."""
+    """{"pending": N, "expired": M, "held": H} across all projects,
+    for doctor."""
     return {"pending": sum(pending_counts().values()),
-            "expired": sum(expired_counts().values())}
+            "expired": sum(expired_counts().values()),
+            "held": sum(held_counts().values())}
 
 
 def _expire_and_prune(pdir, now):
@@ -337,6 +363,20 @@ def _deliver_one(project, pdir, msg_name):
         ccm_send._send_keys(pane_id, "-X", "cancel", label="spool-pre-cancel")
         ccm_send._type_body(pane_id, text.split("\n"))
         ccm_send._send_keys(pane_id, "Enter", label="spool-submit")
+        if ccm_send.held_after_submit(pane_id):
+            # Typed and submitted, and the session is holding it for
+            # its user to confirm (a prompt it rewrote). Recording it
+            # as delivered would lose it while saying it arrived, and
+            # putting it back in the queue would type it a second
+            # time: once the user confirms the copy in the composer,
+            # the next pass finds an empty composer and cannot tell
+            # that from a message never delivered. So it leaves the
+            # queue for `held/`, where `ccm spool list` and
+            # `ccm doctor` name it and the reader decides.
+            hdir = os.path.join(pdir, "held")
+            os.makedirs(hdir, exist_ok=True)
+            os.rename(delivering, os.path.join(hdir, msg_name))
+            return False
         ddir = os.path.join(pdir, "delivered")
         os.makedirs(ddir, exist_ok=True)
         os.rename(delivering, os.path.join(ddir, msg_name))
@@ -440,17 +480,18 @@ def _cmd_list(rest):
     shown = 0
     for name, pdir in _iter_project_dirs(only=project):
         pending = _pending(pdir)
-        expired_dir = os.path.join(pdir, "expired")
-        try:
-            n_expired = sum(1 for n in os.listdir(expired_dir)
-                            if n.endswith(".msg"))
-        except OSError:
-            n_expired = 0
+        def _count(sub):
+            try:
+                return sum(1 for n in os.listdir(os.path.join(pdir, sub))
+                           if n.endswith(".msg"))
+            except OSError:
+                return 0
+        n_expired, n_held = _count("expired"), _count("held")
         # A project whose queue is empty can still be the one holding
         # the record of a message that never arrived. Skipping it
         # because nothing is pending hides that record in the command
         # `ccm doctor` sends the reader to.
-        if not pending and not n_expired:
+        if not pending and not n_expired and not n_held:
             continue
         print(f"{name}:")
         for fname in pending:
@@ -459,6 +500,15 @@ def _cmd_list(rest):
             age = _msg_age(now, queued) if queued else "?"
             msg_id = fname[:-4]
             print(f"  {msg_id}  ({age})  {_preview(os.path.join(pdir, fname))}")
+        for fname in _in_subdir(pdir, "held"):
+            msg_id = fname[:-4]
+            print(f"  {msg_id}  (held)  "
+                  f"{_preview(os.path.join(pdir, 'held', fname))}")
+        if n_held:
+            print(f"  ({n_held} last seen waiting in the session's input "
+                  f"box. Deal with it there — press Enter to send it or "
+                  f"clear the box — then `ccm spool clear-held {name}`. "
+                  f"ccm does not retype or withdraw them.)")
         if n_expired:
             print(f"  ({n_expired} expired — never delivered)")
         shown += 1
@@ -548,6 +598,32 @@ def _cmd_clear_expired(rest):
         ccm_core.ccm_info("No expired message records to clear.")
 
 
+def _cmd_clear_held(rest):
+    """Drop the records of messages a session was holding.
+
+    ccm cannot see how one ended: whether its user pressed Enter on
+    the copy in the composer or cleared it away, the composer is
+    empty afterwards either way — which is why these are not queued
+    again. The record says "this was last seen waiting"; saying
+    "dealt with" is the reader's to do, and this is where they say
+    it. Nothing is sent, withdrawn or typed here.
+    """
+    project = rest[0] if rest else None
+    removed = 0
+    for name, pdir in _iter_project_dirs(only=project):
+        hdir = os.path.join(pdir, "held")
+        for n in _in_subdir(pdir, "held"):
+            try:
+                os.unlink(os.path.join(hdir, n))
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        ccm_core.ccm_info(f"Cleared {removed} held message record(s).")
+    else:
+        ccm_core.ccm_info("No held message records to clear.")
+
+
 def cmd_spool(args):
     """Inspect and withdraw queued (store-and-forward) messages.
 
@@ -556,6 +632,7 @@ def cmd_spool(args):
       ccm spool cancel <id> [project]   Withdraw one
       ccm spool cancel --all [project]  Withdraw all
       ccm spool clear-expired [project] Acknowledge the undelivered
+      ccm spool clear-held [project]    Acknowledge the held
     """
     if not args or args[0] in ("-h", "--help"):
         print(_SPOOL_USAGE)
@@ -567,5 +644,7 @@ def cmd_spool(args):
         _cmd_cancel(rest)
     elif sub == "clear-expired":
         _cmd_clear_expired(rest)
+    elif sub == "clear-held":
+        _cmd_clear_held(rest)
     else:
         ccm_core.ccm_die(_SPOOL_USAGE)

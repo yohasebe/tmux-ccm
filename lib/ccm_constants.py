@@ -27,6 +27,7 @@ here.
 
 import os
 import re
+import unicodedata
 
 
 # Version string. Keep in sync with the `CCM_VERSION` constant in
@@ -264,12 +265,25 @@ def composer_draft_fragment(pane_text, pane_text_attributed=None):
     back to the plain-text answer, unchanged from before this
     discriminator existed.
     """
+    lines = _composer_lines(pane_text, pane_text_attributed)
+    if not lines:
+        return None
+    fragment = lines[0].strip()
+    return fragment[:60] + "..." if len(fragment) > 60 else fragment
+
+
+def _composer_lines(pane_text, pane_text_attributed=None):
+    """The composer's own lines, from its draft line to the closing
+    rule, or [] when the composer is bare, absent or showing the
+    next-prompt suggestion. What a caller does with more than the
+    first line is its business; finding the region is done here
+    once."""
     lines = pane_text.split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
     rules = [i for i, ln in enumerate(lines) if PATTERN_COMPOSER_RULE.match(ln)]
     if len(rules) < 2 or len(lines) - rules[-1] > COMPOSER_TAIL_WINDOW:
-        return None
+        return []
     for idx in range(rules[-2] + 1, rules[-1]):
         ln = lines[idx]
         if PATTERN_COMPOSER_DRAFT.match(ln):
@@ -278,10 +292,81 @@ def composer_draft_fragment(pane_text, pane_text_attributed=None):
                 if (idx < len(att_lines)
                         and strip_sgr(att_lines[idx]) == ln
                         and _fragment_text_is_dim(att_lines[idx])):
-                    return None
-            fragment = ln.strip()
-            return fragment[:60] + "..." if len(fragment) > 60 else fragment
+                    return []
+            return lines[idx:rules[-1]]
+    return []
+
+
+# What Claude Code says when it has NOT taken a prompt it was given.
+# Since 2.1.277 a prompt carrying characters it strips is rewritten
+# without them and held for the sender to confirm, and the line
+# saying so is drawn directly above the composer:
+#
+#   Removed 9 invisible characters · review and press Enter to send
+#
+# That line is the one thing on screen that says what happened.
+# Reading it beats comparing the composer's text with the message,
+# which cannot separate a prompt held back from a draft typed after
+# the send landed: `reply only` is the message `Please reply only
+# OK.` minus six characters, and a prompt Claude Code held after
+# removing nine characters is no less held than one it removed one
+# from. Both of those were sent as evidence by a reviewer, in
+# opposite directions, against a comparison that tried.
+#
+# The count and the reason belong to upstream's wording and are left
+# opaque; what is matched is the shape of the status line — a reason,
+# the `·` separator, and the instruction to the sender closing the
+# line. The instruction alone is not enough: a reply that happens to
+# say `press Enter to send` lands in the same rows as the notice
+# while it streams (measured: 46 of 100 samples of such a reply), and
+# read as the notice it failed a send the session had taken. A
+# rewording upstream, or a pane too narrow to show the line whole
+# (at 60 columns 2.1.278 cuts it before the instruction), means ccm
+# stops seeing the hold and reports as it did before this existed —
+# the same direction every other missed reading takes here.
+PATTERN_PROMPT_HELD = re.compile(
+    r"\S.*\u00b7[^\u00b7\n]*\bpress Enter (?:again )?to send\s*$",
+    re.IGNORECASE)
+
+#: How far above the composer's opening rule the notice may sit.
+#: Bounded because the same words in a transcript — a reply quoting
+#: them, this paragraph on screen — are not the CLI saying it is
+#: holding something.
+HELD_NOTICE_LOOKBACK = 2
+
+
+def prompt_held_notice(pane_text, pane_text_attributed=None):
+    """The line where Claude Code says it is holding a prompt for the
+    sender to confirm, or None when it is not saying that.
+
+    A held prompt is IN the composer — that is what holding it means
+    — so an empty composer is never a hold, whatever the rows above
+    it say. The two conditions are asked together here, in one
+    place, so that no caller can ask only one.
+
+    A sender that reports success on having pressed Enter reports a
+    delivery that did not happen. This is what the pane shows when
+    that has happened, and nothing else on screen states it: the
+    composer's own text says only that something is in it.
+
+    None when the composer cannot be found (a dialog covers it, the
+    capture failed), which leaves the caller reporting what it
+    reported before.
+    """
+    lines = pane_text.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    rules = [i for i, ln in enumerate(lines) if PATTERN_COMPOSER_RULE.match(ln)]
+    if len(rules) < 2 or len(lines) - rules[-1] > COMPOSER_TAIL_WINDOW:
+        return None
+    if not _composer_lines(pane_text, pane_text_attributed):
+        return None
+    top = rules[-2]
+    for idx in range(max(0, top - HELD_NOTICE_LOOKBACK), top):
+        if PATTERN_PROMPT_HELD.search(lines[idx]):
+            return lines[idx].strip()
     return None
+
 
 
 _SGR_PARAM_RE = re.compile(r"\x1b\[([0-9;]*)m")
@@ -438,8 +523,8 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 # own frames to keep prose out of it. With `prefersReducedMotion`
 # the CLI draws a fixed `●` instead, and then nothing on the line
 # moves: the hint form is deliberately not matched there and reads
-# as idle — a known limit, see the guide. The timer form below is
-# not affected, since what ticks there is the time.
+# as idle — a known limit, see the guide. The timer form below
+# reads there, but see what that is worth under its own note.
 # Both forms of the elapsed-less footer start the same way: the
 # animating glyph, the verb, its ellipsis, and the opening paren.
 # One definition, because the two patterns below must agree on
@@ -480,10 +565,18 @@ PATTERN_THINKING_HINT = re.compile(
 # A quoted spinner line still matches — the same bounded risk the
 # other patterns carry, and it ages out like any static clock.
 #
-# This form takes the still glyph as well. What ticks here is the
-# time, not the glyph, so whether the spinner animates does not
-# bear on it: under reduced motion this is the one elapsed-less
-# footer ccm can still read.
+# This form takes the still glyph as well, which is worth less
+# than it looks: under `prefersReducedMotion` the CLI leaves the
+# footer as drawn, so its elapsed time can stand still through a
+# minute of real work and move only when something else redraws
+# the line (a resize does). Measured against 2.1.278:
+# `● Thinking... (2s · ↓ 40 tokens)` held for over 30 seconds
+# while the turn ran, where the animated footer ticked every
+# second. A clock that does not tick ages out like any other
+# static one (`SPINNER_STALE_RELEASE_SEC`), so under reduced
+# motion this form holds a turn busy for that window and no
+# longer. The hooks path is what carries such a session; this is
+# the fallback's limit, not its guarantee.
 PATTERN_SPINNER_TIMER = re.compile(
     _spinner_line_opens(SPINNER_GLYPHS + SPINNER_GLYPH_STILL)
     + r"(?P<clock>(?:\d+h\s+)?(?:\d+m\s+)?\d+s)\s*(?:\)|$)"

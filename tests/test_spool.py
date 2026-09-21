@@ -332,9 +332,14 @@ class TestExpiry:
 
 
 class TestReconcileDelivery:
-    def _stub_delivery(self, monkeypatch, deliverable=("%51", None)):
-        """Stub the readiness check and the typing helpers; returns
-        (typed_lines, keys)."""
+    def _stub_delivery(self, monkeypatch, deliverable=("%51", None),
+                       held=None):
+        """Stub the readiness check, the typing helpers and the
+        session's answer to the submit; returns (typed_lines, keys).
+
+        `held` is what the target does with the submitted prompt:
+        None takes it, and a notice line is what it says when it
+        keeps the prompt for its user to confirm."""
         typed, keys = [], []
         monkeypatch.setattr(ccm_spool, "_deliverable_pane",
                             lambda w: deliverable)
@@ -342,7 +347,71 @@ class TestReconcileDelivery:
                             lambda t, lines: typed.extend(lines))
         monkeypatch.setattr(ccm_send, "_send_keys",
                             lambda *a, **k: keys.append(a))
+        monkeypatch.setattr(ccm_send, "held_after_submit",
+                            lambda pane, **kw: held)
         return typed, keys
+
+    def test_a_message_the_session_does_not_take_leaves_the_queue_held(
+            self, spool_root, monkeypatch):
+        """Typed and submitted is not delivered: Claude Code holds a
+        prompt it rewrote for its user to confirm. Recording it as
+        delivered would lose it — and putting it back in the queue
+        would type it again once the user confirms the copy already
+        in the composer, since an empty composer then looks like a
+        message that never arrived. It goes to `held/` instead, where
+        `ccm spool list` and `ccm doctor` name it."""
+        typed, keys = self._stub_delivery(monkeypatch, held="Removed 1 invisible character · review and press Enter to send")
+        ccm_spool.enqueue("demo", "tester", "please review\u200b now")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert any("please review" in ln for ln in typed)
+        assert any(a == ("%51", "Enter") for a in keys)
+        assert _pending(spool_root) == []
+        assert not os.path.isdir(os.path.join(spool_root, "demo", "delivered"))
+        held_dir = os.path.join(spool_root, "demo", "held")
+        assert len(os.listdir(held_dir)) == 1
+        assert ccm_spool.spool_summary()["held"] == 1
+
+    def test_a_held_record_is_listed_and_can_be_acknowledged(
+            self, spool_root, monkeypatch, capsys):
+        """ccm cannot see how a held message ended — pressing Enter on
+        the copy in the composer and clearing it away both leave the
+        box empty — so the record stays until the reader says it is
+        dealt with. Without that there is a warning nobody can answer."""
+        self._stub_delivery(monkeypatch, held="Removed 1 invisible character · review and press Enter to send")
+        ccm_spool.enqueue("demo", "tester", "please review\u200b now")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        capsys.readouterr()
+
+        ccm_spool.cmd_spool(["list"])
+        listed = capsys.readouterr().out
+        assert "(held)" in listed and "please review" in listed
+        assert "clear-held" in listed
+
+        ccm_spool.cmd_spool(["clear-held", "demo"])
+        assert "Cleared 1 held" in capsys.readouterr().out
+        assert ccm_spool.spool_summary()["held"] == 0
+
+    def test_clearing_held_records_sends_nothing(self, spool_root, monkeypatch):
+        """Acknowledging a record is bookkeeping. Whatever is in the
+        other session's input box is its user's to deal with."""
+        _typed, keys = self._stub_delivery(monkeypatch, held="Removed 1 invisible character · review and press Enter to send")
+        ccm_spool.enqueue("demo", "tester", "please review\u200b now")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        before = len(keys)
+        ccm_spool.cmd_spool(["clear-held", "demo"])
+        assert len(keys) == before
+
+    def test_a_held_message_is_never_typed_again(self, spool_root, monkeypatch):
+        """The pass after it was held types nothing — not even once
+        the user has confirmed or cleared the copy in the composer,
+        which ccm cannot tell apart."""
+        self._stub_delivery(monkeypatch, held="Removed 1 invisible character · review and press Enter to send")
+        ccm_spool.enqueue("demo", "tester", "please review\u200b now")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        typed, keys = self._stub_delivery(monkeypatch)   # target now takes prompts
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert typed == [] and keys == []
+        assert ccm_spool.spool_summary()["held"] == 1
 
     def test_idle_project_receives_the_message(self, spool_root,
                                                monkeypatch):

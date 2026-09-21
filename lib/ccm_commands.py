@@ -993,10 +993,14 @@ def cmd_doctor():
         row(OK, "auto-exit declined", "no records")
 
     spool = ccm_spool.spool_summary()
-    if spool["pending"] or spool["expired"]:
+    if spool["pending"] or spool["expired"] or spool["held"]:
         parts = []
         if spool["pending"]:
             parts.append(f"{spool['pending']} queued — `ccm spool list`")
+        if spool["held"]:
+            parts.append(
+                f"{spool['held']} last seen waiting in a session's input "
+                f"box — `ccm spool list`, then `ccm spool clear-held`")
         if spool["expired"]:
             parts.append(
                 f"{spool['expired']} expired undelivered "

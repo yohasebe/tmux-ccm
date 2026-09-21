@@ -715,9 +715,28 @@ class TestWorkClock:
                 "100", "%0", ps or self._ps(), "99999",
                 stored_clock=stored)
 
+    @patch("ccm_core.tmux_cmd")
+    def test_a_reduced_motion_footer_ages_out_like_any_static_clock(
+            self, mock_tmux):
+        """Known limit, measured against 2.1.278: with Claude Code's
+        reduced-motion setting the footer is left as drawn, so its
+        elapsed time can stand still while the turn runs. ccm cannot
+        tell that from a frozen frame, and releases it on the same
+        window — which is why hooks, not this fallback, are what
+        carry such a session. Pinned so the release stays deliberate.
+        """
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        screen = self._frame("(2s · ↓ 40 tokens)", glyph="●")
+        stored = ("(2s · ↓ 40 tokens)", 1000)
+        assert self._state(mock_tmux, screen, at=1000) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w,
+                           stored=stored) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w + 1,
+                           stored=stored) == "IDLE"
+
     @staticmethod
-    def _frame(footer):
-        return (f"✳ Slithering… {footer}\n"
+    def _frame(footer, glyph="✳"):
+        return (f"{glyph} Slithering… {footer}\n"
                 "❯ \n"
                 "  ~/code/ccm  main  Opus 5  ctx ███░ 27%")
 

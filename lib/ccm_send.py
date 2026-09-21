@@ -69,6 +69,7 @@ import ccm_spool  # store-and-forward queue for undeliverable sends
 from ccm_constants import (
     composer_draft_fragment,
     external_agent_name,
+    prompt_held_notice,
 )
 from ccm_pane_state import (
     capture_composer_snapshot, detect_pane_state, enumerate_window_panes,
@@ -206,6 +207,33 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
 # (normal send) was genuinely ready and is left on the fast path.
 _DELIVERY_VERIFY_RETRIES = 2
 _DELIVERY_VERIFY_SETTLE_SEC = 1.0
+# ─── Submit acceptance ───
+# Pressing Enter is not the same as the message being taken. Claude
+# Code holds a prompt that carried characters it strips, showing it
+# rewritten for the sender to confirm with a second Enter, and says
+# so in a line above the composer that disappears after a few
+# seconds. Enter alone therefore proves nothing, and a send that
+# reports success on it reports a delivery that did not happen.
+#
+# So the pane is read after submitting, and what is read is that
+# line — the CLI's own statement — not the composer's text. Text
+# cannot answer this: a draft typed after the send landed can look
+# like the message minus a few characters, and a message the CLI
+# stripped nine characters from looks no less like itself than one
+# it stripped one from. A reviewer sent both as counter-examples
+# against comparing text, in opposite directions.
+#
+# Reading stops as soon as the composer is clear — the ordinary
+# case, one capture, or two when the first still shows the body on
+# its way out. It keeps looking while
+# something is in the composer, since the notice takes a moment to
+# appear, and gives up at the timeout reporting a delivery — the
+# behaviour that shipped for years, and the safe direction when the
+# screen does not say otherwise. The timeout bounds the polling, not
+# the wall clock: each capture carries tmux's own timeout, so a tmux
+# that answers slowly takes as long as it takes.
+_SUBMIT_ACCEPT_TIMEOUT_SEC = 2.0
+_SUBMIT_ACCEPT_POLL_SEC = 0.4
 # Minimum signature length to verify against. A very short message
 # (< this) cannot be matched in the pane without false positives,
 # so verification is skipped for it (rare for delegation messages).
@@ -261,6 +289,24 @@ def _body_landed(win_target, signatures):
     # sends it twice or stops believing the check.
     flat = "".join(cap.split())
     return any("".join(sig.split()) in flat for sig in signatures)
+
+
+def held_after_submit(pane_target, timeout=_SUBMIT_ACCEPT_TIMEOUT_SEC):
+    """The line in which the target says it is holding the prompt
+    just submitted, or None when it does not say that. Shared by
+    `ccm send` and the spool so both answer this question the same
+    way."""
+    deadline = time.time() + timeout
+    while True:
+        plain, attributed = capture_composer_snapshot(pane_target)
+        notice = prompt_held_notice(plain, attributed)
+        if notice:
+            return notice
+        if composer_draft_fragment(plain, attributed) is None:
+            return None     # nothing waiting in the composer
+        if time.time() >= deadline:
+            return None
+        time.sleep(_SUBMIT_ACCEPT_POLL_SEC)
 
 
 def _type_body(win_target, lines):
@@ -1044,9 +1090,24 @@ def cmd_send(args):
                 "then resend (without --start, since Claude is now running)."
             )
 
-    # Final submit (unless --no-enter)
+    # Final submit (unless --no-enter), then confirm the target took
+    # it: Enter is a keystroke, not an acceptance.
     if not no_enter:
         _send_keys(pane_target, "Enter", label="final-submit")
+        notice = held_after_submit(pane_target)
+        if notice:
+            if _trace_enabled():
+                _trace_record(pane_target, "send-not-accepted",
+                              (f"project={project_name}",))
+            ccm_core.ccm_die(
+                f"{project_name} did not take the message: it is still in "
+                f"that session's input box, unsent.\n"
+                f"  It says: {notice}\n"
+                "  ccm does not press Enter again on its own, and does not "
+                "rewrite what you sent. In the target window, either press "
+                "Enter to send what is shown there, or clear it (ctrl+u) "
+                "and resend without the characters it removed."
+            )
     if _trace_enabled():
         _trace_record(pane_target, "send-end", (f"project={project_name}",))
 

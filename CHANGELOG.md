@@ -90,6 +90,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- `ccm send` no longer reports a message as sent when the session says
+  it did not take it. Claude Code 2.1.277 removes characters it strips
+  from a prompt and holds the cleaned text for the sender to confirm
+  with another Enter, saying so in a line above the input box — so
+  pressing Enter proved nothing. Both `ccm send` and the spool now
+  read that line after submitting: `ccm send` fails, quoting what the
+  session said and adding that the body is still in its input box,
+  and the spool records the message as held instead of delivered,
+  where `ccm spool list` and `ccm doctor` name it and
+  `ccm spool clear-held` acknowledges it once you have dealt with it
+  in that session. It is not queued for a second try: after its user
+  confirms or clears the copy in the input box, the box looks the same
+  either way, so retrying would type the message again. ccm neither
+  presses Enter again nor rewrites what you sent. When the session
+  does not say it is holding the prompt — including when the line has
+  already gone, the wording changes, the pane is too narrow to show
+  the line whole (2.1.278 cuts it at 60 columns), or the pane cannot
+  be read — the send reports as before. The reading can also err the
+  other way: a reply that prints a line shaped like that notice,
+  while the session's user is typing a new draft, reads as a hold.
+  Treat the failure as a prompt to look at the target window, not as
+  grounds to resend automatically.
+- Documented that under Claude Code's reduced-motion setting the
+  spinner footer's elapsed time can stop updating during a running
+  turn, so reading the pane — the fallback used when hooks are not
+  firing — goes idle once `CCM_SPINNER_STALE_RELEASE_SEC` passes. The
+  guides and the pattern's own note said the time was unaffected by
+  reduced motion.
 - `ccm remove-hooks`, and `ccm setup-hooks` when it rebuilds an install,
   no longer remove another tool's hooks. Both dropped any matcher entry
   holding a hook whose command merely contained a ccm script's name, so

@@ -629,6 +629,88 @@ class TestStaleReleaseWindows:
         assert ccm_constants.PERMIT_MAX_TIMEOUT == 600
 
 
+class TestPromptHeldNotice:
+    """Claude Code does not always take a prompt on the Enter that
+    submits it: since 2.1.277 one carrying characters it strips is
+    rewritten and held for the sender to confirm. It says so in a
+    line above the composer — the only thing on screen that does."""
+
+    RULE = "\u2500" * 30
+
+    def _screen(self, *above, composer="\u276f Reply only HOLD_OK. AB"):
+        return "\n".join([*above, self.RULE, composer, self.RULE,
+                           "  \u23f5\u23f5 auto mode on", ""])
+
+    @pytest.mark.parametrize("notice", [
+        "Removed 1 invisible character \u00b7 review and press Enter to send",
+        "Removed 9 invisible characters \u00b7 review and press Enter to send",
+    ], ids=["one", "nine"])
+    def test_the_notice_is_returned_whatever_it_counts(self, notice):
+        """How many characters were removed, and why, is upstream's
+        wording: a count this side insisted on would be a second
+        place to get it wrong."""
+        assert ccm_constants.prompt_held_notice(
+            self._screen("  " + notice)) == notice
+
+    def test_a_rewording_of_the_instruction_is_still_read(self):
+        notice = "Cleaned the prompt \u00b7 press Enter again to send"
+        assert ccm_constants.prompt_held_notice(self._screen("  " + notice)) \
+            == notice
+
+    def test_no_notice_is_no_hold(self):
+        """What the composer holds says nothing: a draft typed after
+        the send landed sits there exactly like a message held back.
+        Only the notice separates them."""
+        assert ccm_constants.prompt_held_notice(
+            self._screen(composer="\u276f reply only")) is None
+        assert ccm_constants.prompt_held_notice(
+            self._screen(composer="\u276f ")) is None
+
+    def test_a_notice_shaped_line_further_up_the_pane_is_not_the_notice(self):
+        """A transcript can hold the notice verbatim — a reply quoting
+        it, an earlier hold scrolled up. Only the rows right above
+        the composer are the CLI speaking now. The composer holds a
+        draft here, so the row limit is the only thing refusing."""
+        quoted = "  Removed 1 invisible character \u00b7 review and press Enter to send"
+        assert ccm_constants.prompt_held_notice(
+            self._screen(quoted, "", "", composer="\u276f a draft")) is None
+
+    @pytest.mark.parametrize("composer", ["\u276f ", "\u276f something else"],
+                             ids=["empty-composer", "another-draft"])
+    @pytest.mark.parametrize("rows_above", [1, 2])
+    def test_a_reply_saying_the_words_is_not_the_notice(self, composer, rows_above):
+        """Measured against 2.1.278: a streamed reply whose lines read
+        `press Enter to send` sits in the same rows as the notice — a
+        hint line between it and the rule, or nothing. It carries the
+        instruction but not the status line's shape, and with an
+        empty composer nothing is being held whatever it says."""
+        above = ["  press Enter to send"] + ["  (hint line)"] * (rows_above - 1)
+        assert ccm_constants.prompt_held_notice(
+            self._screen(*above, composer=composer)) is None
+
+    def test_the_notice_over_an_empty_composer_is_not_a_hold(self):
+        """A held prompt is in the composer. The notice's last
+        moments over a box already cleared are not a hold."""
+        notice = "  Removed 1 invisible character \u00b7 review and press Enter to send"
+        assert ccm_constants.prompt_held_notice(
+            self._screen(notice, composer="\u276f ")) is None
+
+    def test_a_notice_cut_short_by_a_narrow_pane_is_not_read(self):
+        """Known limit, measured at 60 columns: the line is cut
+        before the instruction, and the send reports as it did
+        before this check existed."""
+        cut = "  Removed 1 invisible character \u00b7 review and press Enter \u2026"
+        assert ccm_constants.prompt_held_notice(self._screen(cut)) is None
+
+    def test_no_composer_is_no_answer(self):
+        """A dialog covering the composer, or a capture that read
+        nothing: the caller reports what it reported before."""
+        assert ccm_constants.prompt_held_notice("") is None
+        assert ccm_constants.prompt_held_notice(
+            "review and press Enter to send\nDo you want to proceed?\n"
+            "\u276f 1. Yes") is None
+
+
 class TestComposerExtendedColours:
     @pytest.mark.parametrize("colour", [
         "38;5;2", "48;5;2", "38;2;100;100;100", "48;2;100;100;100",

@@ -1368,6 +1368,227 @@ class TestSendSelfDeliveryGuard:
                    for c in calls)
 
 
+# Screens below are real 2.1.278 captures, trimmed: a prompt held
+# for confirmation with the line the CLI says it in, one queued
+# while the session was working, one the session took, and a draft
+# typed into the composer after a send had landed.
+_RULE = "─" * 40
+_NOTICE = "  Removed 1 invisible character · review and press Enter to send"
+
+
+def _screen(*above, composer):
+    return "\n".join([*above, _RULE, composer, _RULE,
+                      "  ⏵⏵ auto mode on (shift+tab to cycle)", ""])
+
+
+HELD_FOR_CONFIRMATION = _screen(
+    _NOTICE, composer="❯ Reply only REVIEW278_OK. AB")
+HELD_NINE_REMOVED = _screen(
+    "  Removed 9 invisible characters · review and press Enter to send",
+    composer="❯ Reply only HOLD_OK. AB")
+QUEUED_WHILE_WORKING = "\n".join([
+    "· Thinking... (11s · ↓ 135 tokens)",
+    "❯ Reply only REVIEW278_OK. AB",
+    "  ctrl+x ctrl+s to send now",
+    "",
+    _RULE,
+    "❯ Press up to edit queued messages",
+    _RULE,
+    "  ⏸ manual mode on · esc to interrupt",
+    "",
+])
+TAKEN = _screen("❯ Reply only REVIEW278_OK. AB", "", "  REVIEW278_OK", "",
+                composer="❯ ")
+BARE = _screen(composer="❯ ")
+DRAFT_AFTER_THE_SEND = _screen(
+    "❯ Please reply only OK.", "", "  OK", "", composer="❯ reply only")
+BODY_WITH_INVISIBLE = "Reply only REVIEW278_OK. A​B"
+
+
+class TestHeldAfterSubmit:
+    """Pressing Enter is a keystroke; the session taking the prompt
+    is another thing, and the pane says which happened."""
+
+    def _capture(self, monkeypatch, screens):
+        """Hand out `screens` in order, repeating the last one for as
+        long as the check keeps looking, and count the captures."""
+        seen = list(screens)
+        taken = []
+
+        def capture(pane):
+            screen = seen.pop(0) if len(seen) > 1 else seen[0]
+            taken.append(screen)
+            return screen, None
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: None)
+        return taken
+
+    def test_the_notice_is_what_it_reports(self, monkeypatch):
+        self._capture(monkeypatch, [HELD_FOR_CONFIRMATION])
+        assert ccm_send.held_after_submit("%51", timeout=0.2) == \
+            "Removed 1 invisible character · review and press Enter to send"
+
+    def test_a_hold_that_removed_nine_characters_is_no_different(self, monkeypatch):
+        """Counting how much was removed, and deciding from that, is
+        what an earlier version did; nine was over its limit and went
+        out as sent."""
+        self._capture(monkeypatch, [HELD_NINE_REMOVED])
+        assert ccm_send.held_after_submit("%51", timeout=0.2)
+
+    @pytest.mark.parametrize("screen", [TAKEN, BARE, QUEUED_WHILE_WORKING, ""],
+                             ids=["taken", "bare", "queued", "unreadable"])
+    def test_without_the_notice_the_message_went(self, monkeypatch, screen):
+        self._capture(monkeypatch, [screen])
+        assert ccm_send.held_after_submit("%51", timeout=0.2) is None
+
+    def test_a_draft_typed_after_the_send_is_not_a_hold(self, monkeypatch):
+        """Reproduced against 2.1.278 by a reviewer: the message was
+        taken and answered, and `reply only` was typed afterwards. It
+        is the message minus six characters, so comparing text called
+        it the message held back."""
+        self._capture(monkeypatch, [DRAFT_AFTER_THE_SEND])
+        assert ccm_send.held_after_submit("%51", timeout=0.2) is None
+
+    def test_a_clear_composer_answers_on_the_first_capture(self, monkeypatch):
+        """The ordinary send: one capture, no waiting."""
+        taken = self._capture(monkeypatch, [TAKEN])
+        assert ccm_send.held_after_submit("%51") is None
+        assert len(taken) == 1
+
+    def test_it_keeps_looking_while_something_is_in_the_composer(self, monkeypatch):
+        """The notice takes a moment to appear, and the body is in
+        the composer meanwhile."""
+        typed_not_yet_judged = _screen(
+            composer="❯ Reply only REVIEW278_OK. AB")
+        self._capture(monkeypatch,
+                      [typed_not_yet_judged, HELD_FOR_CONFIRMATION])
+        assert ccm_send.held_after_submit("%51") is not None
+
+
+class TestHeldAfterSubmitPassesWhatItCaptured:
+
+    def test_a_dim_suggestion_under_the_notice_is_not_a_hold(self, monkeypatch):
+        """The next-prompt suggestion is told from a draft by the
+        capture's attributes, so they have to reach the reader. With
+        them dropped, the notice's last moments over a suggestion
+        read as a hold."""
+        plain = _screen(_NOTICE, composer="\u276f try the next step")
+        attributed = plain.replace("\u276f try the next step",
+                                   "\u276f \x1b[2mtry the next step\x1b[0m")
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot",
+                            lambda pane: (plain, attributed))
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: None)
+        assert ccm_send.held_after_submit("%51", timeout=0.2) is None
+
+
+class TestHeldAfterSubmitInTime:
+    """The same check against a clock: the notice is on screen for a
+    few seconds only, so how often the pane is read, and for how
+    long, decides whether it is seen. The pane here changes with the
+    time, and `sleep` is what moves the time."""
+
+    BODY_ONLY = _screen(composer="\u276f Reply only REVIEW278_OK. AB")
+
+    def _world(self, monkeypatch, notice_from, notice_until):
+        now = [0.0]
+        captures = []
+        monkeypatch.setattr(ccm_send.time, "time", lambda: now[0])
+        monkeypatch.setattr(ccm_send.time, "sleep",
+                            lambda s: now.__setitem__(0, now[0] + s))
+
+        def capture(pane):
+            captures.append(now[0])
+            shown = notice_from <= now[0] < notice_until
+            return (HELD_FOR_CONFIRMATION if shown else self.BODY_ONLY), None
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
+        return captures
+
+    def test_a_notice_drawn_a_moment_late_is_still_seen(self, monkeypatch):
+        """Measured: on screen from the first capture to about five
+        seconds. One that appears a second late, and is gone at
+        five, must be caught by the polling as configured."""
+        self._world(monkeypatch, notice_from=1.0, notice_until=5.0)
+        assert ccm_send.held_after_submit("%51") is not None
+
+    def test_the_pane_is_read_more_than_once_a_second(self, monkeypatch):
+        captures = self._world(monkeypatch, notice_from=99, notice_until=99)
+        assert ccm_send.held_after_submit("%51") is None
+        gaps = [b - a for a, b in zip(captures, captures[1:])]
+        assert gaps and max(gaps) < 1.0
+
+    def test_it_gives_up_at_the_timeout(self, monkeypatch):
+        """With the default, which is what every caller uses: a send
+        into a composer that stays occupied must not hang on it."""
+        captures = self._world(monkeypatch, notice_from=99, notice_until=99)
+        ccm_send.held_after_submit("%51")
+        assert 2.0 <= captures[-1] < 3.0
+
+
+class TestSendReportsWhatTheSessionTook:
+    """End to end: `ccm send` must not report a delivery the target
+    did not make, nor refuse one it did."""
+
+    def _patch(self, monkeypatch, screen):
+        project = ccm_core.Project(
+            win_target="0:5", win_idx="5", name="demo",
+            directory="/tmp/demo", state="IDLE",
+        )
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "find_window",
+                            lambda sess, name: project.win_idx)
+        monkeypatch.setattr(ccm_core, "build_project_list",
+                            lambda fast=False: [project])
+        monkeypatch.setattr(ccm_core, "ps_snapshot",
+                            lambda: "100 1 100 zsh 00:05\n")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        from ccm_pane_state import PaneInfo
+        pane = PaneInfo("%51", "12077", True, "claude", False, 12078)
+        monkeypatch.setattr(ccm_send, "enumerate_window_panes",
+                            lambda win, ps: [pane])
+        monkeypatch.setattr(ccm_send, "detect_pane_state", lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: None)
+        keys = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a: keys.append(a) or "")
+
+        def submitted():
+            return any(c[-1] == "Enter" for c in keys if c[:1] == ("send-keys",))
+
+        # Before the submit the composer is bare, as the pre-send draft
+        # guard needs to see; afterwards it shows `screen`.
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot",
+                            lambda pane_id: (screen if submitted() else BARE,
+                                             None))
+        return keys
+
+    @pytest.mark.parametrize("screen", [HELD_FOR_CONFIRMATION, HELD_NINE_REMOVED],
+                             ids=["one-removed", "nine-removed"])
+    def test_a_prompt_the_session_is_holding_is_reported_as_not_taken(
+            self, monkeypatch, capsys, screen):
+        keys = self._patch(monkeypatch, screen)
+        with pytest.raises(SystemExit) as exit_info:
+            ccm_send.cmd_send(["demo", "--now", BODY_WITH_INVISIBLE])
+        assert exit_info.value.code not in (0, None)
+        # One read: `readouterr` empties the buffers, so asking twice
+        # checks the second question against nothing.
+        captured = capsys.readouterr()
+        assert "did not take the message" in captured.err
+        assert "press Enter to send" in captured.err   # quotes what it saw
+        assert "Sent to demo" not in captured.out
+        # One Enter — the one that submitted. ccm does not confirm on
+        # the sender's behalf.
+        assert sum(1 for c in keys if c[:2] == ("send-keys", "-t")
+                   and c[-1] == "Enter") == 1
+
+    @pytest.mark.parametrize("screen", [TAKEN, DRAFT_AFTER_THE_SEND],
+                             ids=["taken", "draft-typed-afterwards"])
+    def test_a_prompt_the_session_took_is_reported_as_sent(
+            self, monkeypatch, capsys, screen):
+        self._patch(monkeypatch, screen)
+        ccm_send.cmd_send(["demo", "--now", BODY_WITH_INVISIBLE])
+        assert "Sent to demo" in capsys.readouterr().out
+
+
 class TestSendPreTypeRecheck:
     """TOCTOU guard: the initial state gate runs on a
     `build_project_list` snapshot, and the interactive confirmation
