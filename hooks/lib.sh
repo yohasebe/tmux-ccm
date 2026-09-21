@@ -389,10 +389,71 @@ _ccm_schedule_completed_notify() {
         sleep "$grace"
         if [[ -f "$pending" ]]; then
             rm -f "$pending" 2>/dev/null
+            _ccm_mark_unread
             _ccm_instant_notify "COMPLETED" "$project" "" "$cwd"
         fi
     ) </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null || true
+}
+
+# ─── Unread replies (opt-in: `@ccm-pane-labels on`) ───
+# With several agents in split panes it stops being obvious which
+# pane answered last. A pane is marked when a reply completes in it
+# while the user is looking elsewhere, and unmarked when they focus
+# it or when the next prompt goes in; the pane border shows the mark
+# (ccm.tmux adds it to `pane-border-format`). "Focused" is the only
+# stand-in for "read" that ccm has.
+#
+# The mark is a tmux pane option rather than a file because the
+# border is drawn by tmux from its own state, and because a pane
+# that closes takes its mark with it.
+_ccm_pane_labels_on() {
+    [[ "$(tmux show-option -gqv @ccm-pane-labels 2>/dev/null)" == "on" ]]
+}
+
+# True when the user is looking at $1: some client whose terminal has
+# the focus is showing it as its active pane. Asked of each client,
+# because a pane has no single answer — a window linked into two
+# sessions is in front for one client and not for another, and
+# resolving the pane on its own picks one of them arbitrarily.
+# Without `focus-events on` tmux never reports a client as focused,
+# and every completed reply is marked — the safe side for a mark
+# that means "you may not have seen this".
+#
+# A popup drawn over the pane hides it while tmux goes on reporting
+# the pane as the client's active one, and tmux exposes nothing that
+# says a popup is up. ccm knows about its own: while the dashboard is
+# open nothing under it counts as watched. Another tool's popup
+# cannot be seen from here, and a reply finishing under one goes
+# unmarked.
+_ccm_pane_is_watched() {
+    # The pid file is where the dashboard writes it, which follows
+    # `CCM_TMP_DIR` when that is set. A pid left by a dashboard that
+    # crashed may since belong to something else, so the process is
+    # asked what it is, as the dashboard does before trusting the file.
+    local pane="$1" pid
+    local pidfile="${CCM_TMP_DIR:-${TMPDIR:-/tmp}/ccm-${UID}}/dashboard.pid"
+    if [[ -f "$pidfile" ]]; then
+        pid=$(cat "$pidfile" 2>/dev/null)
+        if [[ "$pid" =~ ^[0-9]+$ ]] \
+                && ps -p "$pid" -o command= 2>/dev/null | grep -q 'dashboard\.py'; then
+            return 1
+        fi
+    fi
+    tmux list-clients -F '#{pane_id} #{client_flags}' 2>/dev/null \
+        | grep -Eq "^${pane} (.*,)?focused(,|\$)"
+}
+
+_ccm_mark_unread() {
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    _ccm_pane_labels_on || return 0
+    _ccm_pane_is_watched "$TMUX_PANE" && return 0
+    tmux set-option -p -t "$TMUX_PANE" @ccm_unread "$(date +%s)" 2>/dev/null || true
+}
+
+_ccm_clear_unread() {
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    tmux set-option -pu -t "$TMUX_PANE" @ccm_unread 2>/dev/null || true
 }
 
 # Cancel any pending COMPLETED notification for a project — called

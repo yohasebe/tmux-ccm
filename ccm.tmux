@@ -151,6 +151,30 @@ if ! tmux show-hooks -g 2>/dev/null | grep "client-resized" | grep -q "on-resize
     tmux set-hook -ga client-resized "run-shell -b '\"${CCM_ROOT}/lib/on-resize.sh\" 2>/dev/null || true'"
 fi
 
+# Pane labels (opt-in: `set -g @ccm-pane-labels on`). Marks, on its
+# border, a pane where a reply completed while you were looking
+# elsewhere (the hooks set `@ccm_unread`; see hooks/lib.sh). Turning
+# on `pane-border-status` and extending `pane-border-format` is a
+# change to the user's own chrome, which is why this is opt-in; the
+# existing format is kept and the mark is put in front of it. The
+# mark goes when the pane is focused, which tmux reports only with
+# `focus-events on`.
+if [ "$(tmux show-option -gqv @ccm-pane-labels 2>/dev/null)" = "on" ]; then
+    tmux set-option -g pane-border-status top
+    CCM_BORDER_FORMAT=$(tmux show-option -gqv pane-border-format 2>/dev/null)
+    case "$CCM_BORDER_FORMAT" in
+        *@ccm_unread*) ;;
+        *) tmux set-option -g pane-border-format \
+               "#{?@ccm_unread,#[fg=colour209]◆ new#[default] ,}${CCM_BORDER_FORMAT}" ;;
+    esac
+    # `pane-focus-in` is a window-scoped hook: `show-hooks -g` does not
+    # list it, and a guard reading that would append a copy on every
+    # reload.
+    if ! tmux show-hooks -gw 2>/dev/null | grep "pane-focus-in" | grep -q "@ccm_unread"; then
+        tmux set-hook -ga pane-focus-in "set-option -pu @ccm_unread"
+    fi
+fi
+
 # Auto-restore: load _autosave snapshot on tmux start
 # Controlled by @ccm-auto-restore: "on" or "off" (default)
 CCM_AUTO_RESTORE=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)

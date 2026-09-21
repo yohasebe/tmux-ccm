@@ -324,6 +324,26 @@ Without hooks, ccm falls back to process tree inspection with prompt pattern mat
 - Text generation (no tool use) appears as IDLE, not BUSY
 - Completion detection relies on BUSY→IDLE transition heuristics
 
+### Which pane answered last (unread mark)
+
+With several agents in split panes, it stops being obvious which one replied last. Opt in with:
+
+```bash
+set -g @ccm-pane-labels on     # in ~/.tmux.conf, before ccm is loaded
+```
+
+ccm then marks a pane's border with `◆ new` when a reply completes in it while you are looking elsewhere, and removes the mark when you focus that pane or send it the next prompt. "Looking at it" means a terminal that has focus is showing the pane as its active one — tmux reports focus only with `set -g focus-events on`. While ccm's dashboard popup is open nothing under it counts as looked at; a popup from another tool cannot be seen from here, so a reply that finishes under one goes unmarked. Focusing is the only stand-in ccm has for reading, so passing through a pane clears its mark.
+
+The mark follows the completion notice: it appears once the reply has stayed finished for `CCM_COMPLETION_GRACE_SEC` (a tool boundary in a multi-step turn does not count), and not at all while background tasks are still running. It needs the hooks, so it covers Claude Code sessions; a sidekick CLI without hooks never gets one.
+
+This turns on tmux's pane border line (`pane-border-status top`) and puts the mark in front of your `pane-border-format`. If your own configuration sets `pane-border-format` after ccm is loaded, it replaces ccm's; add the mark to your format yourself:
+
+```
+#{?@ccm_unread,#[fg=colour209]◆ new#[default] ,}
+```
+
+Turning the option off stops new marks at once, but what was set up while it was on — the border line, the format, the focus hook — stays until tmux restarts or you reset it.
+
 ### Completion tracking
 
 When Claude Code finishes processing, ccm:

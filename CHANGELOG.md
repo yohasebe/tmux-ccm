@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- An unread mark on the pane border, for windows running several
+  agents in split panes (`set -g @ccm-pane-labels on`, off by default).
+  A pane where a reply completed while you were looking elsewhere
+  shows `◆ new` until you focus it or send it the next prompt. It
+  follows the completion notice's rules (grace period, nothing while
+  background tasks remain) and needs the hooks. Turning it on enables
+  tmux's pane border line; if your own configuration sets
+  `pane-border-format` after ccm loads, add the mark to it yourself
+  (see the guide).
 - Auto-exit looks at the target pane before typing and types nothing
   when it shows the agent view (where a session lands after
   `/background`, `←` twice, or `/exit` inside an attached background
