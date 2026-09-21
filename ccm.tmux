@@ -169,9 +169,19 @@ if [ "$(tmux show-option -gqv @ccm-pane-labels 2>/dev/null)" = "on" ]; then
     esac
     # `pane-focus-in` is a window-scoped hook: `show-hooks -g` does not
     # list it, and a guard reading that would append a copy on every
-    # reload.
-    if ! tmux show-hooks -gw 2>/dev/null | grep "pane-focus-in" | grep -q "@ccm_unread"; then
-        tmux set-hook -ga pane-focus-in "set-option -pu @ccm_unread"
+    # reload. The handler waits before clearing (see the script); an
+    # earlier version cleared in the hook itself, and an install that
+    # still carries that entry has it removed here, or it would go on
+    # clearing at once beside the new one.
+    # Only that exact command is ccm's to remove: a hook of the user's
+    # own that reads `@ccm_unread` is theirs, whatever it mentions.
+    tmux show-hooks -gw 2>/dev/null \
+        | sed -n 's/^\(pane-focus-in\[[0-9][0-9]*\]\) set-option -pu @ccm_unread$/\1/p' \
+        | while read -r CCM_OLD_HOOK; do
+            tmux set-hook -gwu "$CCM_OLD_HOOK"
+        done
+    if ! tmux show-hooks -gw 2>/dev/null | grep "pane-focus-in" | grep -q "on-pane-focus.sh"; then
+        tmux set-hook -ga pane-focus-in "run-shell -b '\"${CCM_ROOT}/lib/on-pane-focus.sh\" \"#{hook_pane}\" \"#{pane_id}\"'"
     fi
 fi
 

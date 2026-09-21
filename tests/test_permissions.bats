@@ -47,6 +47,16 @@ _index_mode() {
     [[ "$count" -ge 7 ]]
 }
 
+@test "scripts tmux runs directly are executable in the index" {
+    # tmux's run-shell executes these by path; a mode lost in the index
+    # is a handler that silently never runs on a fresh clone. Tests that
+    # call them through `bash <script>` would not notice.
+    local f
+    for f in lib/on-resize.sh lib/on-pane-focus.sh; do
+        [[ "$(_index_mode "$f")" == "100755" ]] || { echo "$f is $(_index_mode "$f")"; return 1; }
+    done
+}
+
 @test "hooks/lib.sh stays non-executable (source-only contract)" {
     # lib.sh is sourced by every hook, never exec'd. Keeping it 644
     # documents that contract in the index; if someone flips it to

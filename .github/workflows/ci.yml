@@ -30,15 +30,18 @@ jobs:
         run: python3 -m pip install pytest hypothesis
 
       # bats tests use a REAL jq binary (tests/test_event_log.bats,
-      # tests/test_hooks.bats) — only tmux is mocked
-      # (tests/helpers/mock_tmux.bash), so tmux itself is not needed on CI.
-      - name: Install bats and jq (Ubuntu)
+      # tests/test_hooks.bats). tmux is mocked almost everywhere
+      # (tests/helpers/mock_tmux.bash); the few tests that ask a real
+      # server start one of their own (`tmux -L <name> -f /dev/null`)
+      # and skip when the executable is absent, so it is installed here
+      # for them to run.
+      - name: Install bats, jq and tmux (Ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bats jq
+        run: sudo apt-get update && sudo apt-get install -y bats jq tmux
 
-      - name: Install bats and jq (macOS)
+      - name: Install bats, jq and tmux (macOS)
         if: runner.os == 'macOS'
-        run: brew install bats-core jq
+        run: brew install bats-core jq tmux
 
       - name: Run pytest
         run: python3 -m pytest tests/ -q

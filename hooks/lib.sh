@@ -454,6 +454,7 @@ _ccm_mark_unread() {
 _ccm_clear_unread() {
     [[ -n "${TMUX_PANE:-}" ]] || return 0
     tmux set-option -pu -t "$TMUX_PANE" @ccm_unread 2>/dev/null || true
+    tmux set-option -pu -t "$TMUX_PANE" @ccm_unread_look 2>/dev/null || true
 }
 
 # Cancel any pending COMPLETED notification for a project — called

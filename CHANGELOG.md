@@ -11,7 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - An unread mark on the pane border, for windows running several
   agents in split panes (`set -g @ccm-pane-labels on`, off by default).
   A pane where a reply completed while you were looking elsewhere
-  shows `◆ new` until you focus it or send it the next prompt. It
+  shows `◆ new` until you have looked at it for a few seconds
+  (`@ccm-unread-linger`, default 5) or send it the next prompt. The
+  mark outlives the focus event on purpose: tmux delivers that event
+  when you switch to the window or bring the terminal to the front,
+  which is the act of going to look. It
   follows the completion notice's rules (grace period, nothing while
   background tasks remain) and needs the hooks. Turning it on enables
   tmux's pane border line; if your own configuration sets
