@@ -88,8 +88,31 @@ renders() {
     [[ "$status" -eq 0 ]] || { echo "exited $status"; return 1; }
 }
 
+# The script falls back to the `ccm` beside it when CCM_BIN is not
+# usable. Run from the repository that is the real ccm, which goes on
+# to redraw the status bar of whatever tmux server the person running
+# the tests is in. So both cases run a copy of the script from a
+# directory of their own, where what sits beside it is theirs to say.
+_isolated_script() {
+    mkdir -p "${MOCK_DIR}/plugin/lib"
+    cp "${CCM_ROOT}/lib/on-resize.sh" "${MOCK_DIR}/plugin/lib/on-resize.sh"
+    echo "${MOCK_DIR}/plugin/lib/on-resize.sh"
+}
+
 @test "a missing ccm binary is not a crash" {
-    export CCM_BIN="${MOCK_DIR}/absent"
-    run "${CCM_ROOT}/lib/on-resize.sh"
+    local script; script=$(_isolated_script)
+    export CCM_BIN="${MOCK_DIR}/absent"          # and nothing beside the script either
+    run "$script"
     [[ "$status" -eq 0 ]] || { echo "exited $status"; return 1; }
+    [[ "$(renders)" -eq 0 ]]
+}
+
+@test "without a usable CCM_BIN, the ccm beside the script renders" {
+    local script; script=$(_isolated_script)
+    printf '#!/usr/bin/env bash\necho "beside $@" >> "%s"\n' "$RENDERS" > "${MOCK_DIR}/plugin/ccm"
+    chmod +x "${MOCK_DIR}/plugin/ccm"
+    export CCM_BIN="${MOCK_DIR}/absent"
+    run "$script"
+    [[ "$status" -eq 0 ]]
+    grep -q "^beside inject-status --fast$" "$RENDERS"
 }
