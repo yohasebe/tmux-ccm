@@ -12,8 +12,8 @@ cd tmux-ccm
 Test prerequisites:
 
 ```bash
-# Python — pytest is the only runtime dep
-pip install pytest
+# Python test dependencies (hypothesis runs the state-invariant tests)
+python3 -m pip install pytest hypothesis
 
 # bash — bats-core for shell-side tests
 brew install bats-core   # or: apt-get install bats
@@ -28,19 +28,22 @@ Local git hooks enforce this; they are not part of the repository, so install th
 ## Running tests
 
 ```bash
-# Python (detection logic, dashboard, status bar — 600+ cases)
+# Python (detection logic, dashboard, status bar)
 python3 -m pytest tests/ -v
 
 # bash (hook setup + notify parity)
 bats tests/
 ```
 
-The full suite runs in under a second on modern hardware. PRs must keep both green.
+PRs must keep both suites green; tests require local sockets and process inspection.
 
 ## Code organisation
 
 - `ccm` — bash dispatcher CLI
-- `lib/ccm_core.py` — constants, tmux/ps helpers, data model, dispatch, JSONL/hook signal I/O
+- `lib/ccm_core.py` — tmux/ps helpers, data model, dispatch
+- `lib/ccm_constants.py` — constants, terminal patterns, modal classification
+- `lib/ccm_settings.py` — shared regular-file settings reader
+- `lib/ccm_jsonl.py`, `lib/ccm_signals.py` — transcript and hook signal I/O
 - `lib/ccm_detection.py` — state-detection engine (event-log path + minimal legacy fallback)
 - `lib/ccm_commands.py` — `cmd_*` subcommand handlers
 - `lib/ccm_render.py` — terminal-output formatters (`print_*`, ANSI colours)
@@ -63,9 +66,24 @@ The full suite runs in under a second on modern hardware. PRs must keep both gre
 Each new Claude Code release can shift detection assumptions (modal footer wording, hook payload shape, JSONL record schema). When you update Claude Code locally:
 
 1. Pull the verbatim CHANGELOG bullets for the new version (do not rely on a summary — footer wording changes are easy to miss in summaries).
-2. Sample-check the most common modals — `/skills`, `/model`, `/hooks`, the permission prompt — with `tmux capture-pane -p` and verify they still classify correctly.
-3. If a modal's footer wording changed, update `PATTERN_PERMIT_FOOTER` in `lib/ccm_core.py` and the corresponding fixture in `tests/test_ccm_core.py`.
-4. If a JSONL housekeeping record type was added, no code change is required — the activity-type whitelist (`JSONL_ACTIVITY_TYPES`) in `lib/ccm_core.py` rejects unknown types by default.
+2. Sample-check `/skills`, `/model`, `/hooks`, `/effort`, `/autocompact`,
+   `/fast`, and the permission prompt with `tmux capture-pane -p`. Use a
+   separate test session. Record unavailable account-dependent views as unverified.
+3. If a modal's footer changed, update `PATTERN_PERMIT_FOOTER` in
+   `lib/ccm_constants.py`, its classifier tests in `tests/test_constants.py`,
+   and raw-state regressions in `tests/test_pane_state.py`. Test both live
+   footer shapes and similar prose/navigation hints that must not match.
+   Leading hints are an explicit list of verified confirmation forms:
+   capture a new confirmation dialog with hints before Enter before adding
+   its prefix.
+   Preserve navigation exclusions, including `/permissions` with Enter
+   in its navigation footer; structure alone does not classify the panel.
+4. Unknown JSONL housekeeping record types are rejected by the activity
+   whitelist in `lib/ccm_jsonl.py`; check new records against that contract
+   before extending it.
+
+See [the state-machine reference](docs/state-machine.md) for supported
+footer forms and detection limits.
 
 ## Dev-only flags
 

@@ -632,6 +632,8 @@ PATTERN_RETRY_BACKOFF = re.compile(
 #                                             (/model picker, v2.1.144–v2.1.152)
 #   - "Enter to set as default · s to use this session only · Esc to cancel"
 #                                             (/model picker, v2.1.153+)
+#   - "←/→ to adjust · Enter to apply · Esc to cancel" (/autocompact, captured v2.1.280)
+#   - "Space to toggle · Enter to confirm · Esc to cancel" (/fast, source-derived v2.1.280)
 #   - "3. No, and tell Claude what to do differently (esc)"
 #                                             (footer-less permission dialog —
 #                                              WebFetch / web-content prompts,
@@ -657,6 +659,13 @@ PATTERN_RETRY_BACKOFF = re.compile(
 # possible verb. Esc-verb after `Esc to` is also permissive
 # (`\w+`) for the same reason — cancel / exit / close / quit /
 # dismiss have all been observed.
+# Register verified confirmation forms individually: /autocompact and
+# /effort were captured; /fast is source-derived, not captured live.
+# A structural Enter-anywhere matcher also accepts /permissions' navigation
+# footer: "↑/↓ to navigate · Enter to select · ←/→ to switch · Esc to cancel".
+# Whether that panel is a confirmation is a content decision, not a hint
+# shape. Keep navigation classification stable; unregistered leading hints
+# remain a known detection limit until verified and added here.
 #
 # Anchored at line start (after optional whitespace) so the same
 # words inside a Claude response — e.g. "use ctrl+e to explain" in
@@ -708,7 +717,8 @@ _DENY_OPTION_LINE = (
 PATTERN_PERMIT_FOOTER = re.compile(
     r"^\s*(?:"
     r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
-    r"|Enter to \S[^\n]*?\s*(?:·|\|)\s*[^\n]*?\bEsc to \w+"
+    r"|(?:(?:←/→ to adjust|Space to toggle)[ \t\xa0]*(?:·|\|)[ \t\xa0]*)?"
+    r"Enter to \S[^\n]*?[ \t\xa0]*(?:·|\|)[ \t\xa0]*[^\n]*?\bEsc to \w+"
     r"|" + _DENY_OPTION_LINE +
     r")",
     re.MULTILINE,

@@ -151,6 +151,37 @@ This is an information-theoretic invariant ("a completion signal must post-date 
 
 ### `raw=="PERMIT"` precedence
 
+Confirmation footers may start with an adjustment hint before `Enter`:
+`←/→ to adjust · Enter to apply · Esc to cancel` (`/autocompact`),
+`←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel`
+(`/effort`), or `Space to toggle · Enter to confirm · Esc to cancel`
+(`/fast`). These forms are covered for Claude Code 2.1.280. Only the
+known adjustment/toggle prefix is optional; arbitrary leading prose,
+bare `Esc to close`, and the `/permissions` navigation footer
+`←/→ to switch · ↓ to select · Esc to cancel` are not confirmation
+signals. The entire confirmation footer must fit on one captured line.
+
+Leading hints are intentionally registered one verified confirmation form
+at a time. `/autocompact` and `/effort` above were captured on 2.1.280;
+`/fast` is source-derived and its available account-dependent view has not
+been captured. The `/permissions` navigation form
+`↑/↓ to navigate · Enter to select · ←/→ to switch · Esc to cancel`
+(source-derived, not captured) also stays outside PERMIT: the presence of
+Enter anywhere among hints does not make a panel a confirmation dialog.
+A new leading hint such as `Tab to switch` remains undetected until the
+confirmation form is captured and registered. Capture new forms before
+adding them to the list and test navigation exclusions alongside them.
+
+The `/model` Enter-first footer, bare Esc hints in empty `/skills` and
+disabled `/hooks`, and the unavailable `/fast` view retain their existing
+classification. Opus 5.5 model labels do not require a detection list.
+The available `/fast` view, populated skill lists, tool permission dialogs,
+and live model turns were not part of the 2.1.280 UI check; existing
+regression tests do not substitute for those observations. Prompt cleanup
+remains Claude Code's responsibility: the existing hold-notice detector
+recognizes the U+200B cleanup notice. The PermissionRequest change for
+agent-type hooks does not change ccm's command-type registrations.
+
 The capture-pane footer (`Esc to cancel · Tab to amend` for permission dialogs; `Enter to confirm · Esc to <verb>` for confirmation modals, with intermediate `· <action key>` segments tolerated for forms like the v2.1.144 `/model` picker's `Enter to confirm · d to set as default for new sessions · Esc to cancel`; and, for footer-less permission dialogs such as WebFetch prompts or the Claude-in-Chrome site dialog, the deny option itself — an optionally cursor-prefixed numbered line starting with a negative word and ending in the inline `(esc)`, matched by shape because the label wording differs per dialog) is the most physical signal we have — the modal is literally on screen waiting for a keypress. This signal trumps all event-log and hook-based derivations. raw=BUSY does **not** get the same precedence: that would re-introduce the false-BUSY-from-leftover-dev-server problem the event-log path was designed to fix.
 
 ### `claude_pid_age < STARTUP_GRACE_SEC`

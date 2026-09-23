@@ -106,6 +106,20 @@ class TestHasChildren:
 # ─── JSONL session log freshness ───
 
 class TestDetectPaneState:
+    @pytest.mark.parametrize("footer", [
+        "←/→ to adjust · Enter to apply · Esc to cancel",
+        "←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel",
+        "Space to toggle · Enter to confirm · Esc to cancel",
+    ])
+    @pytest.mark.parametrize("with_child", [False, True])
+    def test_adjustment_modal_overrides_idle_and_busy(self, monkeypatch, footer, with_child):
+        entries = [(200, 100, 100, "claude")]
+        if with_child:
+            entries.append((300, 200, 200, "node"))
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a: "Settings\n  " + footer)
+        assert ccm_pane_state.detect_pane_state(
+            "100", "%0", make_ps_lines(*entries), "99999") == "PERMIT"
+
     @patch("ccm_core.tmux_cmd")
     def test_shell_when_no_claude(self, mock_tmux):
         ps = make_ps_lines((100, 1, 100, "bash"))

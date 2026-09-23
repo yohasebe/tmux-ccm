@@ -60,6 +60,40 @@ class TestClassifyPermitModal:
     tests to exact wording.
     """
 
+    @pytest.mark.parametrize("footer", [
+        # /autocompact and /effort captured from 2.1.280;
+        # /fast's enabled form verified in the installed bundle.
+        "←/→ to adjust · Enter to apply · Esc to cancel",
+        "←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel",
+        "Space to toggle · Enter to confirm · Esc to cancel",
+    ])
+    def test_adjustment_modals_v2_1_280(self, footer):
+        assert ccm_constants.PATTERN_PERMIT_FOOTER.match("   " + footer)
+        assert ccm_constants.classify_permit_modal("Settings\n   " + footer)[0] == "confirmation-modal"
+
+    @pytest.mark.parametrize("text", [
+        "←/→ to switch · ↓ to select · Esc to cancel",
+        "Esc to close",
+        "Use Space to toggle · Enter to confirm · Esc to cancel",
+        "The hint is ←/→ to adjust · Enter to apply · Esc to cancel",
+        "←/→ to adjust ·\nEnter to apply",
+        "Space to toggle ·\nEnter to confirm · Esc to cancel",
+    ])
+    def test_adjustment_prefix_does_not_match_prose_or_cross_lines(self, text):
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.match(text)
+
+    def test_permissions_navigation_with_enter_is_not_permit(self):
+        # Source-derived from 2.1.280; this focus state was not captured live.
+        footer = "↑/↓ to navigate · Enter to select · ←/→ to switch · Esc to cancel"
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.match(footer)
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.search("Permissions\n" + footer)
+
+    def test_known_limit_unverified_tab_prefix_is_not_registered(self):
+        # Synthetic future form, not an observation. If captured in a
+        # confirmation dialog later, register it and update this expectation.
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.match(
+            "Tab to switch · Enter to apply · Esc to cancel")
+
     def test_session_resume_modal(self):
         text = (
             "This session is 2h 15m old and 43k tokens.\n"
