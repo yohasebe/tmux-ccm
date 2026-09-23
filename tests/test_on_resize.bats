@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Tests for lib/on-resize.sh — the settle window that turns one resize
 # gesture into one status-bar render.
 #

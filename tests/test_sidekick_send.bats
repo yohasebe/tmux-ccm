@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Dispatch-level tests for `ccm sidekick-send` — the bash wrapper must
 # forward the subcommand to the Python side, and the help surfaces
 # must list it. Identity/refusal behaviour itself is covered by

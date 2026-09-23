@@ -37,6 +37,27 @@ bats tests/
 
 PRs must keep both suites green; tests require local sockets and process inspection.
 
+Every Bats file loads `helpers/tmux_guard.bash` before its setup. Mocks may
+precede its PATH spy; real tmux calls must use `-L` with a socket allocated by
+`ccm_test_new_socket`. Before allocating a real server, the test itself must
+use `[[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"` outside
+command substitution. The allocator only allocates a name; it does not skip.
+The helper uses an empty tmux configuration and a temporary
+socket directory, cleans up allocated servers at file teardown, and fails the
+file if any rejected call was recorded, even if its caller ignored exit 99.
+Do not bypass the spy with an absolute tmux path or reset PATH around it.
+The helper owns `setup_file` and `teardown_file`; per-test setup and teardown
+remain available. Other Bats files and helpers must not define these two file
+hooks. The static wiring check conservatively rejects literal definitions,
+including indented, inline and `function` forms (even inside quoted examples);
+do not define file hooks indirectly through `eval` or generated names.
+Pytest's `block_live_subprocess` guards Python subprocess
+calls separately; neither mechanism is an OS sandbox.
+
+Concurrency tests use explicit gates to control event order. Gate timeouts
+must fail the test, and teardown must release waiting jobs. Keep actual elapsed
+time checks separate from ordering checks.
+
 ## Code organisation
 
 - `ccm` — bash dispatcher CLI

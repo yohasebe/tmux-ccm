@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Parity test: Python `notify()` and bash `_ccm_instant_notify` must
 # reach the same fire/skip decision for every (@ccm-notify, state)
 # combination. The two implementations are intentionally NOT merged

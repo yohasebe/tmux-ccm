@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Tests for the event log writer. Each hook script appends one JSONL
 # record to $HOOK_DIR/<session_id>.events.jsonl in addition to
 # writing the signal file. This suite verifies both the event-log

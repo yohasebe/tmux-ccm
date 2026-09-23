@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Tests for tmux.conf reading/writing helpers (lib/common.sh)
 #
 # The bug these guard against: one ccm option name is a prefix of

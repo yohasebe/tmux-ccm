@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Rate limiting for the periodic status poll.
 #
 # tmux runs `#(ccm inject-status)` once per status-interval, which is

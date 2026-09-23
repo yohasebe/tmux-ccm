@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # The unread mark on a pane's border (opt-in: @ccm-pane-labels on).
 # hooks/lib.sh sets `@ccm_unread` on a pane when a reply completes in
 # it while the user is looking elsewhere. tmux is a function here that
@@ -79,13 +80,29 @@ _fake_dashboard() {
 }
 
 teardown() {
+    # Release both handlers before waiting, including on assertion failure.
+    if [[ -n "${FOCUS_JOBS:-}" ]]; then
+        touch "$BATS_TEST_TMPDIR/A.open" "$BATS_TEST_TMPDIR/B.open"
+        local job
+        for job in $FOCUS_JOBS; do wait "$job" 2>/dev/null || true; done
+    fi
     [[ -n "${FAKE_PID:-}" ]] && kill "$FAKE_PID" 2>/dev/null
     [[ -n "${GATE:-}" ]] && touch "$GATE.open"            # never leave a hook waiting
     if [[ -n "${REAL_SOCK:-}" ]]; then
         command tmux -L "$REAL_SOCK" kill-server 2>/dev/null
         [[ -n "${REAL_SOCK_PATH:-}" ]] && rm -f "$REAL_SOCK_PATH" 2>/dev/null
     fi
-    return 0
+    [[ ! -e "$BATS_TEST_TMPDIR/A.timed-out" && ! -e "$BATS_TEST_TMPDIR/B.timed-out" ]]
+}
+
+_wait_for_gate() {
+    local i
+    for i in $(seq 1 200); do
+        [[ -f "$BATS_TEST_TMPDIR/$1.$2" ]] && return 0
+        sleep 0.05
+    done
+    echo "gate $1 never reached $2"
+    return 1
 }
 
 @test "nothing under ccm's own dashboard popup counts as watched" {
@@ -229,7 +246,7 @@ HOOKS
 # ─── The focus handler: the mark outlives the moment of arriving ───
 
 _focus_handler() {   # runs lib/on-pane-focus.sh against a tmux that keeps pane options in files
-    local bin="${BATS_TEST_TMPDIR}/fbin"; FLOG="${BATS_TEST_TMPDIR}/focus.log"
+    local bin="${BATS_TEST_TMPDIR}/fbin${FOCUS_GATE_ID:+-$FOCUS_GATE_ID}"; FLOG="${BATS_TEST_TMPDIR}/focus.log"
     mkdir -p "$bin"; touch "$FLOG"
     cat > "$bin/tmux" <<SHIM
 #!/usr/bin/env bash
@@ -258,6 +275,11 @@ esac
 exit 0
 SHIM
     chmod +x "$bin/tmux"
+    if [[ -n "${FOCUS_GATE_ID:-}" ]]; then
+        cp "${BATS_TEST_DIRNAME}/helpers/focus_sleep.bash" "$bin/sleep"
+        chmod +x "$bin/sleep"
+    fi
+    export FOCUS_GATE_ID
     PATH="$bin:$PATH" TMPDIR="${BATS_TEST_TMPDIR}" LINGER="${LINGER:-0.2}" \
         "${CCM_ROOT}/lib/on-pane-focus.sh" "$@"
 }
@@ -279,29 +301,52 @@ _looking_at() { echo "$1 attached,focused,UTF-8" > "${BATS_TEST_TMPDIR}/clients"
 
 @test "focus handler: the mark is not cleared before the linger has passed" {
     _mark 1; _looking_at "%7"
-    LINGER=3 _focus_handler "%7" "%7" &
-    sleep 1
-    _marked
-    wait
+    local bin="$BATS_TEST_TMPDIR/clockbin" end
+    mkdir -p "$bin"
+    export FOCUS_CLOCK="$BATS_TEST_TMPDIR/sleep-clock" FOCUS_REAL_SLEEP
+    FOCUS_REAL_SLEEP=$(type -P sleep)
+    cat > "$bin/sleep" <<'CLOCK'
+#!/usr/bin/env bash
+python3 -c 'import json,sys,time; json.dump([time.monotonic(), sys.argv[1:]], open(sys.argv[1], "w"))' "$FOCUS_CLOCK" "$@"
+exec "$FOCUS_REAL_SLEEP" "$@"
+CLOCK
+    chmod +x "$bin/sleep"
+    PATH="$bin:$PATH" LINGER=0.3 _focus_handler "%7" "%7"
+    end=$(python3 -c 'import time; print(time.monotonic())')
+    python3 - "$FOCUS_CLOCK" "$end" <<'CHECK'
+import json, sys
+start, args = json.load(open(sys.argv[1]))
+assert args[1:] == ["0.3"]
+assert float(sys.argv[2]) - start >= 0.3
+CHECK
     ! _marked
 }
 
 @test "focus handler: coming back starts the wait again, and the earlier wait clears nothing" {
-    # Look, leave, come back just before the first wait would end: the
-    # mark must still be there a moment after returning, which is the
-    # whole point of lingering.
     _mark 1; _looking_at "%7"
-    local stamp="${BATS_TEST_TMPDIR}/opt-ccm_unread_look" i look1
-    LINGER=2 _focus_handler "%7" "%7" & local first=$!
-    for i in $(seq 1 50); do [[ -s "$stamp" ]] && break; sleep 0.1; done
+    local stamp="${BATS_TEST_TMPDIR}/opt-ccm_unread_look" look1 first second
+    export FOCUS_GATE_ROOT="$BATS_TEST_TMPDIR" FOCUS_REAL_SLEEP
+    FOCUS_REAL_SLEEP=$(type -P sleep)
+    FOCUS_GATE_ID=A LINGER=2 _focus_handler "%7" "%7" & first=$!
+    FOCUS_JOBS="$first"
+    _wait_for_gate A entered
     look1=$(cat "$stamp")
-    LINGER=2 _focus_handler "%7" "%7" &     # the return: a second focus event
-    for i in $(seq 1 50); do [[ "$(cat "$stamp" 2>/dev/null)" != "$look1" ]] && break; sleep 0.1; done
-    [[ "$(cat "$stamp")" != "$look1" ]]      # the second look is the current one
-    wait "$first"                            # the first wait has ended, whenever that was
+    FOCUS_GATE_ID=B LINGER=2 _focus_handler "%7" "%7" & second=$!
+    FOCUS_JOBS="$FOCUS_JOBS $second"
+    _wait_for_gate B entered
+    [[ "$(cat "$stamp")" != "$look1" ]]
+    [[ "$(cat "$BATS_TEST_TMPDIR/A.request")" == 2 ]]
+    [[ "$(cat "$BATS_TEST_TMPDIR/B.request")" == 2 ]]
+    touch "$BATS_TEST_TMPDIR/A.open"
+    wait "$first"
+    [[ -f "$BATS_TEST_TMPDIR/A.released" ]]
+    [[ ! -f "$BATS_TEST_TMPDIR/B.released" ]]
     _marked
-    wait
-    ! _marked                                # the second wait, run in full, clears it
+    touch "$BATS_TEST_TMPDIR/B.open"
+    wait "$second"
+    [[ -f "$BATS_TEST_TMPDIR/B.released" ]]
+    ! _marked
+    FOCUS_JOBS=""
 }
 
 @test "focus handler: a newer reply's mark is not cleared by the look at an older one" {
@@ -339,9 +384,9 @@ _looking_at() { echo "$1 attached,focused,UTF-8" > "${BATS_TEST_TMPDIR}/clients"
     # new reply completes and the user comes back: a new mark, a new
     # stamp. Asked of a real tmux server, because whether compare and
     # clear can be separated is tmux's answer to give, not a shim's.
-    # `command -v` would find the function setup() defines; ask for the file.
-    type -P tmux >/dev/null || skip "tmux not installed"
-    local sock="ccm-labels-$$-${RANDOM}"; REAL_SOCK="$sock" bin="${BATS_TEST_TMPDIR}/rbin"
+    # The guard remains on PATH even when tmux itself is unavailable.
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    local sock; sock=$(ccm_test_new_socket); REAL_SOCK="$sock" bin="${BATS_TEST_TMPDIR}/rbin"
     tmux() { command tmux -L "$sock" -f /dev/null "$@"; }
     tmux new-session -d -x 80 -y 24 -s t
     REAL_SOCK_PATH=$(tmux display-message -p '#{socket_path}')   # where tmux put it, not a guess
@@ -376,8 +421,8 @@ SHIM
     # tmux runs `after-set-option` hooks between commands, and one that
     # blocks lets another client's commands through. The mark is gone by
     # then; the stamp must go only if it is still this handler's.
-    type -P tmux >/dev/null || skip "tmux not installed"
-    local sock="ccm-labels-$$-${RANDOM}"; REAL_SOCK="$sock"
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    local sock; sock=$(ccm_test_new_socket); REAL_SOCK="$sock"
     local bin="${BATS_TEST_TMPDIR}/rbin3" gate="${BATS_TEST_TMPDIR}/gate"
     tmux() { command tmux -L "$sock" -f /dev/null "$@"; }
     tmux new-session -d -x 80 -y 24 -s t
@@ -429,9 +474,9 @@ BLOCK
 }
 
 @test "focus handler, real tmux: an undisturbed look clears the mark and its stamp" {
-    # `command -v` would find the function setup() defines; ask for the file.
-    type -P tmux >/dev/null || skip "tmux not installed"
-    local sock="ccm-labels-$$-${RANDOM}"; REAL_SOCK="$sock" bin="${BATS_TEST_TMPDIR}/rbin2"
+    # The guard remains on PATH even when tmux itself is unavailable.
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    local sock; sock=$(ccm_test_new_socket); REAL_SOCK="$sock" bin="${BATS_TEST_TMPDIR}/rbin2"
     tmux() { command tmux -L "$sock" -f /dev/null "$@"; }
     tmux new-session -d -x 80 -y 24 -s t
     REAL_SOCK_PATH=$(tmux display-message -p '#{socket_path}')   # where tmux put it, not a guess

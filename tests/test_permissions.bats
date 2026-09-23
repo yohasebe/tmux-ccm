@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Regression guard for executable bits in the GIT INDEX.
 #
 # ccm is distributed via git/TPM, so what users receive is decided by

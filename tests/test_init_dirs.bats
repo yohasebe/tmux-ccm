@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # ccm_gc_tmp ages out disposable caches only; control state and
 # per-session hook files are not subject to the hourly sweep.
 # ccm_init_dirs only creates directories.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Writer half of the sidekick attention-marker contract:
 # hooks/sidekick-attention.sh, invoked by a sidekick CLI's OWN hook
 # system with the event JSON on stdin. The reader/GC half is pinned
