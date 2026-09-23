@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `ccm spool list` shows each expired message with its sender, queue age,
+  preview, and commands to review the full text and send it anew if still
+  needed. Clearing expired records is explicitly described as deletion only;
+  doctor and status warnings direct readers to the detailed list.
 - An unread mark on the pane border, for windows running several
   agents in split panes (`set -g @ccm-pane-labels on`, off by default).
   A pane where a reply completed while you were looking elsewhere

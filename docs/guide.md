@@ -235,12 +235,16 @@ Delivered messages arrive under an envelope header — `[from: <project> · queu
 Queued counts show on `ccm status`, `ccm doctor`, and the dashboard (`✉N` by the project name). To inspect or withdraw:
 
 ```bash
-ccm spool list                 # all pending messages, with age and preview
+ccm spool list                   # pending, held and expired messages with previews
 ccm spool clear-expired           # acknowledge messages that never arrived
 ccm spool clear-held [project]    # acknowledge messages a session was holding
 ccm spool cancel <id> <project>   # withdraw one (a queued mis-send is cancellable)
 ccm spool cancel --all <project>  # clear the project's queue
 ```
+
+Expired messages were never delivered. `ccm spool list [project]` shows each record's id, saved sender label, time since it was queued, and the first nonblank line (up to 60 characters). Unknown filenames show unknown sender/time; unreadable bodies show `(unreadable)` without hiding the record. For each expired record, the list prints a command to read the full text and a `ccm send --file …` command to use **only after reviewing whether the request is still needed**. If it needs updating, send revised text instead. These displayed commands do not run automatically.
+
+Sending again is a **new send**: if queued, it gets a new id and queue time, with the current sender in the delivery envelope. A ready target receives it directly through the usual send path. A SHELL target stays queued; the suggested command does not use `--start`. The old expired record remains until the normal seven-day retention expires or you acknowledge it. After reviewing **all** expired records for a project, `ccm spool clear-expired <project>` deletes those records only; it sends nothing. Without a project argument, it clears expired records across all projects. Neither listing nor clearing records retries delivery.
 
 A message the target session says it did not take — Claude Code holds a prompt it rewrote until its user confirms it, and says so above the input box — is not queued again: once that user presses Enter on the copy in the composer, or clears it away, the box looks the same either way, so retrying would type the whole message a second time. It is recorded as held, `ccm spool list` shows it, and you deal with it in that session's window. `ccm spool clear-held` then says so; it sends and withdraws nothing.
 

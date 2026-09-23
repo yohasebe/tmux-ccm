@@ -129,6 +129,7 @@ class TestExpiredVisibility:
         open(os.path.join(edir, "1-tester.msg"), "w").close()
         msg = ccm_render.spool_expired_warning()
         assert "expired undelivered" in msg and "demo:1" in msg
+        assert "`ccm spool list`" in msg and "clear-expired" not in msg
 
     def test_expired_warning_is_empty_when_nothing_expired(self, spool_root):
         import ccm_render
@@ -711,3 +712,150 @@ class TestCmdSendSpooling:
     def test_sender_label_unknown_outside_tmux(self, monkeypatch):
         monkeypatch.delenv("TMUX_PANE", raising=False)
         assert ccm_send._sender_label() == "unknown"
+
+
+class TestExpiredDetails:
+    """Inspection and acknowledgement must never perform delivery."""
+
+    def _record(self, root, project="demo", filename="1000000-origin.msg",
+                body="Review release\nFull details"):
+        from pathlib import Path
+        path = Path(root) / project / "expired" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_details_and_actions(self, spool_root, monkeypatch, capsys):
+        import shlex
+        monkeypatch.setattr(ccm_spool.time, "time", lambda: 4660)
+        path = self._record(spool_root)
+        ccm_spool.cmd_spool(["list"])
+        out = capsys.readouterr().out
+        assert "1000000-origin  (expired; from: origin; queued: 1h01m ago)  Review release" in out
+        assert "never delivered" in out
+        assert "Review full text: " + shlex.join(["cat", "--", str(path)]) in out
+        assert "If still needed, send as NEW: " + shlex.join(
+            ["ccm", "send", "--file", str(path), "--", "demo"]) in out
+        assert "After reviewing ALL expired records above: ccm spool clear-expired demo" in out
+        assert "deletes this project's expired records only; sends nothing" in out
+        assert "Full details" not in out
+        assert path.read_text() == "Review release\nFull details"
+        assert _pending(spool_root) == []
+
+    @pytest.mark.parametrize("scope", [[], ["beta"]])
+    def test_multiple_projects_and_records(self, spool_root, capsys, scope):
+        self._record(spool_root, "alpha", "1000-a.msg", "alpha one")
+        self._record(spool_root, "alpha", "2000-b.msg", "alpha two")
+        self._record(spool_root, "beta", "3000-c.msg", "beta one")
+        ccm_spool.cmd_spool(["list", *scope])
+        out = capsys.readouterr().out
+        assert "beta:" in out and "beta one" in out
+        if scope:
+            assert "alpha" not in out
+            assert out.count("send as NEW:") == 1
+        else:
+            assert "2 expired" in out and "1 expired" in out
+            assert out.index("alpha one") < out.index("alpha two") < out.index("beta one")
+            assert out.count("send as NEW:") == 3
+
+    @pytest.mark.parametrize("failure", ["oserror", "unicode"])
+    def test_unreadable_body_does_not_hide_other_records(
+            self, spool_root, monkeypatch, capsys, failure):
+        import builtins
+        path = self._record(spool_root)
+        self._record(spool_root, filename="2000000-next.msg", body="still visible")
+        if failure == "unicode":
+            path.write_bytes(b"\xff")
+        else:
+            original = builtins.open
+            def unreadable(name, *a, **kw):
+                if os.fspath(name) == str(path):
+                    raise PermissionError("denied")
+                return original(name, *a, **kw)
+            monkeypatch.setattr(builtins, "open", unreadable)
+        ccm_spool.cmd_spool(["list"])
+        out = capsys.readouterr().out
+        assert "from: origin" in out and "(unreadable)" in out
+        assert "still visible" in out and out.count("Review full text:") == 2
+
+    def test_nonstandard_filename_is_not_dropped(self, spool_root, capsys):
+        self._record(spool_root, filename="unexpected.msg", body="retained evidence")
+        ccm_spool.cmd_spool(["list"])
+        out = capsys.readouterr().out
+        assert "unexpected  (expired; from: unknown; queued: unknown)  retained evidence" in out
+        assert "send as NEW:" in out
+
+    def test_preview_skips_blanks_and_truncates(self, spool_root, capsys):
+        self._record(spool_root, body="\n   \n" + "x" * 75 + "\nunshown tail")
+        ccm_spool.cmd_spool(["list"])
+        out = capsys.readouterr().out
+        assert "x" * 60 + "..." in out
+        assert "x" * 61 not in out and "unshown tail" not in out
+
+    def test_quoted_commands_preserve_arguments(self, spool_root, monkeypatch, capsys):
+        import shlex
+        root = spool_root + " space's"
+        monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", root)
+        project = "team's work"
+        path = self._record(root, project, filename="odd ' name.msg")
+        ccm_spool.cmd_spool(["list"])
+        lines = capsys.readouterr().out.splitlines()
+        review = next(line.split(": ", 1)[1] for line in lines if "Review full text:" in line)
+        send = next(line.split(": ", 1)[1] for line in lines if "send as NEW:" in line)
+        assert shlex.split(review) == ["cat", "--", str(path)]
+        assert shlex.split(send) == ["ccm", "send", "--file", str(path), "--", project]
+
+    def test_list_and_clear_do_not_send_or_change_other_records(
+            self, spool_root, monkeypatch, capsys):
+        from pathlib import Path
+        def forbidden(*a, **kw):
+            pytest.fail("inspection/acknowledgement attempted delivery")
+        for module, names in (
+                (ccm_send, ["cmd_send", "_type_body", "_send_keys"]),
+                (ccm_spool, ["enqueue", "reconcile_spools"]),
+                (ccm_core, ["tmux_cmd"])):
+            for name in names:
+                monkeypatch.setattr(module, name, forbidden)
+        expired = self._record(spool_root)
+        self._record(spool_root, "other")
+        for sub in ("", "held", "delivered"):
+            path = Path(spool_root) / "demo" / sub / "2000000-kept.msg"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("keep me")
+        def snapshot():
+            return {str(p): p.read_bytes() for p in Path(spool_root).rglob("*") if p.is_file()}
+        before = snapshot()
+        ccm_spool.cmd_spool(["list"])
+        out = capsys.readouterr().out
+        assert "last seen waiting in the session's input box" in out
+        assert "expired — never delivered" in out
+        assert snapshot() == before
+        ccm_spool.cmd_spool(["clear-expired", "demo"])
+        del before[str(expired)]
+        assert snapshot() == before
+
+    def test_suggested_send_to_shell_is_new_and_preserves_evidence(
+            self, spool_root, monkeypatch, capsys):
+        import shlex
+        path = self._record(spool_root)
+        monkeypatch.setattr(ccm_spool.time, "time", lambda: 4660)
+        ccm_spool.cmd_spool(["list"])
+        line = next(l for l in capsys.readouterr().out.splitlines() if "send as NEW:" in l)
+        args = shlex.split(line.split(": ", 1)[1])[2:]
+        assert "--start" not in args and "--force" not in args and "-y" not in args
+        helper = TestCmdSendSpooling()
+        helper._patch_resolution(monkeypatch, spool_root, "SHELL")
+        calls = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd", helper._tmux(calls))
+        monkeypatch.setattr(ccm_send, "_sender_label", lambda: "current-sender")
+        ccm_send.cmd_send(args)
+        names = _pending(spool_root)
+        assert names == ["4660000-current-sender.msg"]
+        queued_path = os.path.join(spool_root, "demo", names[0])
+        with open(queued_path) as f:
+            assert f.read() == path.read_text()
+        assert path.exists()
+        assert not [call for call in calls if call[0] == "send-keys"]
+        queued, sender = ccm_spool._parse_msg_name(names[0])
+        envelope = ccm_spool._envelope(sender, queued, 4700)
+        assert "current-sender" in envelope and "origin" not in envelope

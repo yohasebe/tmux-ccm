@@ -47,6 +47,7 @@ Delivery semantics, deliberately chosen and pinned by tests:
 
 import os
 import re
+import shlex
 import time
 
 import ccm_constants
@@ -76,10 +77,10 @@ _LOCK_STALE_SEC = 120
 _EVIDENCE_KEEP_SEC = 7 * 86400
 
 _SPOOL_USAGE = (
-    "Usage: ccm spool list [project]          List queued messages\n"
+    "Usage: ccm spool list [project]          Inspect pending, held and expired messages\n"
     "       ccm spool cancel <id> [project]   Withdraw a queued message\n"
     "       ccm spool cancel --all [project]  Withdraw all of them\n"
-    "       ccm spool clear-expired [project] Acknowledge undelivered ones\n"
+    "       ccm spool clear-expired [project] Delete expired records only; sends nothing\n"
     "       ccm spool clear-held [project]    Acknowledge held ones"
 )
 
@@ -451,7 +452,7 @@ def _preview(path, limit=60):
     try:
         with open(path, encoding="utf-8") as f:
             body = f.read()
-    except OSError:
+    except (OSError, UnicodeError):
         return "(unreadable)"
     first = next((ln.strip() for ln in body.split("\n") if ln.strip()), "")
     if len(first) > limit:
@@ -480,13 +481,9 @@ def _cmd_list(rest):
     shown = 0
     for name, pdir in _iter_project_dirs(only=project):
         pending = _pending(pdir)
-        def _count(sub):
-            try:
-                return sum(1 for n in os.listdir(os.path.join(pdir, sub))
-                           if n.endswith(".msg"))
-            except OSError:
-                return 0
-        n_expired, n_held = _count("expired"), _count("held")
+        expired = _in_subdir(pdir, "expired")
+        held = _in_subdir(pdir, "held")
+        n_expired, n_held = len(expired), len(held)
         # A project whose queue is empty can still be the one holding
         # the record of a message that never arrived. Skipping it
         # because nothing is pending hides that record in the command
@@ -500,7 +497,7 @@ def _cmd_list(rest):
             age = _msg_age(now, queued) if queued else "?"
             msg_id = fname[:-4]
             print(f"  {msg_id}  ({age})  {_preview(os.path.join(pdir, fname))}")
-        for fname in _in_subdir(pdir, "held"):
+        for fname in held:
             msg_id = fname[:-4]
             print(f"  {msg_id}  (held)  "
                   f"{_preview(os.path.join(pdir, 'held', fname))}")
@@ -511,6 +508,19 @@ def _cmd_list(rest):
                   f"ccm does not retype or withdraw them.)")
         if n_expired:
             print(f"  ({n_expired} expired — never delivered)")
+            for fname in expired:
+                parsed = _parse_msg_name(fname)
+                queued, sender = parsed if parsed else (None, "unknown")
+                age = _msg_age(now, queued) if queued is not None else "unknown"
+                path = os.path.abspath(os.path.join(pdir, "expired", fname))
+                print(f"  {fname[:-4]}  (expired; from: {sender}; queued: {age})  "
+                      f"{_preview(path)}")
+                print(f"    Review full text: {shlex.join(['cat', '--', path])}")
+                print("    If still needed, send as NEW: "
+                      + shlex.join(['ccm', 'send', '--file', path, '--', name]))
+            print("  After reviewing ALL expired records above: "
+                  + shlex.join(['ccm', 'spool', 'clear-expired', name])
+                  + " — deletes this project's expired records only; sends nothing.")
         shown += 1
     if shown:
         return
@@ -628,7 +638,7 @@ def cmd_spool(args):
     """Inspect and withdraw queued (store-and-forward) messages.
 
     Usage:
-      ccm spool list [project]          List queued messages
+      ccm spool list [project]          Inspect pending, held and expired messages
       ccm spool cancel <id> [project]   Withdraw one
       ccm spool cancel --all [project]  Withdraw all
       ccm spool clear-expired [project] Acknowledge the undelivered

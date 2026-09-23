@@ -1027,7 +1027,7 @@ def cmd_doctor():
         if spool["expired"]:
             parts.append(
                 f"{spool['expired']} expired undelivered "
-                f"(TTL {ccm_spool.SPOOL_TTL_SEC // 60}m)")
+                f"(TTL {ccm_spool.SPOOL_TTL_SEC // 60}m) — review: `ccm spool list`")
         row(WARN, "spool", "; ".join(parts))
     else:
         row(OK, "spool", "no queued messages")

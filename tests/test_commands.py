@@ -192,6 +192,20 @@ class TestCmdDoctor:
             return MagicMock(returncode=0, stdout="")
         monkeypatch.setattr("subprocess.run", fake_run)
 
+    def test_expired_spool_points_to_review(self, monkeypatch, capsys, tmp_path):
+        import ccm_spool
+        self._stub_world(monkeypatch, tmp_path)
+        monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
+        root = tmp_path / "spool"
+        monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", str(root))
+        record = root / "demo" / "expired" / "1000-origin.msg"
+        record.parent.mkdir(parents=True)
+        record.write_text("Review request")
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "1 expired undelivered (TTL 60m) — review: `ccm spool list`" in out
+        assert record.read_text() == "Review request"
+
     def test_clean_environment_renders_all_sections(self, tmp_path,
                                                     monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path)
