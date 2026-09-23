@@ -107,6 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Keep tracking a conversation after Claude Code parks it in the background, for
+  example when the agents view is opened with `←`. ccm follows `parkedJobId` in the
+  session registration and reads the background session's hooks and transcript. If
+  the parked conversation cannot be identified, the pane stays BUSY until its idle
+  screen has been observed long enough, at the dashboard's or the status bar's
+  cadence; ccm never uses another conversation's completion to decide.
+- Find recent conversation activity behind large transcript housekeeping records
+  with bounded reverse reads and cached results.
+- Release stale BUSY after an ambiguous Stop on an idle screen while preserving
+  known pending tools and prompts.
 - Claude Code 2.1.280 adjustment dialogs (`/autocompact`, `/effort`,
   and the enabled `/fast` picker) now read PERMIT when a key hint
   precedes Enter in their footer. They previously fell through to

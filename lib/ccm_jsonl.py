@@ -82,15 +82,11 @@ JSONL_LOCAL_COMMAND_PREFIXES = (
     "<local-command-caveat>",
 )
 
-# Tail size (bytes) read from each JSONL when looking for the most
-# recent real activity record. Needs to accommodate a single large
-# tool_result record (Read of 2000 lines, long shell output, ...)
-# plus several trailing system records — any tool-result record alone
-# can easily exceed 8 KB. 32 KB covers that comfortably while
-# remaining trivially cheap per detection cycle.
+# Reverse reads stop at the first sufficient activity evidence. Each changed
+# file costs at most 1 MiB of I/O and 200 non-empty record parses; a single
+# record is also bounded by that byte budget. Unchanged files use the LRU.
 JSONL_TAIL_BYTES = 32768
-
-# Safety cap on how many lines from the tail we will JSON-parse.
+JSONL_TAIL_MAX_BYTES = 1024 * 1024
 JSONL_TAIL_MAX_LINES = 200
 
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
@@ -125,17 +121,14 @@ _SESSION_INFO_AGE_DRIFT_SEC = int(
 _jsonl_path_cache: dict = {}
 
 # Cache for _parse_jsonl_tail. Key: jsonl path. Value:
-# ((mtime_int, size_int), (real_activity_ts_or_None, last_stop_reason_or_None)).
+# ((mtime_ns, size_int), (real_activity_ts_or_None, last_stop_reason_or_None)).
 # The cache hits on every detection cycle as long as the JSONL file hasn't
 # been written, so the cost of tail-reading + JSON parsing is paid only
 # when the file actually changes.
 #
-# Why (mtime, size) and not just mtime: int(mtime) has 1-second
-# precision, so two writes within the same wall-clock second would
-# share the same int(mtime) and collide. JSONL files are append-only
-# during a session, so the size is monotonic and any new write
-# changes it — adding size to the key catches sub-second writes that
-# bare mtime would miss.
+# Nanosecond mtime detects same-size rewrites; size also detects appends
+# even on filesystems with coarse timestamp resolution. Rewrites preserving
+# both signature fields remain indistinguishable from unchanged files.
 #
 # OrderedDict + bounded eviction: a new JSONL file is created on every
 # `claude --continue` or `/compact`, so the cache would otherwise grow
@@ -175,15 +168,11 @@ def read_session_info(claude_pid, ps_lines=None):
     """
     if not claude_pid:
         return None
-    path = os.path.join(CLAUDE_SESSIONS_DIR, f"{claude_pid}.json")
+    from ccm_agentview import read_registry_record
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        data = read_registry_record(claude_pid)
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict):
-        return None
-
     if ps_lines is not None:
         # Cross-check `startedAt` (unix ms Claude recorded at session
         # start) against the live process's etime-derived start time.
@@ -621,6 +610,32 @@ def _is_interrupt_user_record(rec: dict) -> bool:
     return isinstance(text, str) and bool(JSONL_INTERRUPT_RE.match(text.strip()))
 
 
+def _reverse_tail_lines(path):
+    """Yield complete lines newest first, without rereading expanded windows.
+
+    A line crossing the byte limit is discarded: a suffix is not a record.
+    Buffers and JSON decoding are bounded by JSONL_TAIL_MAX_BYTES.
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+            remaining = JSONL_TAIL_MAX_BYTES
+            pending = b""
+            while pos and remaining:
+                count = min(pos, remaining, JSONL_TAIL_BYTES)
+                pos -= count
+                remaining -= count
+                f.seek(pos)
+                parts = (f.read(count) + pending).split(b"\n")
+                pending = parts[0]
+                yield from reversed(parts[1:])
+            if pos == 0 and pending:
+                yield pending
+    except OSError:
+        return
+
+
 def _parse_jsonl_tail(
     path: str, mtime: int, size: int
 ) -> Tuple[Optional[int], Optional[str]]:
@@ -661,25 +676,8 @@ def _parse_jsonl_tail(
     last_stop_reason: Optional[str] = None
     interrupt_seen = False
 
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            actual_size = f.tell()
-            f.seek(max(0, actual_size - JSONL_TAIL_BYTES))
-            tail_bytes = f.read()
-    except OSError:
-        _cache_jsonl_activity(path, key, (None, None))
-        return (None, None)
-
-    tail = tail_bytes.decode("utf-8", errors="ignore")
-    lines = tail.split("\n")
-    # When we read mid-file, the first chunk line is potentially partial.
-    # Drop it unless we read the entire file in one shot.
-    if size > JSONL_TAIL_BYTES and len(lines) > 1:
-        lines = lines[1:]
-
     parsed = 0
-    for line in reversed(lines):
+    for line in _reverse_tail_lines(path):
         if parsed >= JSONL_TAIL_MAX_LINES:
             break
         line = line.strip()
@@ -742,8 +740,7 @@ def _parse_jsonl_tail(
             if isinstance(sr, str) and sr:
                 last_stop_reason = sr
         # Stop scanning once we have everything we need.
-        if (real_ts is not None and latest_user_ts is not None
-                and latest_assistant_ts is not None):
+        if real_ts is not None and latest_assistant_ts is not None:
             break
 
     # Promote to JSONL_USER_PENDING when a user record is newer than
@@ -818,7 +815,7 @@ def read_jsonl_tail_info(project_dir: str, claude_pid=None,
         st = os.stat(newest)
     except OSError:
         return -1, None
-    real_ts, stop_reason = _parse_jsonl_tail(newest, int(st.st_mtime), st.st_size)
+    real_ts, stop_reason = _parse_jsonl_tail(newest, st.st_mtime_ns, st.st_size)
     if real_ts is None:
         return -1, stop_reason
     return int(time.time() - real_ts), stop_reason
@@ -846,7 +843,7 @@ def read_jsonl_tail_info_for_session(project_dir: str, session_id: str
         st = os.stat(path)
     except OSError:
         return -1, None
-    real_ts, stop_reason = _parse_jsonl_tail(path, int(st.st_mtime), st.st_size)
+    real_ts, stop_reason = _parse_jsonl_tail(path, st.st_mtime_ns, st.st_size)
     if real_ts is None:
         return -1, stop_reason
     return int(time.time() - real_ts), stop_reason

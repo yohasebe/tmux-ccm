@@ -425,6 +425,59 @@ REGISTRY_KINDS = frozenset({"interactive", "bg", "daemon", "daemon-worker"})
 _ASCII_DIGITS = re.compile(r"[0-9]+")
 
 
+def read_registry_record(pid):
+    """Read one registry object; preserve read/parse failures for callers."""
+    import ccm_jsonl
+    with open(os.path.join(ccm_jsonl.CLAUDE_SESSIONS_DIR, f"{pid}.json"),
+              encoding="utf-8") as f:
+        info = json.load(f)
+    if not isinstance(info, dict):
+        raise ValueError("session registry record is not an object")
+    return info
+
+
+@dataclass(frozen=True)
+class PaneSession:
+    session_id: Optional[str] = None
+    cwd: str = ""
+    parked: bool = False
+    unresolved: bool = False
+
+
+def resolve_pane_session(info) -> PaneSession:
+    """Resolve activity identity once from a validated pane registration.
+
+    Saved jobs establish identity, not worker liveness. Missing or conflicting
+    identities stay unknown; never substitute the display client's old session.
+    """
+    if not info:
+        return PaneSession()
+    cwd = info.get("cwd") or ""
+    short = info.get("parkedJobId")
+    if short is None or short == "":
+        return PaneSession(info.get("sessionId") or info.get("session_id"), cwd)
+    unknown = PaneSession(cwd=cwd, parked=True, unresolved=True)
+    if not claude_config_home_is_default() or not is_valid_short(short):
+        return unknown
+    workers = read_roster().get("workers")
+    worker = workers.get(short) if isinstance(workers, dict) else None
+    job = read_job_state(short)
+    records = [r for r in (worker, job) if isinstance(r, dict)]
+    ids = {r["sessionId"] for r in records
+           if isinstance(r.get("sessionId"), str) and r["sessionId"]}
+    if len(ids) != 1:
+        return unknown
+    sid = ids.pop()
+    if (not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", sid)
+            or not sid.startswith(short)):
+        return unknown
+    cwds = {r["cwd"] for r in records
+            if isinstance(r.get("cwd"), str) and r["cwd"]}
+    if len(cwds) > 1:
+        return unknown
+    return PaneSession(sid, next(iter(cwds), cwd), parked=True)
+
+
 def own_pid_domain() -> Optional[str]:
     """The pid domain the CLI records for processes on this host, or
     None when ccm cannot derive it. macOS records the platform name;
@@ -513,13 +566,9 @@ def live_noninteractive_session_ids():
         if not _ASCII_DIGITS.fullmatch(stem) or stem != str(int(stem)):
             continue
         pid = int(stem)
-        path = os.path.join(ccm_jsonl.CLAUDE_SESSIONS_DIR, entry)
         try:
-            with open(path, encoding="utf-8") as f:
-                info = json.load(f)
+            info = read_registry_record(pid)
         except (OSError, ValueError):
-            return None
-        if not isinstance(info, dict):
             return None
         kind = info.get("kind")
         if not isinstance(kind, str) or kind not in REGISTRY_KINDS:

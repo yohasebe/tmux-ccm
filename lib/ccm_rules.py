@@ -98,6 +98,14 @@ class DetectionContext:
     # `~/.claude/sessions/<pid>.json`. None when no live claude is
     # running, or when session_info has not been written yet.
     session_id: Optional[str] = None
+    # A parked display client whose activity session cannot be identified.
+    session_unresolved: bool = False
+    # Consecutive idle-screen observations for an unresolved display client.
+    unresolved_idle_since: int = 0
+    unresolved_idle_seconds: int = 0
+    unresolved_idle_max_gap: int = 0
+    unresolved_idle_record: str = ""
+    prev_unresolved_idle_record: str = ""
     # The work clock this window's panes show now (first
     # clock-showing pane's, e.g. "(7s · ↓ 380 tokens)" or
     # "Retrying in 3s"), or None when no pane shows one. Detection
@@ -114,7 +122,7 @@ class Action(Enum):
     """Side effect to execute when a rule matches.
 
     DEFAULT         — set @ccm_prev_state to resolved state
-    HOLD_NO_WRITE   — do not touch tmux state (preserve prior state)
+    HOLD_NO_WRITE   — preserve committed state; observation history may change
     """
     DEFAULT = "default"
     HOLD_NO_WRITE = "hold_no_write"
@@ -376,11 +384,13 @@ def build_fast_context(prev_state, project_dir,
     query that built the project list) to avoid an O(N) tmux
     subprocess per fast-path refresh. It also names the transcript:
     with it, the session's own file is read directly (one stat and
-    one tail read), and the hook signal and the transcript describe
-    the same session. Without it, the newest transcript in the
+    one bounded tail scan), and the hook signal and the transcript describe
+    the same session. A missing named file stays unknown. With None,
+    the newest transcript in the
     directory is used — a scan whose cost grows with the number of
     past conversations there, and which can pick another session's
-    file when several share the directory.
+    file when several share the directory. An explicit empty string
+    disables discovery, matching the hook reader's no-identity contract.
     """
     import ccm_jsonl   # deferred — see top-of-file note
     import ccm_signals
@@ -404,13 +414,10 @@ def build_fast_context(prev_state, project_dir,
 
     jsonl_age, jsonl_last_stop_reason = -1, None
     if project_dir:
-        known = (ccm_jsonl.jsonl_path_for_session(
-            os.path.expanduser(project_dir), session_id)
-                 if session_id else None)
-        if known is not None:
+        if session_id:
             jsonl_age, jsonl_last_stop_reason = (
                 ccm_jsonl.read_jsonl_tail_info_for_session(project_dir, session_id))
-        else:
+        elif session_id is None:
             jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(project_dir)
 
     return DetectionContext(

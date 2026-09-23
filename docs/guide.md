@@ -310,6 +310,34 @@ To remove: `ccm remove-hooks` (removes ccm's own hooks only)
 
 ### How each state is detected
 
+When a pane is displaying a conversation parked in the background, ccm follows
+`parkedJobId` in Claude Code's session registration and reads the background
+session's hooks and transcript. This includes parking through the agents view
+and returning to the conversation. If the target cannot be identified, ccm
+initially keeps the pane BUSY (or PERMIT when a dialog is visible). Idle-screen
+observations can release it without borrowing another conversation's completion.
+The allowed gap follows `CCM_RECONCILE_INTERVAL` and tmux's `status-interval`.
+With defaults, a 2 s dashboard cadence releases after 62 s; status-only detection
+at 20 s intervals releases after 80 s. Longer configured intervals also work,
+but each observation adds at most half of `CCM_BUSY_STALE_RELEASE_SEC` (default
+60 s) to the evidence, so a single long wait cannot release the hold.
+Visible work, a dialog, changed identity or clock, a new state notification
+after release, or a gap beyond the configured tolerance restarts the wait.
+The hand-off launch warning applies only to SHELL windows, not a conversation
+already open in a pane.
+
+Large housekeeping records after a reply do not count as activity. Transcript
+reads search backwards, bounded to 1 MiB and 200 records per changed file,
+so attachments and history snapshots can be skipped without hiding the last
+reply within that limit. Unchanged files reuse cached results.
+
+After a `Stop` with an unreadable or unknown stop reason, an idle prompt can
+release BUSY once both the Stop and any readable activity are older than
+`CCM_BUSY_STALE_RELEASE_SEC` (default 60 s). A known pending tool or new prompt
+keeps BUSY; visible work and permission dialogs also prevent this release.
+Auto-exit still requires 600 s of sustained IDLE by default.
+
+
 | State | Method | Details |
 |-------|--------|---------|
 | **SHELL** | Process check | No `claude` process found among window's child processes |
@@ -992,6 +1020,13 @@ If a project shows BUSY when you expect IDLE (or vice-versa), use one of the two
 ccm debug trace <project-name>           # default 0.3 s interval
 ccm debug trace <project-name> 0.5       # or specify interval
 ```
+
+Trace is read-only: it does not advance the saved unresolved-idle history.
+`idle_credit=stored->candidate` shows the saved evidence and what a detection
+commit at that instant would record; `gap` shows the allowed observation gap.
+Keep periodic status detection or the dashboard running to observe committed
+progress. Tracing alone does not replace those detection passes.
+
 
 The target can also be a tmux pane, window, or `session:index` that ccm does
 not manage, which is how you observe a throwaway session started for an

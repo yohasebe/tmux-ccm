@@ -1317,6 +1317,8 @@ def cmd_debug_trace(target_match, interval=0.3):
     sys.stderr.write(
         f"# ccm debug trace: {proj_name} ({win_target}) — {proj_dir}\n"
         f"# interval={interval}s  Ctrl-C to stop\n"
+        "# read-only: unresolved idle history advances only when detection commits; "
+        "idle_credit shows stored->candidate seconds, gap is the allowed interval\n"
         f"# columns: time  raw  prev  hook(state,age)  pid_age  jsonl(age,stop)  ev(derive)  rule[phase]  →  state[action]\n"
     )
     sys.stderr.flush()
@@ -1356,6 +1358,7 @@ def cmd_debug_trace(target_match, interval=0.3):
         ctx = ccm_detection.build_detection_context(
             win_target, proj_dir, prev_state,
             panes_cache, ps_lines, own_pgid,
+            write_session_cache=False,
         )
         # Use the REAL two-path merge (event-log derive primary,
         # legacy fallback), not evaluate_rules alone. The trace used
@@ -1378,13 +1381,22 @@ def cmd_debug_trace(target_match, interval=0.3):
         # investigations include the intended session-lifecycle scope.
         rule_label = f"{rule.name}[{rule.phase or '-'}]"
 
+        idle_label = ""
+        if ctx.session_unresolved:
+            try:
+                stored_credit = json.loads(ctx.prev_unresolved_idle_record)["idle_seconds"]
+            except (ValueError, TypeError, KeyError):
+                stored_credit = "-"
+            idle_label = (f" idle_credit={stored_credit}->{ctx.unresolved_idle_seconds}s"
+                          f" gap={ctx.unresolved_idle_max_gap}s")
+
         sys.stdout.write(
             f"{_time.strftime('%H:%M:%S')}  "
             f"raw={ctx.raw:5}  prev={prev_state or '-':5}  "
             f"hook={hook_str:10}  pid_age={str(pid_age):4}  "
             f"jsonl={jsonl_str:20}  "
             f"ev={event_log_state or '-':5}  "
-            f"{rule_label:42} → {state:5} [{action_short}]\n"
+            f"{rule_label:42} → {state:5} [{action_short}]{idle_label}\n"
         )
         sys.stdout.flush()
 

@@ -32,6 +32,7 @@ from ccm_constants import (
     BUSY_HOOK_JSONL_WINDOW,
     BUSY_STALE_RELEASE_SEC,
     JSONL_HOOK_GAP_TOLERANCE,
+    JSONL_USER_PENDING,
     PERMIT_MAX_TIMEOUT,
     TERMINAL_STOP_REASONS,
 )
@@ -229,10 +230,9 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
 
     if klass == EVENT_CLASS_PAUSE:
         # `stop` event. Terminal stop_reason → turn truly ended,
-        # at rest. tool_use OR missing stop_reason → claude paused
-        # awaiting a tool result, in progress (conservative for
-        # missing data: long-running tools without clear evidence
-        # must not flip to false IDLE).
+        # at rest. Other values start conservatively in progress;
+        # the mapping layer can age out ambiguous evidence on an
+        # idle screen, while preserving known tool work.
         if jsonl_stop_reason in TERMINAL_STOP_REASONS:
             return ACTIVITY_AT_REST, latest
         return ACTIVITY_IN_PROGRESS, latest
@@ -329,9 +329,8 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     keeps working consistently.
 
     event_type: the `type` of the latest event that produced the
-    activity, when known. The stale-BUSY release below only applies
-    to START-class origins (prompt/pretool/posttool/subagent/
-    compact) — the case it exists for is an Esc-interrupted turn. A
+    activity, when known. The stale-BUSY release below applies
+    to START-class origins and ambiguous Stop evidence. A
     BUSY promoted from a permit event (an auto-approved tool whose
     run may legitimately take minutes) must NOT be cut by the short
     release window; it keeps the long-tool semantics of the permit
@@ -411,7 +410,7 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     # session (no Stop hook, no further JSONL — the conjunction of
     # raw=IDLE AND frozen JSONL is what earns the release) escapes a
     # stuck BUSY in 60s instead of 10 minutes.
-    # The release is further restricted to START-class origins: a BUSY
+    # The release covers START-class origins and ambiguous Stop evidence: a BUSY
     # promoted from a permit event (auto-approved tool) can run for
     # minutes legitimately, so it is exempt from the short window and
     # keeps the promotion's own long-tool semantics.
@@ -420,7 +419,12 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     busy_release_eligible = (
         candidate == "BUSY"
         and (event_type is None
-             or EVENT_CLASSES.get(event_type) == EVENT_CLASS_START))
+             or EVENT_CLASSES.get(event_type) == EVENT_CLASS_START
+             or (event_type == "stop"
+                 and jsonl_stop_reason not in ("tool_use", JSONL_USER_PENDING)
+                 and event_age > BUSY_STALE_RELEASE_SEC)))
+    # An ambiguous Stop must itself be old, even if the latest readable
+    # transcript record predates it. Known tool work stays protected.
     # With no readable JSONL the guard used to be unsatisfiable — the
     # age it compares is -1, which is never past the window — so a
     # session whose transcript ccm cannot find (missing file, a slug

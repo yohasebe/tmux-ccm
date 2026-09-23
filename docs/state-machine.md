@@ -72,6 +72,68 @@ Inactive panes also drive the `(bg)` UI affordance (state=IDLE with raw=BUSY: th
 
 The event-log path (`derive_state_from_events`) is the primary detection mechanism. The legacy `DETECTION_RULES` table is the safety net for cases where the event log is empty / malformed / in a post-`session_end` transient — the dispatcher commits the event-log state when derive returns non-`None`, and falls back to legacy otherwise. `CCM_USE_EVENT_LOG=off` is a diagnostic kill-switch that disables the event-log read entirely; the unset default and any other value resolve to the auto dispatch. One exception short-circuits the dispatch itself: raw=IGNORED never reaches the event-log read — the verdict is about visibility, not activity, and the log belongs to sessions ccm chose not to watch (derive would read their absence from the visible process tree as `pid_present=False` and answer SHELL, overriding the verdict).
 
+### Activity session identity and transcript bounds
+
+The pane PID's registration is read and validated once. `ccm_agentview` resolves
+its `parkedJobId`, when present, through the roster and saved job's explicit
+full `sessionId`. Conflicting IDs or directories, malformed IDs, and an
+unresolvable mapping stay unknown. A saved job may establish identity even
+when no worker is listed; this does not assert that the worker is live.
+Custom configuration homes cannot be joined to the default-home transcripts.
+
+The resolved activity ID keys hooks, events, the exact transcript, and the
+window's session cache. Parked targets and explicit fast-path IDs never fall
+back to another transcript. An unresolved parked mapping clears the cached ID
+and initially resolves to BUSY for a running pane, with visible PERMIT taking
+precedence. SHELL/DOWN/IGNORED retain their process or visibility meaning.
+No CLI command or daemon mutation is needed.
+
+For unresolved sessions, `@ccm_unresolved_idle` stores the display process and
+registration identity, first/latest observation times, work clock, and credited
+idle seconds. Let W be `BUSY_STALE_RELEASE_SEC` (default 60), R the nonnegative
+`CCM_RECONCILE_INTERVAL` (default 20), and S the positive tmux `status-interval`.
+The periodic detection cadence is P = max(1, ceil(R/S)) × S; the allowed gap is
+max(W, 2P + 2 seconds), allowing one missed cycle and rounding slack. Invalid
+settings use R=20/S=15; a zero status interval is treated as S=1 for observation
+budgeting (it does not enable disabled polling).
+
+Same-identity, same-clock, consecutive IDLE observations within that gap add
+min(elapsed, max(1, floor(W/2))) credited seconds. The first observation earns
+zero; release requires credited seconds strictly greater than W. This works
+with dashboard and status-only cadences without counting an entire long
+unobserved interval. At W=60: 2 s polls release at 62 s, 20 s polls at 80 s,
+and 120 s polls at 360 s. Longer gaps reset credit, rather than earning any.
+Missing/malformed/future/reversed history, invalid credit, changed identity or
+clock, or a previous-state mismatch reset it too. Older histories without the
+credit field start fresh. Non-IDLE or resolved observations clear the history.
+
+A previous-state mismatch includes a BUSY hook update after release to IDLE.
+The bulk window query carries both history and status interval; direct callers
+read the options. `apply_actions` persists observation history even when the
+state rule says HOLD_NO_WRITE, so a BUSY startup observation clears old idle
+evidence. The only current HOLD rule requires raw=BUSY; an unresolved release
+requires raw=IDLE and has no hook/JSONL evidence, so it uses default/WRITE and
+cannot alternate due to a retained BUSY state. Auto-exit retains its separate
+sustained-IDLE interval. No events or other transcript are used for this release.
+
+`ccm debug trace` does not write either the state, session cache, or idle history.
+Its `idle_credit=stored->candidate` and `gap` fields show saved evidence and the
+same candidate the real detector would commit. Without periodic detection or
+the dashboard, the saved history does not advance; a trace-only loop is not a
+simulated writer. The JSON scan log also includes credited seconds and gap.
+The hand-off warning remains limited to SHELL windows that may launch
+`--continue`; an already connected conversation has no pending launch.
+
+The transcript reader walks backwards in 32 KiB blocks, stopping once the
+latest assistant and any newer user activity have been found. A changed file
+costs at most 1 MiB of reads and 200 non-empty record parses. Complete lines
+within that budget are parsed as JSON, so nested `type` fields cannot masquerade
+as top-level activity; a partial line at the byte boundary is discarded.
+Both activity and individual record size are bounded by this byte budget.
+Results use the bounded LRU keyed by path, `mtime_ns`, and size. Records beyond
+the limits remain unknown; same-size rewrites preserving `mtime_ns` are not
+observable through this cache key.
+
 ### Legacy backbone — `DETECTION_RULES` table
 
 The legacy table is intentionally minimal: it exists only to produce a sensible state when the event-log path declines to answer. All hook / JSONL freshness reasoning lives in the event-log path. Each rule constrains the input `DetectionContext` (raw, hook_state, hook_age, prev_state, jsonl_age, jsonl_last_stop_reason, claude_pid_age) and emits a resolved state. First match wins.
@@ -120,11 +182,12 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
 
    Three properties of the record make it dangerous read naively, all pinned by tests. The phrase must be matched against the **whole** record text, never as a substring — Claude's note is the entire content of its record, so a substring test also fires on any message discussing interrupts, releasing a working session to IDLE (a naive scan of the session that built this returned 41 hits for 7 real interrupts; a consumer hit the same contamination independently). The other two: it is *newer* than the assistant turn it cut short (so counting it as activity resets the aging clock to the moment of the interrupt — restarting the very wait the guard is trying to end), and its `type` is `user` (so it would promote to `user_pending`, "the user just submitted a prompt", pinning BUSY for the full 10-minute window). It is therefore excluded from the activity age and from the prompt-pending promotion, and only counts when nothing newer follows it.
 
-   **Stale-BUSY release (added, aging clock generalised).** An Esc interrupt mid-tool fires no `Stop` hook and freezes the JSONL at a non-terminal `tool_use`, so a start-class event stays "latest" and the session would hold `BUSY` for the whole 10-minute window. The release fires on the conjunction `raw="IDLE"` AND frozen JSONL — raw alone is not trusted, because spinner detection has broken silently on upstream text changes before (`❯❯`→`⏵⏵`, `/model` footer verb rename). The window is short by design: it only prevents flicker, while the real safety net for a genuinely working session (e.g. a long silent build whose JSONL also freezes) is `IDLE_EXIT_TIMEOUT` requiring 600 s of sustained IDLE before auto-exit. The guard reads the JSONL age, falling back to the age of the newest event when the transcript is unreadable — with `jsonl_age = -1` the comparison was unsatisfiable, so a session whose transcript ccm cannot find (missing file, drifted slug rule, brand-new session) stayed BUSY with no release path at all, the non-ASCII-path failure shape. The release applies **only to start-class origins** (the Esc case it exists for); a BUSY promoted from a permit event (auto-approved tool, which may legitimately run for minutes) is exempt from the short window and keeps the promotion's own long-tool semantics.
+   **Stale-BUSY release (added, aging clock generalised).** An Esc interrupt mid-tool fires no `Stop` hook and freezes the JSONL at a non-terminal `tool_use`, so a start-class event stays "latest" and the session would hold `BUSY` for the whole 10-minute window. The release fires on the conjunction `raw="IDLE"` AND frozen JSONL — raw alone is not trusted, because spinner detection has broken silently on upstream text changes before (`❯❯`→`⏵⏵`, `/model` footer verb rename). The window is short by design: it only prevents flicker, while the real safety net for a genuinely working session (e.g. a long silent build whose JSONL also freezes) is `IDLE_EXIT_TIMEOUT` requiring 600 s of sustained IDLE before auto-exit. The guard reads the JSONL age, falling back to the age of the newest event when the transcript is unreadable — with `jsonl_age = -1` the comparison was unsatisfiable, so a session whose transcript ccm cannot find (missing file, drifted slug rule, brand-new session) stayed BUSY with no release path at all, the non-ASCII-path failure shape. The release applies to start-class origins and to ambiguous Stop evidence (see below); a BUSY promoted from a permit event (auto-approved tool, which may legitimately run for minutes) is exempt from the short window and keeps the promotion's own long-tool semantics.
 6. Latest event is `notify_idle` → `IDLE`
 7. Latest event is `stop`:
    - JSONL stop_reason terminal → `IDLE`
-   - JSONL stop_reason `tool_use` or unknown → `BUSY` (intermediate Stop boundary, ball still on Claude's side)
+   - JSONL stop_reason `tool_use` or `user_pending` → `BUSY`; known progress is exempt from short stale release.
+   - Missing or other non-terminal stop reason → initially `BUSY`. If `raw="IDLE"`, the Stop has a valid timestamp older than `BUSY_STALE_RELEASE_SEC`, and the readable JSONL activity is also older than that window (or unavailable), return `None` and defer to legacy. The default window is 60 s, with strict `>` boundaries. A fresh Stop, fresh activity, unknown/future event timestamp, `raw="BUSY"`, or `raw="PERMIT"` prevents this release.
 8. Final A' override: if `raw=="PERMIT"` and candidate ≠ `"PERMIT"` → `"PERMIT"` (capture-pane footer match wins)
 
 ## Invariants

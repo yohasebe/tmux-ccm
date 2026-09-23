@@ -454,7 +454,8 @@ _WINDOW_FORMAT = (
     "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
     "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
     "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}\t"
-    "#{@ccm_work_clock}\t#{@ccm_work_clock_ts}"
+    "#{@ccm_work_clock}\t#{@ccm_work_clock_ts}\t#{@ccm_unresolved_idle}\t"
+    "#{status-interval}"
 )
 _WINDOW_FIELDS_MIN = 6  # win_target, project, dir, prev_state, completed_at, win_activity
 
@@ -544,6 +545,8 @@ def _parse_window_line(line):
         "attention_toggle": attention_toggle,
         "work_clock": work_clock,
         "work_clock_ts": work_clock_ts,
+        "unresolved_idle": parts[11] if len(parts) >= 12 else "",
+        "status_interval": parts[12] if len(parts) >= 13 else "",
     }
 
 
@@ -574,6 +577,8 @@ def _resolve_window_state(row, fast, panes_cache, ps_lines, own_pgid):
             prev_bg_active=bool(row["bg_active_str"]),
             cached_session_id=row["cached_session_id"],
             cached_work_clock=(row["work_clock"], row["work_clock_ts"]),
+            cached_unresolved_idle=row["unresolved_idle"],
+            cached_status_interval=row["status_interval"],
         )
     except Exception:
         log_caught_exception(f"build_project_list[{row['project']}]")

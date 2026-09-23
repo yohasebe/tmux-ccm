@@ -378,14 +378,14 @@ class TestFastContextReadsTheKnownSession:
         ctx = ccm_rules.build_fast_context("BUSY", str(proj), session_id=None)
         assert ctx.jsonl_last_stop_reason == "end_turn"
 
-    def test_unknown_session_falls_back_to_the_newest_file(self, tmp_path, monkeypatch):
-        """The cached id names a transcript that does not exist (yet):
-        the old behaviour applies rather than nothing."""
+    def test_missing_known_session_does_not_borrow_newest(self, tmp_path, monkeypatch):
+        """A missing transcript does not change the activity identity."""
         import ccm_rules
         proj, slug_dir = self._dir(tmp_path, monkeypatch)
         self._write(slug_dir / "other.jsonl", "end_turn", 2000)
         ctx = ccm_rules.build_fast_context("BUSY", str(proj), session_id="gone")
-        assert ctx.jsonl_last_stop_reason == "end_turn"
+        assert ctx.jsonl_last_stop_reason is None
+        assert ctx.jsonl_age == -1
 
     def test_session_under_a_custom_project_dir_name_is_found(self, tmp_path, monkeypatch):
         """A host may name the project directory itself
