@@ -54,6 +54,11 @@ do not define file hooks indirectly through `eval` or generated names.
 Pytest's `block_live_subprocess` guards Python subprocess
 calls separately; neither mechanism is an OS sandbox.
 
+Store nested Bats test source in `tests/fixtures/` with a non-`.bats`
+extension, then copy it into the temporary test directory. Do not embed test
+declarations in heredocs in a `.bats` file. Run child fixtures with
+`"$BATS_ROOT/bin/bats"` so they use the parent's Bats version.
+
 Concurrency tests use explicit gates to control event order. Gate timeouts
 must fail the test, and teardown must release waiting jobs. Keep actual elapsed
 time checks separate from ordering checks.

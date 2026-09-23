@@ -64,3 +64,46 @@ def test_definition_check_covers_bash_function_forms(definition):
 ])
 def test_calls_and_other_function_names_are_not_definitions(text):
     assert _FILE_HOOK_DEFINITION.search(text) is None
+
+
+# Fixture source belongs in non-.bats files: older Bats collectors also
+# recognize test declarations in heredoc bodies. Track heredocs rather
+# than trying to distinguish intended tests from their names.
+_HEREDOC = re.compile(
+    r'''(?<!<)<<(-?)(?!<)[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([A-Za-z_]\w*))'''
+)
+
+
+def _heredoc_test_lines(text):
+    pending = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if pending:
+            delimiter, strip_tabs = pending[0]
+            if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                pending.pop(0)
+            elif re.match(r"\s*@test\b", line):
+                yield number
+        else:
+            for match in _HEREDOC.finditer(line):
+                pending.append((next(value for value in match.groups()[1:]
+                                     if value is not None), bool(match[1])))
+
+
+def test_bats_files_do_not_embed_test_declarations_in_heredocs():
+    for path in Path(__file__).parent.glob("*.bats"):
+        embedded = list(_heredoc_test_lines(path.read_text()))
+        assert not embedded, f"{path.name}: heredoc test declaration at lines {embedded}"
+
+
+@pytest.mark.parametrize("redirect,indent", [
+    ("<<EOF", ""), ("<<'EOF'", ""), ('<<"EOF"', ""), ("<<-EOF", "\t"),
+])
+def test_heredoc_declarations_are_detected(redirect, indent):
+    text = (f"cat {redirect}\n{indent}@test \"child\" {{ :; }}\n"
+            f"{indent}EOF\n@test \"parent\" {{ :; }}\n")
+    assert list(_heredoc_test_lines(text)) == [2]
+
+
+def test_here_strings_and_parent_tests_are_not_heredoc_declarations():
+    text = 'cat <<< "data"\n@test "parent" { :; }\n'
+    assert list(_heredoc_test_lines(text)) == []

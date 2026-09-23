@@ -39,15 +39,12 @@ _spy() {
 _fixture() {
     mkdir -p "$CASE_DIR/fixture"
     ln -s "$BATS_TEST_DIRNAME/helpers" "$CASE_DIR/fixture/helpers"
-    printf '#!/usr/bin/env bats\nload helpers/tmux_guard.bash\n' > "$CASE_DIR/fixture/probe.bats"
+    cp "$BATS_TEST_DIRNAME/fixtures/tmux_guard/$1.fixture" "$CASE_DIR/fixture/probe.bats"
 }
 
 @test "a swallowed tmux refusal still fails the file at teardown" {
-    _fixture
-    cat >> "$CASE_DIR/fixture/probe.bats" <<'TEST'
-@test "swallow the error" { command tmux list-sessions || true; }
-TEST
-    run bats "$CASE_DIR/fixture/probe.bats"
+    _fixture swallow
+    run "$BATS_ROOT/bin/bats" "$CASE_DIR/fixture/probe.bats"
     [[ "$status" -ne 0 ]]
     [[ "$output" == *"Non-isolated tmux calls were blocked"* ]]
     [[ "$output" == *"list-sessions"* ]]
@@ -55,17 +52,8 @@ TEST
 
 @test "a failed test still removes its dedicated tmux server" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
-    _fixture
-    cat >> "$CASE_DIR/fixture/probe.bats" <<'TEST'
-@test "fail after starting" {
-    socket=$(ccm_test_new_socket)
-    command tmux -L "$socket" new-session -d -s isolated
-    command tmux -L "$socket" display-message -p '#{pid}' > "$CASE_DIR/server-pid"
-    echo "$TMUX_TMPDIR" > "$CASE_DIR/socket-dir"
-    false
-}
-TEST
-    run bats "$CASE_DIR/fixture/probe.bats"
+    _fixture failed_server
+    run "$BATS_ROOT/bin/bats" "$CASE_DIR/fixture/probe.bats"
     [[ "$status" -ne 0 ]]
     [[ -s "$CASE_DIR/server-pid" ]]
     local pid i

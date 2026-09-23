@@ -1,0 +1,9 @@
+#!/usr/bin/env bats
+load helpers/tmux_guard.bash
+@test "fail after starting" {
+    socket=$(ccm_test_new_socket)
+    command tmux -L "$socket" new-session -d -s isolated
+    command tmux -L "$socket" display-message -p '#{pid}' > "$CASE_DIR/server-pid"
+    echo "$TMUX_TMPDIR" > "$CASE_DIR/socket-dir"
+    false
+}
