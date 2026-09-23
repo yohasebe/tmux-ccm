@@ -350,7 +350,8 @@ _ccm_hooks_dir() {
 }
 
 # lib/ccm_hook_owner.py holds the one definition of which hooks are ccm's,
-# shared with `ccm doctor`; these wrappers only pipe settings through it.
+# shared with `ccm doctor`; mutations use stdin and the installation
+# probe passes a path for the common reader.
 _ccm_hook_owner() {
     python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ccm_hook_owner.py" "$@"
 }
@@ -429,28 +430,9 @@ _ccm_version_ge() {
 
 # Check if ccm hooks are installed in Claude Code settings
 ccm_hooks_configured() {
-    local settings_file="${HOME}/.claude/settings.json"
-    [[ ! -f "$settings_file" ]] && return 1
-    grep -q 'on-prompt-submit\.sh' "$settings_file" 2>/dev/null || return 1
-    grep -q 'on-stop\.sh' "$settings_file" 2>/dev/null || return 1
-    grep -q 'on-pre-tool-use\.sh' "$settings_file" 2>/dev/null || return 1
-    grep -q 'on-notification\.sh' "$settings_file" 2>/dev/null || return 1
-    grep -q 'on-permission-request\.sh' "$settings_file" 2>/dev/null || return 1
-    grep -q 'on-permission-denied\.sh' "$settings_file" 2>/dev/null || return 1
-    grep -q 'on-session-end\.sh' "$settings_file" 2>/dev/null || return 1
-    # Required hook event names that ccm must always have
-    # registered. Force a reinstall when settings.json is missing
-    # any of them.
-    grep -q 'PostToolUseFailure' "$settings_file" 2>/dev/null || return 1
-    grep -q 'SubagentStop' "$settings_file" 2>/dev/null || return 1
-    grep -q 'PreCompact' "$settings_file" 2>/dev/null || return 1
-    grep -q 'PostCompact' "$settings_file" 2>/dev/null || return 1
-    # The elicitation_dialog Notification matcher is required.
-    # Scope the check to a `"matcher": "elicitation_dialog"` literal
-    # rather than a bare string so we cannot false-positive on the
-    # word appearing elsewhere in the file.
-    grep -qE '"matcher"[[:space:]]*:[[:space:]]*"elicitation_dialog"' \
-        "$settings_file" 2>/dev/null || return 1
+    # Exit 0: complete, 1: incomplete, 2: unreadable. Read the path in
+    # Python, so a pipe cannot block a shell-side cat before the probe.
+    _ccm_hook_owner configured "${HOME}/.claude/settings.json"
 }
 
 # Install Claude Code hooks for improved state detection

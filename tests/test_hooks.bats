@@ -933,3 +933,22 @@ for k, v in STATE_ICONS.items():
         echo "pending should have been cancelled by UserPromptSubmit"; return 1;
     }
 }
+
+@test "setup-hooks: names in metadata do not mean hooks are installed" {
+    # Include the current-path markers and every event/matcher literal
+    # the former grep probe looked for, but no actual hook registrations.
+    jq --arg root "$CCM_ROOT" '
+        {notes: ([.hooks[][] | .hooks[].command |
+                   sub("/plugin"; $root)] +
+                 ["PostToolUseFailure", "SubagentStop", "PreCompact", "PostCompact"]),
+         matcher: "elicitation_dialog"}
+    ' "${CCM_ROOT}/tests/fixtures/hooks-complete.json" > "${MOCK_DIR}/.claude/settings.json"
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"already installed"* ]]
+    jq -e '.hooks.UserPromptSubmit[0].hooks[0].command != null and
+           any(.hooks.Notification[]; .matcher == "elicitation_dialog")' \
+        "${MOCK_DIR}/.claude/settings.json" >/dev/null
+    run ccm_hooks_configured
+    [[ "$status" -eq 0 ]]
+}

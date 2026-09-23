@@ -108,6 +108,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   precedes Enter in their footer. They previously fell through to
   IDLE or BUSY, allowing sends into a dialog. Existing Enter-first
   footers and free-navigation menus retain their classification.
+- Settings diagnostics no longer block on a named pipe in place of
+  a settings file. A shared reader checks the opened file descriptor,
+  accepts regular-file symlinks, and treats non-object JSON and invalid
+  encoding as unreadable. The hook-installation probe now checks hook
+  commands rather than finding script names anywhere in the file.
+- Python status checks and shell hook setup share one installation probe:
+  all seven script names must occur in command hooks, required lifecycle
+  events must have registrations, and Notification must register the
+  elicitation matcher. Names in metadata no longer skip installation;
+  incomplete and unreadable settings remain distinct.
 - `ccm doctor` no longer ticks a settings flag it could not read. A
   `settings.json` that is present but does not parse — overlapping
   writers have left it cut off mid-object — reported

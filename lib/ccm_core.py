@@ -21,6 +21,8 @@ import time
 import traceback
 from datetime import datetime
 
+from ccm_settings import read_settings
+
 # Single-instance guarantee. When invoked as `python3 lib/ccm_core.py
 # <subcmd>`, Python loads this file as `__main__`. Submodules
 # (ccm_commands, ccm_detection, …) imported at the bottom of this
@@ -888,16 +890,10 @@ def build_project_list(fast=False):
 # whether to surface "hooks not installed" warnings.
 
 def hooks_configured():
-    """Return True iff all 7 ccm hook scripts are referenced in the
-    user's `~/.claude/settings.json`. Used as a "hooks installed?"
-    probe — does not validate the script paths or contents."""
-    settings_file = os.path.expanduser("~/.claude/settings.json")
-    try:
-        with open(settings_file, encoding="utf-8") as f:
-            content = f.read()
-        return all(script in content for script in HOOK_SCRIPTS)
-    except OSError:
-        return False
+    """True for complete registrations, False for incomplete, None for
+    unreadable settings. Does not validate hook ownership or paths."""
+    from ccm_hook_owner import registration_complete
+    return registration_complete(_read_user_settings())
 
 
 #: Per-hook timeout, in seconds, above which ccm's own hook entries are
@@ -909,11 +905,7 @@ HOOK_TIMEOUT_WARN_ABOVE = 120
 
 def _read_user_settings():
     """~/.claude/settings.json parsed, or None when it cannot be read."""
-    try:
-        with open(os.path.expanduser("~/.claude/settings.json"), encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
+    return read_settings(os.path.expanduser("~/.claude/settings.json"))
 
 
 def _hook_entries_by_owner():

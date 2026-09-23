@@ -33,6 +33,7 @@ import sys
 import time
 
 import ccm_core  # late-bound for tmux_cmd
+from ccm_settings import read_settings as _read_settings_file
 
 
 # ─── Cluster-SHELL configuration ───
@@ -167,15 +168,6 @@ MANAGED_SETTINGS_DEFAULT = "/etc/claude-code/managed-settings.json"
 # label that doubles as a discriminator silently stops a warning
 # firing, which is the one direction a canary must never fail in.
 MANAGED_SOURCE_LABEL = "managed-settings.json"
-
-
-def _read_settings_file(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
 
 
 def _settings_sources(projects=None):

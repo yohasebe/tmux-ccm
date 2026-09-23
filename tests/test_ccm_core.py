@@ -127,9 +127,9 @@ class TestFindProcessAge:
 
 
 class TestHooksConfigured:
-    @patch("builtins.open", side_effect=FileNotFoundError)
-    def test_false_when_no_settings(self, mock_open):
-        assert ccm_core.hooks_configured() is False
+    def test_unknown_when_no_settings(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "missing"))
+        assert ccm_core.hooks_configured() is None
 
 
 # ─── tmux_batch ───

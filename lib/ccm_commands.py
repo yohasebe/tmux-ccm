@@ -869,8 +869,8 @@ def cmd_doctor():
             "add `set -g focus-events on` to ~/.tmux.conf")
 
     section("Setup")
-    # `hooks_configured` only finds ccm's script names somewhere in the
-    # settings; a ccm at a previous path satisfies it too. So an install
+    # `hooks_configured` checks complete registrations, not ownership;
+    # a ccm at a previous path satisfies it too. So an install
     # with none of the entries in this ccm's hooks directory is not
     # reported as installed. The two warnings below are independent of
     # both answers: each helper says whether it has something to report.

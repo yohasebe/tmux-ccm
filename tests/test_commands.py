@@ -296,6 +296,17 @@ class TestCmdDoctor:
         settings = {"hooks": {"Stop": [{"hooks": [
             {"type": "command", "command": f"/old/ccm/hooks/{n}", "timeout": 5000}
             for n in names]}]}}
+        if scripts == "all":
+            # A complete registration at a different installation remains
+            # distinct from a partial registration and from ownership.
+            fixture = os.path.join(os.path.dirname(__file__), "fixtures", "hooks-complete.json")
+            with open(fixture) as stream:
+                settings = json.load(stream)
+            for entries in settings["hooks"].values():
+                for entry in entries:
+                    for hook in entry["hooks"]:
+                        hook["command"] = hook["command"].replace("/plugin/", "/old/ccm/")
+                        hook["timeout"] = 5000
         claude_dir = tmp_path / "home" / ".claude"
         claude_dir.mkdir(parents=True)
         (claude_dir / "settings.json").write_text(json.dumps(settings))
@@ -307,7 +318,7 @@ class TestCmdDoctor:
             assert "Hooks not installed" in out
         assert "Hooks installed" not in out
         other = next(l for l in out.splitlines() if "Other hooks" in l)
-        n = len(names)
+        n = sum(len(entry["hooks"]) for entries in settings["hooks"].values() for entry in entries)
         assert f"/old/ccm/hooks ({n} {'entry' if n == 1 else 'entries'})" in other
         assert "Hook timeout" not in out
 

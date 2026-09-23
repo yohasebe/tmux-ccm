@@ -34,6 +34,10 @@ CLI (settings JSON on stdin):
     ccm_hook_owner.py strip <hooks_dir>            -> settings on stdout
     ccm_hook_owner.py sync <hooks_dir> <timeout>   -> settings on stdout
     ccm_hook_owner.py lookalikes <hooks_dir>       -> one command per line
+
+File-based probe (separate from ownership):
+    ccm_hook_owner.py configured <settings_file>  -> exit 0 complete, 1 incomplete,
+                                                   2 unreadable (no stdin read)
 """
 import json
 import os
@@ -61,6 +65,40 @@ def _hooks(settings):
             for hook in inner:
                 if isinstance(hook, dict) and isinstance(hook.get("command"), str):
                     yield hook
+
+
+REQUIRED_EVENTS = ("PostToolUseFailure", "SubagentStop", "PreCompact", "PostCompact")
+
+
+def registration_complete(settings):
+    """True if the required registrations exist, False if incomplete,
+    None if settings could not be read as an object.
+
+    This is a presence probe, not ownership or path validation. Script
+    names must occur in command hooks; required events and the Notification
+    elicitation matcher must contain command hooks, not merely appear in
+    metadata. Ownership remains `classify`'s independent responsibility.
+    """
+    if not isinstance(settings, dict):
+        return None
+
+    def commands(data):
+        return [h["command"] for h in _hooks(data)
+                if h.get("type") == "command" and h["command"].strip()]
+
+    all_commands = commands(settings)
+    if not all(any(script in command for command in all_commands)
+               for script in HOOK_SCRIPTS):
+        return False
+    hooks = settings.get("hooks", {})
+    if not all(commands({"hooks": {event: hooks.get(event)}})
+               for event in REQUIRED_EVENTS):
+        return False
+    notifications = hooks.get("Notification", [])
+    return isinstance(notifications, list) and any(
+        isinstance(entry, dict) and entry.get("matcher") == "elicitation_dialog"
+        and bool(commands({"hooks": {"Notification": [entry]}}))
+        for entry in notifications)
 
 
 #: What a command must look like to be read as a path at all: absolute,
@@ -148,6 +186,10 @@ def sync_timeouts(settings, owned, timeout):
 
 
 def _main(argv):
+    if len(argv) == 3 and argv[1] == "configured":
+        from ccm_settings import read_settings
+        complete = registration_complete(read_settings(argv[2]))
+        return 2 if complete is None else (0 if complete else 1)
     if len(argv) < 3 or argv[1] not in ("strip", "sync", "lookalikes"):
         print(__doc__, file=sys.stderr)
         return 2
