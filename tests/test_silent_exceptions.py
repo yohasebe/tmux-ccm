@@ -61,6 +61,7 @@ class TestSnapshotLoadAutosave:
     site (or its callees) would be silent."""
 
     @patch("ccm_core.project_exists", return_value=False)
+    @patch("ccm_core.require_session", lambda: "main")
     @patch("ccm_core.get_session", return_value="main")
     def test_post_load_autosave_invokes_save(
         self, mock_session, mock_exists, tmp_path

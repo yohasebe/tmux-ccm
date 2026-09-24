@@ -107,6 +107,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Commands that require a tmux session distinguish connection failures from
+  being outside tmux. Errors preserve tmux's diagnostic and suggest running
+  outside a sandbox when applicable, including when a popup session name
+  was cached, instead of reporting a missing project.
 - Settings canaries recognize non-boolean managed `allowManagedHooksOnly`
   locks in Claude Code 2.1.282 and name their source in doctor and status.
   Quoted `"false"` and `null` remain unlocked. Invalid managed `disableAllHooks`

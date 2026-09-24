@@ -624,6 +624,7 @@ class TestCmdSendSpooling:
             directory="/tmp/demo", state=state,
         )
         monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,

@@ -109,7 +109,7 @@ class TestSnapshotLoad:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_save_load_round_trip_via_disk(
         self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path
     ):
@@ -168,7 +168,7 @@ class TestSnapshotLoad:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_load_creates_windows(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         """Loading a snapshot creates windows for each project."""
         orig_dir = ccm_core.CCM_SNAPSHOT_DIR
@@ -201,7 +201,7 @@ class TestSnapshotLoad:
 
         ccm_core.CCM_SNAPSHOT_DIR = orig_dir
 
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     @patch("ccm_core.tmux_cmd", return_value="")
     def test_load_skips_missing_dir(self, mock_tmux, mock_session, tmp_path, capsys):
         """Projects with missing directories are skipped with a warning."""
@@ -220,7 +220,7 @@ class TestSnapshotLoad:
         ccm_core.CCM_SNAPSHOT_DIR = orig_dir
 
     @patch("ccm_core.find_window", return_value="1")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     @patch("ccm_core.tmux_cmd", return_value="")
     def test_load_skips_existing_project(self, mock_tmux, mock_session, mock_find, tmp_path, capsys):
         """Projects that already exist are skipped with a warning."""
@@ -251,7 +251,7 @@ class TestSnapshotLoad:
 
         ccm_core.CCM_SNAPSHOT_DIR = orig_dir
 
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     @patch("ccm_core.tmux_cmd", return_value="")
     def test_load_skips_null_entries(self, mock_tmux, mock_session, tmp_path):
         """Null/empty project entries in snapshot are silently skipped."""

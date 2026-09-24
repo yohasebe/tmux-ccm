@@ -191,6 +191,12 @@ Open with `prefix + T`. Shows the full tmux hierarchy:
 
 `ccm send` dispatches a prompt to another project's Claude Code session, so you can hand off work between projects without leaving your current pane.
 
+When calling `ccm send` from a sidekick or a sandboxed tool, run it outside
+the sandbox so it can reach tmux's Unix socket. Network restrictions can
+block that socket even when `TMUX` is set. A connection failure includes
+tmux's error and guidance to retry outside the sandbox; it does not mean
+the project is missing or that the caller is outside tmux.
+
 ```bash
 # Simple positional message (confirmed interactively if run from a TTY)
 ccm send demo "Summarize the last review cycle."

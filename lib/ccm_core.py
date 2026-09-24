@@ -103,20 +103,29 @@ def tmux_cmd(*args, timeout=5):
         return ""
 
 
-def tmux_query(*args, timeout=5):
-    """Like `tmux_cmd`, but a failure is None rather than "" — for a
-    reader that must tell "tmux answered with nothing" from "tmux
-    could not be asked" (a listing that is legitimately empty, say),
-    because the two lead to different conclusions."""
+def tmux_query(*args, timeout=5, errors=None):
+    """Like `tmux_cmd`, but a failure is None rather than "".
+
+    When supplied, `errors` receives the diagnostic from this call;
+    callers can explain a failed query without a second probe losing
+    the original error. Existing best-effort readers remain silent.
+    """
     try:
         r = subprocess.run(
             ["tmux"] + list(args), capture_output=True, timeout=timeout
         )
-        if r.returncode != 0:
-            return None
-        return r.stdout.decode("utf-8", errors="replace").strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
+        if r.returncode == 0:
+            return r.stdout.decode("utf-8", errors="replace").strip()
+        detail = r.stderr.decode("utf-8", errors="replace").strip()
+        if not detail:
+            detail = f"tmux exited with status {r.returncode}"
+    except subprocess.TimeoutExpired:
+        detail = f"tmux query timed out after {timeout} seconds"
+    except OSError as exc:
+        detail = str(exc)
+    if errors is not None:
+        errors.append(detail)
+    return None
 
 
 def tmux_batch(*commands):
@@ -335,6 +344,33 @@ def get_session():
         return session
     out = tmux_cmd("list-clients", "-F", "#{session_name}")
     return out.split("\n")[0] if out else ""
+
+
+def require_session():
+    """Resolve a CLI session and verify tmux is reachable, even for popups."""
+    session = get_session()
+    errors = []
+    # A saved popup-session is only a name, not evidence of a live
+    # connection. Check before a failed lookup becomes "not found".
+    args = (("list-windows", "-t", session, "-F", "#{window_index}")
+            if session else ("list-sessions", "-F", "#{session_name}"))
+    reply = tmux_query(*args, errors=errors)
+    if reply is None:
+        detail = errors[0] if errors else "tmux query failed"
+        no_server = ("no server running" in detail or
+                     ("error connecting to" in detail and
+                      ("No such file or directory" in detail or
+                       "Connection refused" in detail)))
+        if not session and not os.environ.get("TMUX") and no_server:
+            ccm_die("Not inside a tmux session — start one with "
+                    "`tmux new-session` first")
+        ccm_die(f"Cannot query tmux server: {detail}. "
+                "If running inside a sandbox, run this command outside "
+                "the sandbox. Otherwise check the tmux server and socket.")
+    if not session:
+        ccm_die("No current tmux session could be determined — "
+                "attach to a session with `tmux attach-session` first")
+    return session
 
 
 def touch_popup_session():

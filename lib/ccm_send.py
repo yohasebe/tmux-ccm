@@ -679,11 +679,7 @@ def cmd_send(args):
         )
 
     # Resolve target window
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die(
-            "Not inside a tmux session — start one with `tmux new-session` first"
-        )
+    session = ccm_core.require_session()
 
     if target.startswith("#"):
         idx = target[1:]

@@ -59,7 +59,7 @@ class TestCmdSend:
         """Install stubs for get_session / find_window / build_project_list."""
         if project is None:
             project = self._make_project()
-        monkeypatch.setattr(ccm_core, "get_session", lambda: session)
+        monkeypatch.setattr(ccm_core, "require_session", lambda: session)
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -278,7 +278,7 @@ class TestCmdSend:
             win_target="0:5", win_idx="5", name="main",
             directory="/tmp/shared", state=sibling_state,
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: "9" if name == "dup" else None,
@@ -728,7 +728,7 @@ class TestCmdSend:
         busy = self._make_project(state="BUSY")
         idle = self._make_project(state="IDLE")
         states = iter([initial, busy, busy, idle, idle])
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: initial.win_idx if name == initial.name else None,
@@ -912,7 +912,7 @@ class TestCmdSend:
     # --- error paths ---
 
     def test_send_unknown_project_rejected(self, monkeypatch):
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(ccm_core, "find_window", lambda s, n: None)
         monkeypatch.setattr(ccm_core, "build_project_list", lambda fast=False: [])
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -976,7 +976,7 @@ class TestDeliveryPaneResolution:
         )
 
     def _patch_resolution(self, monkeypatch, project, ps_text):
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -1187,7 +1187,7 @@ class TestSendTrace:
                 win_target="0:5", win_idx="5", name="demo",
                 directory="/tmp/demo", state="IDLE",
             )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: session)
+        monkeypatch.setattr(ccm_core, "require_session", lambda: session)
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -1306,7 +1306,7 @@ class TestSendSelfDeliveryGuard:
             win_target="0:5", win_idx="5", name="demo",
             directory="/tmp/demo", state="BUSY",
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(ccm_core, "find_window",
                             lambda s, n: "5" if n == "demo" else None)
         monkeypatch.setattr(ccm_core, "build_project_list",
@@ -1533,7 +1533,7 @@ class TestSendReportsWhatTheSessionTook:
             win_target="0:5", win_idx="5", name="demo",
             directory="/tmp/demo", state="IDLE",
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(ccm_core, "find_window",
                             lambda sess, name: project.win_idx)
         monkeypatch.setattr(ccm_core, "build_project_list",
@@ -1614,7 +1614,7 @@ class TestSendPreTypeRecheck:
             win_target="0:5", win_idx="5", name="demo",
             directory="/tmp/demo", state=project_state,
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -1784,7 +1784,7 @@ class TestComposerDraftGuard:
             win_target="0:5", win_idx="5", name="demo",
             directory="/tmp/demo", state=project_state,
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,

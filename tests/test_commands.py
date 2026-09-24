@@ -597,7 +597,7 @@ class TestCmdAdd:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_creates_window(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         """cmd_add creates a new tmux window with correct metadata tags."""
         proj_dir = tmp_path / "my-project"
@@ -627,7 +627,7 @@ class TestCmdAdd:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_types_the_command_for_the_new_windows_history(
             self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto,
             tmp_path, monkeypatch, has_history):
@@ -674,7 +674,7 @@ class TestCmdAdd:
             ccm_commands.cmd_add("")
 
     @patch("ccm_core.find_window", return_value="1")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_duplicate_name_exits(self, mock_session, mock_find, tmp_path):
         proj_dir = tmp_path / "dup"
         proj_dir.mkdir()
@@ -685,7 +685,7 @@ class TestCmdAdd:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_defaults_name_to_basename(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         proj_dir = tmp_path / "cool-project"
         proj_dir.mkdir()
@@ -711,7 +711,7 @@ class TestCmdAdd:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_create_dir_creates_missing_leaf(
         self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path
     ):
@@ -770,7 +770,7 @@ class TestCmdAdd:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_loading_skips_autosave(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         proj_dir = tmp_path / "loading-test"
         proj_dir.mkdir()
@@ -1189,7 +1189,7 @@ class TestCmdAttach:
                      windows=None, window_names=""):
         """Stub the tmux/ps world cmd_attach reads. Returns the
         (auto_start, reset, tmux_cmd) mocks for assertion."""
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "main")
         monkeypatch.setattr(ccm_core, "find_window",
                             lambda s, n: find_window)
         monkeypatch.setattr(ccm_core, "list_windows_raw",
@@ -1292,6 +1292,7 @@ class TestCmdAttach:
 
     def test_no_session_exits(self, monkeypatch):
         monkeypatch.setattr(ccm_core, "get_session", lambda: None)
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: None)
         with pytest.raises(SystemExit):
             ccm_commands.cmd_attach("proj")
 

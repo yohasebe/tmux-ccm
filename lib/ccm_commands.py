@@ -150,11 +150,7 @@ def cmd_add(directory, name="", start_claude=True, _loading=False,
             "are not allowed — they collide with window-index addressing)"
         )
 
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die(
-            "Not inside a tmux session — start one with `tmux new-session` first"
-        )
+    session = ccm_core.require_session()
 
     if ccm_core.project_exists(session, name):
         ccm_core.ccm_die(f"Project window already exists: {name}")
@@ -232,9 +228,7 @@ def cmd_register(source_target, new_name=""):
     if not source_target:
         ccm_core.ccm_die("Usage: ccm register <window_name|window_index> [name]")
 
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
+    session = ccm_core.require_session()
 
     # Find window by index or name
     if source_target.isdigit():
@@ -405,9 +399,7 @@ def cmd_attach(target):
     if not target:
         ccm_core.ccm_die("Project name or number is required")
 
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
+    session = ccm_core.require_session()
 
     idx = None
     if target.isdigit():

@@ -146,10 +146,7 @@ def cmd_snapshot_load(name=""):
         ccm_core.ccm_die(f"Snapshot malformed: {name} (projects is not a list)")
     print(f"Loading snapshot: {name} ({len(snap_projects)} projects)")
 
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die("Not inside a tmux session — start one with "
-                         "`tmux new-session` first")
+    session = ccm_core.require_session()
 
     for proj in snap_projects:
         if not isinstance(proj, dict):
