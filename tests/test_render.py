@@ -804,3 +804,29 @@ class TestPrintStatusColumnAlignment:
         assert plain[13:23] == cjk_name[:10]
         assert ccm_render.display_width(plain[13:23]) == 20
         assert plain[24] == "-"
+
+
+@pytest.mark.parametrize("flag,effect", [
+    ("allowManagedHooksOnly", "user-scope hooks"),
+    ("disableAllHooks", "ignored"),
+])
+def test_status_reports_managed_nonboolean(tmp_path, monkeypatch, capsys, flag, effect):
+    project = ccm_core.Project(win_target="main:1", win_idx="1", name="demo",
+                               directory=str(tmp_path), state="IDLE")
+    monkeypatch.setattr(ccm_core, "build_project_list", lambda fast=False: [project])
+    monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+    monkeypatch.setattr(ccm_signals, "read_hook_signal", lambda *a, **kw: None)
+    monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: "")
+    monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings", lambda p: [])
+    monkeypatch.setattr(ccm_canaries, "hook_silence_warnings", lambda p: [])
+    monkeypatch.setattr(ccm_agentview, "continue_blocker_warnings", lambda p: [])
+    path = tmp_path / "managed.json"
+    path.write_text(json.dumps({flag: "true"}))
+    monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES", {})
+    monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(path))
+    ccm_render.print_status()
+    rows = [line for line in capsys.readouterr().out.splitlines() if flag in line]
+    assert rows, "status must display the malformed managed setting"
+    row = rows[0]
+    assert "⚠" in row and "non-boolean" in row
+    assert "managed-settings.json" in row and effect in row

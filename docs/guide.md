@@ -624,6 +624,24 @@ ccm reset my-project      # clears hook signals, event log, and cached state opt
 
 `ccm reset` does not touch the conversation, snapshots, or the running `claude` process — it only wipes the ephemeral runtime artefacts that detection reads. The next scan re-resolves state from scratch. For ordinary "Claude is hung" situations, `/exit` inside the pane is still the right answer.
 
+### Settings that stop hooks
+
+`ccm doctor` and `ccm status` name `managed-settings.json` when its
+`allowManagedHooksOnly` value blocks ccm's user-scope hooks. In Claude Code
+2.1.282, `true` and `"true"` enable this lock; `false`, `"false"`, `null`, and
+an absent key do not. Other non-boolean values (including `0`, `1`, `"yes"`,
+empty strings, arrays, and objects) enable the lock until corrected.
+A warning distinguishes a non-boolean value from a literal `true`.
+
+`disableAllHooks` is an exception: Claude Code 2.1.282 ignores non-boolean
+values for this key. ccm reports the invalid managed value so it can be
+corrected, without claiming hooks are disabled. A literal `true` disables
+configured hooks and the custom statusLine. Ask your administrator to correct
+invalid managed values and use Claude Code's `/status` to check the policy
+in force. ccm reads the managed settings file, not MDM or console policies.
+The checks for user and project files are unchanged: only literal `true`
+triggers `disableAllHooks`; `allowManagedHooksOnly` is managed-only.
+
 ### Detection has gone quiet (hook-silence canary)
 
 Claude Code sometimes stops firing hooks partway through a session. ccm's

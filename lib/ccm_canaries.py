@@ -11,8 +11,8 @@ Three independent canary classes:
   - **hooks.log size**: anthropics/claude-code#16047 — a bloated
     `~/.claude/hooks.log` silently disables every hook write.
   - **Settings flags**: `disableAllHooks: true` and
-    `allowManagedHooksOnly: true` in `~/.claude/settings.json`
-    silently disable user-scope hooks (every ccm hook is user-scope).
+    managed `allowManagedHooksOnly` locks disable user-scope hooks
+    (every ccm hook is user-scope). Invalid managed values are reported.
   - **Cluster-SHELL transitions**: several transitions into SHELL
     within a short window. What it observes is that Claude left the
     pane repeatedly; why is not observed — an update relaunching in
@@ -222,18 +222,53 @@ def unreadable_settings(projects=None, managed_only=False):
     return labels
 
 
+def _managed_hooks_lock(value) -> bool:
+    """Managed boolean lock parsing in Claude Code 2.1.282.
+
+    Quoted booleans are converted, null is absent, and other invalid
+    values fail closed. disableAllHooks is explicitly excluded from
+    this upstream parser and must not use this rule.
+    """
+    return value is not None and value is not False and value != "false"
+
+
 def _flag_source(flag, projects=None) -> str:
-    """Label of the first settings file setting `flag` true, else ""."""
+    """Label of the first file enabling a flag, including managed locks."""
     for label, path in _settings_sources(projects):
         data = _read_settings_file(path)
-        if data and data.get(flag) is True:
+        if not data or flag not in data:
+            continue
+        value = data[flag]
+        if (value is True or
+                (label == MANAGED_SOURCE_LABEL and
+                 flag == "allowManagedHooksOnly" and _managed_hooks_lock(value))):
             return label
     return ""
 
 
+def _managed_nonboolean_warning(flag) -> str:
+    """Explain malformed managed values without claiming literal true."""
+    for label, path in _settings_sources():
+        if label != MANAGED_SOURCE_LABEL:
+            continue
+        data = _read_settings_file(path)
+        if not data or flag not in data or isinstance(data[flag], bool):
+            return ""
+        if flag == "allowManagedHooksOnly":
+            if not _managed_hooks_lock(data[flag]):
+                return ""
+            effect = ("Claude Code 2.1.282 reads it as true, so all "
+                      "user-scope hooks (including every ccm hook) are blocked.")
+        else:
+            effect = "This value is ignored by Claude Code 2.1.282."
+        return (f"Claude Code `{flag}` has a non-boolean value in {label}. "
+                f"{effect} Ask your administrator to correct the setting; "
+                "check /status for the managed policy in force.")
+    return ""
+
+
 def disable_all_hooks_warning(projects=None) -> str:
-    """Return a warning string if `disableAllHooks: true` is set in
-    ~/.claude/settings.json, otherwise "".
+    """Warn about enabled disableAllHooks or an invalid managed value.
 
     Per Claude Code's docs, this setting disables ALL hooks AND any
     custom statusLine — ccm's entire fast-path signal goes dark with
@@ -259,12 +294,12 @@ def disable_all_hooks_warning(projects=None) -> str:
             "configured will stop rendering. Remove the setting to "
             "restore real-time hook signals."
         )
-    return ""
+    return _managed_nonboolean_warning("disableAllHooks")
 
 
 def managed_hooks_only_warning(projects=None) -> str:
-    """Return a warning string if `allowManagedHooksOnly: true` is set
-    in any settings file that applies, otherwise "".
+    """Warn about a managed allowManagedHooksOnly lock, including
+    non-boolean values interpreted as true by Claude Code 2.1.282.
 
     Per Claude Code's docs, when this is set in *managed* settings,
     every user-scope hook (which is exactly where ccm installs all
@@ -279,6 +314,9 @@ def managed_hooks_only_warning(projects=None) -> str:
     on working. `projects` is accepted for a uniform signature.
     """
     del projects  # deliberately not scanned; see above
+    malformed = _managed_nonboolean_warning("allowManagedHooksOnly")
+    if malformed:
+        return malformed
     source = _flag_source("allowManagedHooksOnly")
     if source == MANAGED_SOURCE_LABEL:
         return (

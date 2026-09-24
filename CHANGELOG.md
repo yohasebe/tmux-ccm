@@ -107,6 +107,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Settings canaries recognize non-boolean managed `allowManagedHooksOnly`
+  locks in Claude Code 2.1.282 and name their source in doctor and status.
+  Quoted `"false"` and `null` remain unlocked. Invalid managed `disableAllHooks`
+  values are reported as ignored, matching its separate upstream parser;
+  user and project checks retain their existing behavior.
 - Keep tracking a conversation after Claude Code parks it in the background, for
   example when the agents view is opened with `←`. ccm follows `parkedJobId` in the
   session registration and reads the background session's hooks and transcript. If

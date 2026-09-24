@@ -620,6 +620,23 @@ ccm reset my-project      # フックシグナル、event log、キャッシュ�
 
 `ccm reset` は会話履歴・スナップショット・実行中の `claude` プロセスには触りません — 検出が読む ephemeral な runtime artefact だけを wipe します。次のスキャンで一から再解決されます。通常の「Claude が固まった」状況では `/exit` をペイン内で入力するのが筋です。
 
+### フックを停止する設定
+
+`ccm doctor` と `ccm status` は、`allowManagedHooksOnly` によって ccm の
+user-scope フックが止まる場合、出所の `managed-settings.json` を表示します。
+Claude Code 2.1.282 では `true` と `"true"` がロックを有効にし、`false`、
+`"false"`、`null`、鍵の未指定は有効にしません。それ以外の真偽値でない値
+（`0`、`1`、`"yes"`、空文字列、配列、オブジェクトを含む）は、修正されるまで
+ロックを有効にします。警告では真偽値でない値とリテラルの `true` を区別します。
+
+`disableAllHooks` は例外で、Claude Code 2.1.282 はこの鍵の真偽値でない値を
+無視します。ccm は管理者設定の不正な値を修正できるよう表示し、フックが
+停止したとは断定しません。リテラルの `true` は設定されたフックとカスタム
+statusLine を停止します。管理者に不正な値の修正を依頼し、適用中のポリシーは
+Claude Code の `/status` で確認してください。ccm が読むのは管理者設定ファイルで、
+MDM やコンソールのポリシーは読みません。user / project ファイルの判定は従来どおりで、
+`disableAllHooks` はリテラルの `true` のみを検出し、`allowManagedHooksOnly` は管理者設定のみが対象です。
+
 ### 検出が反応しなくなった（hook 沈黙カナリア）
 
 Claude Code はセッションの途中でフックの発火を止めることがあります。ccm の精密な

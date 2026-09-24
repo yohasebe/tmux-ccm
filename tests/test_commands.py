@@ -357,6 +357,27 @@ class TestCmdDoctor:
         assert not any("Hooks not installed" in l or "Hooks installed" in l
                        for l in lines)
 
+    @pytest.mark.parametrize("flag,expected", [
+        ("allowManagedHooksOnly", "user-scope hooks"),
+        ("disableAllHooks", "ignored"),
+    ])
+    def test_managed_nonboolean_is_not_a_tick(
+            self, tmp_path, monkeypatch, capsys, flag, expected):
+        real_disable = ccm_canaries.disable_all_hooks_warning
+        real_managed = ccm_canaries.managed_hooks_only_warning
+        self._stub_world(monkeypatch, tmp_path)
+        monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning", real_disable)
+        monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning", real_managed)
+        path = tmp_path / "managed.json"
+        path.write_text(json.dumps({flag: "true"}))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES", {})
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(path))
+        ccm_commands.cmd_doctor()
+        row = next(line for line in capsys.readouterr().out.splitlines() if flag in line)
+        assert "non-boolean" in row and "managed-settings.json" in row
+        assert expected in row
+        assert "✓" not in row and "not set" not in row
+
     def test_an_absent_settings_file_is_simply_unset(
             self, tmp_path, monkeypatch, capsys):
         """Absent is an answer: nothing is set there."""
