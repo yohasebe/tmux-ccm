@@ -89,7 +89,10 @@ _ccm() {
                 spool_cmds=('list:Inspect pending, held and expired messages'
                             'cancel:Withdraw pending messages'
                             'clear-expired:Delete expired records only; sends nothing'
-                            'clear-held:Acknowledge held records')
+                            'clear-held:Acknowledge held records'
+                            'show:Read one expired or held record'
+                            'discard:Discard one expired or held record'
+                            'resend:Send one expired record as a new message')
                 _describe 'spool command' spool_cmds
                 ;;
             debug)
@@ -105,6 +108,12 @@ _ccm() {
         case "${words[2]}" in
             spool)
                 case "${words[3]}" in
+                    show|discard)
+                        compadd expired held
+                        ;;
+                    resend)
+                        compadd expired
+                        ;;
                     list|clear-expired|clear-held)
                         _ccm_projects
                         ;;

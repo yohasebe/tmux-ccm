@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Dashboard `u` opens expired and held messages with sender, destination,
+  age, preview and scrollable full text. Confirmed actions resend expired
+  messages or discard one record; opening the project sends no keys.
+  `ccm spool show`, `discard` and `resend` expose the same record operations.
 - `ccm spool list` shows each expired message with its sender, queue age,
   preview, and commands to review the full text and send it anew if still
   needed. Clearing expired records is explicitly described as deletion only;
@@ -107,6 +111,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- `ccm send --start` waits for a stable, empty input box in the target pane
+  before typing, up to `CCM_START_WAIT_SEC` (10 seconds by default).
+  If the launch exits back to the shell before the input box is ready,
+  the send fails without typing the message or its submit Enter into the shell.
+  A submitted message whose beginning stays in the input box is reported
+  unsent even without a confirmation notice. Spool delivery keeps such
+  messages as held, and a failed manual resend preserves the original record.
 - Commands that require a tmux session distinguish connection failures from
   being outside tmux. Errors preserve tmux's diagnostic and suggest running
   outside a sandbox when applicable, including when a popup session name

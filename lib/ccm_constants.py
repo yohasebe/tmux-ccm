@@ -272,6 +272,37 @@ def composer_draft_fragment(pane_text, pane_text_attributed=None):
     return fragment[:60] + "..." if len(fragment) > 60 else fragment
 
 
+def composer_visible(pane_text):
+    """Positive evidence of an input prompt between the bottom rules."""
+    lines = pane_text.rstrip().split("\n")
+    rules = [i for i, line in enumerate(lines) if PATTERN_COMPOSER_RULE.match(line)]
+    return (len(rules) >= 2
+            and len(lines) - rules[-1] <= COMPOSER_TAIL_WINDOW
+            and any(PATTERN_INPUT_PROMPT.match(line)
+                    for line in lines[rules[-2] + 1:rules[-1]]))
+
+
+def composer_has_message_prefix(pane_text, attributed, message):
+    """Match the unchanged beginning, never an arbitrary subsequence.
+
+    Whitespace alone is folded to accommodate terminal wrapping. Short
+    messages require equality; longer ones use 32 visible characters.
+    Sanitized prompts are handled separately by prompt_held_notice.
+    """
+    lines = _composer_lines(pane_text, attributed)
+    if not lines or not message:
+        return False
+    first = lines[0].split(maxsplit=1)
+    if len(first) != 2:
+        return False
+    draft = "".join((first[1] + "\n" + "\n".join(lines[1:])).split())
+    body = "".join(message.split())
+    if len(body) < 8:
+        return draft == body and bool(body)
+    prefix = body[:32]
+    return draft.startswith(prefix)
+
+
 def _composer_lines(pane_text, pane_text_attributed=None):
     """The composer's own lines, from its draft line to the closing
     rule, or [] when the composer is bare, absent or showing the

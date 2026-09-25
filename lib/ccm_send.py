@@ -67,7 +67,7 @@ import ccm_window
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 import ccm_spool  # store-and-forward queue for undeliverable sends
 from ccm_constants import (
-    composer_draft_fragment,
+    composer_draft_fragment, composer_visible, composer_has_message_prefix,
     external_agent_name,
     prompt_held_notice,
 )
@@ -138,20 +138,28 @@ START_WAIT_SEC = int(os.environ.get("CCM_START_WAIT_SEC", "10"))
 _WAIT_PROGRESS_TICK_SEC = 1.0
 
 
+def _start_composer_ready(pane_target):
+    plain, attributed = capture_composer_snapshot(pane_target)
+    return (composer_visible(plain)
+            and composer_draft_fragment(plain, attributed) is None
+            and not ccm_core.is_agents_tui(plain))
+
+
 def _wait_for_target_idle(project_name, timeout_sec=None,
-                          progress=False):
+                          progress=False, pane_target=None):
     """Poll the named project until its detected state is IDLE,
     or return the last observed non-IDLE state at timeout.
 
     Used by the `--start` path so the message-send only proceeds
-    once the target is genuinely at the input prompt — not still
-    initialising MCP servers, not in an auto-`/compact`, not on a
-    session-resume picker. Polls every 0.5 s up to `timeout_sec`
+    once IDLE and an empty, visible composer in the pinned pane have
+    persisted for one second. A state label alone is not readiness.
+    Polls every 0.5 s up to `timeout_sec`
     (default `START_WAIT_SEC`).
 
     Returns either the string `"IDLE"` (success), or the last
     non-IDLE state seen (one of `BUSY` / `PERMIT` / `SHELL` /
-    `DOWN`). PERMIT and DOWN short-circuit the wait — they will
+    `DOWN`, or `STARTING` when the input box is not ready).
+    PERMIT and DOWN short-circuit the wait — they will
     not transition to IDLE without operator action, so further
     polling is wasted time and delays the refusal message that
     the operator needs.
@@ -167,6 +175,7 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
     deadline = started + timeout_sec
     last_state = None
     last_progress = started
+    ready_since = None
     while time.time() < deadline:
         time.sleep(0.5)
         projects = ccm_core.build_project_list(fast=False)
@@ -174,8 +183,19 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
         if target is None:
             return "DOWN"
         last_state = target.state
-        if last_state in ("IDLE", "PERMIT", "DOWN"):
+        if last_state in ("PERMIT", "DOWN"):
             return last_state
+        if last_state == "IDLE":
+            if _start_composer_ready(pane_target or target.win_target):
+                if ready_since is None:
+                    ready_since = time.time()
+                if time.time() - ready_since >= 1.0:
+                    return "IDLE"
+            else:
+                ready_since = None
+            last_state = "STARTING"
+        else:
+            ready_since = None
         now = time.time()
         if progress and now - last_progress >= _WAIT_PROGRESS_TICK_SEC:
             elapsed = now - started
@@ -215,23 +235,12 @@ _DELIVERY_VERIFY_SETTLE_SEC = 1.0
 # seconds. Enter alone therefore proves nothing, and a send that
 # reports success on it reports a delivery that did not happen.
 #
-# So the pane is read after submitting, and what is read is that
-# line — the CLI's own statement — not the composer's text. Text
-# cannot answer this: a draft typed after the send landed can look
-# like the message minus a few characters, and a message the CLI
-# stripped nine characters from looks no less like itself than one
-# it stripped one from. A reviewer sent both as counter-examples
-# against comparing text, in opposite directions.
-#
-# Reading stops as soon as the composer is clear — the ordinary
-# case, one capture, or two when the first still shows the body on
-# its way out. It keeps looking while
-# something is in the composer, since the notice takes a moment to
-# appear, and gives up at the timeout reporting a delivery — the
-# behaviour that shipped for years, and the safe direction when the
-# screen does not say otherwise. The timeout bounds the polling, not
-# the wall clock: each capture carries tmux's own timeout, so a tmux
-# that answers slowly takes as long as it takes.
+# Keep the explicit notice check for rewritten prompts: neither a
+# subsequence comparison nor a cap on removed characters identifies them.
+# Separately, an unchanged beginning that persists throughout the polling
+# window is evidence that Enter left our body in the input box. A cleared
+# composer ends the check immediately; no automatic second Enter is sent.
+# The timeout bounds polling, not tmux capture latency.
 _SUBMIT_ACCEPT_TIMEOUT_SEC = 2.0
 _SUBMIT_ACCEPT_POLL_SEC = 0.4
 # Minimum signature length to verify against. A very short message
@@ -291,12 +300,15 @@ def _body_landed(win_target, signatures):
     return any("".join(sig.split()) in flat for sig in signatures)
 
 
-def held_after_submit(pane_target, timeout=_SUBMIT_ACCEPT_TIMEOUT_SEC):
-    """The line in which the target says it is holding the prompt
-    just submitted, or None when it does not say that. Shared by
-    `ccm send` and the spool so both answer this question the same
-    way."""
+def held_after_submit(pane_target, timeout=_SUBMIT_ACCEPT_TIMEOUT_SEC, *, message=None):
+    """Evidence of an unsent prompt, or None without such evidence.
+
+    Explicit notices cover rewritten prompts. With a message, also check
+    for its unchanged beginning persisting for the entire observation.
+    Shared by direct sends and spool delivery; neither retries Enter.
+    """
     deadline = time.time() + timeout
+    unchanged = message is not None
     while True:
         plain, attributed = capture_composer_snapshot(pane_target)
         notice = prompt_held_notice(plain, attributed)
@@ -304,7 +316,10 @@ def held_after_submit(pane_target, timeout=_SUBMIT_ACCEPT_TIMEOUT_SEC):
             return notice
         if composer_draft_fragment(plain, attributed) is None:
             return None     # nothing waiting in the composer
+        unchanged = unchanged and composer_has_message_prefix(plain, attributed, message)
         if time.time() >= deadline:
+            if unchanged:
+                return "The beginning of the submitted message remains in the input box."
             return None
         time.sleep(_SUBMIT_ACCEPT_POLL_SEC)
 
@@ -898,7 +913,7 @@ def cmd_send(args):
         # see a frozen terminal during the wait.
         interactive_wait = sys.stdout.isatty()
         ready_state = _wait_for_target_idle(
-            project_name, progress=interactive_wait,
+            project_name, progress=interactive_wait, pane_target=pane_target,
         )
         if ready_state != "IDLE":
             tail = ccm_core.tmux_cmd(
@@ -1090,7 +1105,7 @@ def cmd_send(args):
     # it: Enter is a keystroke, not an acceptance.
     if not no_enter:
         _send_keys(pane_target, "Enter", label="final-submit")
-        notice = held_after_submit(pane_target)
+        notice = held_after_submit(pane_target, message=message)
         if notice:
             if _trace_enabled():
                 _trace_record(pane_target, "send-not-accepted",
@@ -1098,11 +1113,11 @@ def cmd_send(args):
             ccm_core.ccm_die(
                 f"{project_name} did not take the message: it is still in "
                 f"that session's input box, unsent.\n"
-                f"  It says: {notice}\n"
+                f"  {notice}\n"
                 "  ccm does not press Enter again on its own, and does not "
                 "rewrite what you sent. In the target window, either press "
                 "Enter to send what is shown there, or clear it (ctrl+u) "
-                "and resend without the characters it removed."
+                "and review the message before resending."
             )
     if _trace_enabled():
         _trace_record(pane_target, "send-end", (f"project={project_name}",))

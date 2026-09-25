@@ -81,7 +81,10 @@ _SPOOL_USAGE = (
     "       ccm spool cancel <id> [project]   Withdraw a queued message\n"
     "       ccm spool cancel --all [project]  Withdraw all of them\n"
     "       ccm spool clear-expired [project] Delete expired records only; sends nothing\n"
-    "       ccm spool clear-held [project]    Acknowledge held ones"
+    "       ccm spool clear-held [project]    Acknowledge held ones\n"
+    "       ccm spool show <expired|held> <id> <project>\n"
+    "       ccm spool discard <expired|held> <id> <project> [--yes]\n"
+    "       ccm spool resend expired <id> <project> [--start] [--yes]"
 )
 
 
@@ -364,7 +367,7 @@ def _deliver_one(project, pdir, msg_name):
         ccm_send._send_keys(pane_id, "-X", "cancel", label="spool-pre-cancel")
         ccm_send._type_body(pane_id, text.split("\n"))
         ccm_send._send_keys(pane_id, "Enter", label="spool-submit")
-        if ccm_send.held_after_submit(pane_id):
+        if ccm_send.held_after_submit(pane_id, message=text):
             # Typed and submitted, and the session is holding it for
             # its user to confirm (a prompt it rewrote). Recording it
             # as delivered would lose it while saying it arrived, and
@@ -634,6 +637,100 @@ def _cmd_clear_held(rest):
         ccm_core.ccm_info("No held message records to clear.")
 
 
+def attention_records():
+    """Read-only, stable keys for the records that need a decision."""
+    records = []
+    now = time.time()
+    for project, pdir in _iter_project_dirs():
+        if os.path.islink(pdir):
+            continue
+        for kind in ("expired", "held"):
+            for filename in _in_subdir(pdir, kind):
+                parsed = _parse_msg_name(filename)
+                if parsed is None:
+                    continue
+                queued, sender = parsed
+                records.append({"project": project, "kind": kind,
+                                "id": filename[:-4], "sender": sender,
+                                "age": _msg_age(now, queued),
+                                "preview": _preview(os.path.join(pdir, kind, filename))})
+    return records
+
+
+def _record_path(kind, msg_id, project):
+    if (kind not in ("expired", "held")
+            or any(not value or value in (".", "..")
+                   or os.path.basename(value) != value
+                   for value in (msg_id, project))
+            or _parse_msg_name(msg_id + ".msg") is None):
+        ccm_core.ccm_die("Invalid spool record.")
+    pdir = _project_dir(project)
+    path = os.path.join(pdir, kind, msg_id + ".msg")
+    if any(os.path.islink(p) for p in (pdir, os.path.dirname(path), path)):
+        ccm_core.ccm_die("Refusing a linked spool record.")
+    return path
+
+
+def read_record(kind, msg_id, project):
+    path = _record_path(kind, msg_id, project)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeError) as e:
+        ccm_core.ccm_die(f"Cannot read spool record: {e}")
+
+
+def _cmd_record(action, rest):
+    yes = "--yes" in rest or "-y" in rest
+    start = "--start" in rest
+    args = [arg for arg in rest if arg not in ("--yes", "-y", "--start")]
+    if len(args) != 3 or (start and action != "resend"):
+        ccm_core.ccm_die(_SPOOL_USAGE)
+    kind, msg_id, project = args
+    path = _record_path(kind, msg_id, project)
+    if action == "resend" and kind != "expired":
+        ccm_core.ccm_die("Held records cannot be resent; inspect the target input box.")
+    if action == "show":
+        print(read_record(kind, msg_id, project))
+        return
+    if not yes:
+        import sys
+        if not sys.stdin.isatty():
+            ccm_core.ccm_die("Confirmation required; review the record and pass --yes.")
+        verb = "Start Claude if needed and resend" if start else action.capitalize()
+        try:
+            confirmed = input(f"{verb} {kind} record {msg_id} for {project}? [y/N] ")
+        except EOFError:
+            confirmed = ""
+        if confirmed.lower() != "y":
+            ccm_core.ccm_die("Cancelled; record kept.")
+    pdir = _project_dir(project)
+    if not _acquire_lock(pdir):
+        ccm_core.ccm_die("Spool is busy; record kept. Retry later.")
+    try:
+        body = read_record(kind, msg_id, project)
+        before = os.stat(path)
+        if action == "resend":
+            # --now makes every deferred delivery an error. A normal
+            # return means the shared send acceptance check passed.
+            send_args = ["--now", "--yes", "--file", path]
+            if start:
+                send_args.append("--start")
+            ccm_send.cmd_send(send_args + ["--", project])
+        # Do not remove a replacement created while the send waited.
+        after = os.stat(path)
+        if ((before.st_ino, before.st_mtime_ns, before.st_size)
+                != (after.st_ino, after.st_mtime_ns, after.st_size)
+                or read_record(kind, msg_id, project) != body):
+            ccm_core.ccm_die("Record changed; kept for review.")
+        os.unlink(path)
+    except OSError as e:
+        ccm_core.ccm_die(f"Could not finish {action}: {e}. Review the record before retrying.")
+    finally:
+        _release_lock(pdir)
+    ccm_core.ccm_info(f"{'Resent and cleared' if action == 'resend' else 'Discarded'} {msg_id} ({project}).")
+
+
 def cmd_spool(args):
     """Inspect and withdraw queued (store-and-forward) messages.
 
@@ -648,7 +745,9 @@ def cmd_spool(args):
         print(_SPOOL_USAGE)
         return
     sub, rest = args[0], args[1:]
-    if sub == "list":
+    if sub in ("show", "discard", "resend"):
+        _cmd_record(sub, rest)
+    elif sub == "list":
         _cmd_list(rest)
     elif sub == "cancel":
         _cmd_cancel(rest)

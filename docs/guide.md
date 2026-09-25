@@ -131,11 +131,27 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `/` | Filter | Live incremental search: type to narrow, `↑↓`/`C-p`/`C-n` to select, `Enter` to attach, `C-u` to clear, `Esc` to cancel. Unicode-safe — Japanese project names match on Japanese substrings |
 | `t` | Tree | Switch to tree view |
 | `m` | Menu | Switch to interactive menu |
+| `u` | Undelivered messages | Open expired / held records; also available in the menu (`m` / `?`) |
 | `q` / `Esc` | Quit | Close the dashboard |
 
 The dashboard refreshes on a hybrid cadence: full state detection runs every 2 seconds, and in between, a lightweight fast tick (4×/second) watches the state channel the Claude Code hooks write to — so a hook-driven change (a permission prompt appearing, a prompt submitted) shows up in ~0.3 seconds rather than waiting out the full poll. The status bar gets the same treatment: on a state transition, the hook re-renders the bar immediately instead of waiting for the next `status-interval` tick. Navigation keys (`↑↓/jk`) respond instantly without waiting for any refresh.
 
 The row order is decided when the dashboard opens (projects needing attention first) and then held stable while it stays open — a project changing state updates its icon in place but does not jump to a new position, so your selection never lands on the wrong project mid-interaction. Close and reopen the dashboard to re-sort by current state.
+
+### Handling undelivered messages
+
+Press `u` to open expired records (never delivered) and held records (last seen in the recipient's input box). Each row shows the sender, destination, age and beginning of the message.
+
+| Key | Action in the list |
+|-----|--------------------|
+| `↑↓` / `jk` | Select a record |
+| `Enter` | Read the full text. Long lines wrap; scroll with `↑↓` / `jk` / `PgUp` / `PgDn`. Return to the list with `q` / `Esc` / `Enter` |
+| `r` | Resend an expired record as a new message, after confirmation. If Claude is stopped, asks whether to start it and send. Clears the original record only on success; on failure, shows the reason and keeps it |
+| `d` | Confirm deletion of the selected record only. Deleting a held record does not change the recipient's input box |
+| `o` | Open the destination's existing project without typing keys or automatically starting Claude. Use it to inspect the input box or start Claude manually |
+| `q` / `Esc` | Return to the dashboard |
+
+Held records have no resend action: use `o` to inspect the recipient's input box first, avoiding a duplicate copy. Resend and discard default to No; cancelling does nothing. The list is read on opening and after an action, preserving the order of existing records and the selected record when it still exists. New records are appended. Reopen the list to see external changes.
 
 ### Direct-to-filter shortcut
 
@@ -221,9 +237,13 @@ ccm send demo --no-enter "TODO: "
 |---|---|---|---|---|
 | **IDLE** | Send immediately | Send immediately | — | — |
 | **BUSY** | Queued for later delivery | Refused | Sent now into the input buffer (mixes with the current turn) | — |
-| **SHELL** (Claude not running) | Queued — delivered once Claude is running and idle | Refused | — | Launches Claude, polls for IDLE (up to `CCM_START_WAIT_SEC`, default 10s), then sends |
+| **SHELL** (Claude not running) | Queued — delivered once Claude is running and idle | Refused | — | Launches Claude, polls for IDLE and a ready, empty input box (`CCM_START_WAIT_SEC` polling deadline, default 10s), then sends |
 | **PERMIT** (permission dialog open) | Queued — delivered after the dialog is resolved | **Refused** | Still queued — a dialog is never typed into, even with `--force` | — |
 | **IGNORED** (every Claude pane hidden) | **Refused** — never queued | Refused | Refused | Refused — Claude is never launched into a window ccm cannot see. The refusal points at `ccm unignore <project>` |
+
+`--start` waits for an empty input box in the launch pane, with that condition and IDLE persisting for one second, before typing the body. If readiness is not established by the polling deadline, it reports failure with exit code 1 without typing the body or its submit Enter. This also applies when the launch command exits straight back to the shell. State detection and screen capture time can extend beyond the configured polling deadline.
+
+After the submit Enter, ccm checks the input box again. A hold notice, or the submitted message's beginning staying at the start of the input box throughout the check, produces an unsent error with exit code 1 instead of `Sent`. ccm does not press Enter again automatically. Inspect the recipient's input box before deciding what to do. This is a screen-based check: it cannot fully distinguish cases such as an unreadable screen or a new draft with the same beginning typed immediately after acceptance.
 
 ### The spool (store-and-forward)
 
@@ -246,13 +266,20 @@ ccm spool clear-expired           # acknowledge messages that never arrived
 ccm spool clear-held [project]    # acknowledge messages a session was holding
 ccm spool cancel <id> <project>   # withdraw one (a queued mis-send is cancellable)
 ccm spool cancel --all <project>  # clear the project's queue
+ccm spool show <expired|held> <id> <project>
+ccm spool discard <expired|held> <id> <project> [--yes]
+ccm spool resend expired <id> <project> [--start] [--yes]
 ```
 
 Expired messages were never delivered. `ccm spool list [project]` shows each record's id, saved sender label, time since it was queued, and the first nonblank line (up to 60 characters). Unknown filenames show unknown sender/time; unreadable bodies show `(unreadable)` without hiding the record. For each expired record, the list prints a command to read the full text and a `ccm send --file …` command to use **only after reviewing whether the request is still needed**. If it needs updating, send revised text instead. These displayed commands do not run automatically.
 
-Sending again is a **new send**: if queued, it gets a new id and queue time, with the current sender in the delivery envelope. A ready target receives it directly through the usual send path. A SHELL target stays queued; the suggested command does not use `--start`. The old expired record remains until the normal seven-day retention expires or you acknowledge it. After reviewing **all** expired records for a project, `ccm spool clear-expired <project>` deletes those records only; it sends nothing. Without a project argument, it clears expired records across all projects. Neither listing nor clearing records retries delivery.
+Using the listed `ccm send --file …` command is a **new send**: if queued, it gets a new id and queue time, with the current sender in the delivery envelope. A ready target receives it directly through the usual send path. A SHELL target stays queued; the suggested command does not use `--start`. The old expired record remains until the normal seven-day retention expires or you acknowledge it. After reviewing **all** expired records for a project, `ccm spool clear-expired <project>` deletes those records only; it sends nothing. Without a project argument, it clears expired records across all projects. Neither listing nor clearing records retries delivery.
 
-A message the target session says it did not take — Claude Code holds a prompt it rewrote until its user confirms it, and says so above the input box — is not queued again: once that user presses Enter on the copy in the composer, or clears it away, the box looks the same either way, so retrying would type the whole message a second time. It is recorded as held, `ccm spool list` shows it, and you deal with it in that session's window. `ccm spool clear-held` then says so; it sends and withdraws nothing.
+To handle one record directly, use `show` to read its full text or `discard` to delete only that record. `resend expired` sends the saved body now as a **new send**, clearing the original record only after the send check succeeds. If the target cannot receive it now, for example while BUSY, it fails without queueing a new copy and keeps the original record. Add `--start` to start Claude before sending if it is stopped. To revise the body, send the updated text separately with `ccm send`.
+
+`discard` and `resend` ask for confirmation. After reviewing the record, use `--yes` (`-y`) to skip that prompt; this explicit flag is required in non-interactive use. Held records cannot be resent with `resend`. `discard held` deletes only the record, leaving the recipient's input box untouched. The dashboard's `u` view uses these same operations.
+
+A message the target session says it did not take — Claude Code holds a prompt it rewrote until its user confirms it, and says so above the input box — is not queued again: once that user presses Enter on the copy in the composer, or clears it away, the box looks the same either way, so retrying would type the whole message a second time. The same applies when the submitted message's beginning stays in the input box without a hold notice. These messages are recorded as held, `ccm spool list` shows them, and you deal with them in the recipient's window. `ccm spool clear-held` then says so; it sends and withdraws nothing.
 
 The state check is not the only gate. State detection cannot see a half-typed draft in the target's composer (an `❯` prompt holding text still reads IDLE), so immediately before typing, `ccm send` reads the composer line itself and — while a draft is present — queues the message like any other undeliverable state (`--now` refuses instead). Otherwise the message would merge into text you are still writing, and the Enter would submit the garbled mix. Claude Code's own next-prompt suggestion (drawn dim in the composer when a turn ends) is distinguished from a real draft via the capture's SGR attributes and does not block a send — it vanishes on the first keystroke, so there is nothing to protect.
 

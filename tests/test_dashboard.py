@@ -1783,6 +1783,10 @@ class TestEveryKeyAndOperationIsFindable:
                     offered.add(alt)
                 elif len(alt) == 2 and alt.isalpha() and alt.islower():
                     offered.update(alt)
+        # The undelivered list is discoverable in the on-demand menu;
+        # keep the permanent help line at its existing size.
+        assert '("Undelivered messages (u)", "spool")' in _method_source("_build_menu")
+        offered.add("u")
         missing = handled - offered
         assert not missing, (
             f"keys handled by the dashboard but absent from the help "

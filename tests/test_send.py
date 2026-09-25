@@ -534,7 +534,10 @@ class TestCmdSend:
             call_count[0] += 1
             return [initial if call_count[0] == 1 else after_start]
         monkeypatch.setattr(ccm_core, "build_project_list", stub_build)
-        monkeypatch.setattr("time.sleep", lambda _s: None)
+        monkeypatch.setattr(ccm_send, "_start_composer_ready", lambda pane: True)
+        clock = [0.0]
+        monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
 
     @pytest.mark.parametrize("panes_now", [
         [PaneInfo("0:5", "100", True, "vim", False, None)],           # editor took the foreground
@@ -735,7 +738,7 @@ class TestCmdSend:
         )
         monkeypatch.setattr(
             ccm_core, "build_project_list",
-            lambda fast=False: [next(states)],
+            lambda fast=False: [next(states, idle)],
         )
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
         monkeypatch.setattr(
@@ -743,7 +746,10 @@ class TestCmdSend:
             lambda wt, ps: [PaneInfo("0:5", "100", True, "zsh", False, None)])
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("time.sleep", lambda _s: None)
+        monkeypatch.setattr(ccm_send, "_start_composer_ready", lambda pane: True)
+        clock = [0.0]
+        monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
@@ -1031,6 +1037,10 @@ class TestDeliveryPaneResolution:
             return [initial if call_count[0] == 1 else idle]
         monkeypatch.setattr(ccm_core, "build_project_list", build)
         monkeypatch.setattr("time.sleep", lambda _s: None)
+        monkeypatch.setattr(ccm_send, "_start_composer_ready", lambda pane: True)
+        clock = [0.0]
+        monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
         stub, calls = self._tmux_stub(self._PANES_CLAUDE_INACTIVE)
         with patch("ccm_core.tmux_cmd", side_effect=stub):
             ccm_send.cmd_send(["demo", "--start", "hi"])

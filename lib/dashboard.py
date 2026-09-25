@@ -1427,6 +1427,8 @@ class Dashboard:
                 return self._do_attach(stdscr)
         elif key in (ord("q"), ord("Q"), 27, curses.KEY_F1):
             return "quit"
+        elif key in (ord("u"), ord("U")):
+            return self._do_spool(stdscr)
         elif key in (ord("s"), ord("S")):
             self._do_save(stdscr)
         # The project-scoped action keys (p/n/r/i) share the Enter
@@ -1503,6 +1505,142 @@ class Dashboard:
                 self.selected = max(0, n - 1)
 
         return ""
+
+    def _spool_text(self, stdscr, title, body):
+        """Scrollable full text, including lines wider than the popup."""
+        offset = 0
+        stdscr.timeout(-1)
+        try:
+            while True:
+                height, width = stdscr.getmaxyx()
+                rows = []
+                for line in body.split("\n"):
+                    row = ""
+                    for char in line.expandtabs(4):
+                        char = char if char.isprintable() else "�"
+                        if row and display_width(row + char) > max(1, width - 3):
+                            rows.append(row)
+                            row = ""
+                        row += char
+                    rows.append(row)
+                count = max(1, height - 2)
+                offset = min(offset, max(0, len(rows) - count))
+                stdscr.erase()
+                self._addstr(stdscr, 0, 0, title + " — ↑↓/PgUp/PgDn scroll; q back", curses.A_BOLD)
+                for i, row in enumerate(rows[offset:offset + count]):
+                    self._addstr(stdscr, i + 1, 0, row)
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key in (27, ord("q"), 10, 13):
+                    return
+                if key in (curses.KEY_DOWN, ord("j")):
+                    offset += 1
+                elif key in (curses.KEY_UP, ord("k")):
+                    offset = max(0, offset - 1)
+                elif key == curses.KEY_NPAGE:
+                    offset += count
+                elif key == curses.KEY_PPAGE:
+                    offset = max(0, offset - count)
+        finally:
+            stdscr.timeout(50)
+
+    def _do_spool(self, stdscr):
+        """An explicit decision view; no background typing or deletion."""
+        previous_max_col = getattr(self, "_render_max_col", 0)
+        self._render_max_col = 0
+        records = ccm_spool.attention_records()
+        selected = 0
+        status = ""
+        def identity(record):
+            return record["project"], record["kind"], record["id"]
+        try:
+            while True:
+                height, width = stdscr.getmaxyx()
+                count = max(1, (height - 5) // 2)
+                selected = min(selected, max(0, len(records) - 1))
+                stdscr.erase()
+                self._addstr(stdscr, 0, 0, "Undelivered messages", curses.A_BOLD)
+                first = (selected // count) * count
+                for i, record in enumerate(records[first:first + count]):
+                    label = (f"{'▶' if first + i == selected else ' '} {record['kind']} "
+                             f"{record['sender']} → {record['project']} · {record['age']}")
+                    self._addstr(stdscr, 1 + i * 2, 0, label)
+                    self._addstr(stdscr, 2 + i * 2, 2, record["preview"])
+                record = records[selected] if records else None
+                help_text = "↑↓ select · Enter read · d discard · o open · q back"
+                if record and record["kind"] == "expired":
+                    help_text += " · r resend"
+                if not records:
+                    self._addstr(stdscr, 2, 0, "No expired or held messages.")
+                self._addstr(stdscr, height - 3, 0, help_text)
+                self._addstr(stdscr, height - 2, 0, status)
+                stdscr.refresh()
+                stdscr.timeout(-1)
+                key = stdscr.getch()
+                if key in (27, ord("q")):
+                    return ""
+                if key in (curses.KEY_DOWN, ord("j")) and records:
+                    selected = (selected + 1) % len(records)
+                elif key in (curses.KEY_UP, ord("k")) and records:
+                    selected = (selected - 1) % len(records)
+                elif record:
+                    args = [record["kind"], record["id"], record["project"]]
+                    if key in (10, 13, curses.KEY_ENTER):
+                        try:
+                            with raise_on_die():
+                                body = ccm_spool.read_record(*args)
+                            self._spool_text(stdscr, record["id"], body)
+                        except CCMError as e:
+                            status = str(e)
+                    elif key == ord("o"):
+                        # Selecting alone sends no keys and never auto-starts.
+                        projects = build_project_list(fast=False)
+                        project = next((p for p in projects if p.name == record["project"]), None)
+                        if project is None:
+                            status = "Project is not open. Open it first, then return here."
+                        else:
+                            target_session = project.win_target.split(":")[0]
+                            if target_session != get_session():
+                                tmux_cmd("switch-client", "-t", target_session)
+                            tmux_cmd("select-window", "-t", project.win_target)
+                            return "attached"
+                    elif key == ord("d") or (key == ord("r") and record["kind"] == "expired"):
+                        action = "discard" if key == ord("d") else "resend"
+                        flags = ["--yes"]
+                        verb = ("Discard selected record (input unchanged)"
+                                if record["kind"] == "held" else "Discard selected record")
+                        if action == "resend":
+                            projects = build_project_list(fast=False)
+                            project = next((p for p in projects if p.name == record["project"]), None)
+                            verb = f"Resend selected message to {record['project']}"
+                            if project is not None and project.state == "SHELL":
+                                verb = f"Start Claude and resend to {record['project']}"
+                                flags.append("--start")
+                        answer = self._prompt(stdscr, f"{verb}? [y/N] ")
+                        if not answer or answer.lower() != "y":
+                            status = "Cancelled; record kept."
+                            continue
+                        ok = self._run_cmd(stdscr, ccm_spool.cmd_spool, [action] + args + flags)
+                        if not ok:
+                            status = self._msg_text
+                        elif action == "resend":
+                            status = "Message sent; original record cleared."
+                        elif record["kind"] == "held":
+                            status = "Record discarded; input box unchanged."
+                        else:
+                            status = "Record discarded."
+                        # Refresh without sorting existing rows or moving selection
+                        # to another identity when an earlier record disappears.
+                        old_key = identity(record)
+                        fresh = ccm_spool.attention_records()
+                        by_key = {identity(r): r for r in fresh}
+                        old_keys = {identity(r) for r in records}
+                        records = ([by_key[identity(r)] for r in records if identity(r) in by_key]
+                                   + [r for r in fresh if identity(r) not in old_keys])
+                        selected = next((i for i, r in enumerate(records) if identity(r) == old_key), selected)
+        finally:
+            stdscr.timeout(50)
+            self._render_max_col = previous_max_col
 
     def _selected_bg_index(self):
         """Return the index into `self.bg_sessions` of the currently
@@ -2795,6 +2933,7 @@ class Dashboard:
             # anyone looking for a way out, without sharing a
             # confirmation prompt with the irreversible one.
             ("Ignore / unignore project (hide from ccm)", "ignore"),
+            ("Undelivered messages (u)", "spool"),
             ("Save snapshot", "save"),
             ("Load snapshot", "load"),
             ("", ""),  # separator
@@ -2880,6 +3019,8 @@ class Dashboard:
             elif action in ("unregister", "delete", "ignore"):
                 self._do_menu_removal(stdscr, action)
                 self._build_menu()
+            elif action == "spool":
+                return self._do_spool(stdscr)
             elif action == "save":
                 self._do_save(stdscr)
             elif action == "load":
