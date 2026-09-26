@@ -1263,7 +1263,7 @@ def ccm_warn(msg):
 
 def ccm_info(msg):
     """Print info message."""
-    print(f"{_C_GREEN}{msg}{_C_RESET}")
+    print(f"{_C_GREEN}{msg}{_C_RESET}", flush=True)
 
 
 def validate_name(name):

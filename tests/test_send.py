@@ -893,16 +893,17 @@ class TestCmdSend:
         # No clearing key is sent.
         assert ("send-keys", "-t", "0:5", "C-u") not in send_calls
 
-    def test_start_premature_idle_stops_without_retry(self, monkeypatch):
+    def test_start_waits_for_render_without_retyping(self, monkeypatch):
         """A later matching snapshot must not cause another typing attempt."""
         placeholder = '❯ Try "how does .tags work?"'
         send_calls, raised = self._run_start_with_captures(
             monkeypatch, self._VERIFY_MSG,
-            # Stop on the first unconfirmed capture, without retyping.
+            # Observe the later rendering without typing again.
             capture_responses=[placeholder, f"❯ {self._VERIFY_MSG}"],
         )
-        assert raised, "a later ready composer must not trigger retyping"
-        assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
+        assert not raised
+        assert send_calls.count(("send-keys", "-t", "0:5", "Enter")) == 1
+        assert sum("-l" in call for call in send_calls) == 1
 
     def test_start_short_message_requires_visible_body(self, monkeypatch):
         initial = self._make_project(state="SHELL")

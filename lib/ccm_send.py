@@ -212,6 +212,25 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
 
 # A visible empty composer is not proof that the input handler accepts keys.
 # After launch, verify the visible body before Enter; never clear or retype it.
+# Allow a short render lag without extending the startup readiness wait.
+# Match the existing submit observation budget; 100 ms keeps a ready send fast.
+_START_BODY_TIMEOUT_SEC = 2.0
+_START_BODY_POLL_SEC = 0.1
+
+
+def _wait_for_start_body(pane_target, message):
+    """Read only until the full body appears; retain the last failure evidence."""
+    deadline = time.time() + _START_BODY_TIMEOUT_SEC
+    while True:
+        plain, attributed = capture_composer_snapshot(pane_target)
+        if composer_has_message_prefix(plain, attributed, message, complete=True):
+            return True, plain, attributed
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return False, plain, attributed
+        time.sleep(min(_START_BODY_POLL_SEC, remaining))
+
+
 # ─── Submit acceptance ───
 # Pressing Enter is not the same as the message being taken. Claude
 # Code holds a prompt that carried characters it strips, showing it
@@ -1040,8 +1059,8 @@ def cmd_send(args):
     # A partial match (including old transcript text) is not enough. Clearing
     # and retyping is unsafe: the clear key can be dropped along with the text.
     if did_launch:
-        plain, attributed = capture_composer_snapshot(pane_target)
-        if not composer_has_message_prefix(plain, attributed, message, complete=True):
+        confirmed, plain, attributed = _wait_for_start_body(pane_target, message)
+        if not confirmed:
             if _trace_enabled():
                 _trace_record(pane_target, "send-unverified", (f"project={project_name}",))
             if not plain.strip() or not composer_visible(plain):

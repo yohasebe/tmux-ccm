@@ -125,6 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- `send --start` allows up to two seconds for the input box to render the
+  typed body, checking without sending more keys. Informational output is
+  flushed so a startup message appears before a subsequent error.
 - After launching Claude, `send --start` types each message only once and
   submits only when the whole body is visible in the input box. An uncertain
   result stops without clearing or retyping, and asks the user to inspect

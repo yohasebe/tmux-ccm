@@ -125,3 +125,69 @@ def test_complete_match_reuses_composer_region_and_whitespace_folding():
     assert ccm_constants.composer_has_message_prefix(screen, None, message, complete=True)
     partial = composer_screen('❯ ' + message[:12])
     assert not ccm_constants.composer_has_message_prefix(partial, None, message, complete=True)
+
+
+@pytest.mark.parametrize('render_after', [0.0, 0.1, 1.9, None])
+@pytest.mark.parametrize('no_enter', [False, True])
+def test_render_wait_reads_only_until_match_or_deadline(
+    monkeypatch, dropped_input, render_after, no_enter,
+):
+    message = 'Wait for the complete synthetic message to render.'
+    state = dropped_input(message, 'full')
+    original = ccm_send.capture_composer_snapshot
+    reads = []
+    initial_keys = []
+
+    def capture(pane):
+        if not state['after_type']:
+            return original(pane)
+        now = ccm_send.time.time()
+        if not reads:
+            initial_keys.extend(state['keys'])
+        # Assert on every read, not just the final key count.
+        assert state['keys'] == initial_keys
+        reads.append(now)
+        elapsed = now - reads[0]
+        full = render_after is not None and elapsed + 1e-9 >= render_after
+        return composer_screen('❯ ' + (message if full else message[:12])), None
+
+    monkeypatch.setattr(ccm_send, 'capture_composer_snapshot', capture)
+    code = 0
+    try:
+        ccm_send.cmd_send(
+            ['demo', '--start', '--yes', message] + (['--no-enter'] if no_enter else [])
+        )
+    except SystemExit as error:
+        code = error.code
+    assert code == (1 if render_after is None else 0)
+    assert state['typed'] == [message]
+    assert not any(call[-1] in ('C-u', 'C-c') for call in state['keys'])
+    assert sum(call[-1] == 'Enter' for call in state['keys']) == (
+        1 if render_after is not None and not no_enter else 0
+    )
+    elapsed = reads[-1] - reads[0]
+    assert elapsed == pytest.approx(2.0 if render_after is None else render_after)
+    if render_after == 0.1:
+        assert len(reads) == 2
+    if render_after == 0:
+        assert len(reads) == 1
+    assert all(0 < b - a <= 0.100001 for a, b in zip(reads, reads[1:]))
+    state['queue'].assert_not_called()
+
+
+def test_info_is_flushed_before_error_even_with_buffered_stdout(monkeypatch):
+    import io
+    import sys
+
+    sink = io.BytesIO()
+    stdout = io.TextIOWrapper(sink, encoding='utf-8')
+    stderr = io.TextIOWrapper(sink, encoding='utf-8', write_through=True)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(sys, 'stdout', stdout)
+        patcher.setattr(sys, 'stderr', stderr)
+        ccm_core.ccm_info('Starting Claude in demo...')
+        with pytest.raises(SystemExit):
+            ccm_core.ccm_die('Delivery could not be confirmed')
+        stdout.flush()  # Model the eventual flush at process exit.
+        output = sink.getvalue().decode('utf-8')
+    assert output.index('Starting Claude') < output.index('Error:')
