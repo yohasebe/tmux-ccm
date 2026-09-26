@@ -209,7 +209,7 @@ class TestCmdDoctor:
     def test_clean_environment_renders_all_sections(self, tmp_path,
                                                     monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path)
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         for section in ("Environment", "Setup", "Runtime canaries",
                         "Active projects", "Silent-exception log",
@@ -230,7 +230,7 @@ class TestCmdDoctor:
     def test_focus_events_on_is_not_flagged(self, tmp_path, monkeypatch,
                                             capsys):
         self._stub_world(monkeypatch, tmp_path, focus_events="on")
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "focus-events" in out
         assert "set -g focus-events on" not in out
@@ -253,7 +253,7 @@ class TestCmdDoctor:
         labels = {"timeout": "Hook timeout", "lookalike": "Other hooks"}
         self._stub_world(monkeypatch, tmp_path, hooks=hooks,
                          **{f"{which}_warning": texts[which]})
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         other = "lookalike" if which == "timeout" else "timeout"
         line = next(l for l in out.splitlines() if labels[which] in l)
@@ -266,7 +266,7 @@ class TestCmdDoctor:
         independent facts; one must not hide the other."""
         self._stub_world(monkeypatch, tmp_path, hooks=hooks,
                          timeout_warning="TIMEOUT-BODY-7", lookalike_warning="LOOKALIKE-BODY-3")
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         lines = capsys.readouterr().out.splitlines()
         assert any("Hook timeout" in l and "TIMEOUT-BODY-7" in l for l in lines)
         assert any("Other hooks" in l and "LOOKALIKE-BODY-3" in l for l in lines)
@@ -290,9 +290,12 @@ class TestCmdDoctor:
     def test_hooks_with_entries_of_this_ccm_are_installed(
             self, tmp_path, monkeypatch, capsys, own_hook_entries):
         self._stub_world(monkeypatch, tmp_path, hooks=True, own_hook_entries=own_hook_entries)
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
-        assert "Hooks installed" in out and "Hooks not from this ccm" not in out
+        if own_hook_entries is None:
+            assert "could not inspect hook ownership" in out and "Hooks installed" not in out
+        else:
+            assert "Hooks installed" in out and "Hooks not from this ccm" not in out
 
     @pytest.mark.parametrize("scripts", ["all", "one"])
     def test_another_ccm_s_hooks_through_the_real_helpers(
@@ -324,7 +327,7 @@ class TestCmdDoctor:
         claude_dir = tmp_path / "home" / ".claude"
         claude_dir.mkdir(parents=True)
         (claude_dir / "settings.json").write_text(json.dumps(settings))
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         if scripts == "all":
             assert "Hooks not from this ccm" in out
@@ -387,7 +390,7 @@ class TestCmdDoctor:
         monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES", {})
         monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT",
                             str(tmp_path / "no-managed.json"))
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         flag = next(l for l in capsys.readouterr().out.splitlines()
                     if "disableAllHooks" in l)
         assert "not set" in flag and "unknown" not in flag
@@ -421,7 +424,7 @@ class TestCmdDoctor:
         )
         self._stub_world(monkeypatch, tmp_path,
                          projects=(proj_a, proj_b))
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "alpha" in out and "BUSY" in out
         assert "beta" in out and "IDLE" in out
@@ -459,7 +462,7 @@ class TestCmdDoctor:
             ps_text=self._PS_TWO_CLAUDE,
             panes_cache=self._PANES_TWO_CLAUDE,
         )
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "multi-claude windows" in out
         assert "alpha (2)" in out
@@ -542,7 +545,7 @@ class TestCmdDoctor:
 
     def test_reports_empty_errors_log(self, tmp_path, monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path)
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "errors.log" in out
         assert "empty" in out
@@ -550,7 +553,7 @@ class TestCmdDoctor:
     def test_reports_errors_log_record_count(self, tmp_path,
                                              monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path, errors_log_lines=7)
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "7 record(s)" in out
         assert "ccm errors" in out  # actionable guidance

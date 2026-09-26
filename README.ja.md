@@ -381,7 +381,7 @@ ccm errors [--clear]              silent-exception ログの表示／クリア
 ccm reset <name>                  プロジェクトの runtime 状態をリセット (最終手段の復旧)
 ccm ignore [project]              ペイン(既定:現在)またはプロジェクトをccmから隠す
 ccm unignore [project]            隠したペイン/プロジェクトをccmに戻す
-ccm doctor                        セルフチェック (依存・フック・カナリア・プロジェクト・エラー)
+ccm doctor [--verbose]            問題を表示。--verbose で診断の詳細をすべて表示
 ccm clear-notifications           macOS 通知センターから ccm 通知を削除
 ```
 
@@ -426,7 +426,7 @@ ccm はフック非依存のフォールバックを備えており、Claude Cod
 
 - **JSONL セッションログ心拍**: プロジェクトの最新 `~/.claude/projects/.../jsonl` に user/assistant レコードがあればセッション稼働中の証拠（housekeeping レコードは除外）
 - **許可ダイアログのフッター検出**: 許可フッター（`Esc to cancel · Tab to amend`）をペインから直接検出
-- **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えると silent fail の原因になるため警告表示。修復: `: > ~/.claude/hooks.log`
+- **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えると silent fail の原因になるため警告表示。先にコピーを保存してから `: > ~/.claude/hooks.log` で空にします
 
 フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 

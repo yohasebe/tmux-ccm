@@ -385,7 +385,7 @@ ccm errors [--clear]              View / clear the silent-exception log
 ccm reset <name>                  Clear stuck runtime state (last-resort recovery)
 ccm ignore [project]              Hide a pane (default: current) or project from ccm
 ccm unignore [project]            Restore an ignored pane/project to ccm
-ccm doctor                        Self-check (deps, hooks, canaries, projects, errors)
+ccm doctor [--verbose]            Show issues; --verbose includes all diagnostic details
 ccm clear-notifications           Remove ccm notifications from macOS Notification Center
 ```
 
@@ -430,7 +430,7 @@ ccm has hook-independent fallbacks so detection keeps working when Claude Code s
 
 - **JSONL session-log heartbeat**: a fresh user/assistant record in the project's `~/.claude/projects/.../jsonl` confirms the session is alive (housekeeping records are filtered out).
 - **Permission dialog footer match**: the permission footer (`Esc to cancel · Tab to amend`) is detected directly from the visible pane.
-- **`~/.claude/hooks.log` size canary**: ccm warns when this file exceeds 100 MB — a known cause of silent hook failure. Clear it with `: > ~/.claude/hooks.log`.
+- **`~/.claude/hooks.log` size canary**: ccm warns when this file exceeds 100 MB — a known cause of silent hook failure. Save a copy first, then clear it with `: > ~/.claude/hooks.log`.
 
 Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 

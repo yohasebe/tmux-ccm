@@ -38,7 +38,7 @@ _ccm() {
         'ignore:Hide a pane/project from ccm'
         'unignore:Restore a hidden pane/project to ccm'
         'debug:Live state-detection trace (debug trace)'
-        'doctor:Self-check: dependencies, hooks, canaries, projects'
+        'doctor:Show issues (--verbose for all diagnostic details)'
         'clear-notifications:Remove all ccm notifications from Notification Center'
         'version:Print the ccm version'
         'help:Show help'
@@ -94,6 +94,9 @@ _ccm() {
                             'discard:Discard one expired or held record'
                             'resend:Send one expired record as a new message')
                 _describe 'spool command' spool_cmds
+                ;;
+            doctor)
+                compadd -- --verbose
                 ;;
             debug)
                 local -a debug_cmds

@@ -64,6 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session; the check is read-only.
 
 ### Changed
+- `ccm doctor` shows actionable issues and incomplete checks by default;
+  `--verbose` retains detailed results, identifiers and log counts.
+  Large hook logs should be saved before clearing them.
 - Pressing `Enter` on a dashboard background-session row whose attach
   window is already open switches to that window instead of opening
   another. The window is recognised by a tag (`@ccm_bg_short`) set
@@ -116,6 +119,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Sidekick notification excerpts redact secret values from the hook process's
+  environment, common credential formats, Bearer headers and JSON secret fields.
+  Redaction remains best-effort; the guides explain excerpt and pane-content sharing.
+- The guides require users to answer sidekick approval dialogs themselves.
 - Queued sends preserve the caller pane's registered sender across directory
   changes when process ancestry verifies the pane. Otherwise they check the
   registration against the process working directory. A stale pane hint

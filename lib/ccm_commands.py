@@ -800,7 +800,7 @@ def cmd_unignore(name=""):
     ccm_core.ccm_info(f"Restored {name or 'current pane'} to ccm.")
 
 
-def cmd_doctor():
+def cmd_doctor(verbose=False):
     """`ccm doctor` — single self-check command. Aggregates dependency
     versions, hook installation state, runtime canaries, project
     inventory, and a tail of the silent-exception log. Designed as
@@ -810,11 +810,31 @@ def cmd_doctor():
     WARN = f"{ccm_core._C_YELLOW}⚠{ccm_core._C_RESET}"
     FAIL = f"{ccm_core._C_RED}✗{ccm_core._C_RESET}"
 
-    def section(title):
-        print(f"\n{ccm_core._C_BOLD}{title}{ccm_core._C_RESET}")
+    issues = 0
 
-    def row(mark, label, detail=""):
-        print(f"  {mark} {label}{('  ' + detail) if detail else ''}")
+    def section(title):
+        if verbose:
+            print(f"\n{ccm_core._C_BOLD}{title}{ccm_core._C_RESET}")
+
+    def row(mark, label, detail="", *, brief=None):
+        nonlocal issues
+        if mark != OK:
+            issues += 1
+        if verbose or mark != OK:
+            if not verbose and brief is not None:
+                detail = brief
+            print(f"  {mark} {label}{('  ' + detail) if detail else ''}")
+
+    def evidence_count(path, label):
+        try:
+            with open(path, encoding="utf-8") as stream:
+                return sum(1 for line in stream if line.strip())
+        except FileNotFoundError:
+            return 0
+        except (OSError, UnicodeError):
+            row(WARN, label, f"could not read {path} — check file permissions and encoding",
+                brief="could not read records — check `ccm doctor --verbose` for the file")
+            return None
 
     def _probe(args):
         """Run a dependency probe, returning stdout or "" when the
@@ -822,9 +842,8 @@ def cmd_doctor():
         a missing `which`/`tmux` binary must surface as a "not found"
         row, not crash the whole report with FileNotFoundError."""
         try:
-            return subprocess.run(
-                args, capture_output=True, text=True, timeout=5,
-            ).stdout.strip()
+            result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+            return result.stdout.strip() if result.returncode == 0 else ""
         except (OSError, subprocess.TimeoutExpired):
             return ""
 
@@ -840,7 +859,8 @@ def cmd_doctor():
             "binary not found — install from https://docs.anthropic.com/en/docs/claude-code")
     else:
         version_out = _probe([claude_path, "--version"])
-        row(OK, "claude", version_out or claude_path)
+        row(OK if version_out else WARN, "claude",
+            version_out or "version check failed — try `claude --version`")
     # tmux
     tmux_ver = _probe(["tmux", "-V"])
     row(OK if tmux_ver else FAIL, "tmux", tmux_ver or "not found")
@@ -857,7 +877,7 @@ def cmd_doctor():
         row(OK, "focus-events", "on")
     else:
         row(WARN, "focus-events",
-            f"{focus or 'off'} — Claude Code asks for it; "
+            f"{focus or 'could not read setting'} — Claude Code asks for it; "
             "add `set -g focus-events on` to ~/.tmux.conf")
 
     section("Setup")
@@ -877,7 +897,9 @@ def cmd_doctor():
     elif not ccm_core.hooks_configured():
         row(WARN, "Hooks not installed",
             "run `ccm setup-hooks` for full state detection")
-    elif ccm_core.own_hook_entry_count() == 0:
+    elif (own_entries := ccm_core.own_hook_entry_count()) is None:
+        row(WARN, "Hooks", "could not inspect hook ownership — check settings.json and retry")
+    elif own_entries == 0:
         row(WARN, "Hooks not from this ccm",
             "ccm's hook script names are in ~/.claude/settings.json, but none "
             "is in this ccm's hooks directory — run `ccm setup-hooks`")
@@ -888,29 +910,43 @@ def cmd_doctor():
         row(WARN, "Hook timeout", stale_timeout)
     lookalikes = ccm_core.hook_lookalike_warning()
     if lookalikes:
-        row(WARN, "Other hooks", lookalikes)
+        row(WARN, "Other hooks", lookalikes,
+            brief="Hooks from another installation were left unchanged. "
+                  "See `ccm doctor --verbose` before removing them.")
     claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
     if os.path.exists(claude_md):
-        with open(claude_md, encoding="utf-8") as f:
-            has_ccm = "ccm" in f.read().lower()
-        if has_ccm:
+        try:
+            with open(claude_md, encoding="utf-8") as f:
+                has_ccm = "ccm" in f.read().lower()
+        except (OSError, UnicodeError):
+            has_ccm = None
+        if has_ccm is None:
+            row(WARN, "~/.claude/CLAUDE.md",
+                "could not read — check file permissions and encoding")
+        elif has_ccm:
             row(OK, "~/.claude/CLAUDE.md", "ccm section present")
         else:
             row(WARN, "~/.claude/CLAUDE.md",
                 "ccm section absent — run `ccm setup-claude-md`")
     else:
-        row(WARN, "~/.claude/CLAUDE.md", "missing")
+        row(WARN, "~/.claude/CLAUDE.md", "missing — run `ccm setup-claude-md`")
 
     section("Runtime canaries")
     hooks_warn = ccm_canaries.hooks_log_warning()
     log_size = ccm_canaries.hooks_log_size()
     if hooks_warn:
         row(WARN, "hooks.log size", hooks_warn)
+    elif log_size == -2:
+        row(WARN, "hooks.log size", "could not read — check file permissions")
     elif log_size < 0:
         row(OK, "hooks.log size", "(absent)")
     else:
         row(OK, "hooks.log size", f"{log_size / (1024*1024):.1f} MB")
-    projects = ccm_core.build_project_list(fast=False)
+    try:
+        projects = ccm_core.build_project_list(fast=False)
+    except Exception:
+        projects = []
+        row(WARN, "Projects", "could not inspect projects — check tmux and retry")
     # Name the scope: a bare "not set" reads as a claim about
     # everywhere, and a session started with an explicit
     # `--permission-mode` is out of reach. The managed tier is named by
@@ -924,10 +960,10 @@ def cmd_doctor():
     unread = ccm_canaries.unreadable_settings(projects)
     if dah:
         row(WARN, "disableAllHooks", dah)
-    elif unread:
+    if unread:
         row(WARN, "disableAllHooks",
             f"unknown — could not read: {', '.join(unread)}")
-    else:
+    elif not dah:
         row(OK, "disableAllHooks",
             "not set (managed-settings.json, user and per-project settings; MDM / console policies: see /status)")
     # This one is read from the administrator's file alone, because
@@ -939,10 +975,10 @@ def cmd_doctor():
     unread_managed = ccm_canaries.unreadable_settings(managed_only=True)
     if mho:
         row(WARN, "allowManagedHooksOnly", mho)
-    elif unread_managed:
+    if unread_managed:
         row(WARN, "allowManagedHooksOnly",
             f"unknown — could not read: {', '.join(unread_managed)}")
-    else:
+    elif not mho:
         row(OK, "allowManagedHooksOnly",
             "not set (managed-settings.json; MDM / console policies: see /status)")
 
@@ -967,8 +1003,10 @@ def cmd_doctor():
         # Firing-log evidence count (default-on promotion review):
         # each past firing is one JSON line in the log; zero across a
         # long dogfood window is the "no false fires" evidence.
-        fired = ccm_canaries.hook_silence_log_count()
-        if fired:
+        fired = evidence_count(ccm_canaries.hook_silence_log_path(), "hook-silence log")
+        if fired is None:
+            pass
+        elif fired:
             row(OK, "hook-silence log",
                 f"{fired} firing(s) recorded — inspect "
                 f"{ccm_canaries.hook_silence_log_path()}")
@@ -990,15 +1028,19 @@ def cmd_doctor():
         row(OK, "bg hand-off",
             "no blocking hand-off found in SHELL projects' newest transcripts")
 
-    exited = ccm_runtime.auto_exit_log_count()
-    if exited:
+    exited = evidence_count(ccm_runtime.auto_exit_log_path(), "auto-exit log")
+    if exited is None:
+        pass
+    elif exited:
         row(OK, "auto-exit log",
             f"{exited} session(s) closed by ccm — inspect "
             f"{ccm_runtime.auto_exit_log_path()}")
     else:
         row(OK, "auto-exit log", "no sessions closed by ccm")
-    declined = ccm_runtime.auto_exit_declined_log_count()
-    if declined:
+    declined = evidence_count(ccm_runtime.auto_exit_declined_log_path(), "auto-exit declined")
+    if declined is None:
+        pass
+    elif declined:
         row(OK, "auto-exit declined",
             f"{declined} record(s) — a pane showing the agent view or "
             f"unreadable before `/exit`, or showing the agent view after "
@@ -1020,14 +1062,14 @@ def cmd_doctor():
             parts.append(
                 f"{spool['expired']} expired undelivered "
                 f"(TTL {ccm_spool.SPOOL_TTL_SEC // 60}m) — review: `ccm spool list`")
-        row(WARN, "spool", "; ".join(parts))
+        row(WARN, "spool", "; ".join(parts) + "; dashboard: `u`")
     else:
         row(OK, "spool", "no queued messages")
 
     section("Codex sidekick notifications")
     import ccm_sidekick_notify
-    for detail in ccm_sidekick_notify.doctor_lines(projects):
-        row(WARN if any(word in detail for word in ("unreadable", "incomplete", "not installed")) else OK, detail)
+    for warning, detail in ccm_sidekick_notify.doctor_rows(projects):
+        row(WARN if warning else OK, detail)
 
     section(f"Active projects ({len(projects)})")
     if not projects:
@@ -1053,7 +1095,9 @@ def cmd_doctor():
         ) or "(no session)"
         ver = version_map.get(sid, "")
         sid_label = f"{sid} v{ver}" if ver else sid
-        row(OK, f"{p.name:<20}", f"{state_label}  {sid_label}")
+        row(WARN if p.state == "PERMIT" else OK, f"{p.name:<20}",
+            f"{state_label}  {sid_label}",
+            brief=f"Waiting for your response — open the project with `ccm attach {p.name}`")
 
     # Windows where more than one *visible* pane hosts claude. Two
     # readings are equally legitimate — Agent Teams teammates, or a
@@ -1110,13 +1154,16 @@ def cmd_doctor():
         if os.path.exists(ccm_core.CCM_ERRORS_LOG):
             with open(ccm_core.CCM_ERRORS_LOG, encoding="utf-8") as f:
                 log_count = sum(1 for _ in f)
-    except OSError:
-        pass
-    if log_count == 0:
+    except (OSError, UnicodeError):
+        log_count = None
+    if log_count is None:
+        row(WARN, "errors.log", "could not read — check file permissions; run `ccm errors`")
+    elif log_count == 0:
         row(OK, "errors.log", "empty")
     else:
-        row(WARN, "errors.log",
-            f"{log_count} record(s) — view with `ccm errors`")
+        # Past records alone are not a current problem; the burst check
+        # below reports errors that are accumulating now.
+        row(OK, "errors.log", f"{log_count} record(s) — view with `ccm errors`")
     burst = ccm_canaries.errors_log_burst_warning()
     if burst:
         row(WARN, "errors burst", burst)
@@ -1124,9 +1171,12 @@ def cmd_doctor():
     section("Configuration")
     for key in ("CCM_ROOT", "CCM_TMP_DIR", "CCM_DATA_DIR", "CCM_HOOK_DIR"):
         val = getattr(ccm_core, key, None)
-        if val:
+        if val and verbose:
             print(f"  {key:<20} {val}")
-    print()
+    if verbose:
+        print()
+    elif not issues:
+        print("No issues found in the checks completed. For details, run ccm doctor --verbose.")
 
 
 def cmd_errors(args):

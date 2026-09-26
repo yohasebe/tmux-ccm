@@ -63,11 +63,13 @@ HOOKS_LOG_WARN_BYTES = int(
 
 
 def hooks_log_size() -> int:
-    """Return the byte size of `~/.claude/hooks.log`, or -1 if absent."""
+    """Return the byte size of `~/.claude/hooks.log`, or -1 if absent, -2 if unreadable."""
     try:
         return os.path.getsize(CLAUDE_HOOKS_LOG)
-    except OSError:
+    except FileNotFoundError:
         return -1
+    except OSError:
+        return -2
 
 
 def hooks_log_warning() -> str:
@@ -81,7 +83,7 @@ def hooks_log_warning() -> str:
     mb = size / (1024 * 1024)
     return (
         f"Claude hooks.log is {mb:.0f} MB — hooks may be silently failing. "
-        f"Run `: > ~/.claude/hooks.log` to restore hook delivery (#16047)."
+        "Save a copy first, then run `: > ~/.claude/hooks.log` to restore hook delivery (#16047)."
     )
 
 

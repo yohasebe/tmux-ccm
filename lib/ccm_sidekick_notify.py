@@ -35,11 +35,23 @@ _ANSI = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\
 def clean(value, limit=400):
     if not isinstance(value, str):
         return ''
+    # Match actual values before whitespace/control normalization or truncation.
+    secrets = {v for k, v in os.environ.items()
+               if re.search(r'key|token|secret|password|passwd|credential', k, re.I)
+               and len(v) >= 8}
+    for secret in sorted(secrets, key=len, reverse=True):
+        value = value.replace(secret, '[redacted]')
     value = _ANSI.sub('', value)
     value = ''.join(' ' if c.isspace() else c for c in value
                     if c.isspace() or unicodedata.category(c) not in ('Cc', 'Cf', 'Cs'))
     # Best-effort redaction, not a guarantee that arbitrary prose has no secrets.
-    value = re.sub(r'(?i)(token|password|secret|api[_-]?key)(\s*[=:]\s*)\S+', r'\1\2[redacted]', value)
+    value = re.sub(r'(?i)("[^"\n]*(?:key|token|secret|password)[^"\n]*"\s*:\s*)"(?:\\.|[^"\\])*"',
+                   r'\1"[redacted]"', value)
+    value = re.sub(r'(?i)(token|password|secret|api[_-]?key)(\s*[=:]\s*)\S+',
+                   r'\1\2[redacted]', value)
+    value = re.sub(r'(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]+', r'\1[redacted]', value)
+    value = re.sub(r'(?<![A-Za-z0-9_])(?:sk-(?:proj-)?|AIza|gh[pousr]_|github_pat_|xai-|AKIA)[A-Za-z0-9_-]+',
+                   '[redacted]', value)
     return ' '.join(value.split())[:limit]
 
 
@@ -610,33 +622,72 @@ def configure(remove=False):
         print('Other installations left unchanged: ' + ', '.join(lookalikes))
 
 
-def doctor_lines(projects):
-    data = _read(config_path())
+def doctor_rows(projects):
+    """Return (needs_attention, text) rows; diagnostics never mutate records."""
+    result = []
+    active = []
+    for project in projects:
+        def option(name):
+            return ccm_core.tmux_cmd('show-options', '-wqv', '-t', project.win_target, name)
+        binding = option(BINDING) or 'unbound'
+        setting = option(OPTION) or 'off'
+        result.append((False, f'{project.name}: notify={setting}; limit={option(LIMIT) or "20"}/hour; excerpt={option(EXCERPT) or "on"}; binding={binding}'))
+        if setting == 'on':
+            active.append(project)
+    path = config_path()
+    data = _read(path)
     if data is None or not isinstance(data.get('hooks', {}), dict):
-        status = 'unreadable' if config_path().exists() else 'not installed'
+        status = 'unreadable' if path.exists() else 'not installed'
     else:
         owned, alike = ccm_hook_owner.classify(data, str(Path(ccm_core.CCM_ROOT) / 'hooks'), (SCRIPT,))
         complete = all(any(h.get('command') in owned for h in ccm_hook_owner._hooks({'hooks': {event: data.get('hooks', {}).get(event)}})) for event in EVENTS)
         status = 'registered' if complete else 'incomplete'
         if alike:
             status += '; look-alike hooks left untouched'
-    result = ['Codex hooks: ' + status + '; registration does not prove trust']
-    for project in projects:
-        win = project.win_target
-        def option(name):
-            return ccm_core.tmux_cmd('show-options', '-wqv', '-t', win, name)
-        binding = option(BINDING) or 'unbound'
-        setting = option(OPTION) or 'off'
-        result.append(f'{project.name}: notify={setting}; limit={option(LIMIT) or "20"}/hour; excerpt={option(EXCERPT) or "on"}; binding={binding}')
-    states = [_read(p, {}) for p in (Path(ccm_spool.SPOOL_ROOT) / '.sidekick').glob('*.json')]
+    needs_setup = bool(active) and not status.startswith('registered')
+    action = (' — check Codex hooks.json and repair it' if status == 'unreadable'
+              else ' — run `ccm setup-sidekick-hooks codex` and review hook trust in Codex' if needs_setup else '')
+    result.insert(0, (status == 'unreadable' or needs_setup,
+                     'Codex hooks: ' + status + '; registration does not prove trust' + action))
+    states = []
+    try:
+        for path in (Path(ccm_spool.SPOOL_ROOT) / '.sidekick').glob('*.json'):
+            state = _read(path)
+            if (state is None or not isinstance(state.get('binding', {}), dict)
+                    or not isinstance(state.get('received', 0), (int, float))):
+                result.append((True, 'Codex hook reception: could not read a record — inspect `ccm doctor --verbose`'))
+                result.append((False, f'Unreadable Codex record: {path}'))
+            else:
+                states.append(state)
+    except OSError:
+        result.append((True, 'Codex hook reception: could not inspect records — check spool permissions'))
     latest = max((s.get('received', 0) for s in states), default=0)
-    result.append('Recent Codex hook reception: ' + (f'{int(time.time() - latest)}s ago (not proof of current trust)' if latest else 'none observed'))
+    result.append((False, 'Recent Codex hook reception: ' + (f'{int(time.time() - latest)}s ago (not proof of current trust)' if latest else 'none observed')))
+    for project in active:
+        # Bindings record tmux's window ID, not the session:index target.
+        window_id = ccm_core.tmux_query('display-message', '-p', '-t', project.win_target, '#{window_id}')
+        if not any(s.get('received') and s.get('binding', {}).get('window') in (window_id, project.win_target)
+                   for s in states):
+            result.append((True, f'{project.name}: no Codex hook reception observed — check hook installation and trust in Codex, then complete a turn'))
     counts = {}
     for _, pdir in ccm_spool._iter_project_dirs():
         for _, record in _notices(pdir):
             counts[record['status']] = counts.get(record['status'], 0) + 1
-    result.append('Codex notices: ' + ', '.join(f'{s}={counts.get(s, 0)}' for s in ('pending', 'expired', 'limited', 'uncertain', 'attempted', 'held', 'cancelled')))
+    result.append((False, 'Codex notices: ' + ', '.join(f'{s}={counts.get(s, 0)}' for s in ('pending', 'expired', 'limited', 'uncertain', 'attempted', 'held', 'cancelled'))))
+    # Queued notices deliver on their own; only states that need a person count.
+    labels = {'expired': 'expired before delivery',
+              'limited': 'not sent: hourly limit', 'uncertain': 'delivery unconfirmed',
+              'attempted': 'delivery unconfirmed after attempt', 'held': 'waiting in input box',
+              'cancelled': 'cancelled before delivery'}
+    undelivered = [f'{counts[s]} {label}' for s, label in labels.items() if counts.get(s)]
+    if undelivered:
+        result.append((True, 'Codex notices: ' + '; '.join(undelivered) + ' — review in dashboard `u`; automatic notices are not resent'))
     return result
+
+
+def doctor_lines(projects):
+    """Detailed diagnostic text for callers that do not select a display mode."""
+    return [text for _, text in doctor_rows(projects)]
 
 
 def hook_main():

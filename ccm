@@ -92,7 +92,7 @@ Usage:
   ccm debug trace <target> [interval]  Live state-detection trace; target is a project name or tmux pane/window (read-only)
   ccm errors [--clear]              View / clear the silent-exception log
   ccm reset <name>                  Clear stuck runtime state for a project (last-resort recovery)
-  ccm doctor                        Self-check: dependencies, hooks, canaries, projects, errors
+  ccm doctor [--verbose]            Show issues; --verbose includes all diagnostic details
   ccm clear-notifications           Remove all ccm notifications from macOS Notification Center
   ccm help                          Show this help
   ccm version                       Print the ccm version
@@ -192,7 +192,8 @@ case "${1:-help}" in
         ;;
     doctor)
         # `ccm doctor` — aggregate self-check.
-        python3 "$CCM_ROOT/lib/ccm_core.py" doctor
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" doctor "$@"
         ;;
     clear-notifications)
         python3 "$CCM_ROOT/lib/ccm_core.py" clear-notifications
