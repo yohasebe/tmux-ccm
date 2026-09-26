@@ -558,6 +558,7 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
    # サイドキック attention フックを導入していた場合のみ（ガイドの機能）:
    ccm remove-sidekick-hooks kimi
    ccm remove-sidekick-hooks grok
+   ccm remove-sidekick-hooks codex
    ```
    フックはプラグインディレクトリへの絶対パスで登録されるため、残したままにすると Claude Code が存在しないスクリプトを毎イベント実行しようとし続けます。`CLAUDE.md` のセクションも、削除済みのコマンドを使うよう各セッションに指示し続けることになります。
 

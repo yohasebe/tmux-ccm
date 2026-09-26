@@ -836,7 +836,7 @@ ccm remove-sidekick-hooks kimi    # 削除する（どちらもバックアッ�
 > [!NOTE]
 > Claude 以外のエージェントへの対応は**実験的**で、`ccm setup-sidekick-hooks` は当面 CLI 一覧に載せていません。各ベンダーの hook 契約はまだ若く動いています — 3 つ実測しただけで、未文書のイベント種別、プラットフォーム名付きバイナリ、hook をロードするのに一度も発火しない製品が出てきました。この節は変わる前提でお読みください。上の Claude サイドキックの経路はこれらに一切依存しません。
 
-インストールできるのは **Kimi Code** と **Grok Build** で、どちらも実際に動いているペインで検証済みです。正確なのは Kimi の方です — hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます。Grok にはどちらもありません: 許可待ちは `Notification` の `notificationType: "permission_prompt"` として届き、ツールの詳細を持たず（summary は Grok 自身の「Tool permission requested」にフォールバックします）、次の活動イベントで閉じます。
+インストールできるのは **Kimi Code** と **Grok Build**（どちらも実際に動いているペインで検証済み）、それに **Codex**（後述）です。正確なのは Kimi の方です — hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます。Grok にはどちらもありません: 許可待ちは `Notification` の `notificationType: "permission_prompt"` として届き、ツールの詳細を持たず（summary は Grok 自身の「Tool permission requested」にフォールバックします）、次の活動イベントで閉じます。
 
 **Antigravity CLI**（Gemini CLI の後継）は hook をロードするものの一度も発火しません — 1.1.10 で実測し、実際の承認ダイアログを出しても 6 つのイベントのいずれも呼ばれませんでした。`ccm setup-sidekick-hooks` は未対応のエージェントを名指しで拒否し、どちらに該当するかを表示します。
 

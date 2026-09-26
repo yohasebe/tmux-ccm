@@ -851,7 +851,7 @@ Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-side
 > [!NOTE]
 > Support for non-Claude agents is **exploratory**, and `ccm setup-sidekick-hooks` is deliberately absent from the CLI table for now. Each vendor's hook contract is young and still moving — measuring three of them turned up an undocumented event type, a platform-suffixed binary name, and a product whose hooks load but never fire. Expect this section to change; the Claude-sidekick path above depends on none of it.
 
-Installable for **Kimi Code** and **Grok Build**, both verified against a running pane. Kimi is the precise one — its hook set has `PermissionRequest` *and* `PermissionResult`, so waits open and close exactly. Grok has neither: its permission wait arrives as `Notification` with `notificationType: "permission_prompt"`, carries no tool details (the summary falls back to Grok's own "Tool permission requested"), and closes on the next activity event.
+Installable for **Kimi Code** and **Grok Build**, both verified against a running pane, and for **Codex** (described below). Kimi is the precise one — its hook set has `PermissionRequest` *and* `PermissionResult`, so waits open and close exactly. Grok has neither: its permission wait arrives as `Notification` with `notificationType: "permission_prompt"`, carries no tool details (the summary falls back to Grok's own "Tool permission requested"), and closes on the next activity event.
 
 **Antigravity CLI** (Gemini CLI's successor) loads hooks without ever firing them — measured against 1.1.10, where a real approval dialog produced nothing from any of its six events. `ccm setup-sidekick-hooks` refuses an unsupported agent by name and says which case applies.
 
