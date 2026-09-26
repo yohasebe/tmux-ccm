@@ -1571,7 +1571,7 @@ class Dashboard:
                 if record and record["kind"] == "expired":
                     help_text += " · r resend"
                 if not records:
-                    self._addstr(stdscr, 2, 0, "No expired or held messages.")
+                    self._addstr(stdscr, 2, 0, "No undelivered messages.")
                 self._addstr(stdscr, height - 3, 0, help_text)
                 self._addstr(stdscr, height - 2, 0, status)
                 stdscr.refresh()

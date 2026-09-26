@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Opt-in Codex completion notices share the spool's readiness checks and
+  expiry, with per-window hourly limits, coalescing and visible uncertain
+  deliveries. Codex approval waits use the existing attention channel without
+  asking Claude to answer dialogs. Hook installation preserves other tools'
+  entries and requires the user's Codex trust review.
 - Dashboard `u` opens expired and held messages with sender, destination,
   age, preview and scrollable full text. Confirmed actions resend expired
   messages or discard one record; opening the project sends no keys.

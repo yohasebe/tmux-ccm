@@ -83,6 +83,7 @@ def isolate_runtime_state(tmp_path, monkeypatch):
     happen to need it, so a test written later cannot pollute the
     user's data by forgetting to ask.
     """
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setenv("CCM_AUTO_EXIT_LOG",
                        str(tmp_path / "state" / "auto-exit.log"))
     monkeypatch.setenv("CCM_AUTO_EXIT_DECLINED_LOG",

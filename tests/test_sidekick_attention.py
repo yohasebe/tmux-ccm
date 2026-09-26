@@ -288,12 +288,11 @@ class TestSidekickHooksInstaller:
 
     def test_unsupported_agent_refused(self, kimi_config, capsys):
         with pytest.raises(SystemExit):
-            ccm_commands.cmd_setup_sidekick_hooks("codex")
+            ccm_commands.cmd_setup_sidekick_hooks("antigravity")
         err = capsys.readouterr().err
-        assert "codex" in err
-        # The refusal must say WHY codex cannot be supported yet, so
-        # the user learns it is an upstream gap, not a ccm omission.
-        assert "11808" in err
+        assert "antigravity" in err
+        # The unsupported agent still names the reason.
+        assert "without firing" in err
 
     def test_missing_kimi_install_refused(self, tmp_path, monkeypatch,
                                           capsys):
@@ -347,7 +346,7 @@ class TestGrokInstaller:
             ccm_commands.cmd_setup_sidekick_hooks("grok")
         assert "installed" in capsys.readouterr().err
 
-    def test_codex_refusal_names_the_upstream_gap(self, capsys):
+    def test_antigravity_refusal_names_the_upstream_gap(self, capsys):
         with pytest.raises(SystemExit):
-            ccm_commands.cmd_setup_sidekick_hooks("codex")
-        assert "11808" in capsys.readouterr().err
+            ccm_commands.cmd_setup_sidekick_hooks("antigravity")
+        assert "without firing" in capsys.readouterr().err

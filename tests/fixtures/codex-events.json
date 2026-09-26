@@ -1,0 +1,12 @@
+[
+  {"hook_event_name":"SessionStart","session_id":"session-demo"},
+  {"hook_event_name":"UserPromptSubmit","session_id":"session-demo","turn_id":"turn-one"},
+  {"hook_event_name":"PreToolUse","session_id":"session-demo","turn_id":"turn-one","tool_use_id":"tool-one","tool_name":"Bash","tool_input":{"command":"echo example"}},
+  {"hook_event_name":"PermissionRequest","session_id":"session-demo","turn_id":"turn-one","tool_name":"Bash","tool_input":{"command":"echo example"}},
+  {"hook_event_name":"PostToolUse","session_id":"session-demo","turn_id":"turn-one","tool_use_id":"tool-one","tool_name":"Bash"},
+  {"hook_event_name":"Stop","session_id":"session-demo","turn_id":"turn-one","last_assistant_message":"The example is complete."},
+  {"hook_event_name":"UserPromptSubmit","session_id":"session-demo","turn_id":"turn-two"},
+  {"hook_event_name":"PreToolUse","session_id":"session-demo","turn_id":"turn-two","tool_use_id":"tool-two","tool_name":"Bash","tool_input":{"command":"echo next"}},
+  {"hook_event_name":"PermissionRequest","session_id":"session-demo","turn_id":"turn-two","tool_name":"Bash","tool_input":{"command":"echo next"}},
+  {"hook_event_name":"Interrupt","session_id":"session-demo","turn_id":"turn-two"}
+]

@@ -853,7 +853,86 @@ Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-side
 
 Installable for **Kimi Code** and **Grok Build**, both verified against a running pane. Kimi is the precise one — its hook set has `PermissionRequest` *and* `PermissionResult`, so waits open and close exactly. Grok has neither: its permission wait arrives as `Notification` with `notificationType: "permission_prompt"`, carries no tool details (the summary falls back to Grok's own "Tool permission requested"), and closes on the next activity event.
 
-Two agents cannot be supported at all, both for upstream reasons: **Codex CLI** has no approval-time hook ([openai/codex#11808](https://github.com/openai/codex/issues/11808)), and **Antigravity CLI** (Gemini CLI's successor) loads hooks without ever firing them — measured against 1.1.10, where a real approval dialog produced nothing from any of its six events. `ccm setup-sidekick-hooks` refuses an unsupported agent by name and says which case applies.
+**Antigravity CLI** (Gemini CLI's successor) loads hooks without ever firing them — measured against 1.1.10, where a real approval dialog produced nothing from any of its six events. `ccm setup-sidekick-hooks` refuses an unsupported agent by name and says which case applies.
+
+**Codex attention and completion notifications.** Install the adapter separately
+from enabling Claude notifications:
+
+```bash
+ccm setup-sidekick-hooks codex
+# Review and trust the installed hooks in Codex /hooks.
+# Explicitly select the project window; each window defaults to off.
+tmux set-option -w -t <window> @ccm-sidekick-notify on
+# Optional settings (defaults: 20 deliveries/hour, excerpt on):
+tmux set-option -w -t <window> @ccm-sidekick-notify-limit 20
+tmux set-option -w -t <window> @ccm-sidekick-notify-excerpt off
+# Stop completion notifications:
+tmux set-option -w -t <window> @ccm-sidekick-notify off
+ccm remove-sidekick-hooks codex
+```
+
+The installer merges only this installation's hook entries into Codex's
+`hooks.json` (under `CODEX_HOME`, or `~/.codex`), keeps a `.ccm-bak`, and preserves
+other hooks. Invalid JSON and installation paths containing spaces are refused.
+It does not edit trust records or `config.toml`. New or changed hooks need the
+user's trust review; installation alone does not establish that they run.
+Removal disables loaded ccm hooks and cancels pending notices; restart/review
+Codex as appropriate. Reinstalling restores the adapter; window preferences
+remain as configured. Refresh `ccm setup-claude-md` for the recipient guidance.
+
+Only the hook payload's cwd identifies the project: exactly one registered
+window must contain it, and that window must host exactly one Codex pane.
+Linked copies of a window count once; nested or duplicate registrations are
+ambiguous. Ignored Codex panes still count as physical sidekicks. The first
+session observed for that live Codex process is bound automatically. An event
+from a new session, or a changed process identity, rebinds it, whether or not a
+SessionStart arrived; late events from a session the process already left are
+ignored. The internal `@ccm-sidekick-binding` window option records this
+association; do not edit it. Another session using the same cwd (for example
+Codex running outside tmux) is indistinguishable and takes over the binding
+when it sends events. This is a heuristic, so read the named pane before acting.
+SessionStart may not arrive until the first turn. The hook's own pane variable
+and process ancestry are not used for routing.
+
+Permission requests use the existing attention marker, badge and desktop
+notification, controlled by `@ccm-sidekick-attention`. Desktop notices run on
+the next full refresh and omit waits already resolved. They do **not** send a
+message to Claude. Only a uniquely matched tool completion or a matching turn
+interrupt/end clears the wait; an unrelated tool does not. Neither ccm nor
+Claude answers approval dialogs, returns hook approval decisions, changes
+permissions, or bypasses hook trust. The user handles the original approval UI.
+
+With completion notifications enabled, Stop queues a short automatic notice
+for the window's sole non-ignored Claude pane. It waits for IDLE, an empty
+composer and a readable capture; ordinary queued messages take priority.
+There is no auto-launch or forced delivery. The notice quotes up to 400 sanitized
+characters of the final message unless excerpts are off. Sanitization removes
+terminal/control/bidirectional formatting; it cannot guarantee removal of all
+secrets or malicious instructions. Excerpts are data, not authorization.
+Notifications do not suggest a `ccm send` reply. Do not acknowledge merely to
+acknowledge or automatically delegate another task.
+
+Pending completions for the same session/binding are combined into the latest
+notice with a count. They use the normal spool TTL (60 minutes by default,
+`CCM_SPOOL_TTL_SEC`). Expired notices remain visible. The rolling hourly limit
+is per window; excess notices are recorded rather than delivered, and capacity
+returns as earlier attempts age out. There is no minimum interval, permanent
+pause or lifetime quota. Each delivered notice can consume a Claude turn.
+An explicit `ccm send` does not suppress the automatic completion notice.
+
+A changed source/recipient, opt-out or session end cancels pending delivery.
+If delivery might have begun, ccm records an uncertain result and never retries
+automatically; a crash just before typing can therefore lose a notice. Held
+input is also not resent. Dashboard `u` and `ccm doctor` expose expired,
+rate-limited, cancelled, held and uncertain notices. Read or discard them there;
+automatic notices cannot be resent. `ccm doctor` also shows installation,
+reception, per-window preferences and binding. Reception is not proof of current
+hook trust. Evidence and duplicate IDs are retained for seven days.
+
+This completion path currently supports Codex only. Kimi, Grok and ignored
+Claude sidekicks retain their existing attention behavior. Approval-wait and
+resolution messages to Claude, and `codex queue` transport, are not included.
+
 
 Grok Build gets its own hook file (`~/.grok/hooks/ccm-sidekick-attention.json`) instead of an edit to your config, so removing it is an unlink and nothing of yours is ever merged with.
 

@@ -1024,6 +1024,11 @@ def cmd_doctor():
     else:
         row(OK, "spool", "no queued messages")
 
+    section("Codex sidekick notifications")
+    import ccm_sidekick_notify
+    for detail in ccm_sidekick_notify.doctor_lines(projects):
+        row(WARN if any(word in detail for word in ("unreadable", "incomplete", "not installed")) else OK, detail)
+
     section(f"Active projects ({len(projects)})")
     if not projects:
         row(WARN, "(none registered)", "run `ccm add <dir>` to start")
@@ -1409,8 +1414,8 @@ def cmd_debug_trace(target_match, interval=0.3):
 # — PermissionRequest/PermissionResult fire, $TMUX_PANE is
 # inherited, config loads at session start). Grok Build is verified
 # too, through its Notification event. Gemini has a hook system but
-# its permission-wait event is unverified; Codex has no
-# approval-time hook at all (openai/codex#11808).
+# its permission-wait event is unverified. Codex uses a separate
+# payload-cwd adapter because its hook environment is shared.
 _SIDEKICK_BLOCK_BEGIN = "# ccm:sidekick-attention begin (managed by ccm)"
 _SIDEKICK_BLOCK_END = "# ccm:sidekick-attention end"
 
@@ -1524,15 +1529,17 @@ def cmd_setup_sidekick_hooks(agent):
     adapter into the sidekick CLI's own hook config, so the sidekick
     self-reports "waiting on a decision" without ccm parsing its
     screen."""
+    if agent == "codex":
+        import ccm_sidekick_notify
+        ccm_sidekick_notify.configure(remove=False)
+        return
     if agent == "grok":
         _setup_grok_hooks()
         return
     if agent != "kimi":
         ccm_core.ccm_die(
-            f"unsupported sidekick agent: {agent!r}. Supported: kimi, grok.\n"
-            "  Neither of the other two can be supported from ccm's side: "
-            "Codex has no approval-time hook at all "
-            "(openai/codex#11808), and Antigravity CLI loads hooks without "
+            f"unsupported sidekick agent: {agent!r}. Supported: codex, kimi, grok.\n"
+            "  Antigravity CLI loads hooks without "
             "firing them (measured against 1.1.10).")
     config = _kimi_config_path()
     if not os.path.isdir(os.path.dirname(config)):
@@ -1561,6 +1568,10 @@ def cmd_setup_sidekick_hooks(agent):
 
 def cmd_remove_sidekick_hooks(agent):
     """`ccm remove-sidekick-hooks <agent>` — uninstall the adapter."""
+    if agent == "codex":
+        import ccm_sidekick_notify
+        ccm_sidekick_notify.configure(remove=True)
+        return
     if agent == "grok":
         path = _grok_hook_path()
         if not os.path.exists(path):
@@ -1571,7 +1582,7 @@ def cmd_remove_sidekick_hooks(agent):
         return
     if agent != "kimi":
         ccm_core.ccm_die(
-            f"unsupported sidekick agent: {agent!r}. Supported: kimi, grok.")
+            f"unsupported sidekick agent: {agent!r}. Supported: codex, kimi, grok.")
     config = _kimi_config_path()
     if not os.path.exists(config):
         ccm_core.ccm_info("nothing to remove (no Kimi config found)")

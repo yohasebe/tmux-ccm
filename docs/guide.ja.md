@@ -838,7 +838,76 @@ ccm remove-sidekick-hooks kimi    # 削除する（どちらもバックアッ�
 
 インストールできるのは **Kimi Code** と **Grok Build** で、どちらも実際に動いているペインで検証済みです。正確なのは Kimi の方です — hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます。Grok にはどちらもありません: 許可待ちは `Notification` の `notificationType: "permission_prompt"` として届き、ツールの詳細を持たず（summary は Grok 自身の「Tool permission requested」にフォールバックします）、次の活動イベントで閉じます。
 
-対応できないエージェントが 2 つあり、いずれも upstream 側の事情です。**Codex CLI** には承認時の hook がなく（[openai/codex#11808](https://github.com/openai/codex/issues/11808)）、**Antigravity CLI**（Gemini CLI の後継）は hook をロードするものの一度も発火しません — 1.1.10 で実測し、実際の承認ダイアログを出しても 6 つのイベントのいずれも呼ばれませんでした。`ccm setup-sidekick-hooks` は未対応のエージェントを名指しで拒否し、どちらに該当するかを表示します。
+**Antigravity CLI**（Gemini CLI の後継）は hook をロードするものの一度も発火しません — 1.1.10 で実測し、実際の承認ダイアログを出しても 6 つのイベントのいずれも呼ばれませんでした。`ccm setup-sidekick-hooks` は未対応のエージェントを名指しで拒否し、どちらに該当するかを表示します。
+
+**Codex の attention と完了通知。** hook の導入と Claude への通知の有効化は別々です。
+
+```bash
+ccm setup-sidekick-hooks codex
+# Codex の /hooks で導入された hook を確認して信頼する。
+# 対象窓を明示する。各窓の既定は off。
+tmux set-option -w -t <window> @ccm-sidekick-notify on
+# 任意設定（既定: 1時間20通、抜粋 on）:
+tmux set-option -w -t <window> @ccm-sidekick-notify-limit 20
+tmux set-option -w -t <window> @ccm-sidekick-notify-excerpt off
+# 完了通知を停止:
+tmux set-option -w -t <window> @ccm-sidekick-notify off
+ccm remove-sidekick-hooks codex
+```
+
+導入は Codex の `hooks.json`（`CODEX_HOME` 配下、既定は `~/.codex`）に、現在の
+ccm が所有する hook だけをマージし、`.ccm-bak` を残して他の hook を保ちます。
+壊れた JSON と空白を含むインストールパスは拒否します。信頼記録や `config.toml` は
+編集しません。新規・変更 hook はユーザーの信頼確認が必要で、導入成功だけでは稼働を
+証明しません。撤去するとロード済みの ccm hook も無効になり、未配達通知は取り消します。
+必要に応じて Codex を再起動・確認してください。再導入でアダプターが戻り、窓の設定は
+保持されます。受信側の約束事は `ccm setup-claude-md` で更新できます。
+
+宛先は hook payload の cwd だけから求めます。それを含む登録窓がちょうど一つ、
+その窓内の Codex ペインがちょうど一つの場合だけ進みます。同じ窓のリンクは一つと数え、
+入れ子や重複登録は曖昧として扱います。ignore された Codex も物理的なサイドキックとして
+数えます。その Codex プロセスについて最初に観測した session を自動で結び付けます。
+新しい session のイベント、またはプロセスの生存識別の変更で、SessionStart の有無に
+かかわらず張り直します。そのプロセスが既に離れた session の遅着イベントは無視します。
+内部用の窓オプション `@ccm-sidekick-binding` に対応を保存します。手で編集しないでください。
+同じ cwd を使う別の session（tmux の外で動く Codex など）は区別できず、イベントを送ると
+結び付けを引き継ぎます。推定なので、行動の前に示されたペインを読んでください。SessionStart は最初のターンまで届かない場合があります。
+hook 自身のペイン環境変数やプロセス祖先は宛先判定に使いません。
+
+承認待ちは既存の attention marker・バッジ・デスクトップ通知に載せ、
+`@ccm-sidekick-attention` に従います。デスクトップ通知は次の全体更新で行い、
+既に解除された待ちは通知しません。Claude へはメッセージを送りません。
+一意に対応するツール完了、または対応するターンの割込・終了だけで待ちを解除し、
+無関係なツールでは解除しません。ccm も Claude も承認ダイアログに代理回答せず、
+hook の承認返答・権限変更・信頼確認の迂回もしません。ユーザーが元の UI で操作します。
+
+完了通知が有効なら、Stop で同じ窓の非 ignore な Claude ペイン一つへ短い自動通知を
+予約します。IDLE・下書きなし・capture 成功を待ち、通常の予約メッセージを優先します。
+自動起動や強制配達はしません。抜粋 off でなければ、最後のメッセージを最大400文字で
+引用します。terminal・制御文字・双方向制御は除去しますが、秘密情報や悪意ある指示を
+すべて除去できる保証はありません。抜粋はデータであって権限ではありません。
+通知には `ccm send` での返信案内を付けません。確認だけの返信や、新しい仕事の自動委任は
+しないでください。
+
+同じ session と結び付けの未配達完了通知は、最新一件とまとめた件数に集約します。
+期限は通常 spool と同じで、既定60分（`CCM_SPOOL_TTL_SEC`）です。期限切れも表示に残ります。
+窓ごとの直近1時間の上限を超えた通知は、配達せず記録します。以前の試行が1時間の範囲から
+外れると枠が戻ります。最短間隔・永続的な停止・累計上限はありません。
+通知一件で Claude の一ターンを消費し得ます。明示的な `ccm send` があっても自動完了通知は
+省略しません。
+
+発生元・受信先の変更、opt-out、session 終了で未配達通知を取り消します。
+配達が始まった可能性がある場合は不明として記録し、自動再送しません。そのため入力直前の
+クラッシュでは通知を失う可能性があります。入力欄に保留されたものも再送しません。
+dashboard の `u` と `ccm doctor` で、期限切れ・上限超過・取消・保留・配達不明を確認でき、
+読むか破棄できます。自動通知は再送できません。doctor は導入状態、受信の有無、窓ごとの
+設定と結び付けも示します。受信は現在の信頼状態の証明ではありません。
+証跡と重複識別用 ID は7日間保持します。
+
+この完了通知経路は現在 Codex のみ対応です。Kimi・Grok・ignore された Claude は既存の
+attention 動作を維持します。承認待ちや解除の Claude 宛て通知、`codex queue` による配送は
+含みません。
+
 
 Grok Build には設定の書き換えではなく専用の hook ファイル（`~/.grok/hooks/ccm-sidekick-attention.json`）を置くので、削除は unlink 一発で、あなたの設定と混ざることは一切ありません。
 

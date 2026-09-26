@@ -131,6 +131,16 @@ def notify(state, project, detail=""):
     # one. terminal-notifier respects -group; osascript does not.
     group_id = f"ccm-{project}"
 
+    _desktop(title, body, group_id, sound)
+
+
+def sidekick_attention(agent, pane):
+    """Attention's separate channel; caller honours its toggle and wait ID."""
+    _desktop(f"ccm: {agent} needs a decision", "Review the sidekick's approval dialog yourself.",
+             f"ccm-sidekick-{pane}", "")
+
+
+def _desktop(title, body, group_id, sound):
     tn_path = _terminal_notifier_path()
     if tn_path:
         # Intentionally NO `-sender com.apple.Terminal`. Specifying

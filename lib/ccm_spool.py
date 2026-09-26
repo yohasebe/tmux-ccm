@@ -298,7 +298,7 @@ def _release_lock(pdir):
 
 # ─── delivery ───
 
-def _deliverable_pane(win_target):
+def _deliverable_pane(win_target, expected_pane=None):
     """`(pane_id, None)` when the window can take a message right now,
     else `(None, reason)`. Fail-closed: any doubt defers the message
     to the next pass (the TTL bounds how long that can go on)."""
@@ -309,7 +309,11 @@ def _deliverable_pane(win_target):
         return None, "no panes"
     claude_panes = [p for p in panes if p.claude_pid]
     active = next((p for p in panes if p.active), None)
-    if active is not None and active.claude_pid:
+    if expected_pane is not None:
+        if len(claude_panes) != 1 or claude_panes[0].pane_id != expected_pane:
+            return None, "notification target changed"
+        pane = claude_panes[0]
+    elif active is not None and active.claude_pid:
         pane = active
     elif len(claude_panes) == 1:
         pane = claude_panes[0]
@@ -407,6 +411,7 @@ def reconcile_spools(projects):
     root = SPOOL_ROOT
     if not os.path.isdir(root):
         return
+    regular_pending = set(pending_counts())
     by_name = {}
     for p in projects:
         by_name.setdefault(p.name, p)
@@ -441,6 +446,9 @@ def reconcile_spools(projects):
                 _deliver_one(project, pdir, pending[0])
         finally:
             _release_lock(pdir)
+
+    import ccm_sidekick_notify
+    ccm_sidekick_notify.reconcile(projects, regular_pending)
 
 
 # ─── ccm spool list / cancel ───
@@ -655,7 +663,8 @@ def attention_records():
                                 "id": filename[:-4], "sender": sender,
                                 "age": _msg_age(now, queued),
                                 "preview": _preview(os.path.join(pdir, kind, filename))})
-    return records
+    import ccm_sidekick_notify
+    return records + ccm_sidekick_notify.attention_records()
 
 
 def _record_path(kind, msg_id, project):
@@ -673,6 +682,9 @@ def _record_path(kind, msg_id, project):
 
 
 def read_record(kind, msg_id, project):
+    if kind.startswith("notice-"):
+        import ccm_sidekick_notify
+        return ccm_sidekick_notify.read_record(kind, msg_id, project)
     path = _record_path(kind, msg_id, project)
     try:
         with open(path, encoding="utf-8") as f:
@@ -688,6 +700,9 @@ def _cmd_record(action, rest):
     if len(args) != 3 or (start and action != "resend"):
         ccm_core.ccm_die(_SPOOL_USAGE)
     kind, msg_id, project = args
+    if kind.startswith("notice-"):
+        import ccm_sidekick_notify
+        return ccm_sidekick_notify.record_action(action, kind, msg_id, project, yes)
     path = _record_path(kind, msg_id, project)
     if action == "resend" and kind != "expired":
         ccm_core.ccm_die("Held records cannot be resent; inspect the target input box.")

@@ -107,7 +107,7 @@ def _trace_record(win_target, label, keys):
         pass  # diagnostic logging must never block the send
 
 
-def _send_keys(win_target, *keys, label=""):
+def _send_keys(win_target, *keys, label="", checked=False):
     """tmux send-keys wrapper with optional CCM_SEND_TRACE logging.
     When trace is disabled (the default), this is equivalent to a
     direct `ccm_core.tmux_cmd("send-keys", ...)` call with one extra
@@ -115,7 +115,11 @@ def _send_keys(win_target, *keys, label=""):
     delegated to tmux normally."""
     if _trace_enabled():
         _trace_record(win_target, label, keys)
-    ccm_core.tmux_cmd("send-keys", "-t", win_target, *keys)
+    if checked:
+        if ccm_core.tmux_query("send-keys", "-t", win_target, *keys) is None:
+            raise OSError("tmux did not confirm send-keys")
+    else:
+        ccm_core.tmux_cmd("send-keys", "-t", win_target, *keys)
 
 
 # Maximum seconds to wait for a `--start`-launched target to
@@ -324,7 +328,7 @@ def held_after_submit(pane_target, timeout=_SUBMIT_ACCEPT_TIMEOUT_SEC, *, messag
         time.sleep(_SUBMIT_ACCEPT_POLL_SEC)
 
 
-def _type_body(win_target, lines):
+def _type_body(win_target, lines, *, checked=False):
     """Type the message body into the target's composer: each
     non-empty line literally, with `M-Enter` (newline-without-submit)
     between lines. Does NOT send the committing Enter — the caller
@@ -344,11 +348,12 @@ def _type_body(win_target, lines):
  arriving with an empty slug section) — the delivery
     verification did not catch it because the signature it checks
     survived in the non-bullet lines."""
+    options = {"checked": True} if checked else {}
     for line_i, line in enumerate(lines):
         if line:
-            _send_keys(win_target, "-l", "--", line, label=f"line:{line_i}")
+            _send_keys(win_target, "-l", "--", line, label=f"line:{line_i}", **options)
         if line_i < len(lines) - 1:
-            _send_keys(win_target, "M-Enter", label=f"newline:{line_i}")
+            _send_keys(win_target, "M-Enter", label=f"newline:{line_i}", **options)
 
 
 # ─── Delivery-pane resolution ───

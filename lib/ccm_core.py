@@ -469,15 +469,27 @@ def caller_context(*, resolve_project=True):
     if not resolve_project or cwd is None:
         return "unknown", ""
 
+    match = unique_registered_window(cwd)
+    return (match[1] if match else "unknown"), ""
+
+
+def unique_registered_window(cwd):
+    """Resolve an explicit cwd to exactly one (window ID, name, directory).
+
+    Do not use display-list deduplication or ambient pane/process context.
+    """
+    cwd = _canonical_directory(cwd)
+    if cwd is None:
+        return None
     raw = tmux_query("list-windows", "-a", "-F",
                      "#{window_id}\t#{@ccm_project}\t#{@ccm_dir}")
     if raw is None:
-        return "unknown", ""
+        return None
     windows = {}
     for line in raw.splitlines():
         parts = line.split("\t")
         if len(parts) > 3 or not re.fullmatch(r"@[0-9]+", parts[0]):
-            return "unknown", ""
+            return None
         # tmux_query strips trailing whitespace: an unregistered last
         # window can therefore arrive as just its ID. Preserve empties.
         parts += [""] * (3 - len(parts))
@@ -486,13 +498,14 @@ def caller_context(*, resolve_project=True):
             continue
         directory = _canonical_directory(directory)
         if not win or directory is None:
-            return "unknown", ""
+            return None
         entry = (name, directory)
         if win in windows and windows[win] != entry:
-            return "unknown", ""
+            return None
         windows[win] = entry
-    matches = [name for name, directory in windows.values() if contains(directory)]
-    return (matches[0] if len(matches) == 1 else "unknown"), ""
+    matches = [(win, name, directory) for win, (name, directory) in windows.items()
+               if os.path.commonpath((cwd, directory)) == directory]
+    return matches[0] if len(matches) == 1 else None
 
 
 def touch_popup_session():

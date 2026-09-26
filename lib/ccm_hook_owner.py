@@ -111,18 +111,18 @@ def registration_complete(settings):
 _BARE_PATH = re.compile(r"""/[^\s'"`$;&|<>()\\*?\[\]{}!#]+""")
 
 
-def _split(command):
+def _split(command, scripts=HOOK_SCRIPTS):
     """(directory, script) when `command` is a bare absolute path to a
     file named like a ccm hook script, else None."""
     if not isinstance(command, str) or not _BARE_PATH.fullmatch(command):
         return None
     directory, script = command.rsplit("/", 1)
-    if not directory or script not in HOOK_SCRIPTS:
+    if not directory or script not in scripts:
         return None
     return directory, script
 
 
-def classify(settings, hooks_dir):
+def classify(settings, hooks_dir, scripts=HOOK_SCRIPTS):
     """(owned, lookalikes): the sorted command strings that are ccm's,
     and those named like a ccm script that are not."""
     try:
@@ -131,7 +131,7 @@ def classify(settings, hooks_dir):
         own_exists = False
     owned, lookalikes = [], []
     for command in sorted({h["command"] for h in _hooks(settings)}):
-        parts = _split(command)
+        parts = _split(command, scripts)
         if not parts:
             continue
         try:
