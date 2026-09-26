@@ -64,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session; the check is read-only.
 
 ### Changed
+- Dashboard undelivered records and doctor summaries share readable labels.
+  Full-text titles distinguish messages from automatic notices; unknown record
+  kinds stay intact without offering record operations. Storage and resend rules
+  are unchanged.
 - The guides define completion reporting routes for sidekick assignments,
   including the limits of automatic notices and user-only approvals.
 - `ccm doctor` shows actionable issues and incomplete checks by default;

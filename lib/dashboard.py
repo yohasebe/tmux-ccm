@@ -63,6 +63,7 @@ from ccm_pane_state import enumerate_window_panes
 BG_ATTACH_TAG = "@ccm_bg_short"
 import ccm_agentview
 import ccm_spool
+import ccm_presentation
 from ccm_window import auto_start_claude, reset_window_after_attach
 import ccm_window
 
@@ -1562,18 +1563,22 @@ class Dashboard:
                 self._addstr(stdscr, 0, 0, "Undelivered messages", curses.A_BOLD)
                 first = (selected // count) * count
                 for i, record in enumerate(records[first:first + count]):
-                    label = (f"{'▶' if first + i == selected else ' '} {record['kind']} "
+                    label = (f"{'▶' if first + i == selected else ' '} {ccm_presentation.record_heading(record['kind'])} "
                              f"{record['sender']} → {record['project']} · {record['age']}")
                     self._addstr(stdscr, 1 + i * 2, 0, label)
-                    self._addstr(stdscr, 2 + i * 2, 2, record["preview"])
+                    if ccm_spool.record_actions(record["kind"]):
+                        self._addstr(stdscr, 2 + i * 2, 2, record["preview"])
                 record = records[selected] if records else None
-                help_text = "↑↓ select · Enter read · d discard · o open · q back"
-                if record and record["kind"] == "expired":
-                    help_text += " · r resend"
+                actions = ccm_spool.record_actions(record["kind"]) if record else ()
+                help_text = ccm_presentation.record_help(actions)
                 if not records:
                     self._addstr(stdscr, 2, 0, "No undelivered messages.")
                 self._addstr(stdscr, height - 3, 0, help_text)
-                self._addstr(stdscr, height - 2, 0, status)
+                guidance = ""
+                if record and actions:
+                    spec = ccm_presentation.record_spec(record["kind"])
+                    guidance = ccm_presentation.ACTIONS[spec.action_id].description
+                self._addstr(stdscr, height - 2, 0, status or guidance)
                 stdscr.refresh()
                 stdscr.timeout(-1)
                 key = stdscr.getch()
@@ -1585,14 +1590,17 @@ class Dashboard:
                     selected = (selected - 1) % len(records)
                 elif record:
                     args = [record["kind"], record["id"], record["project"]]
-                    if key in (10, 13, curses.KEY_ENTER):
+                    if not actions:
+                        status = ccm_presentation.record_spec(record["kind"]).label
+                        continue
+                    if key in (10, 13, curses.KEY_ENTER) and "read" in actions:
                         try:
                             with raise_on_die():
                                 body = ccm_spool.read_record(*args)
-                            self._spool_text(stdscr, record["id"], body)
+                            self._spool_text(stdscr, ccm_presentation.record_title(record["kind"], record["project"]), body)
                         except CCMError as e:
                             status = str(e)
-                    elif key == ord("o"):
+                    elif key == ord("o") and "open" in actions:
                         # Selecting alone sends no keys and never auto-starts.
                         projects = build_project_list(fast=False)
                         project = next((p for p in projects if p.name == record["project"]), None)
@@ -1604,7 +1612,7 @@ class Dashboard:
                                 tmux_cmd("switch-client", "-t", target_session)
                             tmux_cmd("select-window", "-t", project.win_target)
                             return "attached"
-                    elif key == ord("d") or (key == ord("r") and record["kind"] == "expired"):
+                    elif (key == ord("d") and "discard" in actions) or (key == ord("r") and "resend" in actions):
                         action = "discard" if key == ord("d") else "resend"
                         flags = ["--yes"]
                         verb = ("Discard selected record (input unchanged)"

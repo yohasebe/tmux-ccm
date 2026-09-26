@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import ccm_commands
+import ccm_presentation
 import ccm_core
 import ccm_sidekick_notify as notices
 import ccm_spool
@@ -56,7 +57,8 @@ def test_abnormal_default_preserves_waits_and_undelivered(healthy, monkeypatch, 
     ccm_commands.cmd_doctor()
     out = capsys.readouterr().out
     assert 'Waiting for your response' in out
-    assert '2 last seen waiting' in out and '3 expired undelivered' in out and '`u`' in out
+    assert '2 ' + ccm_presentation.record_spec('held').label in out
+    assert '3 ' + ccm_presentation.record_spec('expired').label in out and '`u`' in out
     assert 'No issues found' not in out
 
 

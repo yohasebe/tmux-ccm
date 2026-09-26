@@ -20,6 +20,7 @@ import ccm_core
 import ccm_hook_owner
 import ccm_pane_state
 import ccm_spool
+import ccm_presentation
 
 EVENTS = ('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest',
           'PostToolUse', 'Interrupt', 'Stop', 'SessionEnd')
@@ -505,6 +506,13 @@ def attention_records():
     return result
 
 
+def record_actions(kind):
+    """No automatic notice is resendable, regardless of its display label."""
+    if kind in {'notice-' + state for state in TERMINAL | {'attempted'}}:
+        return ('read', 'discard', 'open')
+    return ()
+
+
 def _record(kind, msg_id, project):
     if kind not in {'notice-' + s for s in TERMINAL | {'attempted'}} or not re.fullmatch('[a-f0-9]{64}', msg_id):
         ccm_core.ccm_die('Invalid notification record.')
@@ -675,13 +683,12 @@ def doctor_rows(projects):
             counts[record['status']] = counts.get(record['status'], 0) + 1
     result.append((False, 'Codex notices: ' + ', '.join(f'{s}={counts.get(s, 0)}' for s in ('pending', 'expired', 'limited', 'uncertain', 'attempted', 'held', 'cancelled'))))
     # Queued notices deliver on their own; only states that need a person count.
-    labels = {'expired': 'expired before delivery',
-              'limited': 'not sent: hourly limit', 'uncertain': 'delivery unconfirmed',
-              'attempted': 'delivery unconfirmed after attempt', 'held': 'waiting in input box',
-              'cancelled': 'cancelled before delivery'}
-    undelivered = [f'{counts[s]} {label}' for s, label in labels.items() if counts.get(s)]
+    undelivered = ccm_presentation.record_summary({
+        'notice-' + state: counts.get(state, 0)
+        for state in ('expired', 'limited', 'uncertain', 'attempted', 'held', 'cancelled')
+    })
     if undelivered:
-        result.append((True, 'Codex notices: ' + '; '.join(undelivered) + ' — review in dashboard `u`; automatic notices are not resent'))
+        result.append((True, 'Codex notices: ' + undelivered + ' — review in dashboard `u`; automatic notices are not resent'))
     return result
 
 

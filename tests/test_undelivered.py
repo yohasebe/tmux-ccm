@@ -293,12 +293,15 @@ def test_dashboard_preserves_record_order_on_refresh(monkeypatch):
             record(ident="0500-new", body="new message")
         return original()
     monkeypatch.setattr(ccm_spool, "attention_records", refresh)
+    reader = Mock(wraps=ccm_spool.read_record)
+    monkeypatch.setattr(ccm_spool, "read_record", reader)
     viewer = Mock()
     monkeypatch.setattr(d, "_spool_text", viewer)
     d._do_spool(screen)
     assert not second.exists()
     # New older record is appended, not inserted before the selection.
-    assert viewer.call_args.args[1] == "0500-new"
+    assert reader.call_args.args == ("expired", "0500-new", "demo")
+    assert viewer.call_args.args[2] == "new message"
 
 
 def test_cli_resend_keeps_record_if_target_became_shell(monkeypatch):

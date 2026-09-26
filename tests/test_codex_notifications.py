@@ -23,6 +23,7 @@ def test_codex_hook_setup_supported(tmp_path, monkeypatch):
 from types import SimpleNamespace
 
 import ccm_sidekick_notify as notices
+import ccm_presentation
 import ccm_spool
 import ccm_send
 import ccm_notify
@@ -605,7 +606,8 @@ def test_dashboard_u_shows_limited_notice_without_resend(world, monkeypatch):
     monkeypatch.setattr(d, '_prompt', lambda *a: pytest.fail('No resend for an automatic notice'))
     d._do_spool(screen)
     text = ' '.join(str(c.args) for c in screen.addstr.call_args_list)
-    assert 'notice-limited' in text
+    assert ccm_presentation.record_spec('notice-limited').label in text
+    assert 'notice-limited' not in text
     assert 'r resend' not in text
 
 

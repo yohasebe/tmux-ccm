@@ -298,6 +298,25 @@ To handle one record directly, use `show` to read its full text or `discard` to 
 
 `discard` and `resend` ask for confirmation. After reviewing the record, use `--yes` (`-y`) to skip that prompt; this explicit flag is required in non-interactive use. Held records cannot be resent with `resend`. `discard held` deletes only the record, leaving the recipient's input box untouched. The dashboard's `u` view uses these same operations.
 
+The dashboard's `u` list and full-text titles distinguish **Message** from
+**Completion notice**. They share these labels with `ccm doctor`'s nonzero
+undelivered counts; stored kinds, IDs and CLI selectors stay unchanged:
+
+| Label | Meaning / next action |
+|---|---|
+| `Expired before delivery` | Read the record. Only ordinary expired messages can be sent anew after review. |
+| `Waiting in input box` | Check the recipient's input box; do not send another copy. |
+| `Delivery unconfirmed` | Check the conversation and input box. Automatic notices are never resent. |
+| `Not sent: hourly limit` | Read the sidekick's result; the notice was not delivered. |
+| `Cancelled before delivery` | Check the sidekick's result if still needed. |
+| `Queued; not delivered yet` | Still waiting to deliver; not a delivery confirmation. |
+
+Queued automatic notices appear only in detailed doctor output. Unrecognized
+record kinds show `Unrecognized record; review diagnostic details.` in `u`,
+with no record operations offered; the record is kept. Discarding a known
+record leaves the conversation and input box unchanged. Opening a project
+from `u` does not type or resend anything.
+
 A message the target session says it did not take — Claude Code holds a prompt it rewrote until its user confirms it, and says so above the input box — is not queued again: once that user presses Enter on the copy in the composer, or clears it away, the box looks the same either way, so retrying would type the whole message a second time. The same applies when the submitted message's beginning stays in the input box without a hold notice. These messages are recorded as held, `ccm spool list` shows them, and you deal with them in the recipient's window. `ccm spool clear-held` then says so; it sends and withdraws nothing.
 
 The state check is not the only gate. State detection cannot see a half-typed draft in the target's composer (an `❯` prompt holding text still reads IDLE), so immediately before typing, `ccm send` reads the composer line itself and — while a draft is present — queues the message like any other undeliverable state (`--now` refuses instead). Otherwise the message would merge into text you are still writing, and the Enter would submit the garbled mix. Claude Code's own next-prompt suggestion (drawn dim in the composer when a turn ends) is distinguished from a real draft via the capture's SGR attributes and does not block a send — it vanishes on the first keystroke, so there is nothing to protect.

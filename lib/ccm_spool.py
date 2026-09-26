@@ -667,6 +667,18 @@ def attention_records():
     return records + ccm_sidekick_notify.attention_records()
 
 
+def record_actions(kind):
+    """UI affordances only; record operations re-read and validate the target."""
+    if kind == "expired":
+        return ("read", "discard", "open", "resend")
+    if kind == "held":
+        return ("read", "discard", "open")
+    if kind.startswith("notice-"):
+        import ccm_sidekick_notify
+        return ccm_sidekick_notify.record_actions(kind)
+    return ()
+
+
 def _record_path(kind, msg_id, project):
     if (kind not in ("expired", "held")
             or any(not value or value in (".", "..")

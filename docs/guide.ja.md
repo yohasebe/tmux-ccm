@@ -300,6 +300,24 @@ ccm spool resend expired <id> <project> [--start] [--yes]
 
 状態チェック以外のゲートもあります。状態検出は送信先 composer の書きかけの下書きを認識できません（テキストの入った `❯` プロンプトも IDLE と読まれます）。そこで `ccm send` は打鍵の直前に composer 行を直接読み、下書きがある間は他の配送不可状態と同様にキューに回します（`--now` なら拒否）。このまま送れば書きかけの文章にメッセージが混入し、Enter が混ざった文を submit してしまうためです。Claude Code 自身がターン終了時に composer へ dim で描く次プロンプトの提案は、capture の SGR 属性で本物の下書きと区別され、送信を妨げません — 提案は最初の打鍵で消えるため、守るべきものが存在しません。
 
+ダッシュボードの `u` 一覧と全文タイトルは **Message**（通常メッセージ）と
+**Completion notice**（自動完了通知）を区別します。`ccm doctor` の非ゼロの未配達件数も
+同じラベルを使います。保存 kind・ID・CLI の選択子は変わりません。
+
+| ラベル | 意味・次の操作 |
+|---|---|
+| `Expired before delivery` | 記録を読みます。確認後に新たに送れるのは通常の期限切れメッセージだけです。 |
+| `Waiting in input box` | 相手の入力欄を確認し、同じものを重ねて送りません。 |
+| `Delivery unconfirmed` | 会話と入力欄を確認します。自動通知は再送しません。 |
+| `Not sent: hourly limit` | サイドキックの結果を読みます。通知は届いていません。 |
+| `Cancelled before delivery` | まだ必要ならサイドキックの結果を確認します。 |
+| `Queued; not delivered yet` | 配達待ちです。配達済みの確認ではありません。 |
+
+配達待ちの自動通知は doctor の詳細表示だけに出ます。未知の種類は `u` で
+`Unrecognized record; review diagnostic details.` と表示し、記録の操作を案内せず、
+そのまま保持します。既知の記録を破棄しても会話と入力欄は変わりません。
+`u` からプロジェクトを開いても、文字の入力や再送はしません。
+
 ### フラグ一覧
 
 | フラグ | 用途 |

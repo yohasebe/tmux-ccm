@@ -21,6 +21,7 @@ import ccm_activity
 import ccm_agentview
 import ccm_canaries
 import ccm_commands
+import ccm_presentation
 import ccm_constants
 import ccm_detection
 import ccm_jsonl
@@ -203,7 +204,8 @@ class TestCmdDoctor:
         record.write_text("Review request")
         ccm_commands.cmd_doctor()
         out = capsys.readouterr().out
-        assert "1 expired undelivered (TTL 60m) — review: `ccm spool list`" in out
+        assert "1 " + ccm_presentation.record_spec("expired").label in out
+        assert "`ccm spool list`" in out
         assert record.read_text() == "Review request"
 
     def test_clean_environment_renders_all_sections(self, tmp_path,
