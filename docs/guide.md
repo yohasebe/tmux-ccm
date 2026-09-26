@@ -262,6 +262,8 @@ ccm send demo --no-enter "TODO: "
 
 `--start` waits for an empty input box in the launch pane, with that condition and IDLE persisting for one second, before typing the body. If readiness is not established by the polling deadline, it reports failure with exit code 1 without typing the body or its submit Enter. This also applies when the launch command exits straight back to the shell. State detection and screen capture time can extend beyond the configured polling deadline.
 
+After launching, ccm types the body once and sends the submit Enter only if the whole body is visible in the input box. If only part appears, nothing appears, or the input box cannot be read, it stops with exit code 1 without clearing, retyping, or submitting. Check the recipient's input box and clear any leftover text before deciding whether to send again. The same check applies to short messages and `--no-enter`. A long body that scrolls partly out of view also stops for review. An empty input box and IDLE do not guarantee that a newly launched application accepts every keystroke; screen confirmation is not proof of model receipt.
+
 After the submit Enter, ccm checks the input box again. A hold notice, or the submitted message's beginning staying at the start of the input box throughout the check, produces an unsent error with exit code 1 instead of `Sent`. ccm does not press Enter again automatically. Inspect the recipient's input box before deciding what to do. This is a screen-based check: it cannot fully distinguish cases such as an unreadable screen or a new draft with the same beginning typed immediately after acceptance.
 
 ### The spool (store-and-forward)

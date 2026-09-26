@@ -210,27 +210,8 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
     return last_state or "BUSY"
 
 
-# ─── Post-launch delivery verification (--start path) ───
-# `--start` launches `claude --continue` into a SHELL pane, then
-# waits for IDLE before sending. But the `❯` composer becomes
-# visible (so detection reads IDLE) a moment BEFORE Claude's input
-# handler actually accepts keystrokes — during that window a
-# send-keys is silently eaten, the body never lands, yet ccm
-# printed "Sent". Confirmed (a project project):
-# target SHELL → --start → "Sent" shown but the input box held only
-# its placeholder, body zero; re-sending after IDLE settled
-# delivered the full text.
-#
-# Fix: after typing the body (but BEFORE the committing Enter),
-# verify a signature of the message actually appears in the pane.
-# If not, clear the composer and re-type, up to a few times with a
-# short settle. Only send Enter once the body is confirmed present,
-# so a premature-IDLE drop is caught and retried instead of
-# silently lost — and Enter-after-verify means a retry can never
-# double-submit. Scoped to the launch path; an already-IDLE target
-# (normal send) was genuinely ready and is left on the fast path.
-_DELIVERY_VERIFY_RETRIES = 2
-_DELIVERY_VERIFY_SETTLE_SEC = 1.0
+# A visible empty composer is not proof that the input handler accepts keys.
+# After launch, verify the visible body before Enter; never clear or retype it.
 # ─── Submit acceptance ───
 # Pressing Enter is not the same as the message being taken. Claude
 # Code holds a prompt that carried characters it strips, showing it
@@ -264,9 +245,8 @@ def _message_signature(message):
     scrolls instead and keeps the trailing row (observed
     against Kimi K3: a 30-line message rendered as `↑ 24 more` with the
     head cut off). Checking one end only would report "did not land"
-    for a message sitting right there, which on the --start path means
-    re-typing a body that already arrived and then refusing the send.
-    So take a candidate from each end."""
+    for a message sitting right there. Take a candidate from each end.
+    Startup submission uses a separate full-composer check instead."""
     candidates = [ln.strip() for ln in message.split("\n") if ln.strip()]
     if not candidates:
         return None
@@ -1056,41 +1036,27 @@ def cmd_send(args):
                        f"bytes={len(message)}"))
     _type_body(pane_target, lines)
 
-    # Post-launch delivery verification. On the --start path the
-    # body can be eaten by a not-yet-ready input handler even though
-    # detection saw IDLE (see the _DELIVERY_* note above). Verify the
-    # body actually reached the composer BEFORE committing the Enter;
-    # if not, clear and re-type a few times, then refuse honestly
-    # rather than print a false "Sent". Verifying before Enter means
-    # a retry can never double-submit. Skipped when we didn't launch
-    # (an already-IDLE target was genuinely ready) or when the
-    # message is too short to match without false positives.
-    signature = _message_signature(message) if did_launch else None
-    if signature is not None and not _body_landed(pane_target, signature):
-        landed = False
-        for _ in range(_DELIVERY_VERIFY_RETRIES):
-            time.sleep(_DELIVERY_VERIFY_SETTLE_SEC)
-            # Clear the composer (C-u) first so a partial landing from
-            # the previous attempt cannot duplicate text on re-type.
-            _send_keys(pane_target, "C-u", label="retry-clear")
-            _type_body(pane_target, lines)
-            if _body_landed(pane_target, signature):
-                landed = True
-                break
-        if not landed:
+    # Only a fully visible composer can confirm the body after launch.
+    # A partial match (including old transcript text) is not enough. Clearing
+    # and retyping is unsafe: the clear key can be dropped along with the text.
+    if did_launch:
+        plain, attributed = capture_composer_snapshot(pane_target)
+        if not composer_has_message_prefix(plain, attributed, message, complete=True):
             if _trace_enabled():
-                _trace_record(pane_target, "send-unverified",
-                              (f"project={project_name}",))
+                _trace_record(pane_target, "send-unverified", (f"project={project_name}",))
+            if not plain.strip() or not composer_visible(plain):
+                observation = "The input box could not be read."
+            elif composer_draft_fragment(plain, attributed) is None:
+                observation = "No message text is visible; some input may still remain."
+            elif composer_has_message_prefix(plain, attributed, message):
+                observation = "The beginning of the message remains in the input box."
+            else:
+                observation = "Text remains in the input box; the full message could not be confirmed."
             ccm_core.ccm_die(
-                f"Delivery to {project_name} could not be confirmed: the "
-                f"message did not appear in its input box after "
-                f"{_DELIVERY_VERIFY_RETRIES} retries.\n"
-                "  Likely cause: Claude had just launched (--start) and its "
-                "input handler was not yet accepting keystrokes — the body "
-                "was eaten.\n"
-                "  The send was NOT completed (no Enter submitted). Switch "
-                "to the target window, confirm it is idle at the prompt, "
-                "then resend (without --start, since Claude is now running)."
+                f"Delivery to {project_name} could not be confirmed. "
+                "No submit Enter was sent. " + observation + " "
+                "Check the recipient's input box and clear any leftover text "
+                "before deciding whether to send again."
             )
 
     # Final submit (unless --no-enter), then confirm the target took

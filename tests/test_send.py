@@ -44,6 +44,19 @@ def composer_screen(*composer_rows, scrollback=True):
     return "\n".join(out) + "\n"
 
 
+def _show_typed_body(monkeypatch, calls, message):
+    """Render the body only between its literal typing and final submit."""
+    def capture(pane):
+        items = calls()
+        bodies = [i for i, c in enumerate(items)
+                  if c[0] == "send-keys" and "-l" in c and c[-1] == message]
+        visible = bool(bodies) and not any(
+            c[0] == "send-keys" and c[-1] == "Enter"
+            for c in items[bodies[-1] + 1:])
+        return composer_screen("❯ " + (message if visible else "")), None
+    monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
+
+
 class TestCmdSend:
     """Unit tests for `ccm send` — the cross-project prompt injector."""
 
@@ -671,6 +684,7 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch, project=initial)
         self._patch_start_polling(monkeypatch, initial, after_start)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+            _show_typed_body(monkeypatch, lambda: self._tmux_calls(mock_tmux), "hello")
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         # Claude launch command appears before the message payload.
@@ -754,6 +768,7 @@ class TestCmdSend:
         monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
         monkeypatch.setattr(ccm_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+            _show_typed_body(monkeypatch, lambda: self._tmux_calls(mock_tmux), "hello")
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hello") in calls
@@ -768,19 +783,14 @@ class TestCmdSend:
 
     # --- post-launch delivery verification (premature-IDLE fix) ---
 
-    # A message long enough to clear `_DELIVERY_SIG_MIN_LEN` so the
-    # verification path actually engages (short messages skip it).
+    # A representative body for the post-launch composer check.
     _VERIFY_MSG = "delegate the queued implementation task"
 
     def _run_start_with_captures(self, monkeypatch, message, capture_responses):
-        """Drive a SHELL + --start send where `build_project_list`
-        reports IDLE after launch. The FIRST `capture-pane` call is the
-        composer-draft guard's, which runs before any typing, so it is
-        answered with a bare composer; each LATER call (the
-        delivery-verification `_body_landed`) returns the next item of
-        `capture_responses` (last item repeats). Returns
-        (send_calls, raised) where `raised` is True iff cmd_send exited
-        via ccm_die (delivery unconfirmed)."""
+        """Show an empty composer until typing, then the supplied snapshots.
+
+        Return the key calls and whether delivery was refused.
+        """
         initial = self._make_project(state="SHELL")
         idle = self._make_project(state="IDLE")
         self._patch_resolution(monkeypatch, project=initial)
@@ -788,21 +798,24 @@ class TestCmdSend:
 
         cap_idx = [0]
         send_calls = []
+        typed = [False]
+
+        def capture(pane):
+            if not typed[0]:
+                return composer_screen("❯ "), None
+            i = min(cap_idx[0], len(capture_responses) - 1)
+            cap_idx[0] += 1
+            return composer_screen(*capture_responses[i].split("\n")), None
 
         def tmux_side_effect(*args):
             if args and args[0] == "send-keys":
                 send_calls.append(args)
-                return ""
-            if args and args[0] == "capture-pane":
-                if cap_idx[0] == 0:
-                    cap_idx[0] += 1
-                    # Pre-typing read by the composer-draft guard.
-                    return "❯ \n"
-                i = min(cap_idx[0] - 1, len(capture_responses) - 1)
-                cap_idx[0] += 1
-                return capture_responses[i]
+                if "-l" in args:
+                    typed[0] = True
             return ""
 
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
+        monkeypatch.setattr(ccm_send, "held_after_submit", lambda *a, **kw: False)
         raised = False
         with patch("ccm_core.tmux_cmd", side_effect=tmux_side_effect):
             try:
@@ -833,42 +846,34 @@ class TestCmdSend:
         + ["closing instruction: reply with ccm send when done"]
     )
 
-    def test_start_verifies_against_the_tail_when_head_scrolled_off(
+    def test_start_refuses_when_only_tail_is_visible(
         self, monkeypatch
     ):
-        """A composer showing only the END of a long body still counts
-        as landed.
-
-        Claude's composer grows upward and keeps the leading row, but a
-        body that outgrows the pane scrolls and keeps the trailing row
-        instead. Matching the head alone would report "did not land"
-        for a message sitting right there — and on this path that means
-        re-typing a body that already arrived, then refusing the send."""
+        """A visible tail cannot prove that the missing head arrived."""
         tail = "closing instruction: reply with ccm send when done"
         send_calls, raised = self._run_start_with_captures(
             monkeypatch, self._LONG_MSG,
             capture_responses=[f"↑ 24 more\n  {tail}"],
         )
-        assert not raised, "a visible tail must satisfy verification"
-        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+        assert raised, "a visible tail cannot confirm the complete body"
+        assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
 
-    def test_start_verifies_against_the_head_when_tail_scrolled_off(
+    def test_start_refuses_when_only_head_is_visible(
         self, monkeypatch
     ):
-        """The mirror case, so fixing the tail did not trade away the
-        head: a composer showing only the opening rows also counts."""
+        """A visible head cannot prove that the missing tail arrived."""
         send_calls, raised = self._run_start_with_captures(
             monkeypatch, self._LONG_MSG,
             capture_responses=[
                 "❯ opening line of the queued message, part 0"],
         )
-        assert not raised, "a visible head must satisfy verification"
-        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+        assert raised, "a visible head cannot confirm the complete body"
+        assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
 
     def test_start_premature_idle_refuses_without_false_sent(self, monkeypatch):
         """Premature-IDLE bug: the composer shows but the
         input handler eats the keystrokes, so the body never lands.
-        Every capture returns only the placeholder. After retries the
+        Every capture returns only the placeholder. The
         send must refuse (SystemExit) and must NOT commit the Enter —
         no false 'Sent', no half-delivered prompt."""
         placeholder = '❯ Try "how does .tags work?"'
@@ -879,44 +884,36 @@ class TestCmdSend:
         assert raised, "unverified delivery must refuse, not claim Sent"
         # The committing Enter must NOT have been sent.
         assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
-        # It retried: the body was typed more than once.
+        # An unconfirmed body is never typed again.
         body_types = [
             c for c in send_calls
             if c == ("send-keys", "-t", "0:5", "-l", "--", self._VERIFY_MSG)
         ]
-        assert len(body_types) >= 2, "expected at least one retry re-type"
-        # Each retry cleared the composer first.
-        assert ("send-keys", "-t", "0:5", "C-u") in send_calls
+        assert len(body_types) == 1, "never retype after an unconfirmed attempt"
+        # No clearing key is sent.
+        assert ("send-keys", "-t", "0:5", "C-u") not in send_calls
 
-    def test_start_premature_idle_retry_then_succeeds(self, monkeypatch):
-        """The body is eaten on the first attempt but lands on a
-        retry (input handler became ready). The send then commits the
-        Enter and succeeds — the retry rescued the delivery."""
+    def test_start_premature_idle_stops_without_retry(self, monkeypatch):
+        """A later matching snapshot must not cause another typing attempt."""
         placeholder = '❯ Try "how does .tags work?"'
         send_calls, raised = self._run_start_with_captures(
             monkeypatch, self._VERIFY_MSG,
-            # 1st capture: not landed → retry; 2nd capture: landed.
+            # Stop on the first unconfirmed capture, without retyping.
             capture_responses=[placeholder, f"❯ {self._VERIFY_MSG}"],
         )
-        assert not raised, "a successful retry should not refuse"
-        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+        assert raised, "a later ready composer must not trigger retyping"
+        assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
 
-    def test_start_short_message_skips_verification(self, monkeypatch):
-        """A message shorter than the signature minimum cannot be
-        matched in the pane without false positives, so verification
-        is skipped and the send proceeds as before (no capture-based
-        refusal). Guards against the fix breaking tiny --start sends."""
+    def test_start_short_message_requires_visible_body(self, monkeypatch):
         initial = self._make_project(state="SHELL")
         idle = self._make_project(state="IDLE")
         self._patch_resolution(monkeypatch, project=initial)
         self._patch_start_polling(monkeypatch, initial, idle)
-        # capture-pane would return empty (no body), but a short
-        # message skips verification entirely, so no refusal.
-        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--start", "--yes", "hi"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
-        assert ("send-keys", "-t", "0:5", "Enter") in calls
+        assert ("send-keys", "-t", "0:5", "Enter") not in calls
 
     # --- error paths ---
 
@@ -1046,6 +1043,7 @@ class TestDeliveryPaneResolution:
         monkeypatch.setattr(ccm_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
         stub, calls = self._tmux_stub(self._PANES_CLAUDE_INACTIVE)
         with patch("ccm_core.tmux_cmd", side_effect=stub):
+            _show_typed_body(monkeypatch, lambda: calls, "hi")
             ccm_send.cmd_send(["demo", "--start", "hi"])
         # A launch into an existing shell always resumes; only
         # `ccm add` ever types plain `claude`.
@@ -1701,6 +1699,7 @@ class TestSendPreTypeRecheck:
                             pane_command="zsh", pane_claude=False)
         monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
                             lambda *a, **k: "IDLE")
+        _show_typed_body(monkeypatch, lambda: calls, "hi")
         ccm_send.cmd_send(["demo", "--start", "hi"])
         assert self._literal_sent(calls, "hi")
 

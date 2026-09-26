@@ -282,11 +282,12 @@ def composer_visible(pane_text):
                     for line in lines[rules[-2] + 1:rules[-1]]))
 
 
-def composer_has_message_prefix(pane_text, attributed, message):
+def composer_has_message_prefix(pane_text, attributed, message, *, complete=False):
     """Match the unchanged beginning, never an arbitrary subsequence.
 
     Whitespace alone is folded to accommodate terminal wrapping. Short
     messages require equality; longer ones use 32 visible characters.
+    With complete=True, require equality of the whole visible body.
     Sanitized prompts are handled separately by prompt_held_notice.
     """
     lines = _composer_lines(pane_text, attributed)
@@ -297,7 +298,7 @@ def composer_has_message_prefix(pane_text, attributed, message):
         return False
     draft = "".join((first[1] + "\n" + "\n".join(lines[1:])).split())
     body = "".join(message.split())
-    if len(body) < 8:
+    if complete or len(body) < 8:
         return draft == body and bool(body)
     prefix = body[:32]
     return draft.startswith(prefix)

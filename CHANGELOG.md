@@ -125,6 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- After launching Claude, `send --start` types each message only once and
+  submits only when the whole body is visible in the input box. An uncertain
+  result stops without clearing or retyping, and asks the user to inspect
+  and clear leftover text before deciding whether to send again.
 - Sidekick notification excerpts redact secret values from the hook process's
   environment, common credential formats, Bearer headers and JSON secret fields.
   Redaction remains best-effort; the guides explain excerpt and pane-content sharing.
