@@ -702,10 +702,13 @@ PATTERN_RETRY_BACKOFF = re.compile(
 # words inside a Claude response — e.g. "use ctrl+e to explain" in
 # answer text, or a code example containing "Enter to confirm" —
 # do not falsely trigger PERMIT. The bare "Esc to cancel" line
-# used by slash menus (/hooks, /config, /skills, /resume from
-# v2.1.144 onwards, ...) deliberately does NOT match: those menus
-# are free navigation with type-to-search / preview keys, not a
-# blocked single-decision modal.
+# used by slash menus (/help, /skills, /resume from v2.1.144
+# onwards, ...) deliberately does NOT match: those menus are free
+# navigation with type-to-search / preview keys, not a blocked
+# single-decision modal. Some lists do carry an "Enter to … · Esc
+# to …" footer — /hooks and /memory, and /rewind once there is a
+# conversation — and therefore read as PERMIT. That errs towards
+# not typing into a screen that is not a conversation input box.
 #
 # re.MULTILINE: the pattern is consumed two ways — per-line
 # `.match(line)` in detect_pane_state (unaffected by the flag) and
