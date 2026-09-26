@@ -213,6 +213,25 @@ block that socket even when `TMUX` is set. A connection failure includes
 tmux's error and guidance to retry outside the sandbox; it does not mean
 the project is missing or that the caller is outside tmux.
 
+Queued messages use the caller pane's registered project when the pane's
+process is an ancestor of the sending command. Changing directories, even
+into another project, preserves that sender and pane identity. If ancestry
+cannot be confirmed (including when process inspection fails), ccm checks
+whether the pane's registered directory contains the command's working
+directory. Both paths are resolved through symlinks; subdirectories count,
+sibling name prefixes do not. If that check fails, ccm uses the working
+directory only if exactly one registered window contains it. Nested or duplicate
+registrations are ambiguous; linked copies of the same window count once.
+Otherwise the sender is `unknown`, and the delivered header asks the recipient
+to confirm the reply destination instead of suggesting `ccm send unknown`.
+
+The unique-window fallback identifies a project, not a specific caller pane.
+Self-send checks and the `--start` pane exclusion use a verified pane hint.
+`sidekick-send` and `ignore` / `unignore` without a project argument refuse an
+unverified hint; run those commands from a registered project pane. When
+ancestry cannot be confirmed, the directory check cannot distinguish stale
+hints between panes registered to the same directory.
+
 ```bash
 # Simple positional message (confirmed interactively if run from a TTY)
 ccm send demo "Summarize the last review cycle."

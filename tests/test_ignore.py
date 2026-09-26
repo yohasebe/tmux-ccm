@@ -307,6 +307,7 @@ class TestIgnoreCommands:
         monkeypatch.setattr(ccm_commands, "_pane_session_id",
                             lambda pane, ps: "sid-xyz")
         monkeypatch.setenv("TMUX_PANE", "%7")
+        monkeypatch.setattr(ccm_core, "caller_context", lambda **kw: ("demo", os.environ.get("TMUX_PANE", "")))
         return hook_dir, calls
 
     def test_ignore_sets_pane_option_and_marker(self, tmp_path, monkeypatch):

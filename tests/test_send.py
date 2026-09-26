@@ -3,6 +3,7 @@ state-based gating (PERMIT hard-refuse, BUSY behind --force,
 SHELL behind --start)."""
 
 import io
+import os
 
 from unittest.mock import patch
 
@@ -56,7 +57,9 @@ class TestCmdSend:
         )
 
     def _patch_resolution(self, monkeypatch, project=None, session="0"):
-        """Install stubs for get_session / find_window / build_project_list."""
+        """Install stubs for session / caller / target resolution."""
+        monkeypatch.setattr(ccm_core, "caller_context",
+                            lambda **kw: ("unknown", os.environ.get("TMUX_PANE", "")))
         if project is None:
             project = self._make_project()
         monkeypatch.setattr(ccm_core, "require_session", lambda: session)
@@ -1312,6 +1315,8 @@ class TestSendSelfDeliveryGuard:
     refuses with an explanation instead of a state verdict."""
 
     def _patch(self, monkeypatch, delivery_pane, caller_pane):
+        monkeypatch.setattr(ccm_core, "caller_context",
+                            lambda **kw: ("unknown", caller_pane or ""))
         project = ccm_core.Project(
             win_target="0:5", win_idx="5", name="demo",
             directory="/tmp/demo", state="BUSY",

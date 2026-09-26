@@ -709,15 +709,15 @@ _IGNORE_PANE_TITLE = "⊘ ccm-ignored"
 def _resolve_ignore_targets(name):
     """Return the list of tmux pane ids to (un)ignore.
 
-    No name → the current pane from $TMUX_PANE (the pane `ccm ignore`
-    was typed in). A project name → all panes of that project's
+    No name → the cwd-verified pane from $TMUX_PANE.
+    A project name → all panes of that project's
     window. Dies with a clear message when the target cannot be
     resolved."""
     if not name:
-        pane = os.environ.get("TMUX_PANE", "").strip()
+        _, pane = ccm_core.caller_context(resolve_project=False)
         if not pane:
             ccm_core.ccm_die(
-                "ccm ignore: no pane context (run inside a tmux pane, "
+                "ccm ignore: no verified pane context (run inside a matching project pane, "
                 "or pass a project name)")
         return [pane]
     session = ccm_core.get_session()

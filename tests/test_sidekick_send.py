@@ -28,6 +28,7 @@ class TestSidekickSend:
         change (TOCTOU re-resolution tests). `capture` is a string or
         a callable taking the tmux args."""
         monkeypatch.setenv("TMUX_PANE", "%1")
+        monkeypatch.setattr(ccm_core, "caller_context", lambda **kw: ("demo", "%1"))
         panes_seq = panes if panes and isinstance(panes[0], list) else [panes]
         pane_calls = [0]
         calls = []

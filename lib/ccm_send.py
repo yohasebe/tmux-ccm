@@ -525,23 +525,8 @@ _SEND_USAGE = (
 # with time, so queueing them would only hide the mistake.
 
 def _sender_label():
-    """Best-effort identity of the calling window's project, for the
-    spool envelope's `from:` — which is also the receiver's reply
-    route, so the project name is the useful value."""
-    caller = os.environ.get("TMUX_PANE", "")
-    if not caller:
-        return "unknown"
-    win = (ccm_core.tmux_cmd(
-        "display-message", "-p", "-t", caller, "#{window_id}") or "").strip()
-    if not win:
-        return "unknown"
-    name = (ccm_core.tmux_cmd(
-        "show-option", "-w", "-t", win, "-qv", "@ccm_project") or "").strip()
-    if name:
-        return name
-    name = (ccm_core.tmux_cmd(
-        "display-message", "-p", "-t", win, "#{window_name}") or "").strip()
-    return name or "unknown"
+    """Use a verified project as the queued message's reply route."""
+    return ccm_core.caller_context()[0]
 
 
 def _queue_message(project_name, message, reason):
@@ -592,6 +577,7 @@ def _agents_tui_blocks_send(pane_target, project_name, message, now):
     return False
 
 
+@ccm_core.caller_process_scope()
 def cmd_send(args):
     """Send a prompt to a project's Claude Code session.
 
@@ -773,10 +759,11 @@ def cmd_send(args):
     # which is how it was reported. Refuse explicitly
     # instead: the honest answer is not a state verdict at all.
     #
-    # `$TMUX_PANE` is set by tmux for any process started inside a
-    # pane, so it identifies the caller without a lookup. Absent
-    # (invoked outside tmux) the guard simply does not apply.
-    caller_pane = os.environ.get("TMUX_PANE", "")
+    # A pane hint is usable when its process is an ancestor or its
+    # registration matches our cwd; inherited hints may be stale.
+    # Without a matching hint, the physical caller pane is unknown;
+    # cwd-based project attribution must not invent a pane to exclude.
+    _, caller_pane = ccm_core.caller_context(resolve_project=False)
     if caller_pane and caller_pane == pane_target:
         ccm_core.ccm_die(
             f"{project_name}'s Claude pane IS this pane ({pane_target}) — "
@@ -1177,6 +1164,12 @@ def _resolve_sidekick_pane(caller_pane):
     command against `external_agent_name`, and its working directory
     against the project directory. The sidekick's screen is never
     read."""
+    _, verified_pane = ccm_core.caller_context(resolve_project=False)
+    if not verified_pane or verified_pane != caller_pane:
+        ccm_core.ccm_die(
+            "Cannot verify the caller pane from process ancestry or working directory. "
+            "Run sidekick-send from a pane of the registered project; "
+            "the pane environment may be stale. Nothing sent.")
     fmt = "#{window_id}\t#{pane_current_command}\t#{pane_current_path}"
     info = (ccm_core.tmux_cmd(
         "display-message", "-p", "-t", caller_pane, fmt) or "").strip()
@@ -1253,6 +1246,7 @@ def _resolve_sidekick_pane(caller_pane):
     return pane_id, agent_name
 
 
+@ccm_core.caller_process_scope()
 def cmd_sidekick_send(args):
     """Send a prompt to the sidekick agent CLI in the caller's window.
 

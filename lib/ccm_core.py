@@ -10,9 +10,11 @@ either has I/O side effects (`tmux_cmd`, `ps_snapshot`,
 """
 
 import contextlib
+from contextvars import ContextVar
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -371,6 +373,126 @@ def require_session():
         ccm_die("No current tmux session could be determined — "
                 "attach to a session with `tmux attach-session` first")
     return session
+
+
+def _canonical_directory(path):
+    """Existing physical directory, or None when it cannot be established."""
+    if not path:
+        return None
+    try:
+        path = os.path.expanduser(path)
+        if not os.path.isabs(path):
+            return None
+        resolved = str(Path(path).resolve(strict=True))
+        return resolved if os.path.isdir(resolved) else None
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+_caller_process_cache = ContextVar("caller_process_cache", default=None)
+
+
+@contextlib.contextmanager
+def caller_process_scope():
+    """Share one process snapshot within a command, never between commands.
+
+    Pane metadata is still queried afresh, including sidekick revalidation.
+    """
+    token = _caller_process_cache.set({})
+    try:
+        yield
+    finally:
+        _caller_process_cache.reset(token)
+
+
+def _caller_has_ancestor(pane_pid):
+    if not pane_pid.isdecimal() or int(pane_pid) <= 1:
+        return False
+    cache = _caller_process_cache.get()
+    if cache is None:
+        cache = {}
+    if 'parents' not in cache:
+        parents = {}
+        try:
+            snapshot = ps_snapshot()
+        except OSError:
+            snapshot = ''
+        for line in snapshot.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and all(p.isdecimal() for p in parts[:2]):
+                parents[int(parts[0])] = int(parts[1])
+        cache['parents'] = parents
+    parents = cache['parents']
+    pid = parents.get(os.getpid(), 0)
+    seen = set()
+    while pid > 1 and pid not in seen:
+        if pid == int(pane_pid):
+            return True
+        seen.add(pid)
+        pid = parents.get(pid, 0)
+    return False
+
+
+def caller_context(*, resolve_project=True):
+    """Return (registered project or 'unknown', verified pane or '').
+
+    A pane ancestor verifies the hint regardless of cwd. Otherwise the hint
+    must agree with cwd. A unique cwd fallback
+    identifies a project only, never the physical pane running a command.
+    Linked windows count once; distinct windows remain ambiguous even
+    when their project names or directories are identical.
+    """
+    try:
+        cwd = _canonical_directory(os.getcwd())
+    except OSError:
+        cwd = None
+
+    def contains(directory):
+        if cwd is None:
+            return False
+        try:
+            return os.path.commonpath((cwd, directory)) == directory
+        except ValueError:
+            return False
+
+    pane = os.environ.get("TMUX_PANE", "").strip()
+    if re.fullmatch(r"%[0-9]+", pane):
+        raw = tmux_query("display-message", "-p", "-t", pane,
+                         "#{pane_id}\t#{@ccm_project}\t#{@ccm_dir}\t#{pane_pid}")
+        parts = raw.split("\t") if raw else []
+        if len(parts) == 4 and parts[0] == pane and parts[1]:
+            if _caller_has_ancestor(parts[3]):
+                return parts[1], pane
+            directory = _canonical_directory(parts[2])
+            if directory and contains(directory):
+                return parts[1], pane
+    if not resolve_project or cwd is None:
+        return "unknown", ""
+
+    raw = tmux_query("list-windows", "-a", "-F",
+                     "#{window_id}\t#{@ccm_project}\t#{@ccm_dir}")
+    if raw is None:
+        return "unknown", ""
+    windows = {}
+    for line in raw.splitlines():
+        parts = line.split("\t")
+        if len(parts) > 3 or not re.fullmatch(r"@[0-9]+", parts[0]):
+            return "unknown", ""
+        # tmux_query strips trailing whitespace: an unregistered last
+        # window can therefore arrive as just its ID. Preserve empties.
+        parts += [""] * (3 - len(parts))
+        win, name, directory = parts
+        if not name:
+            continue
+        directory = _canonical_directory(directory)
+        if not win or directory is None:
+            return "unknown", ""
+        entry = (name, directory)
+        if win in windows and windows[win] != entry:
+            return "unknown", ""
+        windows[win] = entry
+    matches = [name for name, directory in windows.values() if contains(directory)]
+    return (matches[0] if len(matches) == 1 else "unknown"), ""
 
 
 def touch_popup_session():

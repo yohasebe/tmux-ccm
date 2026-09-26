@@ -636,6 +636,7 @@ class TestCmdSendSpooling:
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
         monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.setattr(ccm_core, "caller_context", lambda **kw: ("unknown", ""))
         return project
 
     def _tmux(self, calls, capture=""):
@@ -696,22 +697,14 @@ class TestCmdSendSpooling:
         assert not os.path.exists(spool_root)
 
     def test_sender_label_from_window_tag(self, monkeypatch, spool_root):
-        """The envelope's from: is the caller's project name — the
-        receiver's reply route."""
         monkeypatch.setenv("TMUX_PANE", "%41")
-
-        def tmux(*args):
-            if args[0] == "display-message" and "window_id" in args[-1]:
-                return "@9"
-            if args[0] == "show-option":
-                return "origin"
-            return ""
-
-        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux)
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw:
+                            f"%41\torigin\t{os.getcwd()}\t0")
         assert ccm_send._sender_label() == "origin"
 
-    def test_sender_label_unknown_outside_tmux(self, monkeypatch):
+    def test_sender_label_unknown_without_registered_cwd(self, monkeypatch):
         monkeypatch.delenv("TMUX_PANE", raising=False)
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
         assert ccm_send._sender_label() == "unknown"
 
 

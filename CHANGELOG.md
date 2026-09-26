@@ -111,6 +111,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Queued sends preserve the caller pane's registered sender across directory
+  changes when process ancestry verifies the pane. Otherwise they check the
+  registration against the process working directory. A stale pane hint
+  falls back only to a unique registered project; unresolved senders are
+  shown as `unknown` without a misleading reply command. Self-send checks,
+  sidekick delivery and implicit ignore/unignore share the pane validation.
 - `ccm send --start` waits for a stable, empty input box in the target pane
   before typing, up to `CCM_START_WAIT_SEC` (10 seconds by default).
   If the launch exits back to the shell before the input box is ready,

@@ -339,8 +339,9 @@ def _envelope(sender, queued_ts, now):
     q = (time.strftime("%H:%M", time.localtime(queued_ts))
          if queued_ts else "?")
     d = time.strftime("%H:%M", time.localtime(now))
-    return (f"[from: {sender} · queued {q} · delivered {d} — "
-            f"reply with `ccm send {sender} \"…\"`]")
+    reply = ("sender unavailable; confirm the reply destination"
+             if sender == "unknown" else f'reply with `ccm send {sender} "…"`')
+    return f"[from: {sender} · queued {q} · delivered {d} — {reply}]"
 
 
 def _deliver_one(project, pdir, msg_name):
