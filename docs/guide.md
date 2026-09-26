@@ -940,6 +940,26 @@ resolution messages to Claude, and `codex queue` transport, are not included.
 
 Grok Build gets its own hook file (`~/.grok/hooks/ccm-sidekick-attention.json`) instead of an edit to your config, so removing it is an unlink and nothing of yours is ever merged with.
 
+<a id="sidekick-completion-v1"></a>
+### Completion reporting (`sidekick-completion v1`)
+
+When assigning work to a sidekick, the requester specifies the completion route
+(automatic notification or explicit send) and where to leave the result.
+For automatic notification, do not add a `ccm send` just to announce completion:
+start the final message with one line containing the request number, completion,
+and result location. For explicit send, report to the specified recipient as
+usual, and keep the result location in the final message. If the instructions
+are unclear, ask the requester; do not guess that reporting can be omitted.
+Approval dialogs are always handled by the user in the original UI.
+
+Automatic reporting can miss the result location when hooks do not run or
+coalescing replaces an older excerpt. Excerpts are redacted and limited to
+400 characters; when excerpts are off, the location is not included. Specify
+explicit send when notifications are off, the CLI is unsupported, or the route
+is uncertain. ccm does not track outstanding completion reports. Check the
+sidekick's result when a report is missing; expired, limited, held or uncertain
+notices must not trigger an automatic resend through another route.
+
 ## Using with agent view (background sessions)
 
 Claude Code 2.1.139 introduced an [agent view](https://claude.com/blog/agent-view-in-claude-code): `claude agents` (TUI), `claude --bg <prompt>` (background dispatch), and `claude attach <short>` (foreground attach). All three run sessions as workers under a per-user supervisor daemon, completely outside tmux. ccm reads the daemon's state and surfaces those sessions in a read-only dashboard section so a single view shows both ccm-managed project windows and out-of-tmux background sessions.

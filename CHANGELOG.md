@@ -64,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   session; the check is read-only.
 
 ### Changed
+- The guides define completion reporting routes for sidekick assignments,
+  including the limits of automatic notices and user-only approvals.
 - `ccm doctor` shows actionable issues and incomplete checks by default;
   `--verbose` retains detailed results, identifiers and log counts.
   Large hook logs should be saved before clearing them.
