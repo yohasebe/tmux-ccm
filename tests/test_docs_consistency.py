@@ -13,6 +13,10 @@ otherwise would produce brittle tests that punish good writing.
 """
 
 import re
+import json
+import html
+import unicodedata
+from urllib.parse import unquote, urlsplit
 
 import pytest
 
@@ -103,10 +107,11 @@ class TestCliTable:
 
     @pytest.mark.parametrize("name", list(READMES))
     def test_every_command_is_documented(self, name):
-        missing = _dispatcher_commands() - _readme_commands(name) - UNDOCUMENTED_OK
+        docs = _documentation_text(name)
+        missing = {cmd for cmd in _dispatcher_commands() - UNDOCUMENTED_OK
+                   if not re.search(r"\bccm " + re.escape(cmd) + r"(?![\w-])", docs)}
         assert not missing, (
-            f"{name}'s CLI table is missing: {sorted(missing)}. Add a row, "
-            "or list the name in UNDOCUMENTED_OK with the reason."
+            f"{name}'s documentation set is missing commands: {sorted(missing)}."
         )
 
     @pytest.mark.parametrize("name", list(READMES))
@@ -228,12 +233,12 @@ class TestSendFlags:
                          if not _mentions_flag(helps, f))
         assert not missing, f"flags absent from CLI help: {missing}"
 
-    @pytest.mark.parametrize("guide", ["docs/guide.md", "docs/guide.ja.md"])
-    def test_every_flag_is_documented_in_the_guide(self, guide):
-        body = (REPO / guide).read_text()
+    @pytest.mark.parametrize("name", list(READMES))
+    def test_every_flag_is_documented_in_each_language(self, name):
+        body = _documentation_text(name)
         missing = sorted(f for f in _send_flags()
                          if not _mentions_flag(body, f))
-        assert not missing, f"{guide} does not document: {missing}"
+        assert not missing, f"{name} documentation does not cover: {missing}"
 
 
 class TestUninstall:
@@ -320,12 +325,14 @@ def _implemented_env_vars():
     return found
 
 
-def _documentation_text():
-    return "\n".join(
-        (REPO / name).read_text(encoding="utf-8")
-        for name in ("README.md", "README.ja.md",
-                     "docs/guide.md", "docs/guide.ja.md")
-    )
+def _documentation_paths(name):
+    suffix = '.ja' if name == 'README.ja.md' else ''
+    return (name, f'docs/guide{suffix}.md', f'docs/diagnostics{suffix}.md')
+
+
+def _documentation_text(name):
+    return "\n".join((REPO / path).read_text(encoding="utf-8")
+                     for path in _documentation_paths(name))
 
 
 class TestKnobsAreDocumented:
@@ -338,27 +345,29 @@ class TestKnobsAreDocumented:
     opt-in canary went several releases with no mention anywhere.
     """
 
-    def test_every_tmux_option_appears_in_the_docs(self):
-        docs = _documentation_text()
+    @pytest.mark.parametrize("name", list(READMES))
+    def test_every_tmux_option_appears_in_the_docs(self, name):
+        docs = _documentation_text(name)
         missing = sorted(
             opt for opt in _implemented_tmux_options()
             if opt not in UNDOCUMENTED_KNOBS_OK and opt not in docs
         )
         assert not missing, (
-            "tmux options read by the code but absent from README/guide: "
+            "tmux options read by the code but absent from this language's README/guide/diagnostics: "
             f"{missing}. Document them, or add them to "
             "UNDOCUMENTED_KNOBS_OK with the reason."
         )
 
-    def test_every_environment_variable_appears_in_the_docs(self):
-        docs = _documentation_text()
+    @pytest.mark.parametrize("name", list(READMES))
+    def test_every_environment_variable_appears_in_the_docs(self, name):
+        docs = _documentation_text(name)
         missing = sorted(
             var for var in _implemented_env_vars()
             if var not in UNDOCUMENTED_KNOBS_OK and var not in docs
         )
         assert not missing, (
             "environment variables read by the code but absent from "
-            f"README/guide: {missing}. Document them, or add them to "
+            f"{name}/guide/diagnostics: {missing}. Document them, or add them to "
             "UNDOCUMENTED_KNOBS_OK with the reason."
         )
 
@@ -379,3 +388,101 @@ class TestKnobsAreDocumented:
             f"UNDOCUMENTED_KNOBS_OK lists knobs the code no longer reads: "
             f"{stale}"
         )
+
+
+# Local Markdown links are checked without network access. Headings in fenced
+# examples are not anchors; explicit HTML anchors and duplicate headings are.
+def _outside_fences(text):
+    fence = None
+    for line in text.splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+        elif fence is None:
+            yield line
+
+
+def _heading_slug(heading):
+    heading = html.unescape(re.sub(r"<[^>]*>", "", heading)).lower()
+    return ''.join(c for c in heading
+                   if c in '-_ ' or unicodedata.category(c)[0] in 'LN').replace(' ', '-')
+
+
+def _anchors(text):
+    anchors, counts = set(), {}
+    for line in _outside_fences(text):
+        anchors.update(re.findall(r'<a\s+(?:id|name)=["\']([^"\']+)', line))
+        heading = re.match(r"^ {0,3}#{1,6}\s+(.+?)(?:\s+#+)?$", line)
+        if heading:
+            base = _heading_slug(heading.group(1))
+            number = counts.get(base, 0)
+            candidate = f'{base}-{number}' if number else base
+            while candidate in anchors:
+                number += 1
+                candidate = f'{base}-{number}'
+            counts[base] = number + 1
+            anchors.add(candidate)
+    return anchors
+
+
+def _local_links(text):
+    for line in _outside_fences(text):
+        urls = re.findall(r'!?\[[^\]]*\]\(([^)]+)\)', line)
+        reference = re.match(r'^ {0,3}\[[^\]]+\]:\s*(\S+)', line)
+        if reference:
+            urls.append(reference.group(1))
+        urls += re.findall(r'(?:href|src)=["\']([^"\']+)', line)
+        for raw in urls:
+            raw = raw.strip().split(' "', 1)[0].strip('<>')
+            url = urlsplit(raw)
+            if not url.scheme and not url.netloc:
+                yield unquote(url.path), unquote(url.fragment)
+
+
+DOC_SOURCES = tuple(dict.fromkeys(path for name in READMES for path in _documentation_paths(name)))
+
+
+@pytest.mark.parametrize('source', DOC_SOURCES + ('CHANGELOG.md', 'docs/state-machine.md', 'CONTRIBUTING.md'))
+def test_local_document_links_and_anchors_exist(source):
+    path = REPO / source
+    for destination, fragment in _local_links(path.read_text()):
+        target = (path.parent / destination).resolve() if destination else path
+        assert target.exists(), f'{source}: missing link target {destination}'
+        if fragment and target.suffix == '.md':
+            assert fragment in _anchors(target.read_text()), f'{source}: missing anchor {destination}#{fragment}'
+
+
+@pytest.mark.parametrize('name', list(READMES))
+def test_original_guide_anchors_remain_reachable(name):
+    guide = _documentation_paths(name)[1]
+    required = json.loads((REPO / 'tests/fixtures/docs/guide-anchors.json').read_text())[guide]
+    assert set(required) <= _anchors((REPO / guide).read_text())
+
+
+@pytest.mark.parametrize('name', list(READMES))
+def test_moved_headings_have_direct_diagnostic_links(name):
+    _, guide, diagnostic = _documentation_paths(name)
+    text = (REPO / guide).read_text()
+    target = (REPO / diagnostic).name
+    required = json.loads((REPO / 'tests/fixtures/docs/moved-headings.json').read_text())[guide]
+    for heading in required:
+        section = text.split(heading + '\n', 1)[1].split('\n#', 1)[0]
+        assert f'({target}#{_heading_slug(heading.lstrip("# "))})' in section
+
+
+@pytest.mark.parametrize('kind', ['guide', 'diagnostics'])
+def test_document_structure_matches_between_languages(kind):
+    def levels(text):
+        return [len(re.match(r'^(#+)', line).group(1)) for line in _outside_fences(text)
+                if re.match(r'^#{1,6} ', line)]
+    assert levels((REPO / f'docs/{kind}.md').read_text()) == levels((REPO / f'docs/{kind}.ja.md').read_text())
+
+
+def test_markdown_anchor_parser_ignores_code_and_handles_compatibility_anchors():
+    sample = '# A `command` / title\n### A `command` / title\n```md\n## Not an anchor\n```\n<a id="stable"></a>\n## 日本語（例）\n'
+    assert _anchors(sample) == {'a-command--title', 'a-command--title-1', 'stable', '日本語例'}
+    assert list(_local_links('[Jump](guide.md#there)\n```\n[Example](missing.md)\n```')) == [('guide.md', 'there')]

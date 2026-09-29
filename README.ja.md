@@ -590,7 +590,8 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
 
 ## ドキュメント
 
-- [ユーザーガイド](docs/guide.ja.md)
+- [ユーザーガイド](docs/guide.ja.md) — 導入、日常の操作、送信と通知への対処
+- [診断参照](docs/diagnostics.ja.md) — 状態検出、環境変数、ログ、詳しい調査手順
 - [English README](README.md) / [User Guide](docs/guide.md)
 
 ## ライセンス

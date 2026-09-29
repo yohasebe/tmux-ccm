@@ -594,7 +594,8 @@ tmux switch-client -t oss      # Standard tmux session switching
 
 ## Documentation
 
-- [User Guide](docs/guide.md)
+- [User Guide](docs/guide.md) — setup, everyday use, and handling sends and notifications
+- [Diagnostics reference](docs/diagnostics.md) — detection, environment variables, logs, and detailed investigation
 - [日本語版 README](README.ja.md) / [ユーザーガイド](docs/guide.ja.md)
 
 ## License
