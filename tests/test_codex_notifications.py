@@ -880,3 +880,41 @@ def test_excerpt_off_also_hides_record_preview_and_read_view(world):
     row = notices.attention_records()[0]
     assert 'Earlier result' not in row['preview']
     assert 'Earlier result' not in notices.read_record(row['kind'], row['id'], row['project'])
+
+
+@pytest.mark.parametrize('inserted', ['\u200b', '\x1b[31m', '\u00ad'],
+                         ids=['zero-width-space', 'ansi-color', 'soft-hyphen'])
+@pytest.mark.parametrize('route', ['notice', 'defer', 'attention'])
+def test_normalization_cannot_reassemble_environment_secret(world, monkeypatch, inserted, route):
+    secret = 'example-' + 'opaque-value-123456'
+    monkeypatch.setenv('CCM_SYNTHETIC_CREDENTIAL', secret)
+    disguised = secret[:12] + inserted + secret[12:]
+    message = 'Result: ' + disguised + '\nOther details'
+    if route == 'attention':
+        world['emit']('PermissionRequest', tool_name='Bash',
+                      tool_input={'description': message})
+        output = marker()['summary']
+    else:
+        acquire = ccm_spool._acquire_lock
+        if route == 'defer':
+            monkeypatch.setattr(ccm_spool, '_acquire_lock', lambda path: False)
+        world['emit'](last_assistant_message=message)
+        if route == 'defer':
+            inbox = Path(ccm_spool.SPOOL_ROOT) / '.sidekick' / 'inbox'
+            saved = ''.join(p.read_text() for p in inbox.glob('*.json'))
+            leaked_in_inbox = secret in saved
+            assert not leaked_in_inbox, 'Credential appeared in deferred record'
+            monkeypatch.setattr(ccm_spool, '_acquire_lock', acquire)
+            notices._drain_inbox()
+        output = notices.body(pending_notices()[0])
+    # Keep even the expected failure in the negative control free of values.
+    leaked = secret in output
+    assert not leaked, 'Normalization reassembled an environment credential'
+    assert '[redacted]' in output
+
+
+def test_redaction_still_precedes_normalization_and_line_selection(monkeypatch):
+    secret = 'example-' + 'first\nsecond-value'
+    monkeypatch.setenv('CCM_SYNTHETIC_CREDENTIAL', secret)
+    assert notices._first_line('Result: ' + secret + '\nLater') == {
+        'text': 'Result: [redacted]', 'truncated': False}

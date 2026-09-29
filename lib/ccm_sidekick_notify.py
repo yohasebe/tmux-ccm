@@ -38,18 +38,9 @@ MAX_EXCERPT = 400
 MAX_BODY_BYTES = 4096
 
 
-def _redact(value):
-    if not isinstance(value, str):
-        return ''
-    # Match actual values before whitespace/control normalization or truncation.
-    secrets = {v for k, v in os.environ.items()
-               if re.search(r'key|token|secret|password|passwd|credential', k, re.I)
-               and len(v) >= 8}
-    for secret in sorted(secrets, key=len, reverse=True):
+def _redact_secrets(value, secrets):
+    for secret in secrets:
         value = value.replace(secret, '[redacted]')
-    value = _ANSI.sub('', value).replace('\r\n', '\n').replace('\r', '\n')
-    value = ''.join('\n' if c == '\n' else ' ' if c.isspace() else c for c in value
-                    if c.isspace() or unicodedata.category(c) not in ('Cc', 'Cf', 'Cs'))
     # Best-effort redaction, not a guarantee that arbitrary prose has no secrets.
     value = re.sub(r'(?i)("[^"\n]*(?:key|token|secret|password)[^"\n]*"\s*:\s*)"(?:\\.|[^"\\])*"',
                    r'\1"[redacted]"', value)
@@ -59,6 +50,21 @@ def _redact(value):
     value = re.sub(r'(?<![A-Za-z0-9_])(?:sk-(?:proj-)?|AIza|gh[pousr]_|github_pat_|xai-|AKIA)[A-Za-z0-9_-]+',
                    '[redacted]', value)
     return value
+
+
+def _redact(value):
+    if not isinstance(value, str):
+        return ''
+    secrets = sorted({v for k, v in os.environ.items()
+                      if re.search(r'key|token|secret|password|passwd|credential', k, re.I)
+                      and len(v) >= 8}, key=len, reverse=True)
+    # Redact before normalization preserves exact values containing controls;
+    # repeating it afterwards catches values reassembled by removing controls.
+    value = _redact_secrets(value, secrets)
+    value = _ANSI.sub('', value).replace('\r\n', '\n').replace('\r', '\n')
+    value = ''.join('\n' if c == '\n' else ' ' if c.isspace() else c for c in value
+                    if c.isspace() or unicodedata.category(c) not in ('Cc', 'Cf', 'Cs'))
+    return _redact_secrets(value, secrets)
 
 
 def clean(value, limit=400):

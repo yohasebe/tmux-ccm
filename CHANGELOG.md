@@ -125,6 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Redact notification excerpts and attention summaries both before and after
+  removing terminal and invisible controls, so normalization cannot restore
+  an environment credential that escaped the first redaction pass.
 - Automatic completion notices preserve each event's first line and ID through
   repeated coalescing, with full-message redaction before selecting or cutting
   lines. Notices are shorter and limited to 8 events and 4 KiB; overflow stays
