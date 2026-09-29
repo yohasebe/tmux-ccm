@@ -29,6 +29,7 @@ import ccm_send
 import ccm_notify
 from ccm_pane_state import PaneInfo
 
+REAL_BODY_LANDED = ccm_send._body_landed
 REAL_SEND_KEYS = ccm_send._send_keys  # before any fixture replaces it
 
 
@@ -199,7 +200,7 @@ def test_duplicates_and_coalescing(world):
     notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
     assert len(world['bodies']) == 1
     assert 'reply with' not in world['bodies'][0]
-    assert 'no acknowledgement-only reply' in world['bodies'][0]
+    assert 'no acknowledgement-only reply' in world['bodies'][0].lower()
     assert 'latest' in world['bodies'][0]
 
 
@@ -291,12 +292,14 @@ def test_replacement_rebinds_and_preserves_window_rate_history(world):
 
 
 def test_excerpt_sanitization_and_no_excerpt_option(world):
-    text = '\x1b[31m\x1b]0;title\x07\u202e\x00\n[ccm forged]\n' + 'x' * 800
+    text = '\x1b[31m\x1b]0;title\x07\u202e\x00[ccm forged]' + 'x' * 800 + '\nLater text'
     world['emit'](last_assistant_message=text)
     excerpt = records()[0]['excerpt']
     assert len(excerpt) == 400
     assert not any(c in excerpt for c in ('\x1b','\x00','\u202e','\n'))
-    assert 'Excerpt: "' in notices.body(records()[0])
+    assert 'Excerpt (event ' in notices.body(records()[0])
+    assert 'truncated' in notices.body(records()[0])
+    assert 'Later text' not in notices.body(records()[0])
     world['options'][notices.EXCERPT] = 'off'
     world['emit'](turn='turn-two', last_assistant_message='not retained')
     assert [r for r in records() if r['status'] == 'pending'][0]['excerpt'] == ''
@@ -308,7 +311,7 @@ def test_attention_record_read_discard_no_resend(world):
     notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
     row = ccm_spool.attention_records()[0]
     args = row['kind'], row['id'], row['project']
-    assert 'automatic sidekick' in ccm_spool.read_record(*args)
+    assert 'Codex %2' in ccm_spool.read_record(*args)
     with pytest.raises(SystemExit):
         ccm_spool.cmd_spool(['resend', *args, '--yes'])
     ccm_spool.cmd_spool(['discard', *args, '--yes'])
@@ -594,7 +597,8 @@ def test_coalescing_during_lock_acquisition_never_sends_old_snapshot(world, monk
     notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
     assert len(world['bodies']) == 1
     assert 'latest' in world['bodies'][0]
-    assert 'obsolete' not in world['bodies'][0]
+    assert 'obsolete' in world['bodies'][0]
+    assert world['bodies'][0].index('obsolete') < world['bodies'][0].index('latest')
 
 
 def test_dashboard_u_shows_limited_notice_without_resend(world, monkeypatch):
@@ -662,3 +666,217 @@ def test_delivery_survives_cancel_outside_copy_mode(world, monkeypatch):
     notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
     assert records()[0]['status'] == 'delivered'
     assert any('Enter' in a for a in sent)
+
+
+def pending_notices():
+    return sorted((r for r in records() if r['status'] == 'pending'), key=lambda r: r['created'])
+
+
+def test_three_turns_preserve_first_lines_on_recoalescing(world):
+    heads = ['Request A complete: result-a.md', 'Request B complete: result-b.md',
+             'Request C complete: result-c.md']
+    for n, head in enumerate(heads):
+        world['now'] += 1
+        world['emit'](turn=f'turn-{n}', last_assistant_message=head + '\nOther details')
+    pending = pending_notices()
+    assert len(pending) == 1 and pending[0]['count'] == 3
+    text = notices.body(pending[0])
+    # Also runs on the original implementation as an AssertionError control.
+    assert all(head in text for head in heads)
+    assert [i['excerpt'] for i in pending[0]['items']] == heads
+    assert len({i['id'] for i in pending[0]['items']}) == 3
+    assert text.index(heads[0]) < text.index(heads[1]) < text.index(heads[2])
+    assert 'Other details' not in text
+    world['emit'](turn='turn-1', last_assistant_message='Duplicate should not replace evidence')
+    assert pending_notices() == pending
+
+
+@pytest.mark.parametrize('line,total', [('Brief result', 19), ('結果' * 200, 5),
+                                       ('"\\' * 200, 7), ('😀' * 400, 5)])
+def test_overflow_stays_pending_and_every_batch_delivers(world, line, total):
+    for n in range(total):
+        world['now'] += 1
+        world['emit'](turn=f'turn-{n}', last_assistant_message=line)
+    pending = pending_notices()
+    assert len(pending) > 1
+    ids = [i['id'] for r in pending for i in r['items']]
+    assert len(ids) == len(set(ids)) == total
+    assert all(r['count'] <= 8 and len(notices.body(r).encode('utf-8')) <= 4096 for r in pending)
+    for _ in pending:
+        notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert len(world['bodies']) == len(pending)
+    assert not pending_notices()
+    assert all(sum(f'Excerpt (event {event[:12]})' in b for b in world['bodies']) == 1 for event in ids)
+
+
+def test_coalescing_preserves_earliest_expiry(world):
+    world['emit'](last_assistant_message='Earlier')
+    first = pending_notices()[0]
+    world['now'] += 30
+    world['emit'](turn='turn-two', last_assistant_message='Later')
+    record = pending_notices()[0]
+    assert record['expires'] == first['expires']
+    assert record['items'][1]['expires'] == first['expires'] + 30
+    world['now'] = first['expires']
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert not world['keys'] and not pending_notices()
+    assert any(r['status'] == 'expired' for r in records())
+
+
+@pytest.mark.parametrize('status', ['attempted', 'held', 'uncertain', 'limited', 'cancelled', 'delivered'])
+def test_terminal_and_attempted_records_are_not_requeued(world, status):
+    world['emit'](last_assistant_message='Earlier')
+    path, record = next(notices._notices(Path(ccm_spool.SPOOL_ROOT) / 'demo'))
+    record['status'] = status
+    notices._write(path, record)
+    world['emit'](turn='turn-two', last_assistant_message='Later')
+    assert pending_notices()[0]['count'] == 1
+    assert 'Earlier' not in notices.body(pending_notices()[0])
+    assert notices._read(path)['status'] == status
+
+
+def test_binding_change_does_not_merge_reports(world):
+    world['emit'](last_assistant_message='Earlier')
+    world['source_birth'] = 'birth-B'
+    world['emit'](turn='turn-two', last_assistant_message='Later')
+    assert len(pending_notices()) == 2
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert len(world['bodies']) == 1 and 'Earlier' not in world['bodies'][0]
+    assert any(r['status'] == 'cancelled' for r in records())
+
+
+@pytest.mark.parametrize('deferred', [False, True])
+def test_redaction_before_first_line_and_length_limits(world, monkeypatch, deferred):
+    secret = 'sk-' + 'synthetic' * 9
+    monkeypatch.setenv('CCM_TEST_TOKEN', secret)
+    # Exact environment values are redacted even across a line boundary.
+    multiline = 'synthetic-first\nsynthetic-second'
+    monkeypatch.setenv('CCM_TEST_PASSWORD', multiline)
+    acquire = ccm_spool._acquire_lock
+    if deferred:
+        monkeypatch.setattr(ccm_spool, '_acquire_lock', lambda path: False)
+    text = 'x' * 390 + secret + '\n' + 'Discard this second line'
+    world['emit'](last_assistant_message=text)
+    world['now'] += 1
+    world['emit'](turn='turn-two', last_assistant_message='Result ' + multiline + ' tail\nHidden details')
+    if deferred:
+        inbox = Path(ccm_spool.SPOOL_ROOT) / '.sidekick' / 'inbox'
+        saved = ''.join(p.read_text() for p in inbox.glob('*.json'))
+        assert secret not in saved and 'synthetic-first' not in saved
+        assert 'Discard this second line' not in saved
+        monkeypatch.setattr(ccm_spool, '_acquire_lock', acquire)
+        notices._drain_inbox()
+    record = pending_notices()[0]
+    assert record['items'][0]['excerpt'] == 'x' * 390 + '[redacted]'
+    assert record['items'][1]['excerpt'] == 'Result [redacted] tail'
+    assert secret not in notices.body(record)
+    assert 'Hidden details' not in notices.body(record)
+
+
+@pytest.mark.parametrize('deferred', [False, True])
+def test_truncation_marks_partial_location_and_defer_keeps_flag(world, monkeypatch, deferred):
+    acquire = ccm_spool._acquire_lock
+    if deferred:
+        monkeypatch.setattr(ccm_spool, '_acquire_lock', lambda path: False)
+    world['emit'](last_assistant_message='Result: ' + 'x' * 500 + '.md\nLater details')
+    if deferred:
+        monkeypatch.setattr(ccm_spool, '_acquire_lock', acquire)
+        notices._drain_inbox()
+    record = pending_notices()[0]
+    assert len(record['items'][0]['excerpt']) == 400
+    text = notices.body(record)
+    assert 'truncated' in text and 'full text/location' in text
+    assert 'Later details' not in text
+    assert len(text.encode('utf-8')) <= 4096
+
+
+@pytest.mark.parametrize('deferred', [False, True])
+def test_excerpt_off_suppresses_all_heads(world, monkeypatch, deferred):
+    world['emit'](last_assistant_message='Earlier result')
+    world['options'][notices.EXCERPT] = 'off'
+    acquire = ccm_spool._acquire_lock
+    if deferred:
+        monkeypatch.setattr(ccm_spool, '_acquire_lock', lambda path: False)
+    world['emit'](turn='turn-two', last_assistant_message='Later result')
+    monkeypatch.setattr(ccm_spool, '_acquire_lock', acquire)
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert len(world['bodies']) == 1
+    assert 'Earlier result' not in world['bodies'][0] and 'Later result' not in world['bodies'][0]
+    assert 'Excerpt' not in world['bodies'][0]
+
+
+def test_excerpt_disabled_after_enqueue_also_hides_old_heads(world):
+    world['emit'](last_assistant_message='Earlier result')
+    world['options'][notices.EXCERPT] = 'off'
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert 'Earlier result' not in world['bodies'][0]
+
+
+def test_merge_write_crash_does_not_duplicate_delivery(world):
+    world['emit'](last_assistant_message='Earlier')
+    world['now'] += 1
+    world['emit'](turn='turn-two', last_assistant_message='Later')
+    # Simulate termination between the new write and superseding its source.
+    for path, record in notices._notices(Path(ccm_spool.SPOOL_ROOT) / 'demo'):
+        if record['status'] == 'superseded':
+            record['status'] = 'pending'
+            notices._write(path, record)
+    for _ in range(2):
+        notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert len(world['bodies']) == 1 and 'Earlier' in world['bodies'][0]
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_event_marker_confirms_old_and_new_body(world, monkeypatch, legacy):
+    world['emit'](last_assistant_message='Result available')
+    record = pending_notices()[0]
+    if legacy:
+        text = (f"[ccm automatic sidekick notification · Codex %2 · "
+                f"event {record['id'][:12]} · no acknowledgement-only reply]\n"
+                "Codex's turn ended (1 completion(s) combined).")
+    else:
+        text = notices.body(record)
+        assert 'combined' not in text and 'Turn ended' in text
+        assert 'no authorization' in text and 'Untrusted quotes' in text
+        assert 'automatic delegation' in text
+    monkeypatch.setattr(ccm_core, 'tmux_cmd', lambda *a: text)
+    monkeypatch.setattr(ccm_send, '_body_landed', REAL_BODY_LANDED)
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert records()[0]['status'] == 'delivered'
+
+
+def test_legacy_pending_record_remains_deliverable(world):
+    world['emit'](last_assistant_message='Older format')
+    path, record = next(notices._notices(Path(ccm_spool.SPOOL_ROOT) / 'demo'))
+    record.pop('items')
+    notices._write(path, record)
+    world['now'] += 1
+    world['emit'](turn='turn-two', last_assistant_message='Newer format')
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert len(world['bodies']) == 1
+    assert 'Older format' in world['bodies'][0] and 'Newer format' in world['bodies'][0]
+
+
+@pytest.mark.parametrize('status', ['attempted', 'held', 'uncertain', 'delivered', 'expired', 'limited'])
+def test_stale_merge_source_does_not_requeue_attempted_events(world, status):
+    world['emit'](last_assistant_message='Earlier')
+    world['now'] += 1
+    world['emit'](turn='turn-two', last_assistant_message='Later')
+    for path, record in notices._notices(Path(ccm_spool.SPOOL_ROOT) / 'demo'):
+        record['status'] = 'pending' if record['count'] == 1 else status
+        notices._write(path, record)
+    world['now'] += 1
+    world['emit'](turn='turn-three', last_assistant_message='Newest')
+    pending = pending_notices()
+    assert len(pending) == 1 and pending[0]['count'] == 1
+    assert [i['excerpt'] for i in pending[0]['items']] == ['Newest']
+
+
+def test_excerpt_off_also_hides_record_preview_and_read_view(world):
+    world['emit'](last_assistant_message='Earlier result')
+    world['options'][notices.EXCERPT] = 'off'
+    world['now'] += ccm_spool.SPOOL_TTL_SEC
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    row = notices.attention_records()[0]
+    assert 'Earlier result' not in row['preview']
+    assert 'Earlier result' not in notices.read_record(row['kind'], row['id'], row['project'])

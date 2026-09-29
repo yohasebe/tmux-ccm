@@ -125,6 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Automatic completion notices preserve each event's first line and ID through
+  repeated coalescing, with full-message redaction before selecting or cutting
+  lines. Notices are shorter and limited to 8 events and 4 KiB; overflow stays
+  pending, combined expiry never advances, and cut excerpts are marked.
 - Send output distinguishes typing without submit Enter from a submitted
   message. Sidekick sends report visible fragments or unconfirmed delivery
   without claiming acceptance; retry guidance checks the conversation and
