@@ -76,7 +76,9 @@ class TestSidekickSend:
                 < seq.index(("sleep", 0.3)) < seq.index(enter))
         # The confirmation capture happens after the Enter.
         assert seq[-1][0] == "capture-pane"
-        assert "Sent to sidekick kimi (%2)" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "seen on screen" in out and "receipt not confirmed" in out
+        assert "Enter attempted" in out and "Sent to" not in out
 
     def test_multiline_uses_m_enter_between_lines(self, monkeypatch):
         body = "first line of the brief\nsecond line of the brief"
@@ -88,7 +90,7 @@ class TestSidekickSend:
         assert ("send-keys", "-t", "%2", "-l", "--",
                 "second line of the brief") in calls
 
-    def test_no_enter_skips_submit_and_settle(self, monkeypatch):
+    def test_no_enter_skips_submit_and_settle(self, monkeypatch, capsys):
         """--no-enter types the body only: no settle pause, no Enter,
         and the confirmation still runs (the body sits in the
         composer, so its fragment is visible)."""
@@ -97,15 +99,22 @@ class TestSidekickSend:
         assert self._keys(calls, "-l", "--", _MSG)
         assert not self._keys(calls, "Enter")
         assert ("sleep", 0.3) not in calls
+        out = capsys.readouterr().out
+        assert "Enter not sent" in out and "receipt not confirmed" in out
+        assert "Sent to" not in out
 
-    def test_short_message_skips_verification(self, monkeypatch, capsys):
+    @pytest.mark.parametrize("no_enter", [False, True])
+    def test_short_message_skips_verification(self, monkeypatch, capsys, no_enter):
         """A message too short for a reliable signature is sent
         without the capture check, and the output says so."""
         calls = self._stub(monkeypatch)
-        ccm_send.cmd_sidekick_send(["hi"])
-        assert self._keys(calls, "Enter")
+        ccm_send.cmd_sidekick_send((["--no-enter"] if no_enter else []) + ["hi"])
+        assert bool(self._keys(calls, "Enter")) is not no_enter
         assert not [c for c in calls if c[0] == "capture-pane"]
-        assert "too short" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "Delivery unconfirmed" in out and "ccm capture" in out
+        assert ("Enter not sent" if no_enter else "Enter attempted") in out
+        assert "Sent to" not in out
 
     def test_dash_message_via_double_dash(self, monkeypatch):
         calls = self._stub(monkeypatch, capture="-dashy message here\n")
@@ -251,6 +260,8 @@ class TestSidekickSend:
             ccm_send.cmd_sidekick_send([_MSG])
         err = capsys.readouterr().err
         assert "could not be confirmed" in err and "ccm capture" in err
+        assert "do not resend if received" in err and "leftover text" in err
+        assert "then resend" not in err
 
     def test_delivery_confirmation_polls_until_visible(self, monkeypatch):
         """The pane may need a moment to echo the submitted message;

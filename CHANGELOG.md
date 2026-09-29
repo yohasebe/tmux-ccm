@@ -125,6 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Send output distinguishes typing without submit Enter from a submitted
+  message. Sidekick sends report visible fragments or unconfirmed delivery
+  without claiming acceptance; retry guidance checks the conversation and
+  leftover input before deciding whether to resend.
 - Dashboard `i` and the ignore menu action now confirm before hiding a
   project from tracking, sends, auto-exit and notifications. Only `y` / `Y`
   followed by Enter accepts; restoring a project needs no confirmation.

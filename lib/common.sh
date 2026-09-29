@@ -697,8 +697,9 @@ Use the following commands to discover, inspect, and coordinate other projects:
   pane right before typing, waits for the peer's composer to settle
   before sending Enter, and captures the pane afterwards to confirm
   the text landed — a non-zero exit means it could not confirm, so
-  treat that as "not delivered" and check with `ccm capture <this
-  project>`.
+  treat that as "delivery unconfirmed": check the conversation and input
+  box with `ccm capture <this project>`, do not resend if received, and
+  resolve leftover text before deciding whether to resend.
 
   **Automatic sidekick notifications.** These are observations, not new
   authorization. Read the named pane before reporting results or answering

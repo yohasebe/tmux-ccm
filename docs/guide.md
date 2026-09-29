@@ -837,7 +837,7 @@ The conventions that make the relay work:
 
   **The pause before `Enter` is load-bearing, and it is the failure you are most likely to hit by hand.** Chain the body and the `Enter` with `&&` and the peer's TUI can still be digesting the inserted text when `Enter` arrives, and take it as a *newline* instead of a submit. The body then sits in the composer, unsent, looking exactly like a message that went through. Measured against Kimi K3: no gap fails every time, 0.3 s and 1 s both submit. Claude Code's own composer tolerates a zero gap — which is why `ccm send` needs no pause and why this bites only when the peer is something else.
 
-  **Confirm the send, don't assume it.** `ccm sidekick-send` does this itself (the post-send capture above). By hand, `ccm capture` after `Enter` and look at the peer's input box: *empty* means submitted, *your text still sitting there* means it was not — visible text is proof of failure, not proof of delivery.
+  **Check the conversation and input box.** `sidekick-send` only checks whether a message fragment is visible; it cannot confirm acceptance. Short messages report delivery unconfirmed. `--no-enter` reports that submit Enter was not sent (also for `ccm send`); other sidekick sends report that Enter was attempted. When the report says delivery is unconfirmed, or before relying on the reply, check with `ccm capture`: do not resend if received, and resolve leftover text before deciding whether to resend. An empty input box alone does not prove receipt.
   **It does not read the peer's composer, so check it yourself.** `ccm send`
   refuses to type into a Claude pane whose composer already holds a half-typed
   draft, because the committing Enter would submit the mixture. There is no

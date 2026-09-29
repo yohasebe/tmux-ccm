@@ -25,3 +25,13 @@ teardown() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"ccm sidekick-send"* ]]
 }
+
+@test "setup guidance distinguishes unconfirmed delivery from non-delivery" {
+    source "$CCM_ROOT/lib/common.sh"
+    run _ccm_claude_md_section
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'delivery unconfirmed'* ]]
+    [[ "$output" == *'conversation and input'* ]]
+    [[ "$output" == *'do not resend if received'* ]]
+    [[ "$output" != *'treat that as "not delivered"'* ]]
+}

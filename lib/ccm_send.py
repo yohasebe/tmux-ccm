@@ -1099,7 +1099,12 @@ def cmd_send(args):
     if _trace_enabled():
         _trace_record(pane_target, "send-end", (f"project={project_name}",))
 
-    ccm_core.ccm_info(f"Sent to {project_name}")
+    if no_enter:
+        ccm_core.ccm_info(
+            f"Typing attempted for {project_name}; submit Enter not sent. "
+            "Check the input box before submitting.")
+    else:
+        ccm_core.ccm_info(f"Sent to {project_name}")
 
 
 # ─── ccm sidekick-send ───
@@ -1346,15 +1351,15 @@ def cmd_sidekick_send(args):
         time.sleep(_SIDEKICK_SUBMIT_SETTLE_SEC)
         _send_keys(pane_id, "Enter", label="sidekick-submit")
 
-    # Post-send delivery confirmation: a fragment of the message must
-    # be visible in the pane (in the composer for --no-enter, in the
-    # conversation echo after Enter). Absence means the text never
-    # arrived — report failure honestly instead of a false "Sent".
+    # A visible fragment may be in the composer or an earlier conversation;
+    # it does not confirm that this submission was accepted.
+    submit = "submit Enter not sent" if no_enter else "submit Enter attempted"
     signature = _message_signature(message)
     if signature is None:
         ccm_core.ccm_info(
-            f"Sent to sidekick {agent} ({pane_id}) — message too short "
-            "to auto-verify; confirm with `ccm capture`."
+            f"Delivery unconfirmed for sidekick {agent} ({pane_id}); {submit}; "
+            "message too short to auto-verify. "
+            "Check the conversation and input box with `ccm capture`."
         )
         return
     deadline = time.time() + _SIDEKICK_VERIFY_TIMEOUT_SEC
@@ -1369,11 +1374,13 @@ def cmd_sidekick_send(args):
                 f"Delivery to the sidekick ({agent}, {pane_id}) could "
                 "not be confirmed: no fragment of the message appeared "
                 "in the pane after sending.\n"
-                "  The send may have been eaten (a TUI still digesting "
-                "the text, or a dialog open over the composer). Check "
-                "the pane with `ccm capture`, then resend."
+                "  Check the conversation and input box with `ccm capture`: "
+                "do not resend if received; resolve leftover text before "
+                "deciding whether to resend."
             )
         time.sleep(_SIDEKICK_VERIFY_POLL_SEC)
     if _trace_enabled():
         _trace_record(pane_id, "sidekick-send-end", (f"agent={agent}",))
-    ccm_core.ccm_info(f"Sent to sidekick {agent} ({pane_id})")
+    ccm_core.ccm_info(
+        f"Typed into sidekick {agent} ({pane_id}); {submit}; "
+        "seen on screen, receipt not confirmed.")

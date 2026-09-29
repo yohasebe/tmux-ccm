@@ -1602,6 +1602,14 @@ class TestSendReportsWhatTheSessionTook:
         ccm_send.cmd_send(["demo", "--now", BODY_WITH_INVISIBLE])
         assert "Sent to demo" in capsys.readouterr().out
 
+    def test_no_enter_does_not_claim_submission(self, monkeypatch, capsys):
+        keys = self._patch(monkeypatch, TAKEN)
+        ccm_send.cmd_send(["demo", "--now", "--no-enter", BODY_WITH_INVISIBLE])
+        assert not any(c[-1] == "Enter" for c in keys if c[:1] == ("send-keys",))
+        out = capsys.readouterr().out
+        assert "Enter not sent" in out and "Check the input box" in out
+        assert "Sent to" not in out
+
 
 class TestSendPreTypeRecheck:
     """TOCTOU guard: the initial state gate runs on a
