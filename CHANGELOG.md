@@ -125,6 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Dashboard `i` and the ignore menu action now confirm before hiding a
+  project from tracking, sends, auto-exit and notifications. Only `y` / `Y`
+  followed by Enter accepts; restoring a project needs no confirmation.
 - `send --start` allows up to two seconds for the input box to render the
   typed body, checking without sending more keys. Informational output is
   flushed so a startup message appears before a subsequent error.

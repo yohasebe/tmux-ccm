@@ -1490,7 +1490,14 @@ class TestDoRemove:
         assert rebuilds == []
 
 
+@pytest.mark.parametrize("route", ["key", "menu"])
 class TestDoIgnoreToggle:
+    def _invoke(self, dashboard, route):
+        if route == "key":
+            dashboard._handle_key(ord("i"), _make_mock_stdscr())
+        else:
+            dashboard._do_menu_removal(_make_mock_stdscr(), "ignore")
+
     def _cmds(self, monkeypatch):
         calls = {"ignore": [], "unignore": []}
         monkeypatch.setattr("dashboard.cmd_ignore",
@@ -1499,20 +1506,43 @@ class TestDoIgnoreToggle:
                             lambda name: calls["unignore"].append(name))
         return calls
 
-    def test_plain_project_gets_ignored(self, monkeypatch):
+    @pytest.mark.parametrize("answer", ["y", "Y"])
+    def test_plain_project_gets_ignored(self, monkeypatch, answer, route):
         calls = self._cmds(monkeypatch)
         d, _, rebuilds, _ = _interaction_dash(
-            monkeypatch, [_one_project(ignored_panes=0)])
-        d._do_ignore_toggle(_make_mock_stdscr())
+            monkeypatch, [_one_project(ignored_panes=0)],
+            prompt_answers=[answer] if route == "key" else ["", answer])
+        self._invoke(d, route)
 
         assert calls == {"ignore": ["alpha"], "unignore": []}
         assert rebuilds == ["rebuild"]
 
-    def test_ignored_project_gets_unignored(self, monkeypatch):
+    @pytest.mark.parametrize("answer", ["", "n", None, "yes", "x"],
+                             ids=["enter", "n", "escape", "yes", "other"])
+    def test_ignore_cancelled(self, monkeypatch, answer, route):
+        calls = self._cmds(monkeypatch)
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project(ignored_panes=0)],
+            prompt_answers=[answer] if route == "key" else ["", answer])
+        self._invoke(d, route)
+        assert calls == {"ignore": [], "unignore": []}
+        assert rebuilds == []
+        assert messages == ["Ignore cancelled."]
+
+    def test_ignored_project_gets_unignored(self, monkeypatch, route):
         calls = self._cmds(monkeypatch)
         d, _, rebuilds, _ = _interaction_dash(
             monkeypatch, [_one_project(ignored_panes=1)])
-        d._do_ignore_toggle(_make_mock_stdscr())
+        prompts = []
+
+        def prompt(stdscr, text):
+            prompts.append(text)
+            assert route == "menu" and len(prompts) == 1
+            assert text.startswith("Ignore or unignore which project")
+            return ""
+
+        monkeypatch.setattr(d, "_prompt", prompt)
+        self._invoke(d, route)
 
         assert calls == {"ignore": [], "unignore": ["alpha"]}
         assert rebuilds == ["rebuild"]

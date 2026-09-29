@@ -1262,7 +1262,7 @@ class Dashboard:
             help_items = [
                 "[↑↓/jk] select", "[Enter] attach", "[/] search",
                 "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
-                "[r]emove…", "[i]gnore", "e[x]it all", "[s]ave", "[t]ree",
+                "[r]emove…", "[i]gnore (confirm)", "e[x]it all", "[s]ave", "[t]ree",
                 "[b]g sessions", "[w]atch sidekicks", "[m/?] menu",
                 "[q] quit",
             ]
@@ -1970,11 +1970,7 @@ class Dashboard:
             return
         if action == "ignore":
             target = next(p for p in self.projects if p.name == name)
-            ok = self._run_cmd(
-                stdscr,
-                cmd_unignore if getattr(target, "ignored_panes", 0)
-                else cmd_ignore,
-                name)
+            ok = self._toggle_project_ignore(stdscr, target)
         elif action == "unregister":
             ok = self._run_cmd(stdscr, cmd_unregister, name)
         else:
@@ -1994,12 +1990,20 @@ class Dashboard:
         hooks/notifications; un-ignoring restores it. The current
         `ignored_panes` count decides the direction."""
         p = self.projects[self.selected]
-        if getattr(p, "ignored_panes", 0):
-            ok = self._run_cmd(stdscr, cmd_unignore, p.name)
-        else:
-            ok = self._run_cmd(stdscr, cmd_ignore, p.name)
-        if ok:
+        if self._toggle_project_ignore(stdscr, p):
             self._trigger_rebuild()
+
+    def _toggle_project_ignore(self, stdscr, project):
+        """Confirm hiding a project; restoring it needs no confirmation."""
+        if getattr(project, "ignored_panes", 0):
+            return self._run_cmd(stdscr, cmd_unignore, project.name)
+        confirm = self._prompt(
+            stdscr, f"Ignore {project.name}? It stops tracking, sends, "
+            "auto-exit and notifications. [y/N]: ")
+        if confirm not in ("y", "Y"):
+            self._show_message(stdscr, "Ignore cancelled.", 1)
+            return False
+        return self._run_cmd(stdscr, cmd_ignore, project.name)
 
     def _do_exit_all(self, stdscr):
         """Exit all idle Claude Code sessions, optionally including BUSY/PERMIT."""
@@ -2940,7 +2944,7 @@ class Dashboard:
             # Listed beside them so the reversible option is found by
             # anyone looking for a way out, without sharing a
             # confirmation prompt with the irreversible one.
-            ("Ignore / unignore project (hide from ccm)", "ignore"),
+            ("Ignore (confirm) / unignore project", "ignore"),
             ("Undelivered messages (u)", "spool"),
             ("Save snapshot", "save"),
             ("Load snapshot", "load"),
