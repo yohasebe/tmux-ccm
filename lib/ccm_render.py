@@ -352,9 +352,7 @@ def print_status():
         _print_spool_summary(spool_counts)
         return
 
-    if ccm_core.hooks_configured():
-        print(f"{C_DIM}Hooks: ON{C_RESET}")
-    else:
+    if not ccm_core.hooks_configured():
         print(f"{C_DIM}Hooks: OFF (run 'ccm setup-hooks' for improved detection){C_RESET}")
     for warning in (
         ccm_canaries.hooks_log_warning(),

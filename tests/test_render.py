@@ -319,7 +319,7 @@ class TestPrintStatus:
     STATUS column) and gets the dim-bracket / cyan-digit
     treatment, matching the dashboard and status bar."""
 
-    def _run_print_status(self, projects, monkeypatch, capsys):
+    def _run_print_status(self, projects, monkeypatch, capsys, hooks=True, warning=""):
         # build_project_list does file I/O; bypass with a stub.
         monkeypatch.setattr(ccm_core, "build_project_list",
                             lambda fast=False: projects)
@@ -327,7 +327,7 @@ class TestPrintStatus:
         # disable_all_hooks_warning, managed_hooks_only_warning,
         # shell_cluster_warnings — stub all to empty so the test
         # focuses on per-project rendering.
-        monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: "")
+        monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: warning)
         monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning",
                             lambda *a, **kw: "")
         monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
@@ -343,9 +343,21 @@ class TestPrintStatus:
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d, session_id=None: None)
         monkeypatch.setattr(ccm_core, "hooks_configured",
-                            lambda: True)
+                            lambda: hooks)
         ccm_render.print_status()
         return capsys.readouterr().out
+
+
+    @pytest.mark.parametrize("hooks", [True, False, None])
+    @pytest.mark.parametrize("warning", ["", "Unreadable hook settings", "Hook conflict"])
+    def test_only_normal_hook_banner_is_suppressed(self, monkeypatch, capsys, hooks, warning):
+        projects = [ccm_core.Project("0:1", "1", "demo", "demo", "IDLE")]
+        out = self._run_print_status(projects, monkeypatch, capsys, hooks, warning)
+        assert "Hooks: ON" not in out
+        assert ("Hooks: OFF" in out) is (not hooks)
+        assert "demo" in out and "IDLE" in out
+        if warning:
+            assert warning in out
 
     def test_no_pane_marker_for_single_pane_window(
         self, monkeypatch, capsys

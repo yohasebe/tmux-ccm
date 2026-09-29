@@ -372,7 +372,7 @@ ccm setup-hooks
 > [!NOTE]
 > フック信号は `$TMPDIR/ccm-$UID/hooks/` に書き込まれます。BUSY は `Stop`/`SessionEnd` フックまたはプロセス終了でクリアされます。BUSY フックと JSONL の両方が `CCM_BUSY_HOOK_JSONL_WINDOW`（デフォルト10分）を超えて沈黙した場合、ccm は古い信号の信頼を打ち切り IDLE へフォールバックするため、`Stop` の取りこぼしで BUSY に張り付くことはありません。PERMIT も同様に解放されます。permission の解決時に上流はフックを発火しないため、permit イベントが最新で、ペインにモーダルが表示されておらず、セッションログが `CCM_PERMIT_MAX_TIMEOUT`（デフォルト10分）を超えて凍結している場合、ccm はその信頼を打ち切り IDLE へフォールバックします。ダイアログが画面に出ている場合はペインから直接読み取られるため、どれだけ待っていても PERMIT のままです。Esc 中断で残った BUSY（`Stop` フックが発火せず、ログがツール実行中で凍結）はより早く解放されます。画面がアイドルなプロンプトで、ログが `CCM_BUSY_STALE_RELEASE_SEC`（デフォルト60秒）を超えて凍結している場合、ccm は IDLE に委ねます。
 
-フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールせず、ccm 自身のフックの timeout を `CCM_HOOK_CMD_TIMEOUT` に揃えるだけです。ccm を別のパスに再インストールした場合、`ccm setup-hooks` は新しいパスからフックをインストールし、古いパスのフックは名前を挙げるので手で削除してください（下記参照）。
+フックの状態はダッシュボードのフッターに表示されます（Hooks: ON/OFF）。`ccm status` はフックが利用できない場合の Hooks: OFF と診断上の警告を表示し、正常時の Hooks: ON 行は省きます。既にインストール済みの場合、`ccm setup-hooks` は再インストールせず、ccm 自身のフックの timeout を `CCM_HOOK_CMD_TIMEOUT` に揃えるだけです。ccm を別のパスに再インストールした場合、`ccm setup-hooks` は新しいパスからフックをインストールし、古いパスのフックは名前を挙げるので手で削除してください（下記参照）。
 
 `ccm doctor` は対処が必要な項目・検査できなかった項目・次の操作を表示します。完了した検査で問題が見つからなければ総括を1行だけ表示します。正常な検査結果、版、パス、全プロジェクト、session ID、Codex の結び付け、ログ件数は `ccm doctor --verbose` で確認できます。どちらも同じ検査を行い、診断記録を保持します。
 

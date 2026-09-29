@@ -432,7 +432,7 @@ ccm has hook-independent fallbacks so detection keeps working when Claude Code s
 - **Permission dialog footer match**: the permission footer (`Esc to cancel · Tab to amend`) is detected directly from the visible pane.
 - **`~/.claude/hooks.log` size canary**: ccm warns when this file exceeds 100 MB — a known cause of silent hook failure. Save a copy first, then clear it with `: > ~/.claude/hooks.log`.
 
-Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
+Hook status is shown in the dashboard footer (Hooks: ON/OFF). `ccm status` shows Hooks: OFF when hooks are unavailable and retains diagnostic warnings; the normal Hooks: ON line is omitted. If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
 To remove: `ccm remove-hooks`
 

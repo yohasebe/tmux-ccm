@@ -125,6 +125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+- Omit the normal `Hooks: ON` line from `ccm status`, while retaining
+  `Hooks: OFF` and diagnostic warnings.
 - Redact notification excerpts and attention summaries both before and after
   removing terminal and invisible controls, so normalization cannot restore
   an environment credential that escaped the first redaction pass.
