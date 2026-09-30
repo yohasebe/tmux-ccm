@@ -1816,7 +1816,10 @@ class Dashboard:
         if not name:
             name = default_name
         try:
-            cmd_snapshot_save(name, quiet=True)
+            saved = cmd_snapshot_save(name, quiet=True)
+            if saved is False:
+                self._show_message(stdscr, f"Snapshot unchanged, empty or protected: {name}", 1.5)
+                return
             try:
                 import json
                 with open(os.path.join(CCM_SNAPSHOT_DIR, f"{name}.json"), encoding="utf-8") as f:

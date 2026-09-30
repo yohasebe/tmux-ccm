@@ -1540,6 +1540,8 @@ _SUBCOMMANDS = (
     ("spool",
      _passthrough_argparse_config,
      lambda a: ccm_spool.cmd_spool(a.rest)),
+    ("prepare-logout", _passthrough_argparse_config,
+     lambda a: ccm_snapshot.cmd_prepare_logout(a.rest)),
     ("snapshot-save", _add_name_arg,
      lambda a: ccm_snapshot.cmd_snapshot_save(a.name)),
     ("snapshot-load", _add_name_arg,

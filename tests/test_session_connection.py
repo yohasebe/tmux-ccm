@@ -15,7 +15,7 @@ import ccm_snapshot
 def isolated_session(tmp_path, monkeypatch):
     monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
     monkeypatch.setattr(ccm_core, "CCM_SNAPSHOT_DIR", str(tmp_path))
-    (tmp_path / "saved.json").write_text(json.dumps({"projects": []}))
+    (tmp_path / "saved.json").write_text(json.dumps({"version": 1, "projects": []}))
     return tmp_path
 
 

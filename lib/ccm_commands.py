@@ -55,7 +55,7 @@ from ccm_core import _C_BOLD, _C_RESET
 
 
 def _autosave_trigger():
-    """Trigger autosave in background (non-blocking).
+    """Save synchronously through the shared snapshot writer.
 
     Autosave is best-effort — its failure should not crash the
     caller. We do, however, surface the failure as a warning so
@@ -606,8 +606,11 @@ def cmd_stop(target):
         # exists when it does not.
         ccm_core.init_dirs()
         try:
-            ccm_snapshot.cmd_snapshot_save("_autosave", quiet=True)
-            ccm_core.ccm_info("Auto-saved snapshot: _autosave")
+            saved = ccm_snapshot.cmd_snapshot_save("_autosave", quiet=True)
+            if saved:
+                ccm_core.ccm_info("Auto-saved snapshot: _autosave")
+            else:
+                ccm_core.ccm_info("Snapshot unchanged or protected: _autosave")
         except Exception as exc:
             ccm_core.ccm_warn(f"Autosave failed: {exc} — proceeding with stop")
 
@@ -1056,6 +1059,10 @@ def cmd_doctor(verbose=False):
         row(WARN, "spool", summary + " — review: `ccm spool list`; dashboard: `u`")
     else:
         row(OK, "spool", "no queued messages")
+
+    section("Snapshots")
+    for warning, detail in ccm_snapshot.snapshot_diagnostics():
+        row(WARN if warning else OK, detail)
 
     section("Codex sidekick notifications")
     import ccm_sidekick_notify

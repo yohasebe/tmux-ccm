@@ -483,7 +483,7 @@ Adds a second status bar line below the main bar, showing all projects including
 
 ## Snapshots
 
-Save your project layout to restore it later.
+Snapshots save project windows and observed pane layouts from one managed tmux session. Loading currently creates one shell window per project; it does not restore saved splits, pane roles or zoom.
 
 ### Save
 
@@ -499,15 +499,21 @@ ccm start my-workspace
 
 ### Auto-save
 
-The `_autosave` snapshot is updated automatically every 2 minutes while ccm projects exist, and is also written when you run `ccm stop --all`:
+`_autosave` is checked every 2 minutes while projects exist and after operations such as adding or removing a project. Identical content and empty inventories do not replace it. Saving refuses multiple managed sessions and keeps the existing checkpoint.
+
+### Protect a checkpoint
 
 ```bash
-# Stop all projects (auto-saves)
-ccm stop --all
-
-# Next day, restore
-ccm start _autosave
+ccm prepare-logout            # Save the current configuration and protect it
+ccm doctor --verbose          # Inspect protection, capture time and interrupted projects
+ccm prepare-logout --cancel   # Release protection without deleting the checkpoint
 ```
+
+`prepare-logout` waits for the save to finish and protects the captured configuration. Periodic saves, project operations, auto-exit, stop and post-load saves then leave it intact. Windows and agents keep running. Run it again if you change the configuration after protecting it. Protection survives logout and remains in place after loading.
+
+If projects are PERMIT or BUSY, their names and states appear before `Save anyway? [y/N]`. Only `y` followed by Enter confirms. N, Enter alone, Esc, EOF and Ctrl-C leave the checkpoint unchanged and exit nonzero. Non-interactive use refuses the save. `ccm prepare-logout -y` (`--yes`) skips this confirmation and records the interrupted projects. If the configuration or affected states change during confirmation, the save refuses and asks you to retry.
+
+`ccm stop --all` closes windows even if saving fails. If you need a confirmed save, first check that `prepare-logout` succeeds. See [format, fixed backup and older versions](diagnostics.md#snapshot-checkpoints).
 
 #### Auto-restore on tmux start
 
@@ -1046,7 +1052,7 @@ Yes. Run `claude` once in a regular terminal to complete the initial authenticat
 
 ### Can I use ccm across multiple tmux sessions?
 
-ccm manages projects as windows within a single tmux session. The dashboard and status bar show projects from all sessions, but `ccm add` creates windows in your current session. If you need separate project sets, use named snapshots (`ccm snapshot save work`, `ccm snapshot save personal`).
+ccm manages projects as windows within a single tmux session. The dashboard and status bar show projects from all sessions, but `ccm add` creates windows in your current session. Snapshot saving supports managed projects in one session and refuses inventories spanning multiple sessions.
 
 ### Can I view two projects side by side?
 
@@ -1082,8 +1088,8 @@ In most cases, you don't need to manually stop Claude Code at all — idle auto-
 | | `_autosave` | Named snapshots |
 |---|---|---|
 | **Created by** | Automatically every 2 minutes | Manually via dashboard `s` key |
-| **Content** | Always mirrors the current project list | Frozen at the time of save |
-| **Overwritten** | Yes, every 2 minutes | Never (unique date-based name) |
+| **Content** | Last complete capture | Configuration at save time |
+| **Overwritten** | When changed, unless protected | When saved again under the same name |
 | **Used by auto-restore** | Yes | No (must load manually with `ccm start <name>`) |
 
-**Tip:** If you're about to shut down and want to ensure all projects are preserved, save a named snapshot from the dashboard (`s` key). This creates a checkpoint like `save-20260331-1230` that won't be overwritten. You can restore it later with `ccm start save-20260331-1230`.
+**Tip:** Use `ccm prepare-logout` to protect a checkpoint before shutting down. Release protection with `ccm prepare-logout --cancel`.

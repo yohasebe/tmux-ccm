@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Snapshot v2 records observed pane layouts, roles, cwd and ignore intent for
+  one managed session. `ccm prepare-logout` saves and protects `_autosave`,
+  confirms PERMIT/BUSY projects and records their names and states. `--cancel`
+  releases protection. Serialized saves validate captures, skip identical content
+  and keep one fixed previous checkpoint with interrupted-write recovery.
+  Doctor exposes checkpoint details. Loading still restores project windows only.
 - Opt-in Codex completion notices share the spool's readiness checks and
   expiry, with per-window hourly limits, coalescing and visible uncertain
   deliveries. Codex approval waits use the existing attention channel without

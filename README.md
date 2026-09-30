@@ -14,7 +14,7 @@ ccm is a tmux plugin for developers who run [Claude Code](https://docs.anthropic
 
 It's effectively an **attention manager**: every project gets a state (BUSY / IDLE / waiting for permission), the dashboard sorts them by urgency, and one keystroke takes you to whichever needs you next.
 
-A popup dashboard shows every project's state (busy / idle / waiting for permission), git branch, and listening ports at a glance. Snapshots restore your full layout after a tmux restart. Desktop notifications surface only the projects that need attention.
+A popup dashboard shows every project's state (busy / idle / waiting for permission), git branch, and listening ports at a glance. Snapshots restore project windows after a tmux restart. Desktop notifications surface only the projects that need attention.
 
 ccm's value scales with parallelism: useful with 2–3 projects, daily infrastructure with 4+. Best fit for Max-tier users running agents across multiple projects in parallel.
 
@@ -35,7 +35,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - **Tree View** — Hierarchical session/window/pane display with navigation
 - **Git Integration** — Per-project git branch with dirty-state indicator
 - **Port Detection** — Listening ports per project
-- **Snapshots** — Save and restore your project layout
+- **Snapshots** — Save projects and restore their windows
 - **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe), and queues for later delivery (store-and-forward) when the target is busy
 - **Permission-Mode Visibility** — each project's Claude Code permission mode (manual / accept / plan / auto / bypass) shown in `ccm status` and the dashboard, so "this project never asks for permission" is never a mystery
 - **Sidekick Support** — run a second agent CLI beside Claude in a split pane; ccm keeps it out of its own tracking and shows that it is there. See [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore) and [Relaying with a second agent CLI](docs/guide.md#relaying-with-a-second-agent-cli)
@@ -366,6 +366,7 @@ ccm dashboard [--search]          Open interactive dashboard popup
 ccm search                        Open the dashboard in live-filter search mode
 ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
+ccm prepare-logout [-y|--cancel]   Save, protect or unseal a checkpoint
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
@@ -438,7 +439,7 @@ To remove: `ccm remove-hooks`
 
 ### Snapshots
 
-Save your workspace layout and restore it later:
+Save your projects and load their windows later:
 
 ```bash
 ccm snapshot save my-workspace
@@ -446,7 +447,7 @@ ccm snapshot list
 ccm start my-workspace
 ```
 
-The `_autosave` snapshot is also updated automatically every 2 minutes while projects are active. When you run `ccm stop --all`, it is saved as well:
+The `_autosave` checkpoint is checked every 2 minutes and after project operations. Identical or protected content is left intact. Use `ccm prepare-logout` to save and protect it; `ccm prepare-logout --cancel` releases protection. Saving supports one managed session. Splits are recorded, but loading creates one shell window per project.
 
 ```bash
 ccm start _autosave   # restore previous session
@@ -541,7 +542,7 @@ tmux switch-client -t oss      # Standard tmux session switching
 ```
 
 > [!TIP]
-> This pairs well with snapshots. Each session can save and restore its own project layout independently with `ccm snapshot save` / `ccm start`.
+> This pairs well with snapshots. Snapshot saving supports one managed session and refuses inventories spanning multiple managed sessions.
 
 ## How It Works
 

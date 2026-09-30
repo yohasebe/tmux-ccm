@@ -73,6 +73,7 @@ Usage:
   ccm snapshot load [name]          Load and restore a snapshot
   ccm snapshot list                 List available snapshots
   ccm snapshot delete [name]        Delete a snapshot
+  ccm prepare-logout [-y|--cancel]   Save and protect / unseal _autosave
   ccm start <snapshot>              Start from a snapshot
   ccm stop [--all|name]             Stop project window(s)
   ccm bg list                       List external Claude Code agent-view sessions (read-only)
@@ -216,6 +217,10 @@ case "${1:-help}" in
             list|ls) python3 "$CCM_ROOT/lib/ccm_core.py" bg-list ;;
             *)       ccm_die "Usage: ccm bg list" ;;
         esac
+        ;;
+    prepare-logout)
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" prepare-logout "$@"
         ;;
     start)
         ccm_check_deps

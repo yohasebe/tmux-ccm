@@ -371,3 +371,17 @@ To reset ccm state completely:
 rm -rf "${TMPDIR:-/tmp}/ccm-$(id -u)"
 tmux source-file ~/.tmux.conf
 ```
+
+## Snapshot checkpoints
+
+Format v2 retains v1's `projects` and each entry's `name`, `dir` and `auto_start_claude`. Each window's `restore` records its unzoomed layout, width, height, window order, zoom, pane slots, cwd, role, agent kind, ignore intent, active slot and primary Claude slot. Numeric IDs inside the layout and `layout_id` only associate saved geometry with slots; they are not pane identities after restart.
+
+Roles describe observations at save time. Explicit ignore intent is recorded even when the pane has become a shell. Only a uniquely observed non-ignored Claude pane becomes primary; ambiguity leaves the primary slot null. Shells do not imply a past agent. `checkpoint` records scope (one session), completeness, `sealed` and interrupted project names with PERMIT/BUSY; capture time is the top-level `created`. Preparation reads current detection; ordinary saves record the latest cached detection state. Screen contents, drafts, approval details, command arguments, environment values and conversation IDs are omitted. Project names and cwd are stored.
+
+All writers collect under one lock and compare window and pane inventories before and after capture. Changed topology, failed collection and empty inventories preserve the checkpoint. Temporary files are read back, fsynced and atomically replaced. Protection blocks every automatic writer and manual `_autosave` saves/deletion. Running `prepare-logout` again explicitly replaces the protected checkpoint; `--cancel` releases protection while retaining its contents. Saving configuration does not stop processes or transfer approvals.
+
+One fixed `_autosave.prev` contains the validated checkpoint preceding the last successful replacement. Identical, empty and failed saves, and releasing protection, do not rotate it. It is absent from `snapshot list`. Files use mode 0600 and the snapshot directory uses 0700. An interrupted `.snapshot-transaction` causes the next writer to roll back both files under the lock before proceeding. If recovery itself encounters I/O errors, the command exits nonzero and retains the transaction record. Fix the disk problem and retry. `ccm doctor --verbose` reads protection, interrupted projects and backup availability; pending transactions and unreadable checkpoints also appear in ordinary doctor output.
+
+To use the backup, open the snapshot directory (default `~/.local/share/ccm/snapshots`; `CCM_SNAPSHOT_DIR` takes precedence, otherwise under `CCM_DATA_DIR`). Copy `_autosave.prev` to an unused name such as `recovery.json`, set the copy's mode to 0600, then run `ccm start recovery`. Loading currently creates one shell window per project; it does not apply saved splits, roles or zoom. A protected `_autosave` remains protected after loading.
+
+v1 remains readable. Unknown versions are refused before any window changes. **Older ccm ignores v2 additions when loading and can overwrite them with v1 during its subsequent autosave. Older ccm also ignores sealed protection.** Copy the checkpoint and backup elsewhere before downgrading. Stop older ccm processes before relying on the new protection. Protection covers current ccm writers; external file editing and sync are outside its control. A configured directory inside a synced location will sync these records too.
