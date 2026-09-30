@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- The menu preview explains the selected command and shows current setting
+  values. It follows the project preview position, size thresholds and toggle,
+  wraps text to the panel width, and uses one English help definition.
 - Dashboard menu actions for logout preparation/protection cancellation,
   continuing incomplete restores, selecting/deleting saved checkpoints and
   resetting runtime state. CLI progress appears outside curses; full results

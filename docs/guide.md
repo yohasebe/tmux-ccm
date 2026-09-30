@@ -140,6 +140,34 @@ The dashboard refreshes on a hybrid cadence: full state detection runs every 2 s
 
 The row order is decided when the dashboard opens (projects needing attention first) and then held stable while it stays open — a project changing state updates its icon in place but does not jump to a new position, so your selection never lands on the wrong project mid-interaction. Close and reopen the dashboard to re-sort by current state.
 
+### Menu help preview
+
+In the `m` / `?` menu, an enabled preview shows help for the selected item. Right placement requires at least 80 columns; bottom placement requires at least 20 rows. It uses the same dimensions as the project preview. When disabled or too small, only the menu appears. Descriptions wrap within the panel and follow selection changes; setting items also show their current values. The English help text is maintained in one code definition.
+
+The following items complement the checkpoint, logout and recovery actions described in the next section.
+
+| Menu item | Purpose |
+|---|---|
+| Add project | Choose a directory and name for a new project. |
+| Unregister project | Keep its window while removing ccm management. |
+| Delete project | Choose a project and confirm closing its window. |
+| Ignore / unignore project | Hide or restore a project in tracking. |
+| Undelivered messages | Review messages that expired or need inspection. |
+| Save snapshot | Choose a name and save the current layout. |
+| Status bar mode | Choose how much the status bar displays. |
+| Auto-restore | Choose whether tmux startup restores the autosave. |
+| Idle timeout | Set the wait before idle Claude sessions exit. |
+| Preview panel | Show or hide project previews and menu help. |
+| Preview position | Place the preview on the right or below the list. |
+| Background sessions | Show or hide background sessions on the dashboard. |
+| Notifications | Choose which changes generate a notification. |
+| Notification sound | Enable or disable sounds (macOS). |
+| Sound name | Choose and preview a sound (macOS). |
+| Auto-start Claude | Choose whether opening a shell project starts Claude. |
+| Dashboard | Return to the project list. |
+| Tree view | Open the session/window/pane hierarchy. |
+| Quit | Close the dashboard. |
+
 ### Logout, restoration and recovery
 
 Open the menu with `m` or `?`. These actions have no new single-key shortcut.

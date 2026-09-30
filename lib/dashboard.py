@@ -64,6 +64,8 @@ BG_ATTACH_TAG = "@ccm_bg_short"
 import ccm_agentview
 import ccm_spool
 import ccm_presentation
+import ccm_menu_help
+import ccm_roles
 from ccm_window import auto_start_claude, reset_window_after_attach
 import ccm_window
 
@@ -799,24 +801,11 @@ class Dashboard(LifecycleActions):
                 stdscr.refresh()
                 return
 
-            # Preview panel layout
-            preview_width = 0
-            preview_col = 0
-            preview_height = 0
-            preview_row = 0
-            list_width = width
-            list_height = height
-            if self.preview_enabled and self.mode == "dashboard":
-                if self.preview_position == "right" and width >= 80:
-                    preview_width = min(width // 2, width - 40)
-                    list_width = width - preview_width - 1
-                    preview_col = list_width
-                    preview_height = height - 1
-                elif self.preview_position == "bottom" and height >= 20:
-                    preview_height = min(height // 2, height - 10)
-                    list_height = height - preview_height - 1
-                    preview_row = list_height
-                    preview_width = width
+            # Dashboard and menu share the same preview dimensions.
+            (list_width, list_height, preview_col, preview_row,
+             preview_width, preview_height) = ccm_menu_help.preview_geometry(
+                width, height, self.preview_enabled and self.mode == "dashboard",
+                self.preview_position)
 
             # Store list width for _addstr clipping in list area
             self._render_max_col = list_width if preview_width > 0 else 0
@@ -2918,6 +2907,28 @@ class Dashboard(LifecycleActions):
             ("Quit", "quit"),
         ]
 
+    def _render_menu_description(self, stdscr, col, row, width, height):
+        if not (0 <= self.menu_selected < len(self.menu_items)):
+            return
+        label, action = self.menu_items[self.menu_selected]
+        if not action:
+            return
+        if self.preview_position == "right":
+            for y in range(row, row + height):
+                stdscr.addch(y, col, "│", curses.color_pair(C_DIM))
+            x, y, available, count = col + 2, row, width - 3, height
+        else:
+            stdscr.addstr(row, 0, "─" * (width - 1), curses.color_pair(C_DIM))
+            x, y, available, count = 1, row + 1, width - 2, height - 1
+        title = ccm_roles.clean(label)
+        lines = ccm_menu_help.wrap_text(title, available) + [""]
+        title_rows = len(lines) - 1
+        lines += ccm_menu_help.wrap_text(ccm_menu_help.description(action, label), available)
+        for i, line in enumerate(lines[:count]):
+            self._addstr(stdscr, y + i, x, line,
+                         curses.A_BOLD if i < title_rows else 0,
+                         max_col=x + available + 1)
+
     def _render_menu(self, stdscr):
         self._render_max_col = 0
         try:
@@ -2925,30 +2936,29 @@ class Dashboard(LifecycleActions):
             height, width = stdscr.getmaxyx()
 
             if height < self.MIN_HEIGHT or width < self.MIN_WIDTH:
-                try:
-                    stdscr.addstr(0, 0, f"Terminal too small ({width}x{height})"[:width - 1])
-                except curses.error:
-                    pass
+                stdscr.addstr(0, 0, f"Terminal too small ({width}x{height})"[:width - 1])
                 stdscr.refresh()
                 return
 
+            (list_width, list_height, col, row, panel_width,
+             panel_height) = ccm_menu_help.preview_geometry(
+                width, height, self.preview_enabled, self.preview_position)
+            self._render_max_col = list_width if panel_width else 0
             self._addstr(stdscr, 0, 2, "Menu  (d=dashboard, q=quit)", curses.color_pair(C_DIM))
-
-            row = 2
-            start = max(0, self.menu_selected - max(1, height - 4) + 1)
+            menu_row = 2
+            start = max(0, self.menu_selected - max(1, list_height - 4) + 1)
             for i, (label, action) in enumerate(self.menu_items[start:], start):
-                if row >= height - 1:
+                if menu_row >= list_height - 1:
                     break
-                if action == "":
-                    # Separator
-                    row += 1
-                    continue
-                is_sel = i == self.menu_selected
-                prefix = "  ▶ " if is_sel else "    "
-                attr = curses.A_BOLD if is_sel else 0
-                self._addstr(stdscr, row, 0, f"{prefix}{label}", attr)
-                row += 1
-
+                if action:
+                    selected = i == self.menu_selected
+                    prefix = "  ▶ " if selected else "    "
+                    self._addstr(stdscr, menu_row, 0,
+                                 prefix + ccm_roles.clean(label),
+                                 curses.A_BOLD if selected else 0)
+                menu_row += 1
+            if panel_height:
+                self._render_menu_description(stdscr, col, row, panel_width, panel_height)
             stdscr.refresh()
         except curses.error:
             pass
