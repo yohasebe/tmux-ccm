@@ -20,6 +20,7 @@ _ccm() {
         'search:Open dashboard in live-filter search mode'
         'statusline:One-line status for tmux status bar'
         'snapshot:Snapshot operations'
+        'roles:Inspect or release restored pane roles'
         'prepare-logout:Save and protect / unseal the autosave checkpoint'
         'start:Start from a snapshot'
         'stop:Stop project window(s)'
@@ -74,6 +75,9 @@ _ccm() {
                 local -a windows
                 windows=(${(f)"$(tmux list-windows -F '#{window_name}' 2>/dev/null)"})
                 compadd -a windows
+                ;;
+            roles)
+                compadd -- --clear
                 ;;
             prepare-logout)
                 compadd -- --cancel -y --yes

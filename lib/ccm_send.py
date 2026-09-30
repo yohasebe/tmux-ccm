@@ -64,6 +64,7 @@ import time
 
 import ccm_agentview
 import ccm_window
+import ccm_roles
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
 import ccm_spool  # store-and-forward queue for undeliverable sends
 from ccm_constants import (
@@ -408,6 +409,8 @@ def _resolve_delivery_pane(win_target):
     by the --start path to verify it is really a shell before
     typing the launch command), or None when pane enumeration
     failed and we fell back to the window target."""
+    if ccm_roles.pending(win_target):
+        ccm_core.ccm_die("Restore incomplete; retry the same snapshot before sending")
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
     panes = enumerate_window_panes(win_target, ps_lines)
     if not panes:

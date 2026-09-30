@@ -20,6 +20,7 @@ import os
 import ccm_core  # late-bound for tmux_cmd / ccm_die / fzf_select / etc.
 import ccm_render
 import ccm_snapshot_store as store
+import ccm_restore
 
 
 def _sanitize_snapshot_name(name):
@@ -46,6 +47,10 @@ def cmd_snapshot_save(name="", quiet=False):
     name = _sanitize_snapshot_name(name)
     try:
         with store.locked():
+            if ccm_restore.paused():
+                if not quiet:
+                    ccm_core.ccm_warn("Restore incomplete; retry the same snapshot before saving")
+                return False
             old = store.read(store.directory() / f"{name}.json")
             if name == "_autosave" and store.sealed(old):
                 if not quiet:
@@ -106,6 +111,8 @@ def cmd_prepare_logout(args):
     opts = parser.parse_args(args)
     try:
         with store.locked():
+            if ccm_restore.paused():
+                raise store.SnapshotError("Restore incomplete; retry the same snapshot before preparing or unsealing")
             path = store.directory() / "_autosave.json"
             if opts.cancel:
                 data = store.read(path)
@@ -144,6 +151,8 @@ def snapshot_diagnostics():
     """Read only: doctor must not recover, create files or acquire a write lock."""
     rows = []
     try:
+        if ccm_restore.paused():
+            rows.append((True, 'restore incomplete; retry the same snapshot load to resume autosave'))
         if (store.directory() / '.snapshot-transaction').exists():
             rows.append((True, "snapshot transaction pending; next snapshot write will recover it"))
         data = store.read(store.directory() / '_autosave.json')
@@ -205,8 +214,9 @@ def cmd_snapshot_load(name=""):
     except store.SnapshotError as exc:
         ccm_core.ccm_die(str(exc))
     if data['version'] == 2:
-        ccm_core.ccm_warn("Loading project windows only; saved pane splits and roles are not restored. "
-                          "Checkpoint protection remains in place.")
+        return ccm_restore.load(name)
+    if ccm_restore.paused():
+        ccm_core.ccm_die('Restore incomplete; finish the same v2 snapshot before loading another snapshot')
 
     snap_projects = data.get("projects", [])
     if not isinstance(snap_projects, list):
@@ -298,6 +308,8 @@ def cmd_snapshot_delete(name=""):
     file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
     try:
         with store.locked():
+            if ccm_restore.paused():
+                raise store.SnapshotError("Restore incomplete; retry the same snapshot before deleting")
             if name == "_autosave" and store.sealed(store.read(store.directory() / f"{name}.json")):
                 raise store.SnapshotError("Snapshot protected; run ccm prepare-logout --cancel before deleting")
             os.unlink(file_path)

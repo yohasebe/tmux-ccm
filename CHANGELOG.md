@@ -8,12 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- v2 snapshots restore pane splits, working directories, roles and zoom as
+  inactive login shells selected from tmux default-shell, SHELL or sh. Shell
+  startup files run normally; transient foreground work is allowed to settle,
+  while persistent work pauses restoration without being killed or restarted.
+  Restore retries verify ownership and geometry, pause autosave
+  after partial failure, and release protection only after full success.
+  Reserved primary panes constrain Claude launches; `ccm roles` shows or releases
+  reservations, while `ccm unignore` also releases reserved ignore intent.
 - Snapshot v2 records observed pane layouts, roles, cwd and ignore intent for
   one managed session. `ccm prepare-logout` saves and protects `_autosave`,
   confirms PERMIT/BUSY projects and records their names and states. `--cancel`
   releases protection. Serialized saves validate captures, skip identical content
   and keep one fixed previous checkpoint with interrupted-write recovery.
-  Doctor exposes checkpoint details. Loading still restores project windows only.
+  Doctor exposes checkpoint details.
 - Opt-in Codex completion notices share the spool's readiness checks and
   expiry, with per-window hourly limits, coalescing and visible uncertain
   deliveries. Codex approval waits use the existing attention channel without

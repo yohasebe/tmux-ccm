@@ -30,6 +30,7 @@ import os
 import time
 
 import ccm_constants
+import ccm_roles
 import ccm_core
 import ccm_detection
 import ccm_notify
@@ -380,6 +381,8 @@ def auto_exit_idle(projects):
 
         idle_duration = now - idle_since
         if idle_duration >= idle_timeout:
+            if ccm_roles.pending(win_target):
+                continue
             # Target the Claude pane specifically, NOT `win_target`
             # (which routes send-keys to the window's currently
             # active pane). If the user split off a shell pane and

@@ -73,6 +73,7 @@ Usage:
   ccm snapshot load [name]          Load and restore a snapshot
   ccm snapshot list                 List available snapshots
   ccm snapshot delete [name]        Delete a snapshot
+  ccm roles [target] [--clear]      Inspect or release restored pane roles
   ccm prepare-logout [-y|--cancel]   Save and protect / unseal _autosave
   ccm start <snapshot>              Start from a snapshot
   ccm stop [--all|name]             Stop project window(s)
@@ -217,6 +218,10 @@ case "${1:-help}" in
             list|ls) python3 "$CCM_ROOT/lib/ccm_core.py" bg-list ;;
             *)       ccm_die "Usage: ccm bg list" ;;
         esac
+        ;;
+    roles)
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" roles "$@"
         ;;
     prepare-logout)
         shift

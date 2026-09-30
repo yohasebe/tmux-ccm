@@ -17,6 +17,7 @@ import time
 import ccm_core
 import ccm_detection
 import ccm_pane_state
+import ccm_roles
 
 
 class SnapshotError(RuntimeError):
@@ -29,10 +30,10 @@ class EmptySnapshot(SnapshotError):
 
 WINDOW_FIELDS = ('session_id', 'window_id', 'window_index', '@ccm_project',
                  '@ccm_dir', 'window_layout', 'window_width', 'window_height',
-                 'window_zoomed_flag', 'window_panes', '@ccm_prev_state')
+                 'window_zoomed_flag', 'window_panes', '@ccm_prev_state', '@ccm_restore_pending')
 PANE_FIELDS = ('window_id', 'pane_id', 'pane_index', 'pane_pid',
                'pane_current_command', 'pane_current_path', '@ccm_ignore',
-               'pane_active', 'pane_height')
+               'pane_active', 'pane_height', '@ccm_restore_role')
 
 
 def _query(command, fields):
@@ -54,6 +55,8 @@ def _inventory():
     windows = [w for w in _query('list-windows', WINDOW_FIELDS) if w['@ccm_project']]
     if len({w['session_id'] for w in windows}) > 1:
         raise SnapshotError('Multiple managed sessions are not supported; snapshot unchanged')
+    if any(w['@ccm_restore_pending'] == '1' for w in windows):
+        raise SnapshotError('Restore in progress; snapshot unchanged')
     ids = [w['window_id'] for w in windows]
     if len(set(ids)) != len(ids):
         raise SnapshotError('Linked project windows are not supported; snapshot unchanged')
@@ -203,7 +206,7 @@ def collect(name, sealed=False):
     ps_lines = ccm_core.ps_snapshot().splitlines()
     if not ps_lines:
         raise SnapshotError('Cannot read process inventory; snapshot unchanged')
-    projects, interrupted = [], []
+    projects, interrupted, observed_roles = [], [], []
     for w in windows:
         wp = sorted((p for p in panes if p['window_id'] == w['window_id']),
                     key=lambda p: int(p['pane_index']))
@@ -217,10 +220,21 @@ def collect(name, sealed=False):
             role = ('sidekick' if ignore or agent and agent != 'claude' else
                     'shell' if not agent and p['pane_current_command'] in ccm_core.SHELL_FOREGROUND_COMMANDS
                     else 'unknown')
+            observed_roles.append((p['pane_id'], p['@ccm_restore_role'], agent))
+            reserved = ccm_roles.observed(ccm_roles.decode(p['@ccm_restore_role']), agent)
+            if reserved:
+                role, agent = reserved['role'], reserved['agent']
+                ignore = ignore or reserved['ignore']
             saved.append({'slot': slot, 'layout_id': int(p['pane_id'].lstrip('%')),
                           'role': role, 'agent': agent, 'ignore': ignore,
                           'cwd': ccm_core.shorten_home(p['pane_current_path'])})
-        candidates = [p for p in saved if p['agent'] == 'claude' and not p['ignore']]
+        candidates = [p for p in saved if p['role'] == 'primary' and not p['ignore']]
+        if not candidates:
+            candidates = [p for p in saved if p['agent'] == 'claude' and not p['ignore']]
+        if len(candidates) != 1:
+            for p in saved:
+                if p['role'] == 'primary':
+                    p['role'] = 'unknown'
         primary = candidates[0]['slot'] if len(candidates) == 1 else None
         if primary is not None:
             saved[primary]['role'] = 'primary'
@@ -238,6 +252,8 @@ def collect(name, sealed=False):
             interrupted.append({'name': w['@ccm_project'], 'state': state})
     if _inventory() != before:
         raise SnapshotError('Window or pane state changed during capture; retry')
+    for pane, raw, agent in observed_roles:
+        ccm_roles.reconcile(pane, raw, agent)
     return validate({'version': 2, 'name': name,
                      'created': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'projects': projects,
                      'checkpoint': {'scope': 'single-session', 'session': windows[0]['session_id'],

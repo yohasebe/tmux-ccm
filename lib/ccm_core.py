@@ -626,7 +626,7 @@ _WINDOW_FORMAT = (
     "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
     "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}\t"
     "#{@ccm_work_clock}\t#{@ccm_work_clock_ts}\t#{@ccm_unresolved_idle}\t"
-    "#{status-interval}"
+    "#{status-interval}\t#{@ccm_restore_pending}"
 )
 _WINDOW_FIELDS_MIN = 6  # win_target, project, dir, prev_state, completed_at, win_activity
 
@@ -639,9 +639,9 @@ def _force_mock_state() -> bool:
 
 
 def _build_panes_cache():
-    """One bulk `list-panes -a` query returning 7-tuples
+    """One bulk `list-panes -a` query returning pane tuples
     `(target, pid, pane_id, current_command, pane_active, pane_height,
-    ignore)` for every pane across every session. Used by detection
+    ignore, optional_restore_role)` for every pane across every session. Used by detection
     and pane-count phases. `ignore` is the `@ccm_ignore` pane option
     ("1" when the pane hosts a CCM_IGNORE'd session, "" otherwise) —
     carried here so every detection consumer can drop the pane without
@@ -651,7 +651,7 @@ def _build_panes_cache():
         "list-panes", "-a", "-F",
         "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t"
         "#{pane_current_command}\t#{pane_active}\t#{pane_height}\t"
-        "#{@ccm_ignore}"
+        "#{@ccm_ignore}\t#{@ccm_restore_role}"
     )
     cache = []
     for line in panes_raw.split("\n"):
@@ -661,7 +661,7 @@ def _build_panes_cache():
             # stays valid — treated as "not ignored".
             while len(parts) < 7:
                 parts.append("")
-            cache.append(tuple(parts[:7]))
+            cache.append(tuple(parts[:8]))
     return cache
 
 
@@ -680,6 +680,8 @@ def _parse_window_line(line):
     if len(parts) < _WINDOW_FIELDS_MIN:
         return None
     project = parts[1]
+    if len(parts) >= 14 and parts[13] == "1":
+        return None
     if not project:
         return None
     # @ccm_bg_active and @ccm_session_id are recent additions; older
@@ -961,6 +963,11 @@ def build_project_list(fast=False):
 
     ps_lines = [] if fast else ps_snapshot().strip().split("\n")
     panes_cache = [] if fast else _build_panes_cache()
+    import ccm_roles
+    for pc in panes_cache:
+        if len(pc) >= 8 and pc[7]:
+            agent = 'claude' if ccm_detection.find_claude_pid(pc[1], ps_lines) else external_agent_name(pc[3])
+            ccm_roles.reconcile(pc[2], pc[7], agent)
     own_pgid = str(os.getpgrp())
     # Sidekick attention markers: read once per build (a single
     # readdir), lazily on the first row because the global
@@ -1540,6 +1547,8 @@ _SUBCOMMANDS = (
     ("spool",
      _passthrough_argparse_config,
      lambda a: ccm_spool.cmd_spool(a.rest)),
+    ("roles", _passthrough_argparse_config,
+     lambda a: __import__("ccm_roles").cmd_roles(a.rest)),
     ("prepare-logout", _passthrough_argparse_config,
      lambda a: ccm_snapshot.cmd_prepare_logout(a.rest)),
     ("snapshot-save", _add_name_arg,

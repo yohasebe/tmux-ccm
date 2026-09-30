@@ -46,6 +46,7 @@ import ccm_spool
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
+import ccm_roles
 from ccm_constants import (CCM_VERSION, CLAUDE_CMD,
                            external_agent_name)
 from ccm_core import _C_BOLD, _C_RESET
@@ -434,6 +435,8 @@ def cmd_attach(target):
         return
 
     win_target = f"{session}:{idx}"
+    if ccm_roles.pending(win_target):
+        ccm_core.ccm_die("Restore incomplete; retry the same snapshot before attaching")
 
     # Auto-start Claude unless a pane already hosts it. The check of
     # the window as it is now — every pane, from a fresh process
@@ -791,6 +794,7 @@ def cmd_unignore(name=""):
     targets = _resolve_ignore_targets(name)
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
     for pane in targets:
+        ccm_roles.unignore(pane)
         ccm_core.tmux_cmd("set-option", "-p", "-t", pane, "-u", "@ccm_ignore")
         ccm_core.tmux_cmd("select-pane", "-t", pane, "-T", "")
         sid = _pane_session_id(pane, ps_lines)

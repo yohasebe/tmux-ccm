@@ -362,6 +362,7 @@ ccm dashboard [--search]          インタラクティブダッシュボード�
 ccm search                        ダッシュボードをライブフィルタ検索モードで開く
 ccm menu                          インタラクティブメニュー
 ccm snapshot save|load|list|delete  スナップショット管理
+ccm roles [target] [--clear]      復元したペインの役割を表示・解除
 ccm prepare-logout [-y|--cancel]   保存点の保存・保護・解除
 ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
@@ -443,7 +444,7 @@ ccm snapshot list
 ccm start my-workspace
 ```
 
-`_autosave` は 2 分ごととプロジェクト操作時に更新されます。同内容や保護中は上書きしません。`ccm prepare-logout` で保存点を保存・保護し、`ccm prepare-logout --cancel` で解除します。単一の管理セッションに対応します。分割情報も保存しますが、ロードは各プロジェクトにシェル窓を 1 つ作ります。
+`_autosave` は 2 分ごととプロジェクト操作時に更新されます。同内容や保護中は上書きしません。`ccm prepare-logout` で保存点を保存・保護し、`ccm prepare-logout --cancel` で解除します。単一の管理セッションに対応します。v2 は分割・cwd・役割を利用者のログインシェルで復元し、シェルの起動ファイルも通常どおり実行します。ログアウト前に `ccm prepare-logout`、ログイン後に `ccm start _autosave` を実行し、必要な窓を開いて主ペインで Claude を再開します。サイドキックは `ccm roles` の案内に従って手で再開します。同じ環境に tmux-resurrect の復元を重ねないでください。
 
 ```bash
 ccm start _autosave   # 前回のセッションを復元

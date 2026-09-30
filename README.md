@@ -366,6 +366,7 @@ ccm dashboard [--search]          Open interactive dashboard popup
 ccm search                        Open the dashboard in live-filter search mode
 ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
+ccm roles [target] [--clear]      Inspect or release restored pane roles
 ccm prepare-logout [-y|--cancel]   Save, protect or unseal a checkpoint
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
@@ -447,7 +448,7 @@ ccm snapshot list
 ccm start my-workspace
 ```
 
-The `_autosave` checkpoint is checked every 2 minutes and after project operations. Identical or protected content is left intact. Use `ccm prepare-logout` to save and protect it; `ccm prepare-logout --cancel` releases protection. Saving supports one managed session. Splits are recorded, but loading creates one shell window per project.
+The `_autosave` checkpoint is checked every 2 minutes and after project operations. Identical or protected content is left intact. Use `ccm prepare-logout` to save and protect it; `ccm prepare-logout --cancel` releases protection. Saving supports one managed session. v2 restores splits, cwd and roles in your login shell; shell startup files run normally. Before logout run `ccm prepare-logout`; after login run `ccm start _autosave`. Open the windows you need to resume Claude in their reserved primary panes; resume sidekicks manually using `ccm roles` guidance. Do not also restore this environment with tmux-resurrect.
 
 ```bash
 ccm start _autosave   # restore previous session

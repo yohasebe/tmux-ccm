@@ -25,6 +25,7 @@ import os
 from typing import NamedTuple, Optional
 
 import ccm_agentview
+import ccm_roles
 import ccm_core  # late-bound for tmux_cmd / ps_snapshot
 from ccm_constants import (
     CLAUDE_CMD,
@@ -215,6 +216,8 @@ def launch_claude(win_target, honour_setting=True, exclude_pane=None) -> LaunchR
     is judged first, before the launch is typed (the new session's
     own transcript would otherwise be the newest one scanned), and
     shown after."""
+    if ccm_roles.pending(win_target):
+        return LaunchResult(UNAVAILABLE)
     if honour_setting:
         setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
         if setting != "on":
@@ -228,7 +231,13 @@ def launch_claude(win_target, honour_setting=True, exclude_pane=None) -> LaunchR
         return LaunchResult(UNAVAILABLE, notice)
     if any(p.claude_pid for p in panes if not p.ignored):
         return LaunchResult(ALREADY_RUNNING, notice)
-    pane = _pick_shell_pane(panes, exclude_pane)
+    reserved = ccm_roles.primary(win_target, panes)
+    if reserved is None:
+        pane = _pick_shell_pane(panes, exclude_pane)
+    else:
+        pane = next((p.pane_id for p in panes if p.pane_id == reserved
+                     and p.pane_id != exclude_pane and not p.ignored
+                     and p.current_command in SHELL_FOREGROUND_COMMANDS), None)
     if pane is None:
         return LaunchResult(UNAVAILABLE, notice)
     # Leave copy-mode if the pane is in it; a no-op otherwise. Without

@@ -190,7 +190,7 @@ fi
 CCM_AUTO_RESTORE=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)
 CCM_AUTO_RESTORE="${CCM_AUTO_RESTORE:-off}"
 if [[ "$CCM_AUTO_RESTORE" == "on" ]]; then
-    CCM_SNAPSHOT_FILE="${HOME}/.local/share/ccm/snapshots/_autosave.json"
+    CCM_SNAPSHOT_FILE="${CCM_SNAPSHOT_DIR:-${CCM_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/ccm}/snapshots}/_autosave.json"
     if [[ -f "$CCM_SNAPSHOT_FILE" ]]; then
         # Only restore if no ccm projects are already loaded
         # sleep 2 to run after inject-status (sleep 1)

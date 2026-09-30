@@ -122,7 +122,7 @@ def test_change_during_confirmation_is_not_saved(env, monkeypatch):
     assert contents(env) == before
 
 
-@pytest.mark.parametrize('source', ['periodic', 'lifecycle', 'auto-exit', 'stop', 'load', 'manual'])
+@pytest.mark.parametrize('source', ['periodic', 'lifecycle', 'auto-exit', 'stop', 'manual'])
 def test_every_save_path_respects_seal(env, monkeypatch, source):
     snapshot.cmd_prepare_logout([])
     before = contents(env)
@@ -207,9 +207,9 @@ def test_split_roles_cwd_zoom_and_ambiguous_main(env, monkeypatch):
     split = layout('120x40,0,0{59x40,0,0,1,60x40,60,0,2}')
     def query(command, *a, **k):
         if command == 'list-windows':
-            return f'$1\t@1\t3\talpha\t/tmp/alpha\t{split}\t120\t40\t1\t2\tIDLE\tEND'
-        return ('@1\t%1\t0\t11\tzsh\t/tmp/alpha\t\t0\t40\tEND\n'
-                '@1\t%2\t1\t12\tcodex\t/tmp/sidekick\t1\t1\t40\tEND')
+            return f'$1\t@1\t3\talpha\t/tmp/alpha\t{split}\t120\t40\t1\t2\tIDLE\t\tEND'
+        return ('@1\t%1\t0\t11\tzsh\t/tmp/alpha\t\t0\t40\t\tEND\n'
+                '@1\t%2\t1\t12\tcodex\t/tmp/sidekick\t1\t1\t40\t\tEND')
     monkeypatch.setattr(ccm_core, 'tmux_query', query)
     monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: '21 11 11 claude 00:10\n12 0 12 codex 00:10')
     data = store.collect('_autosave')

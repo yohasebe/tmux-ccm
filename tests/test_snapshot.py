@@ -161,7 +161,12 @@ class TestSnapshotLoad:
         snap_path = tmp_path / "rt-disk.json"
         assert snap_path.exists()
 
-        # LOAD the file we just wrote
+        # v1 continues to restore one shell window per project. v2 layout
+        # loading is exercised by the isolated tmux restore tests.
+        data = json.loads(snap_path.read_text())
+        data['version'] = 1
+        snap_path.write_text(json.dumps(data))
+        # LOAD the compatibility manifest
         load_phase["active"] = True
         ccm_snapshot.cmd_snapshot_load("rt-disk")
 

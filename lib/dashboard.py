@@ -1783,6 +1783,10 @@ class Dashboard:
 
     def _do_attach(self, stdscr):
         p = self.projects[self.selected]
+        import ccm_roles
+        if ccm_roles.pending(p.win_target, query=tmux_cmd):
+            self._show_message(stdscr, "Restore incomplete; retry the snapshot load", 3)
+            return ""
         # Check if project directory still exists
         if p.dir and not os.path.isdir(os.path.expanduser(p.dir)):
             self._show_message(stdscr, f"Directory not found: {p.dir}", 3)

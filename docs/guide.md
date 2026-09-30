@@ -483,7 +483,14 @@ Adds a second status bar line below the main bar, showing all projects including
 
 ## Snapshots
 
-Snapshots save project windows and observed pane layouts from one managed tmux session. Loading currently creates one shell window per project; it does not restore saved splits, pane roles or zoom.
+To carry windows, splits, working directories and pane roles across logout:
+
+1. Before logout, run `ccm prepare-logout`. If projects are PERMIT or BUSY, review their names and confirm with `y` and Enter to save.
+2. After login, open tmux and run `ccm start _autosave`. Windows and panes return as inactive shells.
+3. Open the windows you need with `ccm attach <name>` or the dashboard. Claude resumes in the reserved primary pane when `@ccm-auto-start` is on. An unknown primary pane prevents automatic launch.
+4. Resume sidekicks manually using the restore output or `ccm roles`. For Codex, choose a conversation with `codex resume` in that cwd. ccm does not automatically select a particular conversation.
+
+Running conversation state, approval waits and agent processes are not restored. Interrupted projects appear after restoring a sealed checkpoint; cached BUSY entries in ordinary autosaves do not. Do not layer tmux-resurrect restoration onto the same environment.
 
 ### Save
 
@@ -491,47 +498,59 @@ Snapshots save project windows and observed pane layouts from one managed tmux s
 ccm snapshot save my-workspace
 ```
 
+Saving supports one managed session. v2 retains windows, horizontal/vertical splits, cwd, roles, ignore intent, selected panes and zoom.
+
 ### Restore
 
 ```bash
 ccm start my-workspace
+ccm roles                    # Current pane's role and guidance
+ccm roles @7                 # All panes in a window
+ccm roles %12 --clear        # Release a repurposed pane's role reservation
+ccm unignore                 # Clear current pane's ignore intent and live marker
 ```
+
+Smaller screens scale the layout proportionally; if the panes cannot fit, restoration stops as incomplete. Windows without a reserved primary Claude pane do not launch Claude automatically. Clearing a reservation also leaves that pane for manual launch. `roles --clear` does not change live ignore markers; use `unignore` to release those too.
+
+Existing registered windows with matching names and base cwd are retained without changing splits or roles. Overlapping unregistered window names/cwd and missing saved directories stop restoration before creation. Inspect and explicitly register or resolve the overlap, then retry. An unregistered control window in a saved project's cwd also counts as a conflict.
+
+Partial failure reports restored/incomplete counts and pauses autosave. Resolve the cause and rerun the same `ccm start <name>` to continue only in windows marked as belonging to that restore. If you changed an incomplete window so it no longer matches the progress record, ccm stops without further changes.
+
+Restoration starts your login shell: tmux's `default-shell`, then `$SHELL`, then `/bin/sh`, accepting only executable absolute paths with a recognized shell name. It bypasses `default-command`. Shell startup files run normally. At each layout step ccm waits up to 10 seconds for a shell foreground to settle. If rc starts an agent or another persistent foreground process, restoration pauses without killing or restarting it; inspect the pane and retry after it returns to the shell. Already completed panes are not restarted on retry.
 
 ### Auto-save
 
-`_autosave` is checked every 2 minutes while projects exist and after operations such as adding or removing a project. Identical content and empty inventories do not replace it. Saving refuses multiple managed sessions and keeps the existing checkpoint.
+`_autosave` is checked every 2 minutes and after project operations. Identical or empty inventories, protected checkpoints and incomplete restorations leave it intact. Restored shells retain their roles and ignore intent in the next save.
 
 ### Protect a checkpoint
 
 ```bash
-ccm prepare-logout            # Save the current configuration and protect it
-ccm doctor --verbose          # Inspect protection, capture time and interrupted projects
-ccm prepare-logout --cancel   # Release protection without deleting the checkpoint
+ccm prepare-logout
+ccm prepare-logout -y          # --yes: skip PERMIT/BUSY confirmation
+ccm doctor --verbose
+ccm prepare-logout --cancel    # Unseal without deleting the checkpoint
 ```
 
-`prepare-logout` waits for the save to finish and protects the captured configuration. Periodic saves, project operations, auto-exit, stop and post-load saves then leave it intact. Windows and agents keep running. Run it again if you change the configuration after protecting it. Protection survives logout and remains in place after loading.
+The prompt is `Save anyway? [y/N]`. `y` and Enter save; N, Enter alone, Esc, EOF and Ctrl-C exit nonzero without saving. Non-interactive use with PERMIT/BUSY requires `-y`. Changes to configuration or states during confirmation also refuse the save and ask for a retry.
 
-If projects are PERMIT or BUSY, their names and states appear before `Save anyway? [y/N]`. Only `y` followed by Enter confirms. N, Enter alone, Esc, EOF and Ctrl-C leave the checkpoint unchanged and exit nonzero. Non-interactive use refuses the save. `ccm prepare-logout -y` (`--yes`) skips this confirmation and records the interrupted projects. If the configuration or affected states change during confirmation, the save refuses and asks you to retry.
-
-`ccm stop --all` closes windows even if saving fails. If you need a confirmed save, first check that `prepare-logout` succeeds. See [format, fixed backup and older versions](diagnostics.md#snapshot-checkpoints).
+Windows and agents keep running after protection. Run prepare again after configuration changes. Protection survives logout and is released automatically only after a complete restore. Prepare/cancel refuse while restoration is incomplete; finish the same snapshot restore first. `ccm stop --all` closes windows even if saving fails, so confirm a successful prepare first when you need a confirmed save.
 
 #### Auto-restore on tmux start
-
-To automatically restore the last `_autosave` snapshot when tmux starts, add to `~/.tmux.conf`:
 
 ```tmux
 set -g @ccm-auto-restore "on"    # default: off
 ```
 
-> [!NOTE]
-> This loads `_autosave` via TPM on startup. If ccm projects are already loaded, the restore is skipped.
+TPM startup loads `_autosave`, skipping when managed windows already exist. Retry incomplete restoration manually with the same snapshot. The location follows `CCM_SNAPSHOT_DIR`, otherwise under `CCM_DATA_DIR`.
 
 ### Manage snapshots
 
 ```bash
-ccm snapshot list          # see all snapshots
-ccm snapshot delete old    # remove a snapshot
+ccm snapshot list
+ccm snapshot delete old
 ```
+
+The fixed `_autosave.prev` backup is absent from the list. To use it, copy it in the snapshot directory to an unused name such as `recovery.json`, set its mode to 0600, then run `ccm start recovery`. Inspect an existing incomplete restore before switching checkpoints. See [format, protection, backup and conflict details](diagnostics.md#snapshot-checkpoints).
 
 ## Tips
 
