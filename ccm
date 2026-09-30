@@ -76,6 +76,7 @@ Usage:
   ccm roles [target] [--clear]      Inspect or release restored pane roles
   ccm prepare-logout [-y|--cancel]   Save and protect / unseal _autosave
   ccm start <snapshot>              Start from a snapshot
+  ccm exit <name> [-y]             Exit Claude; keep window and sidekicks
   ccm stop [--all|name]             Stop project window(s)
   ccm bg list                       List external Claude Code agent-view sessions (read-only)
   ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
@@ -234,6 +235,10 @@ case "${1:-help}" in
         else
             ccm_die "Usage: ccm start <snapshot>"
         fi
+        ;;
+    exit)
+        shift
+        python3 "$CCM_ROOT/lib/ccm_core.py" exit "$@"
         ;;
     stop)
         # Forward all args (`--all` is a flag, not a name); the Python

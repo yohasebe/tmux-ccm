@@ -338,13 +338,16 @@ Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named
 | `g` | Register existing window |
 | `r` | Remove — choose [u]nregister (keep window) or [d]elete (close it; asks y/N). Also in the menu |
 | `i` | Toggle ignore — hide/restore the project (see [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore)) |
-| `x` | Exit all idle Claude Code sessions |
+| `x` | Review names and states, then exit Claude with screen checks; keep windows |
 | `/` | Search projects |
 | `t` | Switch to tree view |
 | `w` | Toggle sidekick attention — highlight a sidekick that is waiting for you (see [Sidekick attention](docs/guide.md#sidekick-attention-knowing-when-it-needs-you)) |
 | `b` | Toggle [background-sessions section](#background-sessions-section-agent-view-coexistence) |
-| `m` | Switch to menu |
+| `m` / `?` | Menu: prepare for logout, continue restore, choose/delete checkpoints, reset and exit Claude |
 | `q` / `Esc` / `F1` | Close |
+
+`ccm exit <name>` exits Claude while keeping its window; `ccm exit <name> [-y]             Exit Claude; keep window and sidekicks
+ccm stop <name>` closes the window. Exit refuses BUSY/PERMIT unless `-y` is supplied. In PERMIT, Escape rejects the pending tool call. Menu actions provide confirmation and readable results; see the [guide](docs/guide.md#logout-restoration-and-recovery).
 
 ### CLI Commands
 

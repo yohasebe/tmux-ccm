@@ -594,6 +594,11 @@ def cmd_capture(args):
         print("=== end ===")
 
 
+def cmd_exit(args):
+    from ccm_exit import cmd_exit as exit_claude
+    return exit_claude(args)
+
+
 def cmd_stop(target):
     """Stop project window(s)."""
     if target == "--all":

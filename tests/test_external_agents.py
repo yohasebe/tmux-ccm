@@ -217,6 +217,7 @@ class TestDashboardExternalAgent:
         from unittest.mock import MagicMock
         from dashboard import Dashboard
 
+        monkeypatch.setattr("dashboard.Dashboard._lifecycle_banner", lambda *a: "")
         monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
         monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
         monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
@@ -271,6 +272,7 @@ class TestDashboardExternalAgent:
         from unittest.mock import MagicMock
         from dashboard import Dashboard
         calls = []
+        monkeypatch.setattr("dashboard.Dashboard._lifecycle_banner", lambda *a: "")
         monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
         monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
         monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")

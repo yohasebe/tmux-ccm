@@ -820,7 +820,8 @@ class TestAutoExitAgentsView:
             captures=["\u276f \n", AGENTS_VIEW_TAIL])
         sent = [c[3] for c in send_calls if len(c) >= 4]
         assert "/exit" in sent and "clear" not in sent
-        assert len(send_calls) == 2  # Escape, /exit — nothing after
+        keys = [c for c in send_calls if '-X' not in c]
+        assert len(keys) == 2  # Escape, /exit — nothing after
         set_state.assert_not_called()
         autosave.assert_not_called()
         notify.notify.assert_not_called()

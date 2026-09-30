@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Dashboard menu actions for logout preparation/protection cancellation,
+  continuing incomplete restores, selecting/deleting saved checkpoints and
+  resetting runtime state. CLI progress appears outside curses; full results
+  remain scrollable. Incomplete restoration and protection show an actionable banner.
+- `ccm exit <name> [-y]` exits Claude while retaining its window and sidekicks;
+  existing `stop` still closes windows. Dashboard single exit and `x` use the
+  same CLI operation. BUSY/PERMIT requires consent, including the effect of
+  Escape on a pending tool call. Manual and idle exits share screen checks
+  and shell verification; `x` can now decline unsafe exits instead of typing.
 - v2 snapshots restore pane splits, working directories, roles and zoom as
   inactive login shells selected from tmux default-shell, SHELL or sh. Shell
   startup files run normally; transient foreground work is allowed to settle,

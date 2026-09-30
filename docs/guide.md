@@ -129,16 +129,35 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `g` | Register | Tag an existing tmux window as a ccm project |
 | `r` | Remove | Choose [u]nregister (keep window) or [d]elete (kill window; asks y/N). Listed in the menu (`m` / `?`) too |
 | `i` | Ignore | Toggle CCM_IGNORE on the selected project. Hiding requires `y` / `Y` + Enter; Enter alone, Esc or any other answer cancels. Restoring needs no confirmation (see "Running a second model" below) |
-| `x` | Exit all | Exit all idle Claude Code sessions to free resources |
+| `x` | Exit all | Review names and states, then exit Claude after screen checks; keep windows |
 | `/` | Filter | Live incremental search: type to narrow, `↑↓`/`C-p`/`C-n` to select, `Enter` to attach, `C-u` to clear, `Esc` to cancel. Unicode-safe — Japanese project names match on Japanese substrings |
 | `t` | Tree | Switch to tree view |
-| `m` | Menu | Switch to interactive menu |
+| `m` / `?` | Menu | Logout preparation, continue restore, checkpoints, reset and Claude exit |
 | `u` | Undelivered messages | Open expired / held records; also available in the menu (`m` / `?`) |
 | `q` / `Esc` | Quit | Close the dashboard |
 
 The dashboard refreshes on a hybrid cadence: full state detection runs every 2 seconds, and in between, a lightweight fast tick (4×/second) watches the state channel the Claude Code hooks write to — so a hook-driven change (a permission prompt appearing, a prompt submitted) shows up in ~0.3 seconds rather than waiting out the full poll. The status bar gets the same treatment: on a state transition, the hook re-renders the bar immediately instead of waiting for the next `status-interval` tick. Navigation keys (`↑↓/jk`) respond instantly without waiting for any refresh.
 
 The row order is decided when the dashboard opens (projects needing attention first) and then held stable while it stays open — a project changing state updates its icon in place but does not jump to a new position, so your selection never lands on the wrong project mid-interaction. Close and reopen the dashboard to re-sort by current state.
+
+### Logout, restoration and recovery
+
+Open the menu with `m` or `?`. These actions have no new single-key shortcut.
+
+| Menu item | Action |
+|-----------|--------|
+| Prepare for logout | Save and protect `_autosave` through `ccm prepare-logout`. If projects are BUSY or PERMIT, their names appear and `[y/N]` defaults to No |
+| Cancel logout protection | Confirm releasing protection while keeping the saved checkpoint |
+| Continue restore | Continue the checkpoint recorded by an incomplete restoration. If it cannot be identified, choose from saved checkpoints |
+| Saved checkpoints (load / delete) | Select by name, creation time, project count, v1/v2 and protection status. Enter loads; `d` asks `[y/N]` before deleting; Esc returns. `_autosave.prev` is excluded, and protected `_autosave` cannot be deleted |
+| Reset selected project's runtime state | Confirm clearing its runtime signals and caches using `ccm reset`. Conversation files, running processes, windows and checkpoints remain |
+| Exit Claude in selected project | Confirm `ccm exit <name>`. Its window, shell and sidekicks remain |
+
+Preparation and restoration temporarily leave the curses screen so progress and prompts are visible. On return, the full result, failure reason and sidekick guidance stay in a scrollable view: `↑↓` / `jk` / `PgUp` / `PgDn` scroll; Enter / Esc / `q` returns. An incomplete restoration or protected checkpoint also shows an actionable line above the project list. The menu scrolls when the terminal is small.
+
+Confirm with `y` or `Y` and Enter. `N`, Enter alone and Esc cancel. `x` now shows the projects and states before confirming a batch exit, using the same checks as a single exit. In PERMIT, Escape rejects the pending tool call; this is stated before confirmation. A project that becomes BUSY/PERMIT after an IDLE confirmation is refused and can be reviewed again.
+
+`ccm exit <name>` exits Claude while retaining the window; `ccm stop <name>` closes the window. CLI exit refuses BUSY/PERMIT unless `-y` / `--yes` is supplied. Exit checks the Claude pane, excludes ignored panes and requires a shell underneath Claude. Ambiguous Claude panes need a reserved primary pane. It sends no keys when the agent view is open or the screen cannot be read, and reports failure unless the foreground returns to a shell. If exit detaches into agent view, it reports that result without sending further keys. These screen checks are shared with idle auto-exit.
 
 ### Handling undelivered messages
 

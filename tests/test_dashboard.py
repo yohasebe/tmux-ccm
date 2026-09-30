@@ -41,6 +41,7 @@ def _stub_dashboard_environment(monkeypatch):
     Dashboard() can be constructed and render() can run in a pytest
     process without curses, without tmux, and without filesystem
     side effects."""
+    monkeypatch.setattr(Dashboard, '_lifecycle_banner', lambda *a: '')
     import curses as _curses
 
     monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
@@ -1199,18 +1200,31 @@ class TestDoExitAllTargetsClaudePane:
         d.projects = [
             ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
         ]
-        monkeypatch.setattr("dashboard.ps_snapshot", lambda: "")
-        monkeypatch.setattr("dashboard.enumerate_window_panes",
-                            lambda win, ps: panes)
-        monkeypatch.setattr(Dashboard, "_prompt",
-                            lambda self, s, text: answer)
-        monkeypatch.setattr(Dashboard, "_show_message",
-                            lambda self, s, msg, duration=1: None)
-        monkeypatch.setattr(Dashboard, "_trigger_rebuild",
-                            lambda self: None)
+        import ccm_exit
+        import ccm_roles
+        import ccm_pane_state
+        monkeypatch.setattr(ccm_core, "build_project_list", lambda **kw: d.projects)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_pane_state, "enumerate_window_panes", lambda *a: panes)
+        monkeypatch.setattr(ccm_roles, "pending", lambda *a: False)
+        monkeypatch.setattr(ccm_roles, "primary", lambda *a: None)
+        monkeypatch.setattr(ccm_exit.time, "sleep", lambda n: None)
+        monkeypatch.setattr(d, "_prompt", lambda *a: answer)
+        monkeypatch.setattr(d, "_spool_text", lambda *a: None)
+        monkeypatch.setattr(d, "_show_message", lambda *a: None)
+        monkeypatch.setattr(d, "_trigger_rebuild", lambda: None)
+        def run(screen, title, function, *args):
+            with ccm_core.raise_on_die():
+                try:
+                    function(*args)
+                except ccm_core.CCMError:
+                    return False
+        monkeypatch.setattr(d, "_run_terminal_command", run)
         captured = []
-        monkeypatch.setattr("dashboard.tmux_cmd",
-                            lambda *a, **k: captured.append(a) or "")
+        def tmux(*args):
+            captured.append(args)
+            return 'zsh' if args[0] == 'display-message' else 'conversation prompt'
+        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux)
         return d, captured
 
     def test_exit_goes_to_claude_pane_not_active_shell(self,

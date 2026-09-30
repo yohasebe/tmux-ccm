@@ -1535,6 +1535,8 @@ _SUBCOMMANDS = (
     ("capture",
      _passthrough_argparse_config,
      lambda a: ccm_commands.cmd_capture(a.rest)),
+    ("exit", _passthrough_argparse_config,
+     lambda a: ccm_commands.cmd_exit(a.rest)),
     ("stop",
      _passthrough_argparse_config,
      _handle_stop),

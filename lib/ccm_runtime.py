@@ -480,56 +480,12 @@ def auto_exit_idle(projects):
                 # Defensive skip; the next polling cycle re-evaluates.
                 continue
 
-            # What the pane shows decides whether `/exit` may be typed
-            # at all. IDLE is an activity verdict, not proof that the
-            # screen takes a slash command: after a session is sent to
-            # the background (`/background`, `←` twice, or `/exit`
-            # inside an attached background session, which detaches
-            # rather than exits) the pane shows the agent view, where
-            # text typed into the input box can start a new session
-            # and Escape moves between views rather than cancelling
-            # input. Neither is what auto-exit means to do. A pane
-            # that cannot be read is not assumed to be a conversation
-            # either; this is an autonomous keystroke into someone's
-            # terminal, and the cost of skipping one poll is nothing.
-            tail = _pane_tail(claude_pane)
-            if not tail.strip():
-                _log_auto_exit_declined(
-                    project, session_id, DECLINED_CAPTURE_UNREADABLE, now)
+            from ccm_exit import exit_pane
+            outcome = exit_pane(claude_pane, capture=_pane_tail, sleep=time.sleep)
+            if outcome in (DECLINED_CAPTURE_UNREADABLE, DECLINED_AGENTS_VIEW):
+                _log_auto_exit_declined(project, session_id, outcome, now)
                 continue
-            if ccm_core.is_agents_tui(tail):
-                _log_auto_exit_declined(
-                    project, session_id, DECLINED_AGENTS_VIEW, now)
-                continue
-
-            # Cancel any partial input, then cleanly exit Claude Code.
-            ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "Escape")
-            time.sleep(0.1)
-            ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "/exit", "Enter")
-            time.sleep(0.5)
-            # Confirm `/exit` actually completed before committing any
-            # side effect. `/exit` can take longer than the 0.5 s wait
-            # on sessions with heavy conversation history (Claude's
-            # shutdown is context-size sensitive), or be swallowed
-            # entirely if Claude is parked at a confirmation modal. A
-            # ccm-launched Claude always runs as a child of the pane's
-            # shell, so a SUCCESSFUL exit returns the pane's foreground
-            # to that shell; anything else (still `claude`, the version-
-            # string masking, or "" from a failed/timed-out query) means
-            # the exit has not landed. Gate all three side effects on
-            # that positive shell evidence:
-            #   - `clear`: otherwise it lands as literal text in Claude's
-            #     input box and submits as a stray user prompt.
-            #   - SHELL state write: otherwise we declare SHELL while
-            #     Claude is still alive (a one-cycle state lie that the
-            #     next detection pass would have to undo) and fire a
-            #     spurious autosave against it.
-            # When the exit hasn't completed, do nothing this cycle; the
-            # window keeps its real state and the next poll re-evaluates.
-            current_cmd = ccm_core.tmux_cmd(
-                "display-message", "-t", claude_pane, "-p", "#{pane_current_command}"
-            )
-            if current_cmd in ccm_constants.SHELL_FOREGROUND_COMMANDS:
+            if outcome == 'exited':
                 ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "clear", "Enter")
                 ccm_detection._set_win_state(win_target, "SHELL")
                 # Force autosave after auto-exit to preserve project in snapshot.
@@ -549,7 +505,7 @@ def auto_exit_idle(projects):
                 # Written after the same gate as the notification, so
                 # the log can never claim an exit that did not land.
                 _log_auto_exit(project, session_id, idle_timeout, now)
-            elif ccm_core.is_agents_tui(_pane_tail(claude_pane)):
+            elif outcome == DECLINED_AGENTS_VIEW_AFTER:
                 # The pane shows the agent view after `/exit` — what
                 # an attached background session does when told to
                 # exit (it detaches; the worker keeps running), though

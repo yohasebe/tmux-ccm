@@ -149,7 +149,10 @@ STATE_COLOR_PAIR = {
 
 # ─── Dashboard ───
 
-class Dashboard:
+from ccm_dashboard_lifecycle import LifecycleActions
+
+
+class Dashboard(LifecycleActions):
     # Keys that only adjust a selection index. The main loop coalesces
     # these across terminal auto-repeat so a held arrow key renders
     # once at the end of the burst instead of once per keystroke.
@@ -832,6 +835,11 @@ class Dashboard:
                 self._addstr(stdscr, row, 2, header, curses.color_pair(C_DIM))
             row += 1
 
+            recovery_line = self._lifecycle_banner(tmux_query)
+            if recovery_line:
+                self._addstr(stdscr, row, 2, recovery_line, curses.color_pair(C_YELLOW))
+                row += 1
+
             # Snapshot the project list once so the global banners and
             # the per-project canary below see the same data.
             with self.lock:
@@ -1262,8 +1270,8 @@ class Dashboard:
             help_items = [
                 "[↑↓/jk] select", "[Enter] attach", "[/] search",
                 "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
-                "[r]emove…", "[i]gnore (confirm)", "e[x]it all", "[s]ave", "[t]ree",
-                "[b]g sessions", "[w]atch sidekicks", "[m/?] menu",
+                "[r]emove…", "[i]gnore", "e[x]it all", "[s]ave", "[t]ree",
+                "[b]g sessions", "[w]atch sidekicks", "[m/?] menu (logout/restore/reset/exit)",
                 "[q] quit",
             ]
             # Split into lines that fit within avail_w
@@ -2011,79 +2019,6 @@ class Dashboard:
             self._show_message(stdscr, "Ignore cancelled.", 1)
             return False
         return self._run_cmd(stdscr, cmd_ignore, project.name)
-
-    def _do_exit_all(self, stdscr):
-        """Exit all idle Claude Code sessions, optionally including BUSY/PERMIT."""
-        with self.lock:
-            projects = list(self.projects)
-
-        if not projects:
-            return
-
-        idle_targets = [p for p in projects if p.state == "IDLE"]
-        active_targets = [p for p in projects if p.state in ("BUSY", "PERMIT")]
-        # SHELL projects already exited, skip
-
-        total_exit = len(idle_targets)
-        skip_count = len(active_targets)
-
-        if total_exit == 0 and skip_count == 0:
-            self._show_message(stdscr, "No active Claude Code sessions", 1)
-            return
-
-        # Build prompt
-        if skip_count > 0:
-            prompt = f"Exit {total_exit} idle sessions? ({skip_count} BUSY/PERMIT skipped) [y/n/a(all)]: "
-        else:
-            prompt = f"Exit all {total_exit} sessions? [Y/n]: "
-
-        choice = self._prompt(stdscr, prompt)
-        if choice is None:
-            return
-
-        choice = choice.lower().strip()
-        if choice in ("", "y", "yes"):
-            targets = idle_targets
-        elif choice in ("a", "all"):
-            targets = idle_targets + active_targets
-        else:
-            return
-
-        exited = 0
-        try:
-            ps_lines = ps_snapshot().strip().split("\n")
-        except Exception:
-            ps_lines = []
-        for p in targets:
-            if p.state == "SHELL":
-                continue
-            # Resolve the claude-hosting pane and target IT, never the
-            # window: `send-keys -t <window>` lands in the window's
-            # ACTIVE pane, so in a split window with a shell focused
-            # the Escape + `/exit` + Enter sequence would reach the
-            # shell and kill the user's pane (the same incident
-            # `auto_exit_idle`'s find_claude_pid resolution guards
-            # against). An ignored pane is never a target — ignore
-            # means ccm keeps its hands off it.
-            panes = [pn for pn in enumerate_window_panes(p.win_target, ps_lines)
-                     if not pn.ignored and pn.claude_pid]
-            if not panes:
-                # No (non-ignored) pane currently hosts claude — the
-                # window may be transitioning. Defensive skip; without
-                # a resolved pane there is no safe target.
-                continue
-            active = next((pn for pn in panes if pn.active), None)
-            claude_pane = (active or panes[0]).pane_id
-            # Exit any tmux mode (copy/view) first so /exit reaches the
-            # pane's foreground process instead of a copy-mode binding.
-            tmux_cmd("send-keys", "-t", claude_pane, "-X", "cancel")
-            tmux_cmd("send-keys", "-t", claude_pane, "Escape")
-            time.sleep(0.05)
-            tmux_cmd("send-keys", "-t", claude_pane, "/exit", "Enter")
-            exited += 1
-
-        self._show_message(stdscr, f"Exited {exited} session(s)", 1)
-        self._trigger_rebuild()
 
     def _do_register(self, stdscr):
         # List untagged windows
@@ -2951,10 +2886,15 @@ class Dashboard:
             # Listed beside them so the reversible option is found by
             # anyone looking for a way out, without sharing a
             # confirmation prompt with the irreversible one.
-            ("Ignore (confirm) / unignore project", "ignore"),
+            ("Ignore / unignore project", "ignore"),
             ("Undelivered messages (u)", "spool"),
             ("Save snapshot", "save"),
-            ("Load snapshot", "load"),
+            ("Saved checkpoints (load / delete)", "load"),
+            ("Prepare for logout", "prepare_logout"),
+            ("Cancel logout protection", "cancel_logout"),
+            ("Continue restore", "continue_restore"),
+            ("Reset selected project's runtime state", "reset"),
+            ("Exit Claude in selected project (keep window)", "exit"),
             ("", ""),  # separator
             (f"Status bar mode: {mode_label}", "status_mode"),
             (f"Auto-restore: {auto_restore}", "auto_restore"),
@@ -2979,6 +2919,7 @@ class Dashboard:
         ]
 
     def _render_menu(self, stdscr):
+        self._render_max_col = 0
         try:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
@@ -2994,7 +2935,8 @@ class Dashboard:
             self._addstr(stdscr, 0, 2, "Menu  (d=dashboard, q=quit)", curses.color_pair(C_DIM))
 
             row = 2
-            for i, (label, action) in enumerate(self.menu_items):
+            start = max(0, self.menu_selected - max(1, height - 4) + 1)
+            for i, (label, action) in enumerate(self.menu_items[start:], start):
                 if row >= height - 1:
                     break
                 if action == "":
@@ -3043,13 +2985,13 @@ class Dashboard:
             elif action == "save":
                 self._do_save(stdscr)
             elif action == "load":
-                name = self._prompt(stdscr, "Snapshot name: ")
-                if name:
-                    try:
-                        cmd_snapshot_load(name)
-                    except SystemExit:
-                        pass
-                    self._trigger_rebuild()
+                self._do_snapshots(stdscr)
+            elif action in ("prepare_logout", "cancel_logout"):
+                self._do_prepare_logout(stdscr, cancel=action == "cancel_logout")
+            elif action == "continue_restore":
+                self._do_continue_restore(stdscr, tmux_query)
+            elif action in ("reset", "exit"):
+                self._do_project_recovery(stdscr, action)
             elif action == "status_mode":
                 val = self._prompt(stdscr, "Status bar mode [0]=Minimal  [1]=Window list  [2]=Dedicated line: ")
                 if val in ("0", "1", "2"):

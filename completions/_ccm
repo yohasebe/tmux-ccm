@@ -23,6 +23,7 @@ _ccm() {
         'roles:Inspect or release restored pane roles'
         'prepare-logout:Save and protect / unseal the autosave checkpoint'
         'start:Start from a snapshot'
+        'exit:Exit Claude, keeping the window and sidekicks'
         'stop:Stop project window(s)'
         'bg:External Claude Code agent-view sessions'
         'send:Send a prompt to another project'
@@ -66,6 +67,10 @@ _ccm() {
         case "${words[2]}" in
             attach|a|unregister|unreg|remove|rm|rename|mv|capture|cap|stop|send|reset|ignore|unignore)
                 _ccm_projects
+                ;;
+            exit)
+                _ccm_projects
+                compadd -- -y --yes
                 ;;
             add|open)
                 _directories
@@ -117,6 +122,10 @@ _ccm() {
         esac
     elif (( CURRENT == 4 )); then
         case "${words[2]}" in
+            exit)
+                _ccm_projects
+                compadd -- -y --yes
+                ;;
             spool)
                 case "${words[3]}" in
                     show|discard)
