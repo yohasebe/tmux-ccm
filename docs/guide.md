@@ -142,7 +142,7 @@ The row order is decided when the dashboard opens (projects needing attention fi
 
 ### Menu help preview
 
-In the `m` / `?` menu, an enabled preview shows help for the selected item. Right placement requires at least 80 columns; bottom placement requires at least 20 rows. It uses the same dimensions as the project preview. When disabled or too small, only the menu appears. Descriptions wrap within the panel and follow selection changes; setting items also show their current values. The English help text is maintained in one code definition.
+In the `m` / `?` menu, an enabled preview shows help for the selected item. Right placement requires at least 80 columns; bottom placement requires at least 20 rows. It uses the same dimensions as the project preview. When disabled or too small, only the menu appears. Descriptions wrap within the panel and follow selection changes; setting items also show their current values. Set `set -g @ccm-lang "ja"` in `~/.tmux.conf` for Japanese menu descriptions (`en` is the default; unsupported values use English). Reload the configuration and reopen the menu to apply it. Only the description body changes; labels and other screens remain English. Matching dashboard shortcuts appear as dim `[key]` hints at the right edge; narrow menus omit hints to preserve item names.
 
 The following items complement the checkpoint, logout and recovery actions described in the next section.
 

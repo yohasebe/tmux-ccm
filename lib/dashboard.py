@@ -1423,11 +1423,11 @@ class Dashboard(LifecycleActions):
             # we'd index projects[N] and crash.
             if 0 <= self.selected < n:
                 return self._do_attach(stdscr)
-        elif key in (ord("q"), ord("Q"), 27, curses.KEY_F1):
+        elif ccm_menu_help.matches_key("quit", key) or key in (27, curses.KEY_F1):
             return "quit"
-        elif key in (ord("u"), ord("U")):
+        elif ccm_menu_help.matches_key("spool", key):
             return self._do_spool(stdscr)
-        elif key in (ord("s"), ord("S")):
+        elif ccm_menu_help.matches_key("save", key):
             self._do_save(stdscr)
         # The project-scoped action keys (p/n/r/i) share the Enter
         # key's stale-selection guard above: when a bg row is
@@ -1436,7 +1436,7 @@ class Dashboard(LifecycleActions):
         elif key in (ord("p"), ord("P")):
             if 0 <= self.selected < n:
                 self._do_preview(stdscr)
-        elif key in (ord("a"), ord("A")):
+        elif ccm_menu_help.matches_key("add", key):
             self._do_add(stdscr)
         elif key in (ord("n"), ord("N")):
             if 0 <= self.selected < n:
@@ -1446,7 +1446,7 @@ class Dashboard(LifecycleActions):
                 self._do_remove(stdscr)
         elif key in (ord("g"), ord("G")):
             self._do_register(stdscr)
-        elif key in (ord("i"), ord("I")):
+        elif ccm_menu_help.matches_key("ignore", key):
             if 0 <= self.selected < n:
                 self._do_ignore_toggle(stdscr)
         elif key in (ord("x"), ord("X")):
@@ -1455,7 +1455,7 @@ class Dashboard(LifecycleActions):
             action = self._do_search(stdscr)
             if action == "attached":
                 return "attached"
-        elif key in (ord("t"), ord("T")):
+        elif ccm_menu_help.matches_key("tree", key):
             self.mode = "tree"
             self._build_tree()
         elif key in (ord("m"), ord("M"), ord("?")):
@@ -2834,6 +2834,7 @@ class Dashboard(LifecycleActions):
 
     def _build_menu(self):
         """Build menu items dynamically with current setting values."""
+        self.help_language = tmux_cmd("show-option", "-gqv", "@ccm-lang")
         # Status bar mode
         mode = tmux_cmd("show-option", "-gqv", "@ccm-status-line") or "2"
         mode_labels = {"0": "Minimal", "1": "Window list", "2": "Dedicated line"}
@@ -2876,7 +2877,7 @@ class Dashboard(LifecycleActions):
             # anyone looking for a way out, without sharing a
             # confirmation prompt with the irreversible one.
             ("Ignore / unignore project", "ignore"),
-            ("Undelivered messages (u)", "spool"),
+            ("Undelivered messages", "spool"),
             ("Save snapshot", "save"),
             ("Saved checkpoints (load / delete)", "load"),
             ("Prepare for logout", "prepare_logout"),
@@ -2923,7 +2924,7 @@ class Dashboard(LifecycleActions):
         title = ccm_roles.clean(label)
         lines = ccm_menu_help.wrap_text(title, available) + [""]
         title_rows = len(lines) - 1
-        lines += ccm_menu_help.wrap_text(ccm_menu_help.description(action, label), available)
+        lines += ccm_menu_help.wrap_text(ccm_menu_help.description(action, label, getattr(self, "help_language", "en")), available)
         for i, line in enumerate(lines[:count]):
             self._addstr(stdscr, y + i, x, line,
                          curses.A_BOLD if i < title_rows else 0,
@@ -2956,6 +2957,13 @@ class Dashboard(LifecycleActions):
                     self._addstr(stdscr, menu_row, 0,
                                  prefix + ccm_roles.clean(label),
                                  curses.A_BOLD if selected else 0)
+                    key = ccm_menu_help.MENU_KEYS.get(action)
+                    if key:
+                        hint = f"[{key}]"
+                        hint_col = list_width - 1 - display_width(hint)
+                        if display_width(prefix + ccm_roles.clean(label)) + 2 <= hint_col:
+                            self._addstr(stdscr, menu_row, hint_col, hint,
+                                         curses.color_pair(C_DIM))
                 menu_row += 1
             if panel_height:
                 self._render_menu_description(stdscr, col, row, panel_width, panel_height)

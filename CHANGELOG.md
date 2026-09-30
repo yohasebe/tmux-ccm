@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+
+- Menu descriptions support Japanese through `@ccm-lang` (`en` by default). Matching dashboard shortcut hints now align at the menu’s right edge and disappear when space is limited.
 - The menu preview explains the selected command and shows current setting
   values. It follows the project preview position, size thresholds and toggle,
   wraps text to the panel width, and uses one English help definition.

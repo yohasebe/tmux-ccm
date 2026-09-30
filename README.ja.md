@@ -478,6 +478,7 @@ set -g @ccm-idle-timeout "10"    # 分（デフォルト: 10、0で無効化）
 ```tmux
 set -g @ccm-preview "on"              # デフォルト: off
 set -g @ccm-preview-position "right"  # または "bottom"
+set -g @ccm-lang "en"               # en / ja
 ```
 
 カーソル移動で即座に更新され、自動リフレッシュもされます。ANSIカラー（256色、RGB）に対応。端末幅80列以上（右配置）または高さ20行以上（下配置）が必要です。ダッシュボードメニュー（`m`）からもトグル可能。

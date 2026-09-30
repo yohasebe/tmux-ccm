@@ -32,9 +32,47 @@ MENU_HELP = {
 }
 
 
-def description(action, label):
+# Shared with dashboard key handling; only equivalent menu operations belong here.
+MENU_KEYS = {'add': 'a', 'ignore': 'i', 'spool': 'u', 'save': 's', 'tree': 't', 'quit': 'q'}
+
+def matches_key(action, key):
+    hint = MENU_KEYS[action]
+    return key in (ord(hint), ord(hint.upper()))
+
+
+MENU_HELP_JA = {
+    'add': 'プロジェクトのウィンドウを作成し、Claude を起動します。\nディレクトリと名前を入力します。存在しないディレクトリは作成前に確認します。\nCLI: ccm add <dir> [name]',
+    'unregister': 'プロジェクトを ccm の管理対象から外します。\nウィンドウと実行中のプロセスは残ります。対象は入力画面で選びます。\nCLI: ccm unregister <name>',
+    'delete': 'プロジェクトのウィンドウと実行中のプロセスを終了します。\n対象を選び、y で確認します。Enter または Esc でキャンセルします。\nCLI: ccm remove <name>',
+    'ignore': 'プロジェクトを追跡対象から除外、または追跡対象に戻します。\nプロセスは動き続けます。除外時は確認し、復帰時は確認しません。\nCLI: ccm ignore <name> / ccm unignore <name>',
+    'spool': '期限切れ・保留中のメッセージを確認します。\n閲覧だけでは送信しません。再送と削除には確認が必要です。\nCLI: ccm spool list / show / resend / discard',
+    'save': '現在のプロジェクトとペイン配置を保存します。\n保存点の名前を入力します。保護された保存点は変更しません。\nCLI: ccm snapshot save <name>',
+    'load': '保存点を選んで読み込み、または削除します。\n復元の進捗と結果を表示します。削除前に確認し、保護中の autosave は削除できません。\nCLI: ccm snapshot load <name> / delete <name>',
+    'prepare_logout': 'ログアウト前に autosave を保存して保護します。\nウィンドウとエージェントは動き続けます。BUSY・PERMIT のプロジェクトがある場合は確認します。\nCLI: ccm prepare-logout',
+    'cancel_logout': '保存点を残して、ログアウト用の保護を解除します。\n実行前に確認します。未完了の復元がある場合は先に完了させます。\nCLI: ccm prepare-logout --cancel',
+    'continue_restore': '記録された保存点から未完了の復元を続けます。\n復元済みのペインは残ります。進捗と完了時の案内を表示します。\nCLI: ccm start <checkpoint>',
+    'reset': '選択したプロジェクトの実行時シグナルとキャッシュを消去します。\n会話・プロセス・ウィンドウ・保存点は残ります。実行前に確認します。\nCLI: ccm reset <name>',
+    'exit': '選択したプロジェクトの Claude を終了し、ウィンドウとサイドキックを残します。\n実行前に確認します。PERMIT では Escape で保留中のツール呼び出しを拒否します。安全に終了できない画面では実行しません。\nCLI: ccm exit <name> [-y]',
+    'status_mode': 'ステータス表示を最小・ウィンドウ一覧・専用行から選びます。\n表示モードを入力して保存します。プロジェクトは動き続けます。\n現在値: {current}',
+    'auto_restore': 'tmux 起動時に autosave を自動復元するか切り替えます。\n設定はすぐに保存され、次回起動時から適用されます。この操作では復元を開始しません。\n現在値: {current}',
+    'idle_timeout': '操作のない Claude を自動終了するまでの時間を設定します。\n分単位で入力し、0 で無効にします。設定を保存し、ウィンドウは残します。\n現在値: {current}',
+    'preview_toggle': 'プロジェクトのプレビューとメニューの説明表示を切り替えます。\nすぐに反映して保存します。プロジェクトは動き続けます。\n現在値: {current}',
+    'preview_position': 'プレビューの位置を右側と下側で切り替えます。\nすぐに反映して保存します。画面が小さい場合は表示しません。\n現在値: {current}',
+    'bg_section': 'ダッシュボードのバックグラウンドセッション欄の表示を切り替えます。\n設定をすぐに保存します。バックグラウンドセッションは動き続けます。\n現在値: {current}',
+    'notify': '通知する状態変化の組み合わせを順に切り替えます。\n設定をすぐに保存します。実行中のプロジェクトには影響しません。\n現在値: {current}',
+    'notify_sound': '通知音の有効・無効を切り替えます。\n設定をすぐに保存し、有効にするとサンプル音を再生します。\n現在値: {current}',
+    'sound_name': '次の通知音を選び、サンプル音を再生します。\n設定をすぐに保存します。通知する状態変化の設定は変わりません。\n現在値: {current}',
+    'auto_start': 'シェル状態のプロジェクトを開いたときに Claude を起動するか切り替えます。\n設定をすぐに保存します。設定の変更だけではエージェントを起動しません。\n現在値: {current}',
+    'dashboard': 'プロジェクトのダッシュボードに戻ります。\nプロジェクトと実行中のプロセスはそのまま残ります。\nCLI: ccm dashboard',
+    'tree': 'セッション・ウィンドウ・ペインの階層を表示します。\n画面を切り替えても実行中のプロセスには影響しません。\nCLI: ccm tree-interactive',
+    'quit': 'メニューとダッシュボードを閉じます。\nプロジェクト・ウィンドウ・実行中のエージェントは残ります。\n確認なしで閉じます。',
+}
+
+
+def description(action, label, language="en"):
     current = ccm_roles.clean(label.partition(': ')[2])
-    return MENU_HELP[action].replace('{current}', current)
+    table = MENU_HELP_JA if language == 'ja' else MENU_HELP
+    return table[action].replace('{current}', current)
 
 
 def preview_geometry(width, height, enabled, position):

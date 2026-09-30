@@ -396,3 +396,11 @@ Restoration holds the common save lock and preflights all directories and window
 Window option `@ccm_restore_managed` restricts launch selection to reservations; pane option `@ccm_restore_role` stores role/agent/ignore intent. Reservations never count as PERMIT/BUSY/IDLE or live ignore state. Positive observation of a different agent releases stale intent; waiting shells retain it. `ccm roles [target] --clear` releases intent manually, and `ccm unignore` also clears reserved ignore intent. Launch an ignored Claude sidekick manually with `CCM_IGNORE=1` before its first hook.
 
 Restoration starts your login shell: tmux's `default-shell`, then `$SHELL`, then `/bin/sh`, accepting only executable absolute paths with a recognized shell name. It bypasses `default-command`. Shell startup files run normally. At each layout step ccm waits up to 10 seconds for a shell foreground to settle, including child processes sharing its process group during rc execution. Background jobs in separate groups are retained. If rc starts an agent or another persistent foreground process, restoration pauses without killing or restarting it; inspect the pane and retry after it returns to the shell. Already completed panes are not restarted on retry. Saved commands are not executed. Claude hand-off guidance is reevaluated at attach by the existing `continue_blocker_notice`, using current evidence rather than saved PIDs. Role text and resume guidance neutralize control characters and tmux formats.
+
+### Menu language
+
+| tmux option | Default | Values and scope |
+|---|---|---|
+| `@ccm-lang` | `en` | `en` / `ja`; unsupported values use English. Menu description body only. |
+
+Set `set -g @ccm-lang "ja"` in `~/.tmux.conf` for Japanese menu descriptions (`en` is the default; unsupported values use English). Reload the configuration and reopen the menu to apply it. Only the description body changes; labels and other screens remain English. Matching dashboard shortcuts appear as dim `[key]` hints at the right edge; narrow menus omit hints to preserve item names.

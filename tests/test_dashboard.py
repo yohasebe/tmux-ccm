@@ -1805,6 +1805,8 @@ class TestEveryKeyAndOperationIsFindable:
         import re
         handled = set(re.findall(r'ord\("([a-z])"\)',
                                  _method_source("_handle_key")))
+        import ccm_menu_help
+        handled.update(ccm_menu_help.MENU_KEYS.values())
         # The extraction itself has a failure mode: refactor the key
         # handling into a dispatch table and findall returns nothing,
         # leaving an empty `missing` and a test that checks nothing
@@ -1829,7 +1831,7 @@ class TestEveryKeyAndOperationIsFindable:
                     offered.update(alt)
         # The undelivered list is discoverable in the on-demand menu;
         # keep the permanent help line at its existing size.
-        assert '("Undelivered messages (u)", "spool")' in _method_source("_build_menu")
+        assert '("Undelivered messages", "spool")' in _method_source("_build_menu")
         offered.add("u")
         missing = handled - offered
         assert not missing, (
