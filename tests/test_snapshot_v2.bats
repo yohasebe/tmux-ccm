@@ -40,14 +40,17 @@ run_checked() {
     tmux resize-pane -Z -t capture:0.2
     local bin="$BATS_TEST_TMPDIR/bin"
     mkdir -p "$bin"
-    # snapshot save checks for claude on PATH, but must never start it.
-    cat > "$bin/claude" <<'STUB'
+    # The dependency check wants claude and fzf on PATH; neither may run here.
+    local dep
+    for dep in claude fzf; do
+        cat > "$bin/$dep" <<STUB
 #!/bin/sh
-touch "$BATS_TEST_TMPDIR/claude-started"
-echo 'Unexpected claude invocation' >&2
+touch "\$BATS_TEST_TMPDIR/$dep-started"
+echo 'Unexpected $dep invocation' >&2
 exit 99
 STUB
-    chmod +x "$bin/claude"
+        chmod +x "$bin/$dep"
+    done
     # Python calls still pass the guard, with this test's allocated socket.
     cat > "$bin/tmux" <<SHIM
 #!/usr/bin/env bash
@@ -63,5 +66,6 @@ SHIM
     cmp "$BATS_TEST_TMPDIR/sealed.json" "$CCM_SNAPSHOT_DIR/_autosave.json"
     run_checked env PATH="$bin:$PATH" bash "$CCM_ROOT/ccm" prepare-logout --cancel
     [ ! -e "$BATS_TEST_TMPDIR/claude-started" ]
+    [ ! -e "$BATS_TEST_TMPDIR/fzf-started" ]
     tmux kill-server
 }
