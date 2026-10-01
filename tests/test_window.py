@@ -18,6 +18,12 @@ import ccm_window
 from conftest import make_ps_lines
 
 
+@pytest.fixture(autouse=True)
+def ordinary_roles(monkeypatch):
+    # These launch tests use ordinary windows; restored reads have their own suite.
+    monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
+
+
 class TestAutoFocusAttentionPane:
     def _stub_tmux(self, monkeypatch, panes_raw, proj_dir="/tmp/proj"):
         """Stub tmux_cmd: return show-option for @ccm_dir, the
@@ -437,7 +443,7 @@ class TestLaunchCommandChoice:
         monkeypatch.delenv("CLAUDE_CODE_PROJECT_DIR_NAME", raising=False)
         # tmux environments that set nothing relevant, unless a test
         # replaces them.
-        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "PATH=/usr/bin\n-UNSET_ONE")
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "PATH=/usr/bin\n-UNSET_ONE" if a[0] == "show-environment" else "")
 
     def _projects_dir(self, tmp_path, monkeypatch):
         import ccm_jsonl

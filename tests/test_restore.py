@@ -124,6 +124,7 @@ def test_launch_never_falls_back_to_active_sidekick(monkeypatch, primary):
         return ''
     command = Mock(side_effect=tmux)
     monkeypatch.setattr(ccm_core, 'tmux_cmd', command)
+    monkeypatch.setattr(ccm_core, 'tmux_query', command)
     monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: '10 1 10 sh 00:10')
     monkeypatch.setattr(window, 'enumerate_window_panes', lambda *a: panes)
     notice = Mock(return_value='fresh hand-off evidence')
@@ -167,8 +168,9 @@ def test_unignore_releases_reserved_intent_and_mismatch_releases_role(monkeypatc
     command.reset_mock()
     assert roles.reconcile('%1', value, None)['agent'] == 'codex'
     command.assert_not_called()
-    assert roles.reconcile('%1', value, 'claude') is None
-    command.assert_called_once_with('set-option', '-pu', '-t', '%1', roles.ROLE_OPTION)
+    updated = roles.reconcile('%1', value, 'claude')
+    assert updated == {'role': 'unknown', 'agent': 'claude', 'ignore': False}
+    command.assert_called_once_with('set-option', '-p', '-t', '%1', roles.ROLE_OPTION, json.dumps(updated))
 
 
 def test_pending_job_blocks_unsealed_autosave_and_prepare(checkpoint):
@@ -273,3 +275,35 @@ def test_startup_waits_for_transient_child_and_never_terminates_work(monkeypatch
 def test_shell_name_does_not_hide_rc_children(monkeypatch, processes, expected):
     monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: processes)
     assert restore.idle_shells({'%1': {'pid': '100', 'command': 'zsh'}}) is expected
+
+
+@pytest.mark.parametrize('layout,expected', [
+    ({'%1': 'shell'}, '%1'),                          # saved while Claude was stopped
+    ({'%1': 'shell', '%2': 'sidekick'}, '%1'),        # sidekick pane is never chosen
+    ({'%1': 'sidekick'}, None),                       # only a sidekick pane: refuse
+])
+def test_restored_window_without_primary_still_launches(monkeypatch, layout, expected):
+    """A window saved while its Claude was not running has no primary
+    reservation; opening it must still start Claude outside sidekicks."""
+    panes = [ccm_pane_state.PaneInfo(pid, str(10 + i), i == len(layout) - 1, 'sh', False, None)
+             for i, pid in enumerate(layout)]
+    def tmux(*args):
+        if args[-1] == roles.MANAGED_OPTION:
+            return '1'
+        if args[-1] == roles.ROLE_OPTION:
+            pid = args[args.index('-t') + 1]
+            agent = 'codex' if layout[pid] == 'sidekick' else None
+            return json.dumps({'role': layout[pid], 'agent': agent, 'ignore': False})
+        return ''
+    command = Mock(side_effect=tmux)
+    monkeypatch.setattr(ccm_core, 'tmux_cmd', command)
+    monkeypatch.setattr(ccm_core, 'tmux_query', command)
+    monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: '10 1 10 sh 00:10')
+    monkeypatch.setattr(window, 'enumerate_window_panes', lambda *a: panes)
+    monkeypatch.setattr(window, 'continue_blocker_notice', lambda *a: None)
+    result = window.launch_claude('@1', honour_setting=False)
+    sends = [c.args for c in command.call_args_list if c.args[0] == 'send-keys' and c.args[-1] == 'Enter']
+    if expected:
+        assert result.outcome == window.LAUNCHED and sends[0][2] == expected
+    else:
+        assert result.outcome == window.UNAVAILABLE and not sends

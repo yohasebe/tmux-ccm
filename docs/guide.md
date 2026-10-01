@@ -534,7 +534,7 @@ To carry windows, splits, working directories and pane roles across logout:
 
 1. Before logout, run `ccm prepare-logout`. If projects are PERMIT or BUSY, review their names and confirm with `y` and Enter to save.
 2. After login, open tmux and run `ccm start _autosave`. Windows and panes return as inactive shells.
-3. Open the windows you need with `ccm attach <name>` or the dashboard. Claude resumes in the reserved primary pane when `@ccm-auto-start` is on. An unknown primary pane prevents automatic launch.
+3. Open the windows you need with `ccm attach <name>` or the dashboard. When `@ccm-auto-start` is on, Claude resumes in the reserved primary pane, or an eligible shell if readable reservations contain no primary. Unreadable or conflicting roles prevent automatic launch.
 4. Resume sidekicks manually using the restore output or `ccm roles`. For Codex, choose a conversation with `codex resume` in that cwd. ccm does not automatically select a particular conversation.
 
 Running conversation state, approval waits and agent processes are not restored. Interrupted projects appear after restoring a sealed checkpoint; cached BUSY entries in ordinary autosaves do not. Do not layer tmux-resurrect restoration onto the same environment.
@@ -557,7 +557,9 @@ ccm roles %12 --clear        # Release a repurposed pane's role reservation
 ccm unignore                 # Clear current pane's ignore intent and live marker
 ```
 
-Smaller screens scale the layout proportionally; if the panes cannot fit, restoration stops as incomplete. Windows without a reserved primary Claude pane do not launch Claude automatically. Clearing a reservation also leaves that pane for manual launch. `roles --clear` does not change live ignore markers; use `unignore` to release those too.
+Smaller screens scale the layout proportionally; if the panes cannot fit, restoration stops as incomplete. When roles are readable and there is no primary reservation, opening a window chooses the active eligible shell, or the only eligible shell if the active pane is not eligible. Sidekick, reserved-ignore and explicitly cleared panes are excluded. Multiple eligible shells with no eligible active shell are left for manual selection. A unique primary reservation is never replaced by another pane if its pane cannot be used. Unreadable, malformed or conflicting reservations block automatic launch and exit; inspect `ccm roles`. Clearing a reservation records a manual-only role, retained by snapshots and restores; automatic launch and exit leave that pane alone. `roles --clear` does not change live ignore markers; use `unignore` to release those too.
+
+A successfully read empty role means **no reservation**. This can be a newly split pane or a pane whose reservation an older version removed; `ccm roles` shows `reserved`, `no reservation`, or `invalid role` without guessing its origin. An unreserved pane does not block the window. While a known external agent such as Codex is running there, it is excluded from launch, exit and idle-exit candidates. Without a primary, an unreserved shell follows normal shell selection and an unreserved Claude follows normal exit rules. With a unique primary, only that primary can be launched or exited. Live ignore markers still exclude panes. Observation does not write a reservation into an unreserved pane: after the external agent stops, its shell can be eligible again. Saving a snapshot while the external agent is running records it as a sidekick.
 
 Existing registered windows with matching names and base cwd are retained without changing splits or roles. Overlapping unregistered window names/cwd and missing saved directories stop restoration before creation. Inspect and explicitly register or resolve the overlap, then retry. An unregistered control window in a saved project's cwd also counts as a conflict.
 

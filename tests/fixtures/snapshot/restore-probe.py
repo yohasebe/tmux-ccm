@@ -45,6 +45,9 @@ try:
     r['panes'][0].update(role='primary', agent='claude')
     r['panes'][1].update(role='sidekick', agent='codex', ignore=True)
     r['primary_claude_slot'] = 0
+    if mode == 'manual':
+        r['panes'][0].update(role='manual', agent=None)
+        r['primary_claude_slot'] = None
     data['checkpoint']['sealed'] = True
     data['checkpoint']['interrupted'] = [{'name': 'alpha', 'state': 'PERMIT'}]
     if mode == 'performance':
@@ -171,7 +174,24 @@ try:
     after = store.read(store.directory() / '_autosave.json')
     assert after['projects'][0]['restore']['panes'][1]['agent'] == 'codex'
     assert after['projects'][0]['restore']['panes'][1]['ignore'] is True
-    assert after['projects'][0]['restore']['primary_claude_slot'] == 0
+    assert after['projects'][0]['restore']['primary_claude_slot'] == (None if mode == 'manual' else 0)
+    if mode == 'manual':
+        assert after['projects'][0]['restore']['panes'][0]['role'] == 'manual'
+    if mode == 'added-pane':
+        import ccm_pane_state
+        wid = managed[0]['window_id']
+        tmux('resize-pane', '-Z', '-t', wid)
+        added = tmux('split-window', '-h', '-P', '-F', '#{pane_id}', '-t', wid,
+                     '-c', str(root), '/bin/sh')
+        assert tmux('show-option', '-pqv', '-t', added, ccm_roles.ROLE_OPTION) == ''
+        panes = ccm_pane_state.enumerate_window_panes(wid, ccm_core.ps_snapshot().splitlines())
+        choice = ccm_roles.selection(wid, panes)
+        assert choice.state == ccm_roles.SelectionState.PRIMARY, choice
+        assert added in choice.eligible and choice.primary != added
+        tmux('set-option', '-pu', '-t', choice.primary, ccm_roles.ROLE_OPTION)
+        choice = ccm_roles.selection(wid, panes)
+        assert choice.state == ccm_roles.SelectionState.NO_PRIMARY, choice
+        assert added in choice.eligible
     print(json.dumps({'mode': mode, 'windows': len(managed), 'elapsed_seconds': round(elapsed, 3), 'agents_started': 0}))
 finally:
     subprocess.run(['tmux', 'kill-server'], capture_output=True)

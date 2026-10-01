@@ -368,15 +368,18 @@ def load(name):
             except OSError:
                 ccm_core.ccm_warn('Restore completed; progress cleanup failed. Retry this snapshot load to release autosave.')
             print(f'Restored {total}/{total}; snapshot protection released. ccm did not launch agents; '
-                  'Claude starts in its pane when you open a project.')
+                  'Opening a project starts Claude only in an eligible pane; inspect ccm roles.')
             # Only what needs a hand: existing windows left alone and
             # sidekicks to resume. Everything else is `ccm roles`.
             for index, p in enumerate(data['projects']):
                 if str(index) not in job['windows']:
                     print(roles.clean(p['name'] + ': existing layout and roles retained'))
                     continue
+                if p['restore']['primary_claude_slot'] is None:
+                    print(roles.clean(p['name'] + ': no primary reservation; opening the window may start '
+                                      'Claude in an eligible shell using the normal selection rules'))
                 for pane in p['restore']['panes']:
-                    if pane['role'] == 'sidekick':
+                    if pane['role'] in ('sidekick', 'manual'):
                         print(roles.clean(p['name'] + ': ' + roles.hint(pane)))
             if was_sealed and data['checkpoint']['interrupted']:
                 print('Interrupted at save: these states are not restored. Review these projects:')

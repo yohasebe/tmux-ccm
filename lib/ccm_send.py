@@ -888,6 +888,8 @@ def cmd_send(args):
                     "yourself."
                 )
         else:
+            if result.reason:
+                ccm_core.ccm_die(f"{project_name}: {result.reason}. Nothing sent.")
             ccm_core.ccm_die(
                 f"{project_name} is in SHELL state but no pane could be "
                 "verified as a shell prompt (an editor or pager may be in "

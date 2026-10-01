@@ -55,11 +55,14 @@ def cmd_exit(args):
     panes = ccm_pane_state.enumerate_window_panes(project.win_target, ccm_core.ps_snapshot().splitlines())
     candidates = [p for p in panes if not p.ignored and p.claude_pid
                   and str(p.claude_pid) != str(p.pane_pid)]
-    primary = ccm_roles.primary(project.win_target, panes)
-    if primary is not None:
-        candidates = [p for p in candidates if p.pane_id == primary]
+    choice = ccm_roles.selection(project.win_target, panes)
+    if choice.state == ccm_roles.SelectionState.BLOCKED:
+        ccm_core.ccm_die(name + ': ' + choice.reason)
+    candidates = [p for p in candidates if p.pane_id in choice.eligible]
+    if choice.state == ccm_roles.SelectionState.PRIMARY:
+        candidates = [p for p in candidates if p.pane_id == choice.primary]
     if len(candidates) != 1:
-        ccm_core.ccm_die(name + ': cannot identify one Claude pane with a shell; inspect it before exiting')
+        ccm_core.ccm_die(name + ': cannot identify one Claude pane with a shell; inspect ccm roles and the pane before exiting')
     outcome = exit_pane(candidates[0].pane_id)
     reasons = {
         'capture_unreadable': 'Cannot read the pane; no keys sent',

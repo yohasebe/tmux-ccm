@@ -16,6 +16,11 @@ import ccm_core
 import ccm_snapshot
 
 
+@pytest.fixture(autouse=True)
+def ordinary_roles(monkeypatch):
+    monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
+
+
 class TestUpdateWindowNames:
     """`update_window_names` rewrites tmux window names to carry the
     current state icon. Regression coverage for the same-directory
@@ -855,3 +860,59 @@ class TestAutoExitAgentsView:
     def test_an_unwritable_declined_log_does_not_break_the_pass(self, monkeypatch):
         monkeypatch.setenv("CCM_AUTO_EXIT_DECLINED_LOG", "/proc/nonexistent/x.log")
         TestAutoExitIdle()._run("claude", captures=[AGENTS_VIEW_TAIL])  # must not raise
+
+
+@pytest.mark.parametrize('kind', ['manual', 'sidekick', 'missing', 'unreadable', 'primary', 'shell'])
+def test_idle_exit_obeys_restored_roles(monkeypatch, kind):
+    import ccm_roles
+    def query(*a):
+        if a[-1] == ccm_roles.MANAGED_OPTION:
+            return '1'
+        if kind == 'missing':
+            return ''
+        if kind == 'unreadable':
+            return None
+        return json.dumps({'role': kind, 'agent': 'claude' if kind == 'primary' else None,
+                           'ignore': False})
+    monkeypatch.setattr(ccm_core, "tmux_query", query)
+    calls = TestAutoExitIdle()._run('zsh')
+    assert bool(calls) is (kind in ('primary', 'shell', 'missing'))
+
+
+@pytest.mark.parametrize('has_primary', [False, True])
+@pytest.mark.parametrize('command', ['zsh', 'claude', 'codex'])
+def test_idle_exit_handles_unreserved_pane(monkeypatch, has_primary, command):
+    import ccm_roles
+    def query(*a):
+        if a[-1] == ccm_roles.MANAGED_OPTION:
+            return '1'
+        target = a[a.index('-t') + 1]
+        if target.endswith('.1') and has_primary:
+            return json.dumps({'role': 'primary', 'agent': 'claude', 'ignore': False})
+        return ''
+    monkeypatch.setattr(ccm_core, 'tmux_query', query)
+    calls = TestAutoExitIdle()._run(
+        'zsh', panes_listing=f'0\t1000\t{command}\n1\t2000\tzsh',
+        ps_output='1000 999 1000 zsh 01:00:00\n1001 1000 1001 claude 00:30:00\n'
+                  '2000 999 2000 zsh 01:00:00\n')
+    assert bool(calls) is (not has_primary and command != 'codex')
+
+
+@pytest.mark.parametrize('has_primary', [False, True])
+@pytest.mark.parametrize('command', ['zsh', 'codex'])
+def test_idle_exit_with_unreserved_sibling_respects_background_work(monkeypatch, has_primary, command):
+    import ccm_roles
+    def query(*a):
+        if a[-1] == ccm_roles.MANAGED_OPTION:
+            return '1'
+        target = a[a.index('-t') + 1]
+        if target.endswith('.0') and has_primary:
+            return json.dumps({'role': 'primary', 'agent': 'claude', 'ignore': False})
+        return ''
+    monkeypatch.setattr(ccm_core, 'tmux_query', query)
+    calls = TestAutoExitIdle()._run(
+        'zsh', panes_listing=f'0\t1000\tclaude\n1\t2000\t{command}',
+        ps_output='1000 999 1000 zsh 01:00:00\n1001 1000 1001 claude 00:30:00\n'
+                  f'2000 999 2000 {command} 01:00:00\n')
+    # A running sibling agent still triggers the independent live-work guard.
+    assert any(a[3] == '/exit' and a[2].endswith('.0') for a in calls) is (command == 'zsh')

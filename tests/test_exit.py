@@ -1,4 +1,5 @@
 """Exit shares auto-exit's screen checks and retains other panes."""
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -19,7 +20,7 @@ def env(monkeypatch):
              ccm_pane_state.PaneInfo('%2', '200', True, 'zsh', False, None)]
     monkeypatch.setattr(ccm_pane_state, 'enumerate_window_panes', lambda *a: panes)
     monkeypatch.setattr(ccm_roles, 'pending', lambda *a: False)
-    monkeypatch.setattr(ccm_roles, 'primary', lambda *a: None)
+    monkeypatch.setattr(ccm_core, 'tmux_query', lambda *a: '')
     monkeypatch.setattr(exiting.time, 'sleep', lambda n: None)
     calls = []
     def tmux(*args):
@@ -59,7 +60,8 @@ def test_refuse_unsafe_exit_target(env, monkeypatch, case):
     elif case == 'ambiguous':
         panes[1] = panes[1]._replace(claude_pid='201')
     elif case == 'no-primary':
-        monkeypatch.setattr(ccm_roles, 'primary', lambda *a: '')
+        monkeypatch.setattr(ccm_core, 'tmux_query', lambda *a: '1' if a[-1] == ccm_roles.MANAGED_OPTION else
+                            json.dumps({'role': 'sidekick', 'agent': 'claude', 'ignore': False}))
     elif case == 'pending':
         monkeypatch.setattr(ccm_roles, 'pending', lambda *a: True)
     else:
@@ -72,7 +74,12 @@ def test_refuse_unsafe_exit_target(env, monkeypatch, case):
 def test_reserved_primary_wins_over_active_sidekick(env, monkeypatch):
     _, panes, calls = env
     panes[1] = panes[1]._replace(claude_pid='201')
-    monkeypatch.setattr(ccm_roles, 'primary', lambda *a: '%1')
+    def query(*a):
+        if a[-1] == ccm_roles.MANAGED_OPTION:
+            return '1'
+        return json.dumps({'role': 'primary' if a[a.index('-t')+1] == '%1' else 'sidekick',
+                           'agent': 'claude', 'ignore': False})
+    monkeypatch.setattr(ccm_core, 'tmux_query', query)
     ccm_commands.cmd_exit(['alpha'])
     assert all(a[2] == '%1' for a in calls if a[0] == 'send-keys')
 

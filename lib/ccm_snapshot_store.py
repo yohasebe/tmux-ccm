@@ -157,7 +157,7 @@ def validate(data):
         for p in panes:
             if (not isinstance(p, dict) or type(p.get('slot')) is not int or p['slot'] < 0
                     or type(p.get('layout_id')) is not int or p['layout_id'] < 0
-                    or p.get('role') not in ('primary', 'sidekick', 'shell', 'unknown')
+                    or p.get('role') not in ('primary', 'sidekick', 'shell', 'unknown', 'manual')
                     or p.get('agent') not in ('claude', 'codex', 'kimi', 'grok', 'gemini', 'unknown', None)
                     or type(p.get('ignore')) is not bool or not _text(p.get('cwd'))):
                 raise SnapshotError('Invalid pane metadata')
@@ -230,7 +230,7 @@ def collect(name, sealed=False):
                           'cwd': ccm_core.shorten_home(p['pane_current_path'])})
         candidates = [p for p in saved if p['role'] == 'primary' and not p['ignore']]
         if not candidates:
-            candidates = [p for p in saved if p['agent'] == 'claude' and not p['ignore']]
+            candidates = [p for p in saved if p['agent'] == 'claude' and not p['ignore'] and p['role'] != 'manual']
         if len(candidates) != 1:
             for p in saved:
                 if p['role'] == 'primary':

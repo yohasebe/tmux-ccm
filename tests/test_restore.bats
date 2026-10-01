@@ -38,6 +38,11 @@ SHIM
     restore_probe geometry
 }
 
+@test "restore v2: newly split unreserved pane permits selection with and without a primary" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe added-pane
+}
+
 @test "restore v2: retry after a lost split reply creates no duplicates" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe retry
@@ -71,4 +76,9 @@ SHIM
 @test "restore v2: persistent rc work is preserved across failed retries" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe rc-work
+}
+
+@test "restore v2: explicitly cleared panes stay manual after restore and autosave" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe manual
 }

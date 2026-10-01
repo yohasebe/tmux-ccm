@@ -440,6 +440,21 @@ def auto_exit_idle(projects):
             # enough to trip the timeout has all its teammates idle too.
             # The shell-foreground gate below means the window is only
             # marked SHELL once the targeted Claude has actually exited.
+            role_panes = []
+            for line in (panes_raw or "").split("\n"):
+                fields = line.split("\t")
+                if len(fields) < 2:
+                    continue
+                role_panes.append(ccm_pane_state.PaneInfo(
+                    f"{win_target}.{fields[0]}", fields[1], False,
+                    fields[2] if len(fields) > 2 else "",
+                    bool(len(fields) > 3 and fields[3] and fields[3] != "0"), None))
+            choice = ccm_roles.selection(win_target, role_panes)
+            if choice.state == ccm_roles.SelectionState.BLOCKED:
+                continue
+            allowed = choice.eligible
+            if choice.state == ccm_roles.SelectionState.PRIMARY:
+                allowed = allowed & {choice.primary}
             claude_pane = None
             for line in (panes_raw or "").split("\n"):
                 parts = line.split("\t")
@@ -448,6 +463,8 @@ def auto_exit_idle(projects):
                 # Never target a CCM_IGNORE'd pane for exit — the whole
                 # point of ignore is that ccm keeps its hands off it.
                 if len(parts) >= 4 and parts[3] and parts[3] != "0":
+                    continue
+                if f"{win_target}.{parts[0]}" not in allowed:
                     continue
                 claude_pid = ccm_pane_state.find_claude_pid(
                     parts[1], ps_lines)

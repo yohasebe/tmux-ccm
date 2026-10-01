@@ -71,6 +71,7 @@ class TestCmdSend:
 
     def _patch_resolution(self, monkeypatch, project=None, session="0"):
         """Install stubs for session / caller / target resolution."""
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
         monkeypatch.setattr(ccm_core, "caller_context",
                             lambda **kw: ("unknown", os.environ.get("TMUX_PANE", "")))
         if project is None:
@@ -748,6 +749,7 @@ class TestCmdSend:
         busy = self._make_project(state="BUSY")
         idle = self._make_project(state="IDLE")
         states = iter([initial, busy, busy, idle, idle])
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
         monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
@@ -983,6 +985,7 @@ class TestDeliveryPaneResolution:
         )
 
     def _patch_resolution(self, monkeypatch, project, ps_text):
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
         monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
@@ -1706,6 +1709,7 @@ class TestSendPreTypeRecheck:
         Pairs with test_recheck_shell_refused (no launch → refuse)."""
         calls = self._patch(monkeypatch, "SHELL", project_state="SHELL",
                             pane_command="zsh", pane_claude=False)
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
         monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
                             lambda *a, **k: "IDLE")
         _show_typed_body(monkeypatch, lambda: calls, "hi")

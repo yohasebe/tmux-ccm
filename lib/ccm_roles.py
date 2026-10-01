@@ -1,6 +1,9 @@
 """Restored pane intent. These reservations are never detection state."""
+from dataclasses import dataclass
+from enum import Enum
 import json
 import unicodedata
+from typing import FrozenSet, Optional
 
 import ccm_core
 
@@ -23,7 +26,7 @@ def decode(raw):
     try:
         r = json.loads(raw)
         if (not isinstance(r, dict) or set(r) != {'role', 'agent', 'ignore'}
-                or r['role'] not in ('primary', 'sidekick', 'shell', 'unknown')
+                or r['role'] not in ('primary', 'sidekick', 'shell', 'unknown', 'manual')
                 or r['agent'] not in ('claude', 'codex', 'kimi', 'grok', 'gemini', 'unknown', None)
                 or type(r['ignore']) is not bool
                 or r['role'] == 'primary' and (r['agent'] != 'claude' or r['ignore'])):
@@ -34,9 +37,11 @@ def decode(raw):
 
 
 def observed(reservation, agent):
-    """Keep intent while a shell waits; an observed different agent wins."""
+    """Preserve manual intent; other reservations yield to a different agent."""
     if not reservation:
         return None
+    if reservation['role'] == 'manual':
+        return reservation
     if agent and agent != reservation['agent']:
         return None
     return reservation
@@ -44,24 +49,65 @@ def observed(reservation, agent):
 
 def reconcile(pane, raw, agent):
     r = decode(raw)
-    if r and agent and agent != r['agent']:
-        # Positive agent evidence releases stale intent; reservations never
-        # become PERMIT/BUSY/IDLE or live ignore state.
-        ccm_core.tmux_cmd('set-option', '-pu', '-t', pane, ROLE_OPTION)
-        return None
+    if r and r['role'] != 'manual' and agent and agent != r['agent']:
+        # Observed agents release stale intent, but must leave a readable
+        # reservation for subsequent automatic operations in a restored window.
+        r = {'role': 'unknown' if agent == 'claude' else 'sidekick',
+             'agent': agent, 'ignore': False}
+        ccm_core.tmux_cmd('set-option', '-p', '-t', pane, ROLE_OPTION, json.dumps(r))
     return r
 
 
-def primary(target, panes):
-    """None: ordinary window; empty string: reserved window with no safe main."""
-    if ccm_core.tmux_cmd('show-option', '-wqv', '-t', target, MANAGED_OPTION) != '1':
-        return None
-    candidates = []
+class SelectionState(Enum):
+    ORDINARY = 'ordinary'
+    NO_PRIMARY = 'no-primary'
+    PRIMARY = 'primary'
+    BLOCKED = 'blocked'
+
+
+@dataclass(frozen=True)
+class Selection:
+    state: SelectionState
+    eligible: FrozenSet[str] = frozenset()
+    primary: Optional[str] = None
+    reason: str = ''
+
+
+def selection(target, panes):
+    """Read each reservation once; distinguish absent intent from failed reads."""
+    def blocked(reason):
+        return Selection(SelectionState.BLOCKED, reason=reason +
+                         '; inspect with ccm roles, or use ccm roles --clear for manual operation')
+
+    managed = ccm_core.tmux_query('show-option', '-wqv', '-t', target, MANAGED_OPTION)
+    if managed is None:
+        return blocked('Cannot read restored-window status')
+    if managed not in ('', '0', '1'):
+        return blocked('Invalid restored-window status')
+    found = {}
     for p in panes:
-        r = decode(ccm_core.tmux_cmd('show-option', '-pqv', '-t', p.pane_id, ROLE_OPTION))
-        if r and r['role'] == 'primary' and not r['ignore'] and not p.ignored:
-            candidates.append(p.pane_id)
-    return candidates[0] if len(candidates) == 1 else ''
+        raw = ccm_core.tmux_query('show-option', '-pqv', '-t', p.pane_id, ROLE_OPTION)
+        if raw is None:
+            return blocked('Cannot read restored pane roles')
+        if raw == '':
+            continue
+        r = decode(raw)
+        if r is None:
+            return blocked('Invalid restored pane role')
+        found[p.pane_id] = r
+    eligible = frozenset(
+        p.pane_id for p in panes if not p.ignored and
+        ((not found[p.pane_id]['ignore'] and
+          found[p.pane_id]['role'] not in ('sidekick', 'manual'))
+         if p.pane_id in found else not ccm_core.external_agent_name(p.current_command)))
+    if managed != '1':
+        return Selection(SelectionState.ORDINARY, eligible)
+    primaries = [pid for pid, r in found.items() if r['role'] == 'primary']
+    if len(primaries) > 1:
+        return blocked('Conflicting primary pane reservations')
+    if primaries:
+        return Selection(SelectionState.PRIMARY, eligible, primaries[0])
+    return Selection(SelectionState.NO_PRIMARY, eligible)
 
 
 def unignore(pane):
@@ -72,6 +118,8 @@ def unignore(pane):
 
 
 def hint(r):
+    if r['role'] == 'manual':
+        return 'manual: start agents manually; no automatic launch or exit'
     if r['role'] == 'primary':
         return 'Claude: opens here when you attach'
     if r['agent'] == 'codex':
@@ -80,7 +128,9 @@ def hint(r):
         return 'Claude sidekick: start manually with CCM_IGNORE=1 from the first hook'
     if r['role'] == 'sidekick':
         return f"{r['agent'] or 'sidekick'}: resume manually in this directory"
-    return r['role'] + ': no automatic agent launch'
+    if r['ignore']:
+        return r['role'] + ': ignored reservation; start agents manually'
+    return r['role'] + ': without a primary reservation, opening the window may start Claude in an eligible shell'
 
 
 def cmd_roles(args):
@@ -105,8 +155,15 @@ def cmd_roles(args):
             continue
         r = decode(value)
         if opts.clear:
-            if ccm_core.tmux_query('set-option', '-pu', '-t', pane, ROLE_OPTION) is None:
+            manual = json.dumps({'role': 'manual', 'agent': None, 'ignore': False})
+            if ccm_core.tmux_query('set-option', '-p', '-t', pane, ROLE_OPTION, manual) is None:
                 ccm_core.ccm_die('Cannot clear pane role')
             print(f'{pane}: role reservation cleared; start agents manually')
         else:
-            print(clean(f"{pane} {cwd}: {hint(r) if r else 'no reserved role'}"))
+            if value == '':
+                description = 'no reservation: follows current command; a unique primary takes priority'
+            elif r:
+                description = 'reserved: ' + hint(r)
+            else:
+                description = 'invalid role; use ccm roles --clear for manual operation'
+            print(clean(f"{pane} {cwd}: {description}"))

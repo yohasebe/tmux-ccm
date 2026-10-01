@@ -1207,7 +1207,7 @@ class TestDoExitAllTargetsClaudePane:
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
         monkeypatch.setattr(ccm_pane_state, "enumerate_window_panes", lambda *a: panes)
         monkeypatch.setattr(ccm_roles, "pending", lambda *a: False)
-        monkeypatch.setattr(ccm_roles, "primary", lambda *a: None)
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
         monkeypatch.setattr(ccm_exit.time, "sleep", lambda n: None)
         monkeypatch.setattr(d, "_prompt", lambda *a: answer)
         monkeypatch.setattr(d, "_spool_text", lambda *a: None)

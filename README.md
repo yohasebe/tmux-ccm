@@ -451,7 +451,7 @@ ccm snapshot list
 ccm start my-workspace
 ```
 
-The `_autosave` checkpoint is checked every 2 minutes and after project operations. Identical or protected content is left intact. Use `ccm prepare-logout` to save and protect it; `ccm prepare-logout --cancel` releases protection. Saving supports one managed session. v2 restores splits, cwd and roles in your login shell; shell startup files run normally. Before logout run `ccm prepare-logout`; after login run `ccm start _autosave`. Open the windows you need to resume Claude in their reserved primary panes; resume sidekicks manually using `ccm roles` guidance. Do not also restore this environment with tmux-resurrect.
+The `_autosave` checkpoint is checked every 2 minutes and after project operations. Identical or protected content is left intact. Use `ccm prepare-logout` to save and protect it; `ccm prepare-logout --cancel` releases protection. Saving supports one managed session. v2 restores splits, cwd and roles in your login shell; shell startup files run normally. Before logout run `ccm prepare-logout`; after login run `ccm start _autosave`. Open the windows you need to resume Claude in their reserved primary panes, or eligible shells when readable roles contain no primary; resume sidekicks manually using `ccm roles` guidance. Do not also restore this environment with tmux-resurrect.
 
 ```bash
 ccm start _autosave   # restore previous session

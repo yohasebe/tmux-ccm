@@ -154,6 +154,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Restored windows accept panes with no role reservation, including newly split panes and reservations removed by older versions. Known external agents in those panes remain excluded from launch and exit; read failures, malformed roles and duplicate primaries still block automatic actions. `ccm roles` distinguishes reserved, unreserved and invalid roles.
+
+- Restored windows saved while Claude was stopped can start it in an eligible
+  shell. Launch and exit share one checked role inventory and refuse unreadable,
+  conflicting or unusable primary reservations. Explicitly cleared panes remain
+  manual-only across snapshots and restores; role guidance explains shell selection.
+
 - Codex completion notifications now honor persistent global tmux defaults for notification enablement, delivery limits and excerpts, with window overrides taking precedence. Hook delivery, dashboard notice reads and doctor share option resolution; verbose diagnostics show effective values and their sources.
 - Separate detailed detection, tuning, and troubleshooting reference from the
   English and Japanese user guides, keeping original section anchors and

@@ -52,6 +52,7 @@ class LaunchResult(NamedTuple):
     outcome: str
     notice: Optional[str] = None   # hand-off notice, when one applies
     pane: Optional[str] = None     # the pane typed into, when LAUNCHED
+    reason: Optional[str] = None   # why automatic operation was refused
 
 
 def _pick_shell_pane(panes, exclude_pane=None):
@@ -231,15 +232,18 @@ def launch_claude(win_target, honour_setting=True, exclude_pane=None) -> LaunchR
         return LaunchResult(UNAVAILABLE, notice)
     if any(p.claude_pid for p in panes if not p.ignored):
         return LaunchResult(ALREADY_RUNNING, notice)
-    reserved = ccm_roles.primary(win_target, panes)
-    if reserved is None:
-        pane = _pick_shell_pane(panes, exclude_pane)
-    else:
-        pane = next((p.pane_id for p in panes if p.pane_id == reserved
-                     and p.pane_id != exclude_pane and not p.ignored
-                     and p.current_command in SHELL_FOREGROUND_COMMANDS), None)
+    choice = ccm_roles.selection(win_target, panes)
+    if choice.state == ccm_roles.SelectionState.BLOCKED:
+        return LaunchResult(UNAVAILABLE, notice, reason=choice.reason)
+    eligible = [p for p in panes if p.pane_id in choice.eligible]
+    if choice.state == ccm_roles.SelectionState.PRIMARY:
+        eligible = [p for p in eligible if p.pane_id == choice.primary]
+    pane = _pick_shell_pane(eligible, exclude_pane)
     if pane is None:
-        return LaunchResult(UNAVAILABLE, notice)
+        reason = None if choice.state == ccm_roles.SelectionState.ORDINARY else (
+            'No eligible restored Claude pane; inspect ccm roles. '
+            'Sidekick, ignored and explicitly cleared panes require manual operation')
+        return LaunchResult(UNAVAILABLE, notice, reason=reason)
     # Leave copy-mode if the pane is in it; a no-op otherwise. Without
     # this the keys would be read as copy-mode bindings.
     ccm_core.tmux_cmd("send-keys", "-t", pane, "-X", "cancel")

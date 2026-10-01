@@ -445,7 +445,7 @@ def cmd_attach(target):
     result = ccm_window.auto_start_claude(win_target)
     if result.outcome == ccm_window.UNAVAILABLE:
         ccm_core.ccm_info(
-            "Claude not auto-started: no pane could be verified as a "
+            result.reason or "Claude not auto-started: no pane could be verified as a "
             "shell prompt. Start it by hand in the window."
         )
     if result.outcome == ccm_window.LAUNCHED and result.notice:

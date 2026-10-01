@@ -78,8 +78,8 @@ def _announce_unlaunched(result):
     that need no action (launched, already running, auto-start off)."""
     if result is not None and result.outcome == ccm_window.UNAVAILABLE:
         tmux_cmd("display-message", "-d", "8000",
-                 "ccm: Claude not auto-started — no pane could be "
-                 "verified as a shell prompt. Start it by hand.")
+                 "ccm: " + (result.reason or "Claude not auto-started — no pane could be "
+                 "verified as a shell prompt. Start it by hand.").replace("#", "##"))
 from ccm_canaries import (
     disable_all_hooks_warning,
     errors_log_burst_warning,
