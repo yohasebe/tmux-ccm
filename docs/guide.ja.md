@@ -1036,7 +1036,7 @@ ccm は 3 つを安い順に確かめます。daemon の roster にそのプロ�
 
 ### tmux-resurrect / tmux-continuum
 
-ccmのウィンドウオプション（`@ccm_project`、`@ccm_dir`）はセッション復元プラグインでは自動保持されません。同じ環境に tmux-resurrect と ccm の復元を重ねないでください。ccm のロードは窓を新規作成するため、既存の未登録窓と重複し得ます。
+ccmのウィンドウオプション（`@ccm_project`、`@ccm_dir`）はセッション復元プラグインでは自動保持されません。同じ環境に tmux-resurrect と ccm の復元を重ねないでください。ccm が管理していない窓とプロジェクトの名前やディレクトリが重なる場合、`ccm start` は何も作らずに止まります。その窓を閉じるか `ccm register` で登録してから、もう一度実行してください。
 
 ### ステータス更新間隔
 

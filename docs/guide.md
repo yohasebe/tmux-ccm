@@ -1061,7 +1061,7 @@ See the [diagnostics reference](diagnostics.md#interactions-with-claude-codes-ow
 
 ### tmux-resurrect / tmux-continuum
 
-ccm's window options (`@ccm_project`, `@ccm_dir`) are not automatically preserved by session restoration plugins. After a tmux restore, use `ccm start _autosave` to re-register projects from the last autosave snapshot. Alternatively, enable `@ccm-auto-restore "on"` to handle this automatically on tmux startup.
+ccm's window options (`@ccm_project`, `@ccm_dir`) are not preserved by session restoration plugins. Do not restore the same environment with both tmux-resurrect and ccm. If windows that ccm does not manage share a project's name or directory, `ccm start` stops before creating anything; close those windows or register them with `ccm register`, then run it again.
 
 ### Status refresh interval
 
