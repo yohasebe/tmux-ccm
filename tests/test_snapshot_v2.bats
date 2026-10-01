@@ -9,6 +9,14 @@ setup() {
     mkdir -p "$CCM_TMP_DIR"
 }
 
+run_checked() {
+    run "$@"
+    if [[ "$status" -ne 0 ]]; then
+        printf 'exit=%s\n%s\n' "$status" "$output"
+        return 1
+    fi
+}
+
 @test "prepare-logout help and flags reach Python" {
     run bash "$CCM_ROOT/ccm" prepare-logout --help
     [ "$status" -eq 0 ]
@@ -32,23 +40,28 @@ setup() {
     tmux resize-pane -Z -t capture:0.2
     local bin="$BATS_TEST_TMPDIR/bin"
     mkdir -p "$bin"
+    # snapshot save checks for claude on PATH, but must never start it.
+    cat > "$bin/claude" <<'STUB'
+#!/bin/sh
+touch "$BATS_TEST_TMPDIR/claude-started"
+echo 'Unexpected claude invocation' >&2
+exit 99
+STUB
+    chmod +x "$bin/claude"
     # Python calls still pass the guard, with this test's allocated socket.
     cat > "$bin/tmux" <<SHIM
 #!/usr/bin/env bash
 PATH="$PATH" exec tmux -L "$sock" -f /dev/null "\$@"
 SHIM
     chmod +x "$bin/tmux"
-    run env PATH="$bin:$PATH" bash "$CCM_ROOT/ccm" prepare-logout
-    [ "$status" -eq 0 ]
+    run_checked env PATH="$bin:$PATH" bash "$CCM_ROOT/ccm" prepare-logout
     [[ "$output" == *"saved and protected"* ]]
-    run python3 "$CCM_ROOT/tests/fixtures/snapshot/check-capture.py" "$CCM_SNAPSHOT_DIR/_autosave.json"
-    [ "$status" -eq 0 ]
+    run_checked python3 "$CCM_ROOT/tests/fixtures/snapshot/check-capture.py" "$CCM_SNAPSHOT_DIR/_autosave.json"
     cp "$CCM_SNAPSHOT_DIR/_autosave.json" "$BATS_TEST_TMPDIR/sealed.json"
     tmux kill-pane -t capture:0.2
-    run env PATH="$bin:$PATH" bash "$CCM_ROOT/ccm" snapshot save _autosave
-    [ "$status" -eq 0 ]
+    run_checked env PATH="$bin:$PATH" bash "$CCM_ROOT/ccm" snapshot save _autosave
     cmp "$BATS_TEST_TMPDIR/sealed.json" "$CCM_SNAPSHOT_DIR/_autosave.json"
-    run env PATH="$bin:$PATH" bash "$CCM_ROOT/ccm" prepare-logout --cancel
-    [ "$status" -eq 0 ]
+    run_checked env PATH="$bin:$PATH" bash "$CCM_ROOT/ccm" prepare-logout --cancel
+    [ ! -e "$BATS_TEST_TMPDIR/claude-started" ]
     tmux kill-server
 }

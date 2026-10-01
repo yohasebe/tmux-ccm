@@ -17,14 +17,16 @@ setup() {
 }
 
 restore_probe() {
-    local mode="$1" sock
-    sock=$(ccm_test_new_socket)
+    local mode="$1" restore_sock
+    export CCM_TEST_SOCKET
+    CCM_TEST_SOCKET=$(ccm_test_new_socket)
+    restore_sock=$(ccm_test_new_socket)
     cat > "$BATS_TEST_TMPDIR/bin/tmux" <<SHIM
 #!/usr/bin/env bash
-PATH="$PATH" exec tmux -L "$sock" -f /dev/null "\$@"
+PATH="$PATH" exec tmux -L "\$CCM_TEST_SOCKET" -f /dev/null "\$@"
 SHIM
     chmod +x "$BATS_TEST_TMPDIR/bin/tmux"
-    PATH="$BATS_TEST_TMPDIR/bin:$PATH" python3 "$CCM_ROOT/tests/fixtures/snapshot/restore-probe.py" "$mode" "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/probe.log" 2>&1 || {
+    PATH="$BATS_TEST_TMPDIR/bin:$PATH" python3 "$CCM_ROOT/tests/fixtures/snapshot/restore-probe.py" "$mode" "$BATS_TEST_TMPDIR" "$restore_sock" > "$BATS_TEST_TMPDIR/probe.log" 2>&1 || {
         cat "$BATS_TEST_TMPDIR/probe.log"
         return 1
     }

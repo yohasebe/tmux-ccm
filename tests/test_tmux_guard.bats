@@ -36,6 +36,26 @@ _spy() {
     [[ ! -s "$CASE_DIR/denied" ]]
 }
 
+@test "tmux startup failure preserves stderr and status without dumping the environment" {
+    cat > "$CASE_DIR/native" <<'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == -V ]]; then echo 'tmux test-version'; exit 0; fi
+echo 'synthetic startup failure' >&2
+exit 42
+MOCK
+    export CCM_TEST_SECRET=do-not-print-this-value
+    export ENV=do-not-print-this-rc-path
+    unset TERM
+    run _spy -L ccm-test.allowed -f /dev/null new-session -d
+    [[ "$status" -eq 42 ]]
+    [[ "$output" == *'synthetic startup failure'* ]]
+    [[ "$output" == *'tmux new-session failed: exit=42'* ]]
+    [[ "$output" == *'socket_bytes='* && "$output" == *'resolved_socket_bytes='* ]]
+    [[ "$output" == *'config=/dev/null'* && "$output" == *'tmux test-version'* ]]
+    [[ "$output" == *'TERM: set=no bytes=0'* ]]
+    [[ "$output" != *'do-not-print'* && "$output" != *'CCM_TEST_SECRET'* ]]
+}
+
 _fixture() {
     mkdir -p "$CASE_DIR/fixture"
     ln -s "$BATS_TEST_DIRNAME/helpers" "$CASE_DIR/fixture/helpers"

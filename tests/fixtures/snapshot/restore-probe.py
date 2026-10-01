@@ -15,7 +15,7 @@ import ccm_roles
 import ccm_snapshot
 import ccm_snapshot_store as store
 
-mode, base = sys.argv[1], Path(sys.argv[2])
+mode, base, restore_socket = sys.argv[1], Path(sys.argv[2]), sys.argv[3]
 control = base / 'control'
 control.mkdir()
 root = base / 'alpha'
@@ -71,6 +71,9 @@ try:
         store.write('_autosave', data)
     original = (store.directory() / '_autosave.json').read_bytes()
     tmux('kill-server')
+    # kill-server can return while the old server still accepts connections.
+    # A separately allocated socket gives restoration a fresh server and IDs.
+    os.environ['CCM_TEST_SOCKET'] = restore_socket
     new_server(100, 30)
     tmux('set-option', '-g', 'pane-base-index', '7')
     tmux('split-window', '-h', '-t', 'test:0', '-c', str(control), '/bin/sh')
