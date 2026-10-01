@@ -404,3 +404,19 @@ Restoration starts your login shell: tmux's `default-shell`, then `$SHELL`, then
 | `@ccm-lang` | `en` | `en` / `ja`; unsupported values use English. Menu description body only. |
 
 Set `set -g @ccm-lang "ja"` in `~/.tmux.conf` for Japanese menu descriptions (`en` is the default; unsupported values use English). Reload the configuration and reopen the menu to apply it. Only the description body changes; labels and other screens remain English. Matching dashboard shortcuts appear as dim `[key]` hints at the right edge; narrow menus omit hints to preserve item names.
+
+### Codex sidekick notifications
+
+| tmux option | Default | Meaning |
+|---|---|---|
+| `@ccm-sidekick-notify` | `off` | Deliver Codex turn-end notices to Claude in the same window (`on` / `off`). |
+| `@ccm-sidekick-notify-limit` | `20` | Maximum attempts per rolling hour per window; `0` suppresses delivery. |
+| `@ccm-sidekick-notify-excerpt` | `on` | Include the final message’s first line (`on` / `off`). |
+
+For all sidekick windows, put `set -g @ccm-sidekick-notify on` in `~/.tmux.conf` (recommended), then reload the configuration. A command entered only into the running server is not persistent. This enables delivery when matching Codex hooks are installed and trusted; it does not install or trust hooks.
+
+All three notification options resolve in this order: explicit window value (`set -w`), global window value (`set -gw`), global session value (`set -g`), built-in default. A window's `off` overrides global `on`. If both global tables are set, `-gw` wins; prefer using only `-g` in the configuration. Empty values act as unset. Use `tmux set -wu -t <window> @ccm-sidekick-notify` to remove a window override. A failed query stops resolution and disables notification/excerpt delivery for that read.
+
+`ccm doctor --verbose` shows the effective notification, hourly limit and excerpt values with their sources (`window`, `global (-gw)`, `global (-g)`, `default`, or `unavailable` on query failure). Enabled windows without observed Codex hooks still produce a warning. Hook creation, delivery, diagnostics and dashboard notice previews share the same resolver.
+
+Snapshots v1/v2 are unchanged: they do not save notification overrides. Global configuration applies to newly restored windows. A window-only override is lost when its window is recreated; reapply exceptions before starting sidekicks. If notifications or excerpts must stay disabled after restart, set the corresponding global option to `off` in `~/.tmux.conf`.

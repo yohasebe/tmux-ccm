@@ -856,7 +856,7 @@ ccm remove-sidekick-hooks kimi    # 削除する（どちらもバックアッ�
 ```bash
 ccm setup-sidekick-hooks codex
 # Codex の /hooks で導入された hook を確認して信頼する。
-# 対象窓を明示する。各窓の既定は off。
+# 窓ごとの上書き用。通常は後述の全体設定を設定ファイルに保存します。
 tmux set-option -w -t <window> @ccm-sidekick-notify on
 # 任意設定（既定: 1時間20通、抜粋 on）:
 tmux set-option -w -t <window> @ccm-sidekick-notify-limit 20
@@ -865,6 +865,15 @@ tmux set-option -w -t <window> @ccm-sidekick-notify-excerpt off
 tmux set-option -w -t <window> @ccm-sidekick-notify off
 ccm remove-sidekick-hooks codex
 ```
+
+全サイドキック窓で使う場合は、`~/.tmux.conf` に `set -g @ccm-sidekick-notify on` を書き、設定を再読み込みする方法を推奨します。実行中のサーバーにコマンドを打つだけでは再起動後に残りません。対応する Codex hook がインストール・信頼済みなら配達が有効になります。この設定だけでは hook の導入や信頼は行いません。
+
+通知の 3 オプションは、窓の明示値（`set -w`）→全体の窓設定（`set -gw`）→全体のセッション設定（`set -g`）→組み込みの既定値の順で読みます。窓の `off` は全体の `on` より優先します。全体の両方に書いた場合は `-gw` が優先するため、設定ファイルでは `-g` に統一してください。空の値は未設定扱いです。窓の上書きを消すには `tmux set -wu -t <window> @ccm-sidekick-notify` を使います。問い合わせに失敗した場合は下位の設定へ進まず、その読み取りでは通知・抜粋の配達を無効にします。
+
+`ccm doctor --verbose` は通知・時間当たり上限・抜粋の有効値と出所（`window`、`global (-gw)`、`global (-g)`、`default`、問い合わせ失敗時は `unavailable`）を表示します。通知が有効な窓で Codex hook の受信記録がない場合の警告も残ります。hook の通知作成、配達、診断、ダッシュボードの通知プレビューは同じ関数で設定を読みます。
+
+保存点 v1/v2 の形式は変更せず、通知の窓別上書きは保存しません。復元で新しく作った窓には全体設定が適用されます。窓だけに設定した例外は窓の再作成で失われるため、サイドキック起動前に設定し直してください。再起動後も通知や抜粋を無効に保つ必要がある場合は、対応する全体設定を `~/.tmux.conf` で `off` にしてください。
+
 
 導入は Codex の `hooks.json`（`CODEX_HOME` 配下、既定は `~/.codex`）に、現在の
 ccm が所有する hook だけをマージし、`.ccm-bak` を残して他の hook を保ちます。

@@ -475,6 +475,16 @@ Claude Code sessions that remain idle are automatically exited to free system re
 set -g @ccm-idle-timeout "10"    # minutes (default: 10, 0 to disable)
 ```
 
+### Codex sidekick notifications
+
+Persist the all-window default in `~/.tmux.conf`, then reload it. Install and trust the Codex hooks separately. Window overrides win over `set -gw`, then `set -g`; without a setting, notifications are off. Window-only exceptions are not saved in snapshots. See the [guide](docs/guide.md#sidekick-completion-v1) for delivery and approval handling.
+
+```tmux
+set -g @ccm-sidekick-notify on
+set -g @ccm-sidekick-notify-limit 20
+set -g @ccm-sidekick-notify-excerpt on
+```
+
 ### Dashboard Preview Panel
 
 Show a live preview of the selected project's terminal content alongside the project list:

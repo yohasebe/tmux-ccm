@@ -153,6 +153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   yellow while the sidekick waits on a decision.
 
 ### Fixed
+
+- Codex completion notifications now honor persistent global tmux defaults for notification enablement, delivery limits and excerpts, with window overrides taking precedence. Hook delivery, dashboard notice reads and doctor share option resolution; verbose diagnostics show effective values and their sources.
 - Separate detailed detection, tuning, and troubleshooting reference from the
   English and Japanese user guides, keeping original section anchors and
   adding links from each guide and README.

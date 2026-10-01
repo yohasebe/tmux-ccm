@@ -321,6 +321,16 @@ set -g @ccm-status-fg-dim     "#5a5a5a"   # 区切り記号やヒント表示
 > [!NOTE]
 > モード2は追加の `status-format` スロット（1行のガター + レイアウト1行ごとに1スロット、最大 16）を使用します。他のプラグインがこれらのインデックスを使用している場合、衝突が発生する可能性があります。
 
+### Codex サイドキックの通知
+
+全窓の既定値は `~/.tmux.conf` に書き、設定を再読み込みします。Codex hook の導入と信頼は別途必要です。窓の上書き、`set -gw`、`set -g` の順で優先し、未設定時の通知は off です。窓だけの例外は保存点に残りません。配達・承認の扱いは[ガイド](docs/guide.ja.md#sidekick-completion-v1)を参照してください。
+
+```tmux
+set -g @ccm-sidekick-notify on
+set -g @ccm-sidekick-notify-limit 20
+set -g @ccm-sidekick-notify-excerpt on
+```
+
 ### ダッシュボード操作
 
 | キー | 動作 |

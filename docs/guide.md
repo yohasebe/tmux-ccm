@@ -867,7 +867,7 @@ from enabling Claude notifications:
 ```bash
 ccm setup-sidekick-hooks codex
 # Review and trust the installed hooks in Codex /hooks.
-# Explicitly select the project window; each window defaults to off.
+# Optional per-window override; prefer the persistent global setting below.
 tmux set-option -w -t <window> @ccm-sidekick-notify on
 # Optional settings (defaults: 20 deliveries/hour, excerpt on):
 tmux set-option -w -t <window> @ccm-sidekick-notify-limit 20
@@ -876,6 +876,15 @@ tmux set-option -w -t <window> @ccm-sidekick-notify-excerpt off
 tmux set-option -w -t <window> @ccm-sidekick-notify off
 ccm remove-sidekick-hooks codex
 ```
+
+For all sidekick windows, put `set -g @ccm-sidekick-notify on` in `~/.tmux.conf` (recommended), then reload the configuration. A command entered only into the running server is not persistent. This enables delivery when matching Codex hooks are installed and trusted; it does not install or trust hooks.
+
+All three notification options resolve in this order: explicit window value (`set -w`), global window value (`set -gw`), global session value (`set -g`), built-in default. A window's `off` overrides global `on`. If both global tables are set, `-gw` wins; prefer using only `-g` in the configuration. Empty values act as unset. Use `tmux set -wu -t <window> @ccm-sidekick-notify` to remove a window override. A failed query stops resolution and disables notification/excerpt delivery for that read.
+
+`ccm doctor --verbose` shows the effective notification, hourly limit and excerpt values with their sources (`window`, `global (-gw)`, `global (-g)`, `default`, or `unavailable` on query failure). Enabled windows without observed Codex hooks still produce a warning. Hook creation, delivery, diagnostics and dashboard notice previews share the same resolver.
+
+Snapshots v1/v2 are unchanged: they do not save notification overrides. Global configuration applies to newly restored windows. A window-only override is lost when its window is recreated; reapply exceptions before starting sidekicks. If notifications or excerpts must stay disabled after restart, set the corresponding global option to `off` in `~/.tmux.conf`.
+
 
 The installer merges only this installation's hook entries into Codex's
 `hooks.json` (under `CODEX_HOME`, or `~/.codex`), keeps a `.ccm-bak`, and preserves

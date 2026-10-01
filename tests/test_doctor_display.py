@@ -73,13 +73,22 @@ def test_codex_unused_vs_enabled_missing_hook(healthy, monkeypatch, capsys, enab
             return '{"session":"opaque-session","pid":1234}'
         return ''
     monkeypatch.setattr(ccm_core, 'tmux_cmd', option)
-    monkeypatch.setattr(ccm_core, 'tmux_query', lambda *args: None)
+    monkeypatch.setattr(ccm_core, 'tmux_query', option)
+    project = _DoctorWorld()._one_project()
+    project.external_agents = ('codex',)
+    monkeypatch.setattr(ccm_core, 'build_project_list', lambda **kw: [project])
     ccm_commands.cmd_doctor()
     out = capsys.readouterr().out
     assert ('Codex hooks: not installed' in out) == enabled
     assert ('no Codex hook reception observed' in out) == enabled
     assert 'opaque-session' not in out and 'binding=' not in out
     assert ('No issues found' in out) != enabled
+    # Enabled globally but no Codex in the window: nothing to report.
+    project.external_agents = ()
+    ccm_commands.cmd_doctor()
+    out = capsys.readouterr().out
+    assert 'no Codex hook reception observed' not in out
+    assert 'Codex hooks: not installed' not in out
 
 
 def test_codex_invalid_settings_is_not_unused(healthy, capsys):
@@ -99,9 +108,9 @@ def test_codex_reception_is_per_window(monkeypatch, tmp_path):
     state.write_text(json.dumps({'received': 1, 'binding': {'window': '@1'}}))
     # Real projects are addressed as session:index; bindings hold window IDs.
     ids = {'main:3': '@1', 'main:4': '@2'}
-    monkeypatch.setattr(ccm_core, 'tmux_query', lambda *args: ids.get(args[3]) if args[0] == 'display-message' else None)
-    rows = notices.doctor_rows([SimpleNamespace(name='one', win_target='main:3'),
-                               SimpleNamespace(name='two', win_target='main:4')])
+    monkeypatch.setattr(ccm_core, 'tmux_query', lambda *args: ids.get(args[3]) if args[0] == 'display-message' else 'on' if notices.OPTION in args else '')
+    rows = notices.doctor_rows([SimpleNamespace(name='one', win_target='main:3', external_agents=('codex',)),
+                               SimpleNamespace(name='two', win_target='main:4', external_agents=('codex',))])
     warnings = '\n'.join(text for warning, text in rows if warning)
     assert 'two: no Codex hook reception' in warnings
     assert 'one: no Codex hook reception' not in warnings
@@ -196,3 +205,14 @@ def test_queued_codex_notice_is_not_a_default_issue(monkeypatch):
     rows = notices.doctor_rows([])
     assert not [text for warning, text in rows if warning and 'Codex notices' in text]
     assert any('pending=1' in text for warning, text in rows if not warning)
+
+
+def test_reception_warning_only_for_windows_hosting_codex(monkeypatch):
+    """A global on must not warn about every project without a sidekick."""
+    monkeypatch.setattr(notices, 'effective_option', lambda win, name: ('on', 'global (-g)') if name == notices.OPTION else ('20', 'default'))
+    monkeypatch.setattr(ccm_core, 'tmux_query', lambda *args: None)
+    rows = notices.doctor_rows([SimpleNamespace(name='plain', win_target='main:1', external_agents=()),
+                                SimpleNamespace(name='withcodex', win_target='main:2', external_agents=('codex',))])
+    warnings = '\n'.join(text for warning, text in rows if warning)
+    assert 'withcodex: no Codex hook reception' in warnings
+    assert 'plain: no Codex hook reception' not in warnings

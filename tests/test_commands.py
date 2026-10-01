@@ -163,6 +163,7 @@ class TestCmdDoctor:
                 return focus_events
             return ""
         monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "tmux_query", fake_tmux)
         # The multi-claude row reads the bulk panes cache plus a ps
         # snapshot. Both would trip conftest's live-subprocess guard,
         # and the scan swallows that failure — so without these stubs

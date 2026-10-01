@@ -152,8 +152,37 @@ def _write(path, data):
             os.unlink(temp)
 
 
+def effective_option(win, name):
+    """Resolve value and source without tmux's cross-scope inheritance.
+
+    User options in set -g and set -gw live in separate tables. A plain
+    show-options -w does not inherit; -wA only inherits the -gw table.
+    Read explicit scopes so local off always wins and the source is known.
+    Empty values are treated as unset. A failed query stops resolution.
+    """
+    defaults = {OPTION: 'off', LIMIT: '20', EXCERPT: 'on'}
+    default = defaults[name]
+    for flags, source in (('-wqv', 'window'), ('-gwqv', 'global (-gw)'),
+                          ('-gqv', 'global (-g)')):
+        value = ccm_core.tmux_query('show-options', flags, '-t', win, name)
+        if value is None:
+            # Never enable notifications or expose excerpts based on a
+            # less specific scope when the window override could not be read.
+            safe = {OPTION: 'off', LIMIT: '0', EXCERPT: 'off'}[name]
+            return safe, 'unavailable'
+        if value:
+            if name == OPTION:
+                value = 'on' if value == 'on' else 'off'
+            elif name == EXCERPT:
+                value = 'off' if value == 'off' else 'on'
+            elif not value.isdecimal():
+                value = default
+            return value, source
+    return default, 'default'
+
+
 def _option(win, name):
-    return ccm_core.tmux_query('show-options', '-wqv', '-t', win, name)
+    return effective_option(win, name)[0]
 
 
 def _pdir(project):
@@ -729,12 +758,15 @@ def doctor_rows(projects):
     result = []
     active = []
     for project in projects:
-        def option(name):
-            return ccm_core.tmux_cmd('show-options', '-wqv', '-t', project.win_target, name)
-        binding = option(BINDING) or 'unbound'
-        setting = option(OPTION) or 'off'
-        result.append((False, f'{project.name}: notify={setting}; limit={option(LIMIT) or "20"}/hour; excerpt={option(EXCERPT) or "on"}; binding={binding}'))
-        if setting == 'on':
+        binding = ccm_core.tmux_query('show-options', '-wqv', '-t', project.win_target, BINDING) or 'unbound'
+        setting, setting_source = effective_option(project.win_target, OPTION)
+        limit, limit_source = effective_option(project.win_target, LIMIT)
+        excerpt, excerpt_source = effective_option(project.win_target, EXCERPT)
+        result.append((False, f'{project.name}: notify={setting} [{setting_source}]; '
+                       f'limit={limit}/hour [{limit_source}]; '
+                       f'excerpt={excerpt} [{excerpt_source}]; binding={binding}'))
+        # Only a window that hosts Codex can be expected to have reported.
+        if setting == 'on' and 'codex' in (getattr(project, 'external_agents', ()) or ()):
             active.append(project)
     path = config_path()
     data = _read(path)
