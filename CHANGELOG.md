@@ -154,6 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- While a restore runs, the dashboard shows its progress and an estimated time left instead of reporting it incomplete; a stopped restore shows its reason. A second restore started meanwhile waits, reports progress and the first run's result, and does not restore again. Auto-restore at tmux start keeps its output and failure reason in `state/auto-restore.log`. Each restored window prints the estimated time left.
+
 - Restored windows accept panes with no role reservation, including newly split panes and reservations removed by older versions. Known external agents in those panes remain excluded from launch and exit; read failures, malformed roles and duplicate primaries still block automatic actions. `ccm roles` distinguishes reserved, unreserved and invalid roles.
 
 - Restored windows saved while Claude was stopped can start it in an eligible

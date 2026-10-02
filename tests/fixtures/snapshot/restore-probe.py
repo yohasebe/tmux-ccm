@@ -50,9 +50,9 @@ try:
         r['primary_claude_slot'] = None
     data['checkpoint']['sealed'] = True
     data['checkpoint']['interrupted'] = [{'name': 'alpha', 'state': 'PERMIT'}]
-    if mode == 'performance':
+    if mode in ('performance', 'concurrent'):
         projects = []
-        for i in range(46):
+        for i in range(46 if mode == 'performance' else 12):
             p = copy.deepcopy(project)
             p['name'] = f'project-{i:02d}'
             path = base / p['name']
@@ -124,6 +124,9 @@ try:
                 assert (store.directory() / '_autosave.json').read_bytes() == original
                 assert ccm_restore.paused()
                 assert not marker.exists()
+                progress = ccm_restore.read_progress()
+                assert progress['state'] == 'stopped' and 'did not settle' in progress['error'], progress
+                assert not ccm_restore.running()
             print(json.dumps({'mode': mode, 'preserved_on_retries': 2, 'shell_starts': 1}))
             sys.exit(0)
     if mode.startswith('retry'):
@@ -146,7 +149,49 @@ try:
         assert ccm_snapshot.cmd_snapshot_save('_autosave', quiet=True) is False
         ccm_restore.run = original_run
     start = time.monotonic()
-    ccm_restore.load('_autosave')
+    if mode == 'concurrent':
+        # A second load while the first runs reports progress and the first
+        # run's result; it never restores the same snapshot again.
+        import threading
+        import ccm_dashboard_lifecycle as life
+        # Hold the first run inside its first window until the second load
+        # has reported that it is waiting, so the two always overlap.
+        gate = threading.Event()
+        original_window = ccm_restore.restore_window
+
+        def gated(*args):
+            assert gate.wait(30), 'second load never reported waiting'
+            return original_window(*args)
+        ccm_restore.restore_window = gated
+        first = threading.Thread(target=ccm_restore.load, args=('_autosave',))
+        first.start()
+        deadline = time.monotonic() + 20
+        banner = ''
+        while not banner.startswith('Restoring ') and time.monotonic() < deadline:
+            banner, _ = life.restore_status(lambda *a: '')
+            time.sleep(0.05)
+        assert banner.startswith('Restoring '), banner
+        second = subprocess.Popen(
+            [sys.executable, '-c',
+             'import sys; sys.path.insert(0, sys.argv[1]); import ccm_core, ccm_restore; '
+             'ccm_core.require_session = lambda: "test"; ccm_restore.load("_autosave")',
+             str(Path(ccm_restore.__file__).parent)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        first_line = second.stdout.readline()
+        assert 'already running' in first_line, first_line
+        gate.set()
+        rest, errors = second.communicate(timeout=60)
+        output = first_line + rest
+        first.join(60)
+        ccm_restore.restore_window = original_window
+        assert not first.is_alive()
+        assert second.returncode == 0, errors
+        assert 'That restore finished:' in output, output
+        assert 'Restored 12/12' in output, output
+        assert ccm_restore.read_progress()['state'] == 'done'
+        assert life.restore_status(lambda *a: '')[0] == ''
+    else:
+        ccm_restore.load('_autosave')
     elapsed = time.monotonic() - start
     all_windows = ccm_restore.windows()
     managed = [w for w in all_windows if w['@ccm_project']]

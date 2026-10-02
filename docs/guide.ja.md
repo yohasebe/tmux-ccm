@@ -586,7 +586,9 @@ ccm prepare-logout --cancel    # 保存点を残して保護を解除
 set -g @ccm-auto-restore "on"    # デフォルト: off
 ```
 
-TPM 起動時に `_autosave` をロードします。既に管理窓がある場合はスキップします。復元途中なら手動で同じ snapshot を再実行してください。保存先は `CCM_SNAPSHOT_DIR`、または `CCM_DATA_DIR` 配下です。
+TPM 起動時に `_autosave` をロードします。既に管理窓がある場合はスキップします。保存先は `CCM_SNAPSHOT_DIR`、または `CCM_DATA_DIR` 配下です。実行の出力は、失敗理由も含めて `CCM_DATA_DIR` 配下の `state/auto-restore.log` に残ります。
+
+復元の実行中は、ダッシュボードに `Restoring 12/45: alpha · about 50s left` のような進捗を表示します。残り時間は 3 窓を作り直した後から表示します。途中で止まった場合は `Restore stopped:` と理由を表示するので、メニューの Continue restore か同じ snapshot で再実行してください。実行中に別の復元を始めると、実行中のものを待って進捗と結果を表示し、同じ復元を繰り返しません。待っていた復元の結果を確認できない場合は、待っていた側が続きを実行します。復元済みの窓はそのまま残ります。
 
 ### スナップショット管理
 

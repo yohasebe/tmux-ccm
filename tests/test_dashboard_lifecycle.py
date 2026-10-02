@@ -222,3 +222,52 @@ def test_long_result_uses_full_terminal_width(ui):
     d._lifecycle_text(screen, 'Result', 'example')
     assert widths == [0]
     assert d._render_max_col == 25
+
+
+@pytest.mark.parametrize('case', ['running', 'running-other', 'stopped', 'died', 'other-source',
+                                  'pre-job-stopped', 'pre-job-deleted', 'pre-job-done', 'pre-job-replaced'])
+def test_banner_separates_running_from_stopped(ui, monkeypatch, case):
+    import ccm_restore as restore
+    directory = store.directory()
+    directory.mkdir()
+    if not case.startswith('pre-job'):
+        (directory / '.restore-state').write_text(json.dumps({'source': 'named'}))
+    if case != 'pre-job-deleted':
+        (directory / 'named.json').write_text('{}')
+    monkeypatch.setattr(store, 'read', lambda path: {'version': 2, 'checkpoint': {'sealed': False}})
+    record = {'run': 'holder', 'source': 'named', 'state': 'running', 'total': 45, 'done': 12,
+              'current': 'alpha', 'samples': 0, 'spent': 0.0}
+    record['file_digest'] = restore._file_digest('named')
+    if case in ('stopped', 'pre-job-stopped', 'pre-job-deleted', 'pre-job-replaced'):
+        record.update(state='stopped', error='Project directory missing: alpha')
+    if case == 'pre-job-replaced':
+        (directory / 'named.json').write_text('{"saved": "later"}')
+    elif case == 'other-source':
+        record.update(source='other', state='stopped', error='old')
+    elif case == 'running-other':
+        record.update(run='older', source='other', done=99, total=99, current='unrelated', state='done')
+    elif case == 'pre-job-done':
+        record.update(state='done')
+    restore._publish(record)
+    held = None
+    if case.startswith('running'):
+        held, _ = restore._acquire_running()
+        restore.os.ftruncate(held, 0)
+        restore.os.pwrite(held, b'holder', 0)
+    try:
+        line, name = life.restore_status(Mock(return_value=''))
+    finally:
+        if held is not None:
+            restore.os.close(held)
+    stopped = 'Restore stopped: Project directory missing: alpha; open Menu → Continue restore.'
+    assert (line, name) == {
+        'running': ('Restoring 12/45: alpha …', 'named'),
+        'running-other': ('Restoring in progress …', 'named'),
+        'stopped': (stopped, 'named'),
+        'died': ('Restore stopped: the restoring process ended unexpectedly; open Menu → Continue restore.', 'named'),
+        'other-source': ('Restore incomplete; open Menu → Continue restore.', 'named'),
+        'pre-job-stopped': (stopped, 'named'),
+        'pre-job-deleted': ('', None),
+        'pre-job-done': ('', None),
+        'pre-job-replaced': ('', None),
+    }[case]

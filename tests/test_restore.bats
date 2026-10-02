@@ -82,3 +82,37 @@ SHIM
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe manual
 }
+
+@test "restore v2: a second load during a restore waits and reports the first run's result" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe concurrent
+}
+
+@test "auto-restore at tmux start keeps its output, including the failure reason" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    export CCM_TEST_SOCKET
+    CCM_TEST_SOCKET=$(ccm_test_new_socket)
+    # The server's own children (run-shell, status jobs) call plain tmux, so
+    # the shim must come first on the server's PATH and reach the guard by path.
+    cat > "$BATS_TEST_TMPDIR/bin/tmux" <<SHIM
+#!/usr/bin/env bash
+exec "$CCM_TEST_GUARD_DIR/bin/tmux" -L "\$CCM_TEST_SOCKET" -f /dev/null "\$@"
+SHIM
+    chmod +x "$BATS_TEST_TMPDIR/bin/tmux"
+    mkdir -p "$CCM_SNAPSHOT_DIR"
+    printf 'not json' > "$CCM_SNAPSHOT_DIR/_autosave.json"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    tmux new-session -d -s test -x 100 -y 30 /bin/sh
+    tmux set-option -g @ccm-auto-restore on
+    run bash "$CCM_ROOT/ccm.tmux"
+    log="$CCM_DATA_DIR/state/auto-restore.log"
+    for _ in $(seq 1 100); do
+        [[ -s "$log" ]] && break
+        sleep 0.1
+    done
+    tmux kill-server
+    [[ -s "$log" ]]
+    grep -q 'Snapshot unreadable' "$log"
+    mode=$(stat -c '%a' "$log" 2>/dev/null || stat -f '%Lp' "$log")
+    [[ "$mode" == 600 ]]
+}

@@ -590,7 +590,9 @@ Windows and agents keep running after protection. Run prepare again after config
 set -g @ccm-auto-restore "on"    # default: off
 ```
 
-TPM startup loads `_autosave`, skipping when managed windows already exist. Retry incomplete restoration manually with the same snapshot. The location follows `CCM_SNAPSHOT_DIR`, otherwise under `CCM_DATA_DIR`.
+TPM startup loads `_autosave`, skipping when managed windows already exist. The location follows `CCM_SNAPSHOT_DIR`, otherwise under `CCM_DATA_DIR`. The run's output, including any failure reason, is kept in `state/auto-restore.log` under `CCM_DATA_DIR`.
+
+While a restore runs, the dashboard shows its progress, for example `Restoring 12/45: alpha · about 50s left`; the estimate appears after three windows have been rebuilt. If it stops, the dashboard shows `Restore stopped:` with the reason; retry with Menu → Continue restore or the same snapshot. Starting a restore while another is running waits for it, prints its progress and then its result, and does not restore again. When that run's result cannot be confirmed, the waiting restore continues itself; windows already restored are kept.
 
 ### Manage snapshots
 

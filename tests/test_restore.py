@@ -307,3 +307,283 @@ def test_restored_window_without_primary_still_launches(monkeypatch, layout, exp
         assert result.outcome == window.LAUNCHED and sends[0][2] == expected
     else:
         assert result.outcome == window.UNAVAILABLE and not sends
+
+
+def _load_within(name, seconds=5):
+    # A missing wait would block on the run lock this test still holds;
+    # fail instead of hanging the suite.
+    import threading
+    errors = []
+
+    def target():
+        try:
+            restore.load(name)
+        except BaseException as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    assert not worker.is_alive(), 'load blocked on the run lock instead of waiting for it'
+    if errors:
+        raise errors[0]
+
+
+def _retained_window(data, monkeypatch):
+    w = {field: '' for field in restore.WF}
+    w.update({'session_id': '$1', 'window_id': '@3', '@ccm_project': 'alpha', '@ccm_dir': data['projects'][0]['dir']})
+    monkeypatch.setattr(restore, 'windows', lambda: [w])
+    monkeypatch.setattr(store, '_query', lambda *a: [])
+    monkeypatch.setattr(ccm_core, 'require_session', lambda: 'test')
+    monkeypatch.setattr(restore, 'run', Mock(return_value='$1'))
+
+
+def _hold(run_id=None):
+    """Take the run lock as another run would, optionally with a known id."""
+    fd, run = restore._acquire_running()
+    assert fd is not None
+    if run_id is not None:
+        restore.os.ftruncate(fd, 0)
+        restore.os.pwrite(fd, run_id.encode(), 0)
+        run = run_id
+    return fd, run
+
+
+def test_run_lock_is_visible_while_held_and_released_after(checkpoint):
+    assert restore.holder() is None and not restore.running()
+    fd, run = restore._acquire_running()
+    try:
+        assert restore.holder() == run and restore.running()
+        assert restore._acquire_running() == (None, None)
+    finally:
+        restore.os.close(fd)
+    assert restore.holder() is None
+
+
+@pytest.mark.parametrize('record, expected', [
+    ({'total': 10, 'done': 2, 'samples': 2, 'spent': 4.0}, None),
+    ({'total': 10, 'done': 4, 'samples': 4, 'spent': 8.0}, 12),
+    ({'total': 10, 'done': 10, 'samples': 10, 'spent': 20.0}, None),
+    ({'total': 'x'}, None),
+])
+def test_remaining_time_needs_rebuilt_samples(record, expected):
+    assert restore.remaining_seconds(record) == expected
+
+
+def test_progress_phrase_names_current_project_and_estimate():
+    record = {'total': 45, 'done': 12, 'current': 'alpha\x1b[31m', 'samples': 12, 'spent': 18.0}
+    assert restore.describe(record) == '12/45: alpha [31m · about 50s left'
+    record.update(samples=3, spent=600.0)
+    assert restore.describe(record).endswith('about 110 min left')
+    assert restore.describe({}) == 'in progress'
+
+
+def test_successful_load_records_done_with_summary(checkpoint, monkeypatch, capsys):
+    _retained_window(checkpoint, monkeypatch)
+    restore.load('_autosave')
+    record = restore.read_progress()
+    assert record['state'] == 'done' and record['done'] == record['total'] == 1
+    assert any('existing layout and roles retained' in line for line in record['summary'])
+    assert not restore.running()
+
+
+def test_failed_load_records_reason_and_releases_lock(checkpoint, monkeypatch):
+    _retained_window(checkpoint, monkeypatch)
+    monkeypatch.setattr(restore, 'preflight', Mock(side_effect=store.SnapshotError(
+        'Restore shell startup did not settle within 10 seconds')))
+    with pytest.raises(SystemExit):
+        restore.load('_autosave')
+    record = restore.read_progress()
+    assert record['state'] == 'stopped'
+    assert 'did not settle' in record['error']
+    assert not restore.running()
+
+
+def test_unexpected_exception_marks_progress_stopped(checkpoint, monkeypatch):
+    _retained_window(checkpoint, monkeypatch)
+    monkeypatch.setattr(restore, 'preflight', Mock(side_effect=KeyboardInterrupt))
+    with pytest.raises(KeyboardInterrupt):
+        restore.load('_autosave')
+    assert restore.read_progress()['state'] == 'stopped'
+    assert not restore.running()
+
+
+def test_stop_reason_survives_a_writer_cleaning_staged_snapshots(checkpoint, monkeypatch):
+    # Another writer's lock cleanup runs between staging and replacing.
+    _retained_window(checkpoint, monkeypatch)
+    monkeypatch.setattr(restore, 'preflight', Mock(side_effect=store.SnapshotError('Project directory missing: alpha')))
+    real_replace = restore.os.replace
+
+    def replace(src, dst):
+        # Only the stop record is written outside the writer lock.
+        if str(dst).endswith(restore.PROGRESS) and '"stopped"' in open(src).read():
+            with store.locked():
+                pass
+        return real_replace(src, dst)
+    monkeypatch.setattr(restore.os, 'replace', replace)
+    with pytest.raises(SystemExit):
+        restore.load('_autosave')
+    record = restore.read_progress()
+    assert record['state'] == 'stopped' and 'directory missing' in record['error']
+
+
+def test_second_load_waits_and_reports_instead_of_restoring(checkpoint, monkeypatch, capsys):
+    held, run = _hold('first-run')
+    restore._publish({'run': run, 'source': '_autosave', 'state': 'running', 'total': 45, 'done': 12,
+                      'current': 'alpha', 'samples': 0, 'spent': 0.0})
+
+    def sleep(_):
+        restore._publish({'run': run, 'source': '_autosave', 'state': 'done', 'total': 45, 'done': 45,
+                          'summary': ['Restored 45/45; snapshot protection released.']})
+        restore.os.close(held)
+    monkeypatch.setattr(restore.time, 'sleep', sleep)
+    inner = Mock()
+    monkeypatch.setattr(restore, '_load', inner)
+    _load_within('_autosave')
+    out = capsys.readouterr().out
+    assert 'already running' in out and '12/45: alpha' in out
+    assert 'That restore finished:' in out and 'Restored 45/45' in out
+    inner.assert_not_called()
+    assert not restore.running()
+
+
+def test_old_success_is_not_reported_for_a_run_that_left_no_record(checkpoint, monkeypatch, capsys):
+    # A previous run's `done` must not stand in for the run this load
+    # waited for, which failed before it could publish anything.
+    restore._publish({'run': 'earlier', 'source': '_autosave', 'state': 'done', 'summary': ['old summary']})
+    held, _ = _hold('failed-run')
+
+    def sleep(_):
+        restore.os.close(held)
+    monkeypatch.setattr(restore.time, 'sleep', sleep)
+    inner = Mock()
+    monkeypatch.setattr(restore, '_load', inner)
+    _load_within('_autosave')
+    out = capsys.readouterr().out
+    assert 'finished' not in out and 'old summary' not in out
+    inner.assert_called_once()
+
+
+def test_every_waiter_reports_the_run_that_finished_while_it_waited(checkpoint, monkeypatch, capsys):
+    # The first holder stops; another waiter takes over and finishes. A
+    # later waiter must report that result instead of restoring again.
+    first, _ = _hold('run-a')
+    restore.save_job({'source': '_autosave'})
+    steps = []
+
+    def sleep(_):
+        if not steps:
+            restore._publish({'run': 'run-a', 'source': '_autosave', 'state': 'stopped', 'error': 'x'})
+            restore.os.close(first)
+            steps.append(_hold('run-b'))
+        else:
+            fd, _ = steps[-1]
+            restore.job_path().unlink()
+            restore._publish({'run': 'run-b', 'source': '_autosave', 'state': 'done', 'summary': ['done by b']})
+            restore.os.close(fd)
+    monkeypatch.setattr(restore.time, 'sleep', sleep)
+    inner = Mock()
+    monkeypatch.setattr(restore, '_load', inner)
+    _load_within('_autosave')
+    out = capsys.readouterr().out
+    assert 'That restore finished:' in out and 'done by b' in out
+    inner.assert_not_called()
+
+
+def test_load_after_a_stopped_run_reports_reason_and_continues(checkpoint, monkeypatch, capsys):
+    held, run = _hold('stopping-run')
+    restore.save_job({'source': '_autosave'})
+
+    def sleep(_):
+        restore._publish({'run': run, 'source': '_autosave', 'state': 'stopped', 'error': 'tmux list-panes failed'})
+        restore.os.close(held)
+    monkeypatch.setattr(restore.time, 'sleep', sleep)
+    inner = Mock()
+    monkeypatch.setattr(restore, '_load', inner)
+    _load_within('_autosave')
+    assert 'That restore stopped: tmux list-panes failed' in capsys.readouterr().out
+    inner.assert_called_once()
+
+
+@pytest.mark.parametrize('state', ['done', 'stopped'])
+@pytest.mark.parametrize('error', [KeyboardInterrupt, OSError])
+def test_lock_is_released_when_reporting_the_waited_result_fails(checkpoint, monkeypatch, state, error):
+    held, run = _hold('first-run')
+    if state == 'stopped':
+        restore.save_job({'source': '_autosave'})
+
+    def sleep(_):
+        restore._publish({'run': run, 'source': '_autosave', 'state': state, 'error': 'reason',
+                          'summary': ['line']})
+        restore.os.close(held)
+    monkeypatch.setattr(restore.time, 'sleep', sleep)
+    monkeypatch.setattr(restore, '_load', Mock())
+
+    def broken_print(*args, **kwargs):
+        if args and str(args[0]).startswith('That restore'):
+            raise error('output failed')
+    monkeypatch.setattr(restore, 'print', broken_print, raising=False)
+    with pytest.raises(error):
+        _load_within('_autosave')
+    assert not restore.running()
+    fd, _ = restore._acquire_running()
+    assert fd is not None
+    restore.os.close(fd)
+
+
+def test_a_run_whose_id_cannot_be_written_does_not_start(checkpoint, monkeypatch, capsys):
+    # An older id left in the lock file would let a waiter take an earlier
+    # success for this run's result.
+    (store.directory() / restore.RUNNING).write_text('earlier')
+    restore._publish({'run': 'earlier', 'source': '_autosave', 'state': 'done', 'summary': ['OLD SUCCESS']})
+
+    def fail(*args):
+        raise OSError('read-only')
+    monkeypatch.setattr(restore.os, 'ftruncate', fail)
+    inner = Mock()
+    monkeypatch.setattr(restore, '_load', inner)
+    with pytest.raises(SystemExit):
+        restore.load('_autosave')
+    inner.assert_not_called()
+    assert 'Cannot record the restore run' in capsys.readouterr().err
+    assert not restore.running()
+
+
+@pytest.mark.parametrize('call', ['ftruncate', 'pwrite'])
+def test_lock_is_released_when_recording_the_run_is_interrupted(checkpoint, monkeypatch, call):
+    real = getattr(restore.os, call)
+
+    def interrupt(*args):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(restore.os, call, interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        restore.load('_autosave')
+    # Restore only the syscall; undo() would also drop the fixture's directory.
+    monkeypatch.setattr(restore.os, call, real)
+    assert not restore.running()
+
+
+def test_stop_reason_names_the_checkpoint_actually_read(checkpoint, monkeypatch):
+    # A save under the same name lands while the restore waits for the
+    # writer lock; the stop must be tied to what was read, not to the
+    # content seen before waiting.
+    _retained_window(checkpoint, monkeypatch)
+    replaced = copy.deepcopy(checkpoint)
+    replaced['projects'][0]['name'] = 'beta'
+    real_locked = store.locked
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def locked_after_save():
+        monkeypatch.setattr(store, 'locked', real_locked)
+        with real_locked():
+            store.write('_autosave', replaced)
+        with real_locked():
+            yield
+    monkeypatch.setattr(store, 'locked', locked_after_save)
+    monkeypatch.setattr(restore, 'preflight', Mock(side_effect=store.SnapshotError('Directory not found: beta')))
+    with pytest.raises(SystemExit):
+        restore.load('_autosave')
+    record = restore.read_progress()
+    assert record['state'] == 'stopped'
+    assert record['file_digest'] == restore._file_digest('_autosave')

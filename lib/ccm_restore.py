@@ -1,5 +1,6 @@
 """Resumable v2 restoration. Only windows carrying this job's token are edited."""
 import copy
+import fcntl
 import hashlib
 import json
 import os
@@ -13,6 +14,13 @@ import ccm_roles as roles
 import ccm_snapshot_store as store
 
 JOB = '.restore-state'
+# Progress is a separate record so its frequent rewrites never touch the job
+# a resumed load trusts. The run lock is held for the whole load and the
+# kernel releases it when the process exits, so "the job file exists" can be
+# told apart from "a restore is running now".
+PROGRESS = '.restore-progress'
+RUNNING = '.restore-running'
+ETA_MIN_SAMPLES = 3
 SHELL_STARTUP_TIMEOUT = 10.0
 SHELL_QUIET_INTERVAL = 0.1
 WF = ('session_id', 'window_id', 'window_name', '@ccm_project', '@ccm_dir',
@@ -49,6 +57,141 @@ def identity(data):
     data = copy.deepcopy(data)
     data['checkpoint']['sealed'] = False
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
+def progress_path():
+    return store.directory() / PROGRESS
+
+
+def read_progress():
+    try:
+        record = json.loads(progress_path().read_text())
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def _lock_running():
+    """The run lock's fd, or None while another process holds it."""
+    store.directory().mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(store.directory() / RUNNING, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException as exc:
+        os.close(fd)
+        if isinstance(exc, BlockingIOError):
+            return None
+        raise
+    return fd
+
+
+def _acquire_running():
+    """The run lock and this run's id, or (None, None) while another holds it.
+    The holder writes its id into the lock file so a waiter can tell which
+    run it waited for; the kernel drops the lock if the holder dies. A run
+    whose id cannot be written does not start: an older id left in the
+    file would let a waiter mistake an earlier result for this run's."""
+    fd = _lock_running()
+    if fd is None:
+        return None, None
+    # The fd is ours until returned: any interruption here must close it,
+    # because the caller has not received it and cannot release it.
+    try:
+        run = uuid.uuid4().hex
+        os.ftruncate(fd, 0)
+        if os.pwrite(fd, run.encode(), 0) != len(run):
+            raise OSError('short write')
+    except BaseException as exc:
+        os.close(fd)
+        if isinstance(exc, OSError):
+            raise store.SnapshotError(f'Cannot record the restore run ({exc}); retry this snapshot load') from exc
+        raise
+    return fd, run
+
+
+def holder():
+    """Id of the run holding the lock, '' if unreadable, None if free."""
+    try:
+        fd = _lock_running()
+    except OSError:
+        return None
+    if fd is not None:
+        os.close(fd)
+        return None
+    try:
+        return (store.directory() / RUNNING).read_text().strip()
+    except OSError:
+        return ''
+
+
+def running():
+    """True while some process is inside load()."""
+    return holder() is not None
+
+
+def remaining_seconds(record):
+    """Estimate from windows that were actually rebuilt; retained windows
+    finish instantly and would make the estimate meaningless."""
+    try:
+        samples, spent = int(record['samples']), float(record['spent'])
+        left = int(record['total']) - int(record['done'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if samples < ETA_MIN_SAMPLES or left <= 0:
+        return None
+    return round(spent / samples * left)
+
+
+def describe(record):
+    """One progress phrase, e.g. `12/45: alpha · about 50s left`."""
+    try:
+        text = f"{int(record['done'])}/{int(record['total'])}"
+    except (KeyError, TypeError, ValueError):
+        return 'in progress'
+    if record.get('current'):
+        text += ': ' + roles.clean(record['current'])
+    eta = remaining_seconds(record)
+    if eta is not None:
+        text += f' · about {eta}s left' if eta < 90 else f' · about {round(eta / 60)} min left'
+    return text
+
+
+def _publish(record, **changes):
+    """Atomically replace the progress record. Its temporary file is not a
+    `.snapshot-*` name, so a writer's cleanup can never remove it mid-write."""
+    import tempfile
+    record.update(changes, updated=time.time())
+    try:
+        fd, staged = tempfile.mkstemp(prefix=PROGRESS + '.', dir=store.directory())
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(record, f)
+            os.replace(staged, progress_path())
+        finally:
+            Path(staged).unlink(missing_ok=True)
+    except OSError:
+        pass  # Progress is advisory; it must never fail the restore itself.
+
+
+def _wait_for_running(name, poll=1.0):
+    """Report other runs' progress until the lock is ours; never take a run
+    over. Returns the lock, our run id and every run id seen holding it."""
+    seen, shown = set(), None
+    print('Another restore is already running; waiting for it to finish.', flush=True)
+    while True:
+        fd, run = _acquire_running()
+        if fd is not None:
+            return fd, run, seen
+        current = holder()
+        if current:
+            seen.add(current)
+        record = read_progress() or {}
+        ours = bool(current) and record.get('run') == current and record.get('source') == name
+        phrase = describe(record) if ours else 'in progress'
+        if phrase != shown:
+            print('  ' + phrase, flush=True)
+            shown = phrase
+        time.sleep(poll)
 
 
 def save_job(job):
@@ -300,14 +443,77 @@ def restore_window(w, project, state, job):
     save_job(job)
 
 
+def _file_digest(name):
+    try:
+        return hashlib.sha256((store.directory() / (name + '.json')).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def load(name):
+    fd, seen = None, None
+    try:
+        try:
+            fd, run = _acquire_running()
+            if fd is None:
+                fd, run, seen = _wait_for_running(name)
+        except store.SnapshotError as exc:
+            ccm_core.ccm_die(roles.clean(exc))
+        if seen_result(name, seen):
+            return
+        record = {'run': run, 'pid': os.getpid(), 'source': name, 'state': 'running',
+                  'started': time.time(), 'total': 0, 'done': 0, 'current': '',
+                  'samples': 0, 'spent': 0.0, 'file_digest': None}
+        try:
+            _publish(record)
+            _load(name, record)
+        except BaseException:
+            if record['state'] == 'running':
+                _publish(record, state='stopped', error='interrupted before finishing', current='')
+            raise
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def seen_result(name, seen):
+    """Report the result of a run this waiter saw holding the lock. True
+    when that run finished this snapshot and nothing is left to do; an
+    older record with the same source proves nothing."""
+    if not seen:
+        return False
+    other = read_progress() or {}
+    if other.get('run') not in seen or other.get('source') != name:
+        return False
+    if other.get('state') == 'done' and not job_path().exists():
+        print('That restore finished:', flush=True)
+        for line in other.get('summary') or []:
+            print(roles.clean(str(line)), flush=True)
+        return True
+    if other.get('state') == 'stopped' and other.get('error'):
+        print('That restore stopped: ' + roles.clean(str(other['error'])), flush=True)
+    return False
+
+
+def _load(name, record):
     total, done = 0, 0
+    summary = []
+
+    def say(line):
+        line = roles.clean(line)
+        summary.append(line)
+        print(line, flush=True)
+
     try:
         with store.locked():
+            # Taken under the writer lock, so it names the content actually
+            # restored; a later save under the same name clears this stop.
+            _publish(record, file_digest=_file_digest(name))
             data = store.read(store.directory() / (name + '.json'))
             if not data or data['version'] != 2:
                 raise store.SnapshotError('Expected a v2 snapshot')
             total = len(data['projects'])
+            _publish(record, total=total)
             digest = identity(data)
             if job_path().exists():
                 job = json.loads(job_path().read_text())
@@ -324,12 +530,14 @@ def load(name):
             save_job(job)
             for index, project in enumerate(data['projects']):
                 key = str(index)
+                _publish(record, done=done, current=project['name'])
                 w = existing.get(key)
                 owned = w and w['@ccm_restore_job'] == job['id'] + ':' + key
                 if w and not owned:
                     print(roles.clean(f"Restored {index + 1}/{total}: {project['name']} (matching registered window retained)"), flush=True)
                     done += 1
                     continue
+                started = time.monotonic()
                 created = not w
                 if not w:
                     # Repeat overlap checks so an external creator between
@@ -343,7 +551,12 @@ def load(name):
                     state = _initialize(w, project, job, key)
                 restore_window(w, project, state, job)
                 done += 1
-                print(roles.clean(f"Restored {done}/{total}: {project['name']}"), flush=True)
+                record['samples'] += 1
+                record['spent'] += time.monotonic() - started
+                _publish(record, done=done, current='')
+                eta = remaining_seconds(record)
+                left = f' · about {eta}s left' if eta is not None else ''
+                print(roles.clean(f"Restored {done}/{total}: {project['name']}{left}"), flush=True)
             # Publish only verified windows. Pending remains set until every
             # new window is ready; the durable job pauses all snapshot writers.
             for key, state in job['windows'].items():
@@ -367,23 +580,26 @@ def load(name):
                 store._sync_dir()
             except OSError:
                 ccm_core.ccm_warn('Restore completed; progress cleanup failed. Retry this snapshot load to release autosave.')
-            print(f'Restored {total}/{total}; snapshot protection released. ccm did not launch agents; '
-                  'Opening a project starts Claude only in an eligible pane; inspect ccm roles.')
+            say(f'Restored {total}/{total}; snapshot protection released. ccm did not launch agents; '
+                'Opening a project starts Claude only in an eligible pane; inspect ccm roles.')
             # Only what needs a hand: existing windows left alone and
             # sidekicks to resume. Everything else is `ccm roles`.
             for index, p in enumerate(data['projects']):
                 if str(index) not in job['windows']:
-                    print(roles.clean(p['name'] + ': existing layout and roles retained'))
+                    say(p['name'] + ': existing layout and roles retained')
                     continue
                 if p['restore']['primary_claude_slot'] is None:
-                    print(roles.clean(p['name'] + ': no primary reservation; opening the window may start '
-                                      'Claude in an eligible shell using the normal selection rules'))
+                    say(p['name'] + ': no primary reservation; opening the window may start '
+                        'Claude in an eligible shell using the normal selection rules')
                 for pane in p['restore']['panes']:
                     if pane['role'] in ('sidekick', 'manual'):
-                        print(roles.clean(p['name'] + ': ' + roles.hint(pane)))
+                        say(p['name'] + ': ' + roles.hint(pane))
             if was_sealed and data['checkpoint']['interrupted']:
-                print('Interrupted at save: these states are not restored. Review these projects:')
+                say('Interrupted at save: these states are not restored. Review these projects:')
                 for p in data['checkpoint']['interrupted']:
-                    print(roles.clean(f"  {p['name']}: {p['state']}"))
+                    say(f"  {p['name']}: {p['state']}")
+            _publish(record, state='done', done=total, current='', summary=summary)
     except (store.SnapshotError, OSError, ValueError, KeyError) as exc:
-        ccm_core.ccm_die(f'Restored {done} / incomplete {max(0, total - done)}: {roles.clean(exc)}. Checkpoint retained; retry the same snapshot.')
+        reason = roles.clean(exc)
+        _publish(record, state='stopped', done=done, current='', error=reason)
+        ccm_core.ccm_die(f'Restored {done} / incomplete {max(0, total - done)}: {reason}. Checkpoint retained; retry the same snapshot.')

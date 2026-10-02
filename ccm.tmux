@@ -191,6 +191,8 @@ CCM_AUTO_RESTORE=$(tmux show-option -gqv @ccm-auto-restore 2>/dev/null)
 CCM_AUTO_RESTORE="${CCM_AUTO_RESTORE:-off}"
 if [[ "$CCM_AUTO_RESTORE" == "on" ]]; then
     CCM_SNAPSHOT_FILE="${CCM_SNAPSHOT_DIR:-${CCM_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/ccm}/snapshots}/_autosave.json"
+    # Keep the unattended run's output: its failure reason is otherwise lost.
+    CCM_RESTORE_LOG="${CCM_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/ccm}/state/auto-restore.log"
     if [[ -f "$CCM_SNAPSHOT_FILE" ]]; then
         # Only restore if no ccm projects are already loaded
         # sleep 2 to run after inject-status (sleep 1)
@@ -198,7 +200,12 @@ if [[ "$CCM_AUTO_RESTORE" == "on" ]]; then
             sleep 2
             existing=\$(tmux list-windows -a -F '#{window_id} #{@ccm_project}' 2>/dev/null | awk '\$2 != \"\" {print}')
             if [ -z \"\$existing\" ]; then
-                $CCM_BIN start _autosave 2>/dev/null || true
+                log='$CCM_RESTORE_LOG'
+                mkdir -p \"\$(dirname \"\$log\")\" 2>/dev/null
+                # Owner-only like the progress record; an unwritable log
+                # must not prevent the restore itself.
+                { (umask 077; : > \"\$log\") && chmod 600 \"\$log\"; } 2>/dev/null || log=/dev/null
+                $CCM_BIN start _autosave > \"\$log\" 2>&1 || true
             fi
         "
     fi

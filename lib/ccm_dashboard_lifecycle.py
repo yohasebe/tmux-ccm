@@ -8,6 +8,7 @@ import sys
 import time
 
 import ccm_core
+import ccm_restore
 import ccm_roles
 import ccm_snapshot as snapshot
 import ccm_snapshot_store as store
@@ -31,16 +32,44 @@ def snapshots():
     return rows
 
 
+def _checkpoint_name(name):
+    return (isinstance(name, str) and bool(name.strip('.'))
+            and snapshot._sanitize_snapshot_name(name) == name)
+
+
+def _stopped_line(record):
+    # A record left `running` with no lock holder means the process died.
+    reason = record.get('error') or 'the restoring process ended unexpectedly'
+    return ccm_roles.clean(f'Restore stopped: {reason}; open Menu → Continue restore.')
+
+
 def restore_status(query):
     """One actionable line and the checkpoint to resume, if known."""
     try:
+        record = ccm_restore.read_progress() or {}
         progress = store.directory() / '.restore-state'
+        job_name = None
         if progress.exists():
-            job = json.loads(progress.read_text())
-            name = job.get('source')
-            if not isinstance(name, str) or not name.strip('.') or snapshot._sanitize_snapshot_name(name) != name:
+            job_name = json.loads(progress.read_text()).get('source')
+            if not _checkpoint_name(job_name):
                 return 'Restore needs attention; open Menu → Continue restore.', None
-            return 'Restore incomplete; open Menu → Continue restore.', name
+        current = ccm_restore.holder()
+        if current is not None:
+            # Details only from the record of the run holding the lock.
+            ours = bool(current) and record.get('run') == current and _checkpoint_name(record.get('source'))
+            phrase = ccm_restore.describe(record) if ours else 'in progress'
+            return 'Restoring ' + phrase + ' …', job_name or (record['source'] if ours else None)
+        if job_name:
+            if record.get('source') == job_name and record.get('state') in ('stopped', 'running'):
+                return _stopped_line(record), job_name
+            return 'Restore incomplete; open Menu → Continue restore.', job_name
+        # A run can stop before it records a job (session or preflight
+        # checks). Its reason stays while the checkpoint is unchanged; a
+        # later save under the same name clears it.
+        source = record.get('source')
+        if (record.get('state') in ('stopped', 'running') and _checkpoint_name(source)
+                and record.get('file_digest') and record['file_digest'] == ccm_restore._file_digest(source)):
+            return _stopped_line(record), source
         sealed = store.sealed(store.read(store.directory() / '_autosave.json'))
         pending = query('list-windows', '-a', '-F', '#{@ccm_restore_pending}') or ''
         if '1' in pending.splitlines():
