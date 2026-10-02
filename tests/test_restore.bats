@@ -99,6 +99,18 @@ SHIM
 exec "$CCM_TEST_GUARD_DIR/bin/tmux" -L "\$CCM_TEST_SOCKET" -f /dev/null "\$@"
 SHIM
     chmod +x "$BATS_TEST_TMPDIR/bin/tmux"
+    # The dependency check wants claude and fzf on PATH; neither may run
+    # here beyond the version probe that startup's setup-hooks makes.
+    local dep
+    for dep in claude fzf; do
+        cat > "$BATS_TEST_TMPDIR/bin/$dep" <<STUB
+#!/bin/sh
+[ "\$1" = --version ] && [ "$dep" = claude ] && { echo '9.9.9 (Claude Code)'; exit 0; }
+touch "$BATS_TEST_TMPDIR/$dep-started"
+exit 99
+STUB
+        chmod +x "$BATS_TEST_TMPDIR/bin/$dep"
+    done
     mkdir -p "$CCM_SNAPSHOT_DIR"
     printf 'not json' > "$CCM_SNAPSHOT_DIR/_autosave.json"
     export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
@@ -112,7 +124,9 @@ SHIM
     done
     tmux kill-server
     [[ -s "$log" ]]
-    grep -q 'Snapshot unreadable' "$log"
+    grep -q 'Snapshot unreadable' "$log" || { cat "$log"; return 1; }
+    [ ! -e "$BATS_TEST_TMPDIR/claude-started" ]
+    [ ! -e "$BATS_TEST_TMPDIR/fzf-started" ]
     mode=$(stat -c '%a' "$log" 2>/dev/null || stat -f '%Lp' "$log")
     [[ "$mode" == 600 ]]
 }
