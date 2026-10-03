@@ -7,7 +7,7 @@ import pytest
 import dashboard
 import ccm_menu_help as help_text
 from ccm_render import display_width
-from test_dashboard import _stub_dashboard_environment, _make_mock_stdscr
+from test_dashboard import _stub_dashboard_environment, _make_mock_stdscr, _screen_text
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def test_preview_toggle_position_and_size(menu, monkeypatch, enabled, position, 
     if visible:
         *_, col, row, panel_width, panel_height = help_text.preview_geometry(width, height, enabled, position)
         assert selected.call_args.args[1:] == (col, row, panel_width, panel_height)
-        output = '\n'.join(str(call.args[2]) for call in screen.addstr.call_args_list)
+        output = _screen_text(screen)
         assert 'Same as: ccm add' in output
     else:
         assert not screen.addch.called
@@ -79,11 +79,11 @@ def test_selection_changes_help_without_queries_or_project_capture(menu, monkeyp
     monkeypatch.setattr(menu, '_update_preview', forbidden)
     menu.menu_selected = 0
     menu._render_menu(screen)
-    first = '\n'.join(str(c.args[2]) for c in screen.addstr.call_args_list)
+    first = _screen_text(screen)
     screen.reset_mock()
     menu._handle_menu_key(dashboard.curses.KEY_DOWN, screen)
     menu._render_menu(screen)
-    second = '\n'.join(str(c.args[2]) for c in screen.addstr.call_args_list)
+    second = _screen_text(screen)
     assert 'Same as: ccm add' in first
     assert 'Same as: ccm unregister' in second
     assert 'Same as: ccm add' not in second
@@ -104,7 +104,7 @@ def test_description_wraps_inside_panel_and_menu_stays_separate(menu, position, 
     assert all(x + display_width(text) < width for y, x, text in help_calls)
     assert all(y < (ph if position == 'right' else row + ph) for y, x, text in help_calls)
     assert any('Escape' in text for _, _, text in help_calls)
-    assert any('Exit Claude in selected' in str(c) and '▶' in str(c) for c in text_calls)
+    assert any('Exit Claude in selected' in line and '▶' in line for line in _screen_text(screen).splitlines())
 
 
 def test_current_value_and_label_are_neutralized(menu, monkeypatch):
@@ -113,7 +113,7 @@ def test_current_value_and_label_are_neutralized(menu, monkeypatch):
     select(menu, 'auto_restore')
     screen = _make_mock_stdscr(200, 40)
     menu._render_menu(screen)
-    output = '\n'.join(str(c.args[2]) for c in screen.addstr.call_args_list)
+    output = _screen_text(screen)
     assert 'Current: on' in output
     assert '\x1b' not in output and '\x07' not in output and '#(' not in output
     assert '＃(example)' in output

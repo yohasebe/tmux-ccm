@@ -5,7 +5,7 @@ import pytest
 import dashboard
 import ccm_menu_help as help_text
 from ccm_render import display_width
-from test_dashboard import _stub_dashboard_environment, _make_mock_stdscr
+from test_dashboard import _stub_dashboard_environment, _make_mock_stdscr, _screen_text
 
 
 def make_menu(monkeypatch, language=''):
@@ -28,9 +28,9 @@ def test_option_controls_rendered_body_only(monkeypatch, language, expected):
     d.preview_enabled, d.preview_position = True, 'right'
     screen = _make_mock_stdscr(200, 40)
     d._render_menu(screen)
-    text = '\n'.join(c.args[2] for c in screen.addstr.call_args_list)
+    text = _screen_text(screen)
     assert expected in text
-    assert 'Add project' in text and 'Menu  (d=dashboard, q=quit)' in text
+    assert 'Add project' in text and 'Menu  (/=filter, d=dashboard, q=quit)' in text
 
 
 @pytest.mark.parametrize('action,method', [('add', '_do_add'), ('ignore', '_do_ignore_toggle'), ('spool', '_do_spool'), ('save', '_do_save'), ('tree', '_build_tree'), ('quit', None)])
@@ -75,7 +75,7 @@ def test_absent_and_narrow_hints(monkeypatch):
     d.menu_items = [('Wide name ' * 8, 'add')]
     screen = _make_mock_stdscr(40, 40)
     d._render_menu(screen)
-    text = '\n'.join(c.args[2] for c in screen.addstr.call_args_list)
+    text = _screen_text(screen)
     assert 'Wide name' in text and '[a]' not in text
 
 
@@ -87,7 +87,7 @@ def test_current_value_cleaning_and_panel_bounds(monkeypatch, language, position
     d.menu_items = [('Auto-restore: 測定値\x1b\x07#(sample)', 'auto_restore')]
     screen = _make_mock_stdscr(80, 30)
     d._render_menu(screen)
-    output = '\n'.join(c.args[2] for c in screen.addstr.call_args_list)
+    output = _screen_text(screen)
     assert ('現在値:' if language == 'ja' else 'Current:') in output
     assert '測定値' in output and '{current}' not in output
     assert '\x1b' not in output and '\x07' not in output and '#(' not in output

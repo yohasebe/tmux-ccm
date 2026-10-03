@@ -144,6 +144,8 @@ The row order is decided when the dashboard opens (projects needing attention fi
 
 In the `m` / `?` menu, an enabled preview shows help for the selected item. Right placement requires at least 80 columns; bottom placement requires at least 20 rows. It uses the same dimensions as the project preview. When disabled or too small, only the menu appears. Descriptions wrap within the panel and follow selection changes; setting items also show their current values. Set `set -g @ccm-lang "ja"` in `~/.tmux.conf` for Japanese menu descriptions (`en` is the default; unsupported values use English). Reload the configuration and reopen the menu to apply it. Only the description body changes; labels and other screens remain English. Matching dashboard shortcuts appear as dim `[key]` hints at the right edge; narrow menus omit hints to preserve item names.
 
+Items are grouped under Actions, Settings and Navigate. Setting values are colored (`on` green, `off` dim, others cyan), and the preview highlights the equivalent CLI command and the current value. Press `/` in the menu to filter items as you type, as in the project list: matching is case-insensitive on item names and on the first line of each description in the current `@ccm-lang` language, so `ログアウト` finds the logout items when descriptions are Japanese. `↑↓` / `C-p` / `C-n` select, `Enter` runs the selected item, `C-u` clears and `Esc` returns to the full menu with that item still selected.
+
 The following items complement the checkpoint, logout and recovery actions described in the next section.
 
 | Menu item | Purpose |
@@ -160,10 +162,10 @@ The following items complement the checkpoint, logout and recovery actions descr
 | Preview panel | Show or hide project previews and menu help. |
 | Preview position | Place the preview on the right or below the list. |
 | Background sessions | Show or hide background sessions on the dashboard. |
+| Auto-start Claude | Choose whether opening a shell project starts Claude. |
 | Notifications | Choose which changes generate a notification. |
 | Notification sound | Enable or disable sounds (macOS). |
 | Sound name | Choose and preview a sound (macOS). |
-| Auto-start Claude | Choose whether opening a shell project starts Claude. |
 | Dashboard | Return to the project list. |
 | Tree view | Open the session/window/pane hierarchy. |
 | Quit | Close the dashboard. |

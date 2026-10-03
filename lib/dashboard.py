@@ -1351,6 +1351,21 @@ class Dashboard(LifecycleActions):
             break
         return text[:i]
 
+    @staticmethod
+    def _strip_first_grapheme(text):
+        """Remove the first user-perceived character, with the same
+        clustering as `_strip_last_grapheme` (combining marks and
+        ZWJ-joined characters go with their base)."""
+        i = 1 if text else 0
+        while i < len(text):
+            if unicodedata.category(text[i]).startswith("M"):
+                i += 1
+            elif text[i] == "\u200d":
+                i = min(i + 2, len(text))
+            else:
+                break
+        return text[i:]
+
     def _render_help_line(self, stdscr, y, x, text):
         """Render help text with [key] portions highlighted."""
         col = x
@@ -1463,8 +1478,8 @@ class Dashboard(LifecycleActions):
             # (vim, fzf, etc.) — alias to menu mode which already
             # lists every action this dashboard exposes.
             self.mode = "menu"
-            self._build_menu()
             self.menu_selected = 0
+            self._build_menu()
         elif key in (ord("w"), ord("W")):
             # Sidekick-attention toggle (`w` = watch). Unlike `b`,
             # this writes the GLOBAL @ccm-sidekick-attention option:
@@ -2866,6 +2881,7 @@ class Dashboard(LifecycleActions):
         is_macos = _IS_MACOS
 
         self.menu_items = [
+            ("Actions", ""),  # heading
             ("Add project", "add"),
             # Removal belongs here too. The menu is where a reader
             # finds out WHAT ccm can do, and leaving these out made
@@ -2885,14 +2901,14 @@ class Dashboard(LifecycleActions):
             ("Continue restore", "continue_restore"),
             ("Reset selected project's runtime state", "reset"),
             ("Exit Claude in selected project (keep window)", "exit"),
-            ("", ""),  # separator
+            ("Settings", ""),  # heading
             (f"Status bar mode: {mode_label}", "status_mode"),
             (f"Auto-restore: {auto_restore}", "auto_restore"),
             (f"Idle timeout: {idle_label}", "idle_timeout"),
             (f"Preview panel: {preview_on}", "preview_toggle"),
             (f"Preview position: {preview_pos_label}", "preview_position"),
             (f"Background sessions: {self.bg_section_setting}", "bg_section"),
-            ("", ""),  # separator
+            (f"Auto-start Claude: {auto_start}", "auto_start"),
             (f"Notifications: {notify}", "notify"),
         ]
         if is_macos:
@@ -2901,12 +2917,71 @@ class Dashboard(LifecycleActions):
                 (f"Sound name: {sound_name}", "sound_name"),
             ]
         self.menu_items += [
-            (f"Auto-start Claude: {auto_start}", "auto_start"),
-            ("", ""),  # separator
+            ("Navigate", ""),  # heading
             ("Dashboard", "dashboard"),
             ("Tree view", "tree"),
             ("Quit", "quit"),
         ]
+        self._normalize_menu_selection()
+
+    def _normalize_menu_selection(self):
+        """Headings are not selectable: land on the next item instead."""
+        selectable = [i for i, (_, a) in enumerate(self.menu_items) if a]
+        if selectable and self.menu_selected not in selectable:
+            self.menu_selected = next((i for i in selectable if i >= self.menu_selected),
+                                      selectable[0])
+
+    # Items whose label ends in `: <current value>`.
+    _MENU_SETTINGS = frozenset({
+        "status_mode", "auto_restore", "idle_timeout", "preview_toggle",
+        "preview_position", "bg_section", "auto_start", "notify",
+        "notify_sound", "sound_name"})
+    # Preview lines that name a command or a current value.
+    _HELP_COMMAND_PREFIXES = ("Same as: ", "CLI: ")
+    _HELP_VALUE_PREFIXES = ("Current: ", "現在値: ")
+
+    @staticmethod
+    def _menu_value_attr(value):
+        if value in ("on", "always"):
+            return curses.color_pair(C_COMPLETED)
+        if value == "off":
+            return curses.color_pair(C_DIM)
+        return curses.color_pair(C_CYAN)
+
+    def _put_segments(self, stdscr, y, x, segments, max_col=0):
+        """Draw (text, attr) pieces left to right; returns the end column."""
+        for text, attr in segments:
+            if text:
+                self._addstr(stdscr, y, x, text, attr, max_col=max_col)
+                x += display_width(text)
+        return x
+
+    def _menu_label_segments(self, label, action, selected, query=""):
+        text = ccm_roles.clean(label)
+        base = curses.A_BOLD if selected else 0
+        name, sep, value = text.partition(": ")
+        if action in self._MENU_SETTINGS and sep:
+            pieces = [(name + sep, base), (value, self._menu_value_attr(value) | base)]
+        else:
+            pieces = [(text, base)]
+        if not query:
+            return pieces
+        # Highlight the first match over whatever styling the span had.
+        folded = query.casefold()
+        start = text.casefold().find(folded)
+        # Folding that changes lengths (ß → ss) would misplace the span.
+        if start < 0 or len(text.casefold()) != len(text) or len(folded) != len(query):
+            return pieces
+        end = start + len(query)
+        out, pos = [], 0
+        for piece, attr in pieces:
+            lo, hi = pos, pos + len(piece)
+            cut = [lo, max(lo, min(hi, start)), max(lo, min(hi, end)), hi]
+            for (i, j), hit in zip(zip(cut, cut[1:]), (False, True, False)):
+                if i < j:
+                    out.append((text[i:j], curses.color_pair(C_YELLOW) | curses.A_BOLD if hit else attr))
+            pos = hi
+        return out
 
     def _render_menu_description(self, stdscr, col, row, width, height):
         if not (0 <= self.menu_selected < len(self.menu_items)):
@@ -2921,16 +2996,33 @@ class Dashboard(LifecycleActions):
         else:
             stdscr.addstr(row, 0, "─" * (width - 1), curses.color_pair(C_DIM))
             x, y, available, count = 1, row + 1, width - 2, height - 1
-        title = ccm_roles.clean(label)
-        lines = ccm_menu_help.wrap_text(title, available) + [""]
-        title_rows = len(lines) - 1
-        lines += ccm_menu_help.wrap_text(ccm_menu_help.description(action, label, getattr(self, "help_language", "en")), available)
-        for i, line in enumerate(lines[:count]):
-            self._addstr(stdscr, y + i, x, line,
-                         curses.A_BOLD if i < title_rows else 0,
-                         max_col=x + available + 1)
+        limit = x + available + 1
+        rows = [(line, [(line, curses.A_BOLD | curses.color_pair(C_CYAN))])
+                for line in ccm_menu_help.wrap_text(ccm_roles.clean(label), available)]
+        rows.append(("", []))
+        body = ccm_menu_help.description(action, label, getattr(self, "help_language", "en"))
+        for source in body.split("\n"):
+            prefix = next((p for p in self._HELP_COMMAND_PREFIXES + self._HELP_VALUE_PREFIXES
+                           if source.startswith(p)), "")
+            if prefix in self._HELP_COMMAND_PREFIXES:
+                rest_attr = curses.color_pair(C_YELLOW)
+            elif prefix:
+                rest_attr = self._menu_value_attr(source[len(prefix):].strip())
+            else:
+                rest_attr = 0
+            for n, wrapped in enumerate(ccm_menu_help.wrap_text(source, available)):
+                if n == 0 and prefix and wrapped.startswith(prefix.rstrip()):
+                    head = wrapped[:len(prefix.rstrip())]
+                    rows.append((wrapped, [(head, curses.color_pair(C_DIM)),
+                                           (wrapped[len(head):], rest_attr)]))
+                else:
+                    rows.append((wrapped, [(wrapped, rest_attr)]))
+        for i, (_, segments) in enumerate(rows[:count]):
+            self._put_segments(stdscr, y + i, x, segments, max_col=limit)
 
-    def _render_menu(self, stdscr):
+    def _render_menu(self, stdscr, query=None, matches=None):
+        """Draw the menu. With `query` not None, only `matches` (menu
+        indices) are listed and a filter prompt occupies the bottom."""
         self._render_max_col = 0
         try:
             stdscr.erase()
@@ -2945,31 +3037,144 @@ class Dashboard(LifecycleActions):
              panel_height) = ccm_menu_help.preview_geometry(
                 width, height, self.preview_enabled, self.preview_position)
             self._render_max_col = list_width if panel_width else 0
-            self._addstr(stdscr, 0, 2, "Menu  (d=dashboard, q=quit)", curses.color_pair(C_DIM))
+            self._normalize_menu_selection()
+            self._put_segments(stdscr, 0, 2, [
+                ("Menu", curses.A_BOLD | curses.color_pair(C_CYAN)),
+                ("  (/=filter, d=dashboard, q=quit)", curses.color_pair(C_DIM))])
+            filtering = query is not None
+            shown = matches if filtering else range(len(self.menu_items))
+            bottom = list_height - (3 if filtering else 1)
             menu_row = 2
-            start = max(0, self.menu_selected - max(1, list_height - 4) + 1)
-            for i, (label, action) in enumerate(self.menu_items[start:], start):
-                if menu_row >= list_height - 1:
+            visible = max(1, bottom - menu_row)
+            position = list(shown).index(self.menu_selected) if self.menu_selected in shown else 0
+            start = max(0, position - visible + 1)
+            for i in list(shown)[start:]:
+                if menu_row >= bottom:
                     break
-                if action:
-                    selected = i == self.menu_selected
-                    prefix = "  ▶ " if selected else "    "
-                    self._addstr(stdscr, menu_row, 0,
-                                 prefix + ccm_roles.clean(label),
-                                 curses.A_BOLD if selected else 0)
-                    key = ccm_menu_help.MENU_KEYS.get(action)
-                    if key:
-                        hint = f"[{key}]"
-                        hint_col = list_width - 1 - display_width(hint)
-                        if display_width(prefix + ccm_roles.clean(label)) + 2 <= hint_col:
-                            self._addstr(stdscr, menu_row, hint_col, hint,
-                                         curses.color_pair(C_DIM))
+                label, action = self.menu_items[i]
+                if not action:
+                    self._addstr(stdscr, menu_row, 2, ccm_roles.clean(label),
+                                 curses.A_BOLD | curses.color_pair(C_DIM))
+                    menu_row += 1
+                    continue
+                selected = i == self.menu_selected
+                prefix = "  ▶ " if selected else "    "
+                self._addstr(stdscr, menu_row, 0, prefix,
+                             curses.A_BOLD | curses.color_pair(C_CYAN) if selected else 0)
+                end = self._put_segments(stdscr, menu_row, display_width(prefix),
+                                         self._menu_label_segments(label, action, selected, query or ""))
+                key = ccm_menu_help.MENU_KEYS.get(action)
+                if key:
+                    hint = f"[{key}]"
+                    hint_col = list_width - 1 - display_width(hint)
+                    if end + 2 <= hint_col:
+                        self._addstr(stdscr, menu_row, hint_col, hint,
+                                     curses.color_pair(C_DIM))
                 menu_row += 1
-            if panel_height:
+            if filtering:
+                if not matches:
+                    self._addstr(stdscr, 2, 4, "(no match)", curses.color_pair(C_DIM))
+                total = sum(1 for _, a in self.menu_items if a)
+                prompt_row = list_height - 2
+                self._addstr(stdscr, prompt_row, 2, "Filter: ", curses.color_pair(C_DIM))
+                count = f"{len(matches)}/{total}"
+                count_col = list_width - display_width(count) - 2
+                # Scroll a long query so its end and the cursor stay in view.
+                shown_query = query
+                while shown_query and 10 + display_width(shown_query) > list_width - 2:
+                    shown_query = self._strip_first_grapheme(shown_query)
+                self._addstr(stdscr, prompt_row, 10, shown_query, curses.A_BOLD)
+                if count_col > 10 + display_width(shown_query) + 2:
+                    self._addstr(stdscr, prompt_row, count_col, count, curses.color_pair(C_DIM))
+                self._addstr(stdscr, list_height - 1, 2,
+                             "[↑↓] select  [Enter] run  [C-u] clear  [Esc] back",
+                             curses.color_pair(C_DIM))
+            if panel_height and (not filtering or matches):
                 self._render_menu_description(stdscr, col, row, panel_width, panel_height)
+            if filtering:
+                try:
+                    stdscr.move(list_height - 2, 10 + display_width(shown_query))
+                except curses.error:
+                    pass
             stdscr.refresh()
         except curses.error:
             pass
+
+    def _menu_matches(self, query):
+        """Menu indices whose label, or description summary in the
+        current help language, contains `query` (case-insensitive)."""
+        q = query.casefold()
+        language = getattr(self, "help_language", "en")
+        found = []
+        for i, (label, action) in enumerate(self.menu_items):
+            if not action:
+                continue
+            if q in ccm_roles.clean(label).casefold():
+                found.append(i)
+                continue
+            summary = ccm_menu_help.description(action, label, language).split("\n")[0]
+            if q in summary.casefold():
+                found.append(i)
+        return found
+
+    def _do_menu_filter(self, stdscr):
+        """Live filter for the menu, like the project filter. Enter runs
+        the selected item through the normal menu handler; Esc returns
+        to the full menu with that item still selected."""
+        buf, sel, chosen = "", 0, False
+        try:
+            prev_cursor = curses.curs_set(1)
+        except curses.error:
+            prev_cursor = 1
+        stdscr.timeout(-1)
+        try:
+            while True:
+                matches = self._menu_matches(buf)
+                sel = min(max(sel, 0), max(len(matches) - 1, 0))
+                if matches:
+                    self.menu_selected = matches[sel]
+                self._render_menu(stdscr, buf, matches)
+                try:
+                    wch = stdscr.get_wch()
+                except curses.error:
+                    continue
+                except KeyboardInterrupt:
+                    return ""
+                if isinstance(wch, str):
+                    if wch in ("\x1b", "\x03", "\x07"):
+                        return ""
+                    if wch in ("\n", "\r"):
+                        if matches:
+                            chosen = True
+                            break
+                        continue
+                    if wch in ("\x7f", "\b"):
+                        buf, sel = self._strip_last_grapheme(buf), 0
+                    elif wch == "\x15":
+                        buf, sel = "", 0
+                    elif wch == "\x10":
+                        sel = (sel - 1) % len(matches) if matches else 0
+                    elif wch == "\x0e":
+                        sel = (sel + 1) % len(matches) if matches else 0
+                    elif wch >= " ":
+                        buf, sel = buf + wch, 0
+                elif wch == curses.KEY_ENTER:
+                    if matches:
+                        chosen = True
+                        break
+                elif wch in (curses.KEY_BACKSPACE, 127, 8):
+                    buf, sel = self._strip_last_grapheme(buf), 0
+                elif wch == curses.KEY_UP and matches:
+                    sel = (sel - 1) % len(matches)
+                elif wch == curses.KEY_DOWN and matches:
+                    sel = (sel + 1) % len(matches)
+        finally:
+            try:
+                curses.curs_set(prev_cursor)
+            except curses.error:
+                pass
+            stdscr.timeout(50)
+        return self._handle_menu_key(10, stdscr) if chosen else ""
 
     def _handle_menu_key(self, key, stdscr):
         # Skip separators when navigating
@@ -2984,6 +3189,8 @@ class Dashboard(LifecycleActions):
             except ValueError:
                 return 0
 
+        if key == ord("/"):
+            return self._do_menu_filter(stdscr)
         if key in (curses.KEY_UP, ord("k")):
             idx = (_cur_sel_idx() - 1) % n
             self.menu_selected = selectable[idx]

@@ -66,6 +66,30 @@ def _stub_dashboard_environment(monkeypatch):
     monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
 
 
+def _screen_text(stdscr):
+    """The drawn text, one line per screen row. Pieces drawn separately
+    on a row (a label and its colored value) join at their columns, so
+    assertions read rows as a person sees them. It accumulates every
+    call: erase() and overdrawn cells are not modelled, so text drawn in
+    an earlier frame still appears. Use it for one frame's content."""
+    from ccm_render import display_width
+    rows = {}
+    for call in stdscr.addstr.call_args_list:
+        y, x, text = call.args[:3]
+        rows.setdefault(y, []).append((x, str(text)))
+    lines = []
+    for y in sorted(rows):
+        line, col = "", 0
+        for x, text in sorted(rows[y], key=lambda item: item[0]):
+            if x > col:
+                line += " " * (x - col)
+                col = x
+            line += text
+            col += display_width(text)
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _make_mock_stdscr(width=200, height=40):
     from unittest.mock import MagicMock
     stdscr = MagicMock()

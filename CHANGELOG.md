@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The dashboard menu has a `/` live filter like the project list. It matches item names and the first line of each description in the `@ccm-lang` language; Enter runs the selected item and Esc returns to the full menu. Menu items are grouped under headings, setting values are colored, and the help preview highlights the CLI command and current value.
+
 - Menu descriptions support Japanese through `@ccm-lang` (`en` by default). Matching dashboard shortcut hints now align at the menu’s right edge and disappear when space is limited.
 - The menu preview explains the selected command and shows current setting
   values. It follows the project preview position, size thresholds and toggle,
