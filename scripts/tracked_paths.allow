@@ -1,0 +1,49 @@
+# Paths this repository may track. check_tracked_paths.py fails when a
+# tracked file matches no line here, and when a line here matches no
+# tracked file (so a stale line cannot quietly widen what is allowed).
+#
+# `*` and `?` stay within one directory and also match dotfiles, `**/`
+# spans any depth, and `{a,b}` is expanded before matching; every
+# alternative must match a tracked file.
+# Prefer a place and a file type over a single file; name a single file
+# only when it is the one file of its kind in that place.
+#
+# Adding a line is a decision about what may be published: TPM installs
+# ccm by cloning this repository, so every tracked file is shipped.
+
+# --- Repository root --------------------------------------------------------
+.gitignore
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+README.md
+README.ja.md
+ccm
+ccm.tmux
+ccm.tmux.conf
+
+# --- Repository tooling -----------------------------------------------------
+.github/ISSUE_TEMPLATE/bug_report.md
+.github/workflows/ci.yml
+scripts/*.py
+scripts/tracked_paths.allow
+
+# --- Plugin -----------------------------------------------------------------
+lib/*.{py,sh}
+hooks/*.sh
+completions/_ccm
+
+# --- Documentation ----------------------------------------------------------
+docs/*.md
+assets/*.{png,svg}
+
+# --- Tests ------------------------------------------------------------------
+tests/*.{py,bats}
+tests/helpers/*.bash
+tests/helpers/sidekick_option_probe.py
+tests/fixtures/*.json
+tests/fixtures/docs/*.json
+tests/fixtures/snapshot/*.py
+tests/fixtures/snapshot/v1-implementation.txt
+tests/fixtures/tmux_guard/*.fixture
+tests/fixtures/traces/*.events.jsonl

@@ -20,6 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # First: every tracked file must be an allowed kind in an allowed
+      # place (TPM ships whatever is tracked).
+      - name: Check tracked paths
+        run: python3 scripts/check_tracked_paths.py
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

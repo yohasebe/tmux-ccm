@@ -25,6 +25,15 @@ The repository carries the tool, its tests and its documentation. Paths, address
 
 Local git hooks enforce this; they are not part of the repository, so install them once per clone from your own copy. Nothing about your environment is written down here.
 
+Every tracked file must also match a line of `scripts/tracked_paths.allow`, and every line there must match a tracked file. TPM installs ccm by cloning the repository, so whatever is tracked is shipped. CI checks this first:
+
+```bash
+python3 scripts/check_tracked_paths.py              # the index (next commit)
+python3 scripts/check_tracked_paths.py --tree REV   # a commit
+```
+
+When a new file belongs in the repository, add the narrowest line that describes its place and kind, and stage the list with it.
+
 ## Running tests
 
 ```bash
