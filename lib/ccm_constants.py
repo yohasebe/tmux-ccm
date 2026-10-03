@@ -32,7 +32,7 @@ import unicodedata
 
 # Version string. Keep in sync with the `CCM_VERSION` constant in
 # the bash `ccm` wrapper and with CHANGELOG.md's top entry.
-CCM_VERSION = "0.11.0"
+CCM_VERSION = "0.12.0"
 
 
 # ─── Runtime paths ───
