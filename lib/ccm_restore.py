@@ -173,6 +173,53 @@ def _publish(record, **changes):
         pass  # Progress is advisory; it must never fail the restore itself.
 
 
+# How long each status-area notice stays up. Progress notices are renewed
+# for every window, so each only has to outlive the slowest window.
+ANNOUNCE_PROGRESS_MS = 15000
+ANNOUNCE_DONE_MS = 10000
+ANNOUNCE_STOPPED_MS = 30000
+
+
+# A coloured badge and a dark body keep the notice distinct from the
+# status bar around it; muted colours keep it from shouting. `none` first,
+# so attributes from the user's message-style (reverse, underscore) do not
+# carry over and change these colours.
+_NOTICE_BADGES = {
+    'progress': '#[none,bg=colour67,fg=colour255,bold] \u27f3 ccm restore ',
+    'done': '#[none,bg=colour65,fg=colour255,bold] \u2714 ccm restore ',
+    'stopped': '#[none,bg=colour131,fg=colour255,bold] \u2716 ccm restore ',
+}
+_NOTICE_BODY = '#[none,bg=colour237,fg=colour250] '
+
+
+def _announce(kind, body, duration_ms, session=None):
+    """Show `body` after a `kind` badge in the status line of every client attached to the
+    restoring session (the default client when the session is not known
+    yet). A restore at tmux start has no terminal of its own, so this is
+    how anyone sees it.
+
+    `-C` keeps panes updating while the message is up; tmux without it
+    (before 3.6) rejects the command, and nothing is shown rather than
+    freezing panes. With a session, only its clients are told: when none
+    is attached, or they cannot be listed, nothing is shown rather than
+    telling whoever else is attached. Names and reasons are cleaned (`#` cannot start a
+    format, so the body cannot restyle itself) and `%` is doubled so it
+    is not read as a time format.
+    Failures, such as no client attached yet, are ignored."""
+    message = (_NOTICE_BADGES[kind] + _NOTICE_BODY
+               + roles.clean(body).replace('%', '%%') + ' #[default]')
+    try:
+        clients = [None]
+        if session:
+            listing = ccm_core.tmux_query('list-clients', '-t', session, '-F', '#{client_name}')
+            clients = [c for c in (listing or '').splitlines() if c]
+        for client in clients:
+            target = ['-c', client] if client else []
+            ccm_core.tmux_query('display-message', '-C', '-d', str(duration_ms), *target, message)
+    except Exception:
+        pass
+
+
 def _wait_for_running(name, poll=1.0):
     """Report other runs' progress until the lock is ours; never take a run
     over. Returns the lock, our run id and every run id seen holding it."""
@@ -470,6 +517,8 @@ def load(name):
         except BaseException:
             if record['state'] == 'running':
                 _publish(record, state='stopped', error='interrupted before finishing', current='')
+                _announce('stopped', 'interrupted \u00b7 dashboard menu: Continue restore',
+                          ANNOUNCE_STOPPED_MS, record.get('session'))
             raise
     finally:
         if fd is not None:
@@ -522,6 +571,8 @@ def _load(name, record):
             else:
                 job = {'id': uuid.uuid4().hex, 'source': name, 'digest': digest, 'windows': {}}
             session = ccm_core.require_session()
+            record['session'] = session
+            _announce('progress', f'restoring {total} window(s)\u2026', ANNOUNCE_PROGRESS_MS, session)
             existing = preflight(data, session, job)
             if 'shell' not in job and any(
                     str(i) not in existing or existing[str(i)]['@ccm_restore_job'] == job['id'] + ':' + str(i)
@@ -531,6 +582,7 @@ def _load(name, record):
             for index, project in enumerate(data['projects']):
                 key = str(index)
                 _publish(record, done=done, current=project['name'])
+                _announce('progress', describe(record), ANNOUNCE_PROGRESS_MS, session)
                 w = existing.get(key)
                 owned = w and w['@ccm_restore_job'] == job['id'] + ':' + key
                 if w and not owned:
@@ -599,7 +651,11 @@ def _load(name, record):
                 for p in data['checkpoint']['interrupted']:
                     say(f"  {p['name']}: {p['state']}")
             _publish(record, state='done', done=total, current='', summary=summary)
+            _announce('done', f'restored {total}/{total} window(s) \u00b7 opening a project starts Claude; '
+                      'sidekicks are resumed by hand', ANNOUNCE_DONE_MS, session)
     except (store.SnapshotError, OSError, ValueError, KeyError) as exc:
         reason = roles.clean(exc)
         _publish(record, state='stopped', done=done, current='', error=reason)
+        _announce('stopped', f'stopped at {done}/{total} \u00b7 dashboard menu: Continue restore \u00b7 {reason}',
+                  ANNOUNCE_STOPPED_MS, record.get('session'))
         ccm_core.ccm_die(f'Restored {done} / incomplete {max(0, total - done)}: {reason}. Checkpoint retained; retry the same snapshot.')

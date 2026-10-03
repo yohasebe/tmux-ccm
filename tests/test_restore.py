@@ -16,6 +16,18 @@ import ccm_window as window
 from snapshot_fixture import inventory_query, layout as checksum
 
 
+REAL_ANNOUNCE = restore._announce
+
+
+@pytest.fixture(autouse=True)
+def announcements(monkeypatch):
+    """Status-area notices the restore would show, instead of live tmux."""
+    shown = []
+    monkeypatch.setattr(restore, '_announce',
+                        lambda kind, body, ms, session=None: shown.append((f'{kind}: {body}', ms)))
+    return shown
+
+
 @pytest.fixture
 def checkpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(ccm_core, 'CCM_SNAPSHOT_DIR', str(tmp_path / 'snapshots'))
@@ -398,12 +410,13 @@ def test_failed_load_records_reason_and_releases_lock(checkpoint, monkeypatch):
     assert not restore.running()
 
 
-def test_unexpected_exception_marks_progress_stopped(checkpoint, monkeypatch):
+def test_unexpected_exception_marks_progress_stopped(checkpoint, monkeypatch, announcements):
     _retained_window(checkpoint, monkeypatch)
     monkeypatch.setattr(restore, 'preflight', Mock(side_effect=KeyboardInterrupt))
     with pytest.raises(KeyboardInterrupt):
         restore.load('_autosave')
     assert restore.read_progress()['state'] == 'stopped'
+    assert announcements[-1][0] == 'stopped: interrupted \u00b7 dashboard menu: Continue restore'
     assert not restore.running()
 
 
@@ -587,3 +600,83 @@ def test_stop_reason_names_the_checkpoint_actually_read(checkpoint, monkeypatch)
     record = restore.read_progress()
     assert record['state'] == 'stopped'
     assert record['file_digest'] == restore._file_digest('_autosave')
+
+
+
+def test_progress_and_outcome_are_announced_in_the_status_area(checkpoint, monkeypatch, announcements):
+    _retained_window(checkpoint, monkeypatch)
+    restore.load('_autosave')
+    texts = [text for text, _ in announcements]
+    assert texts[0] == 'progress: restoring 1 window(s)\u2026'
+    assert texts[1].startswith('progress: 0/1: alpha')
+    assert texts[-1].startswith('done: restored 1/1 window(s)')
+    assert announcements[-1][1] == restore.ANNOUNCE_DONE_MS
+
+
+def test_a_stop_is_announced_with_its_reason(checkpoint, monkeypatch, announcements):
+    _retained_window(checkpoint, monkeypatch)
+    monkeypatch.setattr(restore, 'preflight', Mock(side_effect=store.SnapshotError('Directory not found: alpha')))
+    with pytest.raises(SystemExit):
+        restore.load('_autosave')
+    assert [t for t, _ in announcements if 'interrupted' in t] == []
+    text, ms = announcements[-1]
+    assert text == 'stopped: stopped at 0/1 \u00b7 dashboard menu: Continue restore \u00b7 Directory not found: alpha'
+    assert ms == restore.ANNOUNCE_STOPPED_MS
+
+
+def test_a_waiting_load_does_not_announce(checkpoint, monkeypatch, announcements):
+    held, run = _hold('first-run')
+
+    def sleep(_):
+        restore._publish({'run': run, 'source': '_autosave', 'state': 'done', 'summary': []})
+        restore.os.close(held)
+    monkeypatch.setattr(restore.time, 'sleep', sleep)
+    monkeypatch.setattr(restore, '_load', Mock())
+    _load_within('_autosave')
+    assert announcements == []
+
+
+def test_announcement_reaches_every_client_of_the_session_without_freezing(monkeypatch):
+    calls = []
+
+    def query(*args):
+        calls.append(args)
+        return 'c1\nc2\n' if args[0] == 'list-clients' else ''
+    monkeypatch.setattr(restore.ccm_core, 'tmux_query', query)
+    REAL_ANNOUNCE('progress', '1/2: #[bg=red]#(touch x) 100% /tmp/%Y \x1b[31m', 5000, 'work')
+    message = (restore._NOTICE_BADGES['progress'] + restore._NOTICE_BODY
+               + '1/2: \uff03[bg=red]\uff03(touch x) 100%% /tmp/%%Y  [31m #[default]')
+    assert calls == [('list-clients', '-t', 'work', '-F', '#{client_name}'),
+                     ('display-message', '-C', '-d', '5000', '-c', 'c1', message),
+                     ('display-message', '-C', '-d', '5000', '-c', 'c2', message)]
+
+
+def test_announcement_without_a_session_uses_the_default_client(monkeypatch):
+    calls = []
+    monkeypatch.setattr(restore.ccm_core, 'tmux_query', lambda *a: calls.append(a))
+    REAL_ANNOUNCE('done', 'anything', 5000)
+    expected = restore._NOTICE_BADGES['done'] + restore._NOTICE_BODY + 'anything #[default]'
+    assert calls == [('display-message', '-C', '-d', '5000', expected)]
+
+    def fail(*a):
+        raise OSError('no server')
+    monkeypatch.setattr(restore.ccm_core, 'tmux_query', fail)
+    REAL_ANNOUNCE('stopped', 'anything', 5000, 'work')
+
+
+@pytest.mark.parametrize('listing', ['', None])
+def test_a_session_without_listable_clients_tells_no_one_else(monkeypatch, listing):
+    calls = []
+
+    def query(*args):
+        calls.append(args)
+        return listing if args[0] == 'list-clients' else ''
+    monkeypatch.setattr(restore.ccm_core, 'tmux_query', query)
+    REAL_ANNOUNCE('progress', '1/2', 5000, 'work')
+    assert [c for c in calls if c[0] == 'display-message'] == []
+
+
+def test_notice_styles_reset_inherited_attributes_first():
+    # A reverse or underscore message-style would otherwise carry over.
+    for style in (*restore._NOTICE_BADGES.values(), restore._NOTICE_BODY):
+        assert style.startswith('#[none,')
