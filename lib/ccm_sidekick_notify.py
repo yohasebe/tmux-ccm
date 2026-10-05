@@ -825,6 +825,8 @@ def doctor_lines(projects):
 
 def hook_main():
     import sys
+    if not ccm_core.secure_tmp_root():
+        return  # an untrusted temp root gets nothing written into it
     try:
         raw = sys.stdin.buffer.read(256 * 1024 + 1)
         if len(raw) <= 256 * 1024:

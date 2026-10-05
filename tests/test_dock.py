@@ -164,11 +164,12 @@ def test_a_failed_move_leaves_the_source_layout_alone(tmux):
     assert 'select-layout' not in names(calls)
 
 
-def test_the_dashboard_command_is_quoted_and_overridable(monkeypatch):
-    monkeypatch.delenv('CCM_DOCK_COMMAND', raising=False)
-    assert dock.dashboard_command().endswith(' dashboard --docked')
+def test_the_dashboard_command_is_this_plugins_ccm_and_ignores_the_environment(monkeypatch):
+    import os
+    import shlex
     monkeypatch.setenv('CCM_DOCK_COMMAND', 'sleep 300')
-    assert dock.dashboard_command() == 'sleep 300'
+    ccm = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(dock.__file__))), 'ccm')
+    assert dock.dashboard_command() == f'{shlex.quote(ccm)} dashboard --docked'
 
 
 # --- the checkpoint sets the dock aside ------------------------------------

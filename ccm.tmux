@@ -13,8 +13,8 @@ CCM_KEY_SEARCH=$(tmux show-option -gqv @ccm-key-search 2>/dev/null)
 
 CCM_KEY_DASHBOARD="${CCM_KEY_DASHBOARD:-Tab}"
 
-# Temp dir setup command (used in run-shell for session detection)
-_session_cmd='mkdir -p "${TMPDIR:-/tmp}/ccm-$(id -u)" && printf "#{session_name}" > "${TMPDIR:-/tmp}/ccm-$(id -u)/popup-session"'
+# Records the session for the popup (used in run-shell for session detection)
+_session_cmd="bash \"${CCM_ROOT}/lib/popup-session.sh\" #{q:session_name}"
 
 # Coloured "ccm" badge for popup titles. Three pill cells in a
 # muted traffic-light palette (rose / amber / sage) so each

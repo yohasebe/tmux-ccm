@@ -196,6 +196,7 @@ renders() {
 _isolated_script() {
     mkdir -p "${MOCK_DIR}/plugin/lib"
     cp "${CCM_ROOT}/lib/on-resize.sh" "${MOCK_DIR}/plugin/lib/on-resize.sh"
+    cp "${CCM_ROOT}/lib/ccm_tmp_root.sh" "${MOCK_DIR}/plugin/lib/ccm_tmp_root.sh"
     echo "${MOCK_DIR}/plugin/lib/on-resize.sh"
 }
 

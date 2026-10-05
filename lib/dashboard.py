@@ -41,6 +41,7 @@ from ccm_constants import (
     STATE_PRIORITY,
     permission_mode_label,
 )
+import ccm_core  # noqa: E402
 from ccm_core import (
     CCMError,
     build_project_list,
@@ -3487,7 +3488,8 @@ def acquire_pidfile(name="dashboard.pid"):
     keeps its own file, so opening a popup (menu, tree, filter) never
     ends it, and a new dock replaces only an old dock."""
     pidfile = os.path.join(CCM_TMP_DIR, name)
-    os.makedirs(CCM_TMP_DIR, exist_ok=True)
+    if not ccm_core.secure_tmp_root(CCM_TMP_DIR):
+        sys.exit(f"Refusing to use {CCM_TMP_DIR}: it must be a directory owned by you, not a symlink")
     # Kill existing
     if os.path.exists(pidfile):
         try:

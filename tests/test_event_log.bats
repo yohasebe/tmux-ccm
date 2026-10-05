@@ -16,6 +16,9 @@ load helpers/mock_tmux.bash
 TEST_SESSION_ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 setup() {
+    # The temp roots made below must be closed to others, as ccm makes them;
+    # under umask 002 ccm would rightly move them aside.
+    umask 077
     SANDBOX="$(mktemp -d)"
     export TMPDIR="${SANDBOX}/tmp"
     mkdir -p "$TMPDIR"

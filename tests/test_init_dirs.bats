@@ -16,7 +16,7 @@ setup() {
     export CCM_SNAPSHOT_DIR="${CCM_DATA_DIR}/snapshots"
     export CCM_STATE_DIR="${CCM_DATA_DIR}/state"
     export CCM_HOOK_DIR="${CCM_TMP_DIR}/hooks"
-    mkdir -p "${CCM_TMP_DIR}/git-cache" "${CCM_TMP_DIR}/port-cache" "${CCM_TMP_DIR}/notified" "${CCM_TMP_DIR}/hooks"
+    (umask 077; mkdir -p "${CCM_TMP_DIR}/git-cache" "${CCM_TMP_DIR}/port-cache" "${CCM_TMP_DIR}/notified" "${CCM_TMP_DIR}/hooks")
 }
 
 teardown() {

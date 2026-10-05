@@ -25,7 +25,9 @@
 CCM_RESIZE_SETTLE="${CCM_RESIZE_SETTLE:-0.4}"
 
 _dir="${CCM_TMP_DIR:-${TMPDIR:-/tmp}/ccm-${UID}}"
-mkdir -p "$_dir" 2>/dev/null || exit 0
+# shellcheck source=/dev/null
+source "$(dirname "$0")/ccm_tmp_root.sh" 2>/dev/null \
+    && ccm_secure_tmp_root "$_dir" || exit 0
 # One stamp per user, not per tmux server: a resize on another
 # socket suppresses this one's render for the settle window. Worth
 # knowing where isolated sockets are routine; the periodic tick

@@ -331,6 +331,52 @@ def log_caught_exception(scope: str) -> None:
 
 # ─── Session detection ───
 
+def secure_tmp_root(path=None):
+    """Create or check the per-user temp root, as `ccm_secure_tmp_root`
+    in lib/ccm_tmp_root.sh does for the shell side. Where TMPDIR is
+    unset it sits in the shared /tmp, so it must be a real directory
+    owned by this user that nobody else could ever write into. A root of
+    ours others could write is moved aside unopened and made afresh; a
+    root others can only read is closed. False means: write nothing
+    there."""
+    import stat
+    path = (path or CCM_TMP_DIR).rstrip('/')
+    # `link/` and `link/.` resolve through the link; test the name itself.
+    if os.path.basename(path) in ('', '.', '..'):
+        return False
+
+    def ours(info):
+        return (not stat.S_ISLNK(info.st_mode) and stat.S_ISDIR(info.st_mode)
+                and info.st_uid == os.getuid())
+
+    old = os.umask(0o077)
+    try:
+        if not os.path.lexists(path):
+            os.makedirs(path, exist_ok=True)
+        info = os.lstat(path)
+        if not ours(info):
+            return False
+        if info.st_mode & 0o022:
+            try:
+                os.rename(path, f'{path}.untrusted-{os.getpid()}')
+            except OSError:
+                pass
+            try:
+                os.mkdir(path, 0o700)
+            except FileExistsError:
+                pass
+            info = os.lstat(path)
+            if not ours(info) or info.st_mode & 0o022:
+                return False
+        if info.st_mode & 0o077:
+            os.chmod(path, 0o700)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.umask(old)
+
+
 def get_session():
     popup_file = os.path.join(CCM_TMP_DIR, "popup-session")
     try:
@@ -1354,6 +1400,9 @@ def clipboard_copy(text):
 
 def init_dirs():
     """Create runtime directories."""
+    if not secure_tmp_root(CCM_TMP_DIR):
+        raise SystemExit(f"ccm: refusing to use {CCM_TMP_DIR}: it must be a "
+                         "directory owned by you and closed to others")
     for d in [CCM_SNAPSHOT_DIR, CCM_TMP_DIR, CCM_HOOK_DIR,
               CCM_GIT_CACHE_DIR, CCM_PORT_CACHE_DIR,
               os.path.join(os.path.expanduser("~/.local/share/ccm"), "state")]:

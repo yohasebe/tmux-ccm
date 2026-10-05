@@ -93,6 +93,11 @@ if [[ "$EVENT" == "notification" ]]; then
     esac
 fi
 
+# Every branch below reads or writes under the temp root.
+# shellcheck source=/dev/null
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/ccm_tmp_root.sh" 2>/dev/null \
+    && ccm_secure_tmp_root "${ATTENTION_DIR%/attention}" || exit 0
+
 case "$EVENT" in
     permissionrequest)
         mkdir -p "$ATTENTION_DIR" 2>/dev/null || exit 0

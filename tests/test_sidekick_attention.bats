@@ -9,6 +9,9 @@ CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 SCRIPT="${CCM_ROOT}/hooks/sidekick-attention.sh"
 
 setup() {
+    # The temp roots made below must be closed to others, as ccm makes them;
+    # under umask 002 ccm would rightly move them aside.
+    umask 077
     SANDBOX="$(mktemp -d)"
     export TMPDIR="${SANDBOX}/tmp"
     mkdir -p "$TMPDIR"

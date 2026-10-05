@@ -18,6 +18,7 @@ from ccm_constants import (
     STATE_ICONS,
     STATE_PRIORITY,
 )
+import ccm_core  # noqa: E402
 from ccm_core import (
     build_project_list,
     tmux_batch,
@@ -76,7 +77,8 @@ def strip_tmux_formats(s):
 def acquire_lockfile():
     """Prevent concurrent inject-status execution using flock."""
     lockfile = os.path.join(CCM_TMP_DIR, "inject.lock")
-    os.makedirs(CCM_TMP_DIR, exist_ok=True)
+    if not ccm_core.secure_tmp_root(CCM_TMP_DIR):
+        sys.exit(0)
 
     fd = open(lockfile, "w", encoding="utf-8")
     try:

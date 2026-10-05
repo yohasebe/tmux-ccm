@@ -98,7 +98,8 @@ def _serialized():
     """One dock operation at a time across the server: key presses and
     window hooks run concurrently, and each re-reads the dock under this
     lock, so two cannot both see "no dock" and open two."""
-    os.makedirs(ccm_core.CCM_TMP_DIR, exist_ok=True)
+    if not ccm_core.secure_tmp_root():
+        raise SystemExit(f'Refusing to use {ccm_core.CCM_TMP_DIR}: not a directory closed to others')
     with open(os.path.join(ccm_core.CCM_TMP_DIR, 'dock.lock'), 'w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
@@ -148,9 +149,8 @@ def _restore(window, layout):
 
 
 def dashboard_command():
-    # Tests replace the dashboard with an inert command.
-    if os.environ.get('CCM_DOCK_COMMAND'):
-        return os.environ['CCM_DOCK_COMMAND']
+    """The `ccm` next to this plugin's lib/, never a command taken from the
+    environment. (Tests run a copy of the plugin whose `ccm` is inert.)"""
     ccm = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ccm')
     return f'{shlex.quote(ccm)} dashboard --docked'
 

@@ -11,6 +11,8 @@ CCM_STATE_DIR="${CCM_STATE_DIR:-${CCM_DATA_DIR}/state}"
 
 # Temp directory (user-scoped; overridable for isolation)
 CCM_TMP_DIR="${CCM_TMP_DIR:-${TMPDIR:-/tmp}/ccm-${UID}}"
+# shellcheck source=lib/ccm_tmp_root.sh
+source "$(dirname "${BASH_SOURCE[0]}")/ccm_tmp_root.sh"
 
 # Hook signal directory
 CCM_HOOK_DIR="${CCM_HOOK_DIR:-${CCM_TMP_DIR}/hooks}"
@@ -73,7 +75,9 @@ _ccm_should_reconcile() {
     local now last
     now="${EPOCHSECONDS:-}"
     [[ -z "$now" ]] && now=$(date +%s)
-    if [[ -r "$stamp" ]]; then
+    # Builtin checks only (this path must fork nothing): read the stamp
+    # only from a root that is ours and only if it is a plain file.
+    if [[ ! -L "$CCM_TMP_DIR" && -O "$CCM_TMP_DIR" && -f "$stamp" && ! -L "$stamp" ]]; then
         # Server restarted after our last run → reconcile now.
         local sock="${TMUX%%,*}"
         if [[ -z "$sock" || ! "$sock" -nt "$stamp" ]]; then
@@ -84,12 +88,15 @@ _ccm_should_reconcile() {
             fi
         fi
     fi
-    printf '%s\n' "$now" > "$stamp" 2>/dev/null || true
+    # Writing waits for the full check; an untrusted root then stops
+    # the run in ccm_init_dirs.
+    ccm_secure_tmp_root "$CCM_TMP_DIR" && printf '%s\n' "$now" > "$stamp" 2>/dev/null
     return 0
 }
 
 
 ccm_init_dirs() {
+    ccm_secure_tmp_root "$CCM_TMP_DIR" || ccm_die "Refusing to use $CCM_TMP_DIR: it must be a directory owned by you, not a symlink. Remove it, or set TMPDIR to a directory only you can use."
     mkdir -p "$CCM_SNAPSHOT_DIR" "$CCM_STATE_DIR" "$CCM_TMP_DIR" "$CCM_HOOK_DIR" \
              "${CCM_TMP_DIR}/port-cache" "${CCM_TMP_DIR}/git-cache" 2>/dev/null
 }

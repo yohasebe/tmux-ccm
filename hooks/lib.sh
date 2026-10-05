@@ -59,7 +59,7 @@ _ccm_mark_ignored_pane() {
 # path must stay as cheap and unbreakable as a plain early-exit.
 _ccm_route_sidekick_attention() {
     [[ -n "${TMUX_PANE:-}" ]] || return 0
-    local script="${CCM_HOOK_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/sidekick-attention.sh"
+    local script="${_CCM_HOOK_LIB_DIR}/sidekick-attention.sh"
     [[ -x "$script" ]] || return 0
     printf '%s' "$INPUT" | "$script" claude 2>/dev/null || true
     return 0
@@ -67,6 +67,11 @@ _ccm_route_sidekick_attention() {
 
 ccm_hook_init() {
     HOOK_DIR="${TMPDIR:-/tmp}/ccm-${UID}/hooks"
+    # An untrusted temp root (another user's, a symlink) gets nothing
+    # written into it; the hook does nothing rather than fail Claude.
+    # shellcheck source=/dev/null
+    source "${_CCM_HOOK_LIB_DIR}/../lib/ccm_tmp_root.sh" 2>/dev/null \
+        && ccm_secure_tmp_root "${HOOK_DIR%/hooks}" || exit 0
     mkdir -p "$HOOK_DIR" 2>/dev/null || true
 
     INPUT=$(cat)
