@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Status modes 1 and 2 highlight the current project's entry with a distinct background, including one space on each side, without changing its width. Customize the color with `@ccm-status-current-bg` (default `#505050`).
 - The dashboard opens faster, and status redraws cost less, where `python3` is a version manager's shim (pyenv, asdf, mise). Each start used to run the shim first (0.1–0.3 s). ccm now resolves `python3` through `PATH` once, keeps its real path in the runtime directory, and runs it directly; it resolves again if that interpreter goes away.
 
 ### Fixed

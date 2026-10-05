@@ -23,6 +23,60 @@ def make_project(win_target, win_idx, name, state):
     )
 
 
+# ─── build_detail_entries: current-project background ───
+
+class TestCurrentProjectBackground:
+    """The project in the window you are looking at sits on its own
+    background across its whole cell; the block's colours come back
+    after the space that follows it."""
+
+    @pytest.mark.parametrize("with_extras", [False, True])
+    def test_only_the_current_entry_gets_the_background(self, with_extras):
+        projects = [make_project("0:1", "1", "alpha", "IDLE"),
+                    make_project("0:2", "2", "beta", "SHELL")]
+        entries = inject_status.build_detail_entries(
+            projects, with_extras=with_extras, current_win_target="0:2",
+            pill_bg="#123456")
+        assert "#123456" not in entries[0]
+        assert entries[1].startswith("#[bg=#123456]")
+        # Every style change inside names the background, so none can drop it.
+        styles = re.findall(r"#\[([^\]]*)\]", entries[1])
+        assert styles and all("bg=#123456" in st for st in styles)
+
+    def test_dim_greys_are_lifted_on_the_background(self):
+        p = make_project("0:1", "1", "alpha", "IDLE")
+        p.pane_count = 2
+        entry = inject_status.build_detail_entries([p], current_win_target="0:1")[0]
+        assert "#666666" not in entry
+
+    def test_the_background_adds_no_columns(self):
+        projects = [make_project("0:1", "1", "alpha", "IDLE")]
+        plain = lambda e: re.sub(r"#\[[^\]]*\]", "", e)
+        on = inject_status.build_detail_entries(projects, current_win_target="0:1")
+        off = inject_status.build_detail_entries(projects, current_win_target="0:9")
+        assert plain(on[0]) == plain(off[0])
+
+    def test_the_cell_takes_in_the_spaces_on_each_side(self):
+        entries = ["one", inject_status._as_current_pill("two", "#123456"), "three"]
+        out = inject_status._join_entries(
+            entries, [" ", " | ", " | ", " ."], "#123456", "#000000", "#999999")
+        plain = re.sub(r"#\[[^\]]*\]", "", out)
+        assert plain == " one | two | three ."          # no columns added
+        assert " |#[bg=#123456] #[bg=#123456]two" in out
+        assert "two #[bg=#000000,nobold,fg=#999999]| three" in out
+
+    def test_no_entries_keeps_the_separators(self):
+        assert inject_status._join_entries([], [" ", "  "], "#1", "#2", "#3") == "   "
+
+    @pytest.mark.parametrize("position", [0, 2])
+    def test_the_cell_at_either_end(self, position):
+        entries = ["a", "b", "c"]
+        entries[position] = inject_status._as_current_pill(entries[position], "#123456")
+        out = inject_status._join_entries(
+            entries, [" ", " | ", " | ", "  "], "#123456", "#000000", "#999999")
+        assert re.sub(r"#\[[^\]]*\]", "", out) == " a | b | c  "
+
+
 # ─── build_detail_entries: active highlighting ───
 
 class TestBuildDetailEntriesActive:
@@ -188,7 +242,7 @@ class TestPaneCountSuffixInStatusBar:
     def test_single_pane_no_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(1)],
-            with_extras=False, current_win_target="0:2",
+            with_extras=False, current_win_target="0:99",
         )
         # No bracketed digit between name and the icon-colon.
         assert "[1]" not in entries[0]
@@ -198,7 +252,7 @@ class TestPaneCountSuffixInStatusBar:
     def test_two_panes_show_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(2)],
-            with_extras=False, current_win_target="0:2",
+            with_extras=False, current_win_target="0:99",
         )
         # The digit appears between dim brackets.
         assert "[" in entries[0] and "]" in entries[0]
@@ -207,7 +261,7 @@ class TestPaneCountSuffixInStatusBar:
     def test_three_panes_show_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(3)],
-            with_extras=False, current_win_target="0:2",
+            with_extras=False, current_win_target="0:99",
         )
         assert "3" in entries[0]
         # The digit was emitted with a cyan colour code so the
@@ -217,7 +271,7 @@ class TestPaneCountSuffixInStatusBar:
     def test_mode2_two_panes_show_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(2)],
-            with_extras=True, current_win_target="0:2",
+            with_extras=True, current_win_target="0:99",
         )
         assert "#[fg=cyan]2" in entries[0]
 
@@ -236,7 +290,7 @@ class TestPaneCountSuffixInStatusBar:
         p = self._make(2, state="PERMIT")
         entries = inject_status.build_detail_entries(
             [p],
-            with_extras=False, current_win_target="0:2",
+            with_extras=False, current_win_target="0:99",
         )
         # Both markers present; order: pane marker first (pre-
         # icon), stale after (post-icon).

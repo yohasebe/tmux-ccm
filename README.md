@@ -329,7 +329,10 @@ set -g @ccm-status-bg         "#262626"   # entry-row background
 set -g @ccm-status-gutter-bg  "#1a1a1a"   # one-row gutter between main bar and entries
 set -g @ccm-status-fg         "#9E9E9E"   # default foreground
 set -g @ccm-status-fg-dim     "#5a5a5a"   # separators / hints
+set -g @ccm-status-current-bg "#505050"   # current project's background (modes 1 and 2)
 ```
+
+In modes 1 and 2, the current project has a distinct background, including one space on each side, so it is easier to locate without widening the status entries.
 
 Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named colours (`red`, `blue`, `default`, …). Invalid values fall back to the default.
 

@@ -158,7 +158,54 @@ def priority_icon(projects):
     return "≡"
 
 
-def build_detail_entries(projects, with_extras=False, current_win_target=""):
+# The project in the window you are looking at is drawn on its own
+# background across its whole cell, separator spaces included, so it
+# reads at a glance which one that is. A neutral grey that every state
+# colour stays legible on; `@ccm-status-current-bg` overrides it.
+CURRENT_PILL_BG = "#505050"
+# The dim greys the entries use would sink into that background; on it
+# they are drawn lighter.
+_LIFTED_ON_PILL = {"#666666": "#a8a8a8", "#888888": "#b8b8b8"}
+
+
+def _as_current_pill(entry, pill_bg):
+    """Put an entry on the current-project background. The background is
+    named in every style change inside it, so nothing can drop it
+    halfway; the block's colours come back in `_join_entries`, after
+    the space that follows."""
+    def restyle(m):
+        style = m.group(1)
+        for dim, lifted in _LIFTED_ON_PILL.items():
+            style = style.replace(f"fg={dim}", f"fg={lifted}")
+        return f"#[{style},bg={pill_bg}]"
+    return f"#[bg={pill_bg}]" + re.sub(r"#\[([^\]]*)\]", restyle, entry)
+
+
+def _is_current_pill(entry):
+    return entry.startswith("#[bg=")
+
+
+def _join_entries(entries, separators, pill_bg, block_bg, block_fg):
+    """Interleave `entries` with `separators` (one more than the entries:
+    the lead, those between, and the end). Each separator before an entry
+    must end with a space and each after one must start with a space; the
+    current entry's background takes in those two spaces, which are the
+    cell it owns, and adds no columns."""
+    if not entries:
+        return "".join(separators)
+    seps = list(separators)
+    for i, entry in enumerate(entries):
+        if _is_current_pill(entry):
+            seps[i] = seps[i][:-1] + f"#[bg={pill_bg}] "
+            seps[i + 1] = f" #[bg={block_bg},nobold,fg={block_fg}]" + seps[i + 1][1:]
+    out = seps[0]
+    for entry, sep in zip(entries, seps[1:]):
+        out += entry + sep
+    return out
+
+
+def build_detail_entries(projects, with_extras=False, current_win_target="",
+                         pill_bg=CURRENT_PILL_BG):
     """Build status bar entries for mode 1/2.
     current_win_target: full `session:window_index` of the active
     window. Compared against `Project.win_target`, not just the
@@ -262,6 +309,8 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
             if post:
                 entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"
 
+        if is_current:
+            entry = _as_current_pill(entry, pill_bg)
         entries.append(entry)
     return entries
 
@@ -666,7 +715,10 @@ def _inject_status_impl(force_fast=False):
             ("set", "-g", "window-status-current-format", ""),
         )
 
-        entries = build_detail_entries(all_projects, current_win_target=current_win_target)
+        pill_bg = _opt_color("@ccm-status-current-bg", CURRENT_PILL_BG)
+        entries = build_detail_entries(
+            all_projects, current_win_target=current_win_target,
+            pill_bg=pill_bg)
 
         # The terminal width bounds the entry budget below and, after
         # the write, the `status-right-length` floor — the latter on
@@ -767,15 +819,16 @@ def _inject_status_impl(force_fast=False):
             def _styled(sep):
                 return sep.replace("│", "#[fg=#666666]│#[fg=#9E9E9E]")
 
-            detail = ""
-            for i, entry in enumerate(selected):
-                detail += _styled(ENTRY_SEPARATOR if i else ENTRY_LEAD)
-                detail += entry
+            separators = ([_styled(ENTRY_LEAD)]
+                          + [_styled(ENTRY_SEPARATOR)] * (len(selected) - 1)
+                          + [_styled(LIST_END)])
+            detail = _join_entries(selected, separators, pill_bg,
+                                   "#3a3a3a", "#9E9E9E")
 
             gap = " " * pad if pad > 0 else ""
             new_status = (
                 f"#[fg=#9E9E9E,bg=#3a3a3a]{detail}"
-                f"{_styled(LIST_END)}#[default]{gap}{original}{refresh}"
+                f"#[default]{gap}{original}{refresh}"
             )
 
         if new_status != prev_status:
@@ -802,7 +855,6 @@ def _inject_status_impl(force_fast=False):
 
         all_projects = apply_shell_filter(
             scan_active_windows(projects, include_all=True))
-        entries = build_detail_entries(all_projects, with_extras=True, current_win_target=current_win_target)
 
         # Visual palette for the dedicated mode-2 line(s). `BG`
         # (slightly darker than the main bar) keeps the ccm rows
@@ -819,6 +871,10 @@ def _inject_status_impl(force_fast=False):
         FG_DEFAULT = _opt_color("@ccm-status-fg", "#9E9E9E")
         FG_DIM = _opt_color("@ccm-status-fg-dim", "#5a5a5a")
         SEP = f"  #[fg={FG_DIM}]·#[fg={FG_DEFAULT}]  "
+        pill_bg = _opt_color("@ccm-status-current-bg", CURRENT_PILL_BG)
+        entries = build_detail_entries(
+            all_projects, with_extras=True, current_win_target=current_win_target,
+            pill_bg=pill_bg)
         SEP_VISIBLE_W = 5  # "  ·  "
         GUTTER_FMT = f"#[fill={GUTTER_BG}]#[bg={GUTTER_BG}] "
 
@@ -883,17 +939,13 @@ def _inject_status_impl(force_fast=False):
 
             entry_idx = 0
             for line_idx in range(num_lines):
-                line_str = ""
-                count = 0
-                while entry_idx < len(entries) and count < entries_per_line:
-                    if count > 0:
-                        line_str += SEP
-                    else:
-                        line_str += " "
-                    line_str += entries[entry_idx]
-                    entry_idx += 1
-                    count += 1
-                fmt = f"#[fill={BG}]#[fg={FG_DEFAULT},bg={BG}]{line_str}  "
+                line_entries = entries[entry_idx:entry_idx + entries_per_line]
+                entry_idx += len(line_entries)
+                separators = ([" "] + [SEP] * (len(line_entries) - 1)
+                              + ["  "])
+                line_str = _join_entries(line_entries, separators, pill_bg,
+                                         BG, FG_DEFAULT)
+                fmt = f"#[fill={BG}]#[fg={FG_DEFAULT},bg={BG}]{line_str}"
                 # +2 because slot 0 is main bar, slot 1 is gutter,
                 # slot 2 is first entry line.
                 cmds.append(("set", "-g", f"status-format[{line_idx + 2}]", fmt))
