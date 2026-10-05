@@ -17,6 +17,13 @@ if [[ "$1" == -f && "$2" == /dev/null ]]; then shift 2; fi
 [[ -n "$1" && "$1" != -* ]] || reject "${original[@]}"
 [[ -n "$CCM_TEST_REAL_TMUX" ]] || exit 127
 unset TMUX TMUX_PANE
+# Whatever the command (tmux takes `new` for `new-session`, and any
+# command may start a server), the user's HOME never reaches tmux: a
+# server's children run with the server's environment. A test that set
+# its own HOME keeps it.
+if [[ -z "$HOME" || "$HOME" == "$CCM_TEST_REAL_HOME" ]]; then
+    export HOME="$CCM_TEST_GUARD_DIR/home"
+fi
 if [[ "$1" == new-session ]]; then
     # Keep tmux's stderr, then add only allowlisted diagnostic metadata.
     "$CCM_TEST_REAL_TMUX" -L "$socket" -f /dev/null "$@"

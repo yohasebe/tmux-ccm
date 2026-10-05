@@ -3,7 +3,11 @@
 setup_file() {
     export CCM_TEST_REAL_TMUX="${CCM_TEST_REAL_TMUX-$(type -P tmux || true)}"
     export CCM_TEST_GUARD_DIR="${BATS_FILE_TMPDIR}/tmux-guard"
-    mkdir -p "$CCM_TEST_GUARD_DIR/bin" "$CCM_TEST_GUARD_DIR/sockets"
+    # A real server's children (run-shell, hooks) run with the server's
+    # environment; ccm.tmux starts `ccm setup-hooks` that way, which edits
+    # $HOME/.claude/settings.json. The spy starts servers away from it.
+    export CCM_TEST_REAL_HOME="$HOME"
+    mkdir -p "$CCM_TEST_GUARD_DIR/bin" "$CCM_TEST_GUARD_DIR/sockets" "$CCM_TEST_GUARD_DIR/home"
     : > "$CCM_TEST_GUARD_DIR/denied"
     cp "${BATS_TEST_DIRNAME}/helpers/tmux_spy.bash" "$CCM_TEST_GUARD_DIR/bin/tmux"
     chmod +x "$CCM_TEST_GUARD_DIR/bin/tmux"

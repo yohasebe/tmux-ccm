@@ -36,6 +36,37 @@ _spy() {
     [[ ! -s "$CASE_DIR/denied" ]]
 }
 
+@test "a server is started away from the real HOME, and a test's own HOME is kept" {
+    cat > "$CASE_DIR/native" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$HOME" > "$CASE_DIR/server-home"
+MOCK
+    mkdir -p "$CASE_DIR/home"
+    HOME="/real/home" CCM_TEST_REAL_HOME="/real/home" _spy -L ccm-test.allowed -f /dev/null new-session -d
+    [[ "$(cat "$CASE_DIR/server-home")" == "$CASE_DIR/home" ]]
+    HOME="/real/home" CCM_TEST_REAL_HOME="/real/home" _spy -L ccm-test.allowed -f /dev/null start-server
+    [[ "$(cat "$CASE_DIR/server-home")" == "$CASE_DIR/home" ]]
+    HOME="/real/home" CCM_TEST_REAL_HOME="/real/home" _spy -L ccm-test.allowed -f /dev/null new -d
+    [[ "$(cat "$CASE_DIR/server-home")" == "$CASE_DIR/home" ]]
+    HOME="$BATS_TEST_TMPDIR/own" CCM_TEST_REAL_HOME="/real/home" _spy -L ccm-test.allowed -f /dev/null new-session -d
+    [[ "$(cat "$CASE_DIR/server-home")" == "$BATS_TEST_TMPDIR/own" ]]
+}
+
+@test "a real isolated server does not carry the user's HOME, however it is started" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    local sock cmd
+    for cmd in new-session new; do
+        sock=$(ccm_test_new_socket)
+        tmux -L "$sock" -f /dev/null "$cmd" -d -s h
+        run tmux -L "$sock" -f /dev/null show-environment -g HOME
+        # What the server runs (run-shell) sees the same HOME.
+        tmux -L "$sock" -f /dev/null run-shell 'printf %s "$HOME" > "$BATS_TEST_TMPDIR/run-shell-home"'
+        tmux -L "$sock" -f /dev/null kill-server
+        [[ "$output" == "HOME=$CCM_TEST_GUARD_DIR/home" ]]
+        [[ "$(cat "$BATS_TEST_TMPDIR/run-shell-home")" == "$CCM_TEST_GUARD_DIR/home" ]]
+    done
+}
+
 @test "tmux startup failure preserves stderr and status without dumping the environment" {
     cat > "$CASE_DIR/native" <<'MOCK'
 #!/usr/bin/env bash
