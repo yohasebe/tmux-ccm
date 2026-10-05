@@ -125,12 +125,12 @@ def enumerate_window_panes(win_target, ps_lines):
     raw = ccm_core.tmux_cmd(
         "list-panes", "-t", win_target, "-F",
         "#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
-        "#{pane_current_command}\t#{@ccm_ignore}",
+        "#{pane_current_command}\t#{@ccm_ignore}\t#{@ccm_dock}",
     )
     out = []
     for line in (raw or "").split("\n"):
         parts = line.split("\t")
-        if len(parts) < 2:
+        if len(parts) < 2 or ccm_core.is_dock_field(parts, 5):
             continue
         out.append(PaneInfo(
             pane_id=parts[0],

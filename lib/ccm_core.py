@@ -651,11 +651,13 @@ def _build_panes_cache():
         "list-panes", "-a", "-F",
         "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t"
         "#{pane_current_command}\t#{pane_active}\t#{pane_height}\t"
-        "#{@ccm_ignore}\t#{@ccm_restore_role}"
+        "#{@ccm_ignore}\t#{@ccm_restore_role}\t#{@ccm_dock}"
     )
     cache = []
     for line in panes_raw.split("\n"):
         parts = line.split("\t")
+        if is_dock_field(parts, 8):
+            continue  # ccm's own docked dashboard is not a project pane
         if len(parts) >= 6:
             # Pad the ignore field so older tmux output (6 fields)
             # stays valid — treated as "not ignored".
@@ -663,6 +665,14 @@ def _build_panes_cache():
                 parts.append("")
             cache.append(tuple(parts[:8]))
     return cache
+
+
+def is_dock_field(parts, index) -> bool:
+    """True when field `index` of a tab-split pane row is the `@ccm_dock`
+    mark. Every pane listing that feeds detection, auto-exit or focus
+    drops these rows: the docked dashboard is ccm's own pane, and a
+    python process in it would otherwise read as live work or a shell."""
+    return len(parts) > index and parts[index] == "1"
 
 
 def _pane_is_ignored(pc) -> bool:

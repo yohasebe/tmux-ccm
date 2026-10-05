@@ -29,9 +29,14 @@ _logo='#[bg=#E89B9B,fg=#000000,bold] c #[bg=#E8C76A,fg=#000000,bold] c #[bg=#86C
 # Keybindings — only dashboard is bound by default (Tab rarely conflicts)
 # Menu and tree are opt-in via @ccm-key-menu / @ccm-key-tree to avoid
 # conflicts with other plugins (e.g., tmux-sessionist binds C).
-tmux bind-key "$CCM_KEY_DASHBOARD" \
-    run-shell "$_session_cmd" \\\; \
-    display-popup -E -w 80% -h 60% -T " ${_logo} Dashboard " "$CCM_BIN dashboard"
+# `@ccm-dashboard-dock top|bottom` docks the dashboard as a pane instead of
+# a popup (see lib/ccm_dock.py). Decided per key press, so changing the
+# option needs no reload. `#{window_id}` is expanded in the client's
+# context, which is the window the dock belongs in.
+_dock_on='#{||:#{==:#{@ccm-dashboard-dock},top},#{==:#{@ccm-dashboard-dock},bottom}}'
+_dock_toggle="run-shell -b \"$CCM_BIN dock toggle '#{window_id}'\""
+_dashboard_popup="run-shell '$_session_cmd' ; display-popup -E -w 80% -h 60% -T ' ${_logo} Dashboard ' '$CCM_BIN dashboard'"
+tmux bind-key "$CCM_KEY_DASHBOARD" if-shell -F "$_dock_on" "$_dock_toggle" "$_dashboard_popup"
 
 if [[ -n "$CCM_KEY_MENU" ]]; then
     tmux bind-key "$CCM_KEY_MENU" \
@@ -59,9 +64,7 @@ fi
 # as the prefix binding so the coloured logo title is preserved.
 CCM_KEY_DASHBOARD_NOPREFIX=$(tmux show-option -gqv @ccm-key-dashboard-noprefix 2>/dev/null)
 if [[ -n "$CCM_KEY_DASHBOARD_NOPREFIX" ]]; then
-    tmux bind-key -n "$CCM_KEY_DASHBOARD_NOPREFIX" \
-        run-shell "$_session_cmd" \\\; \
-        display-popup -E -w 80% -h 60% -T " ${_logo} Dashboard " "$CCM_BIN dashboard"
+    tmux bind-key -n "$CCM_KEY_DASHBOARD_NOPREFIX" if-shell -F "$_dock_on" "$_dock_toggle" "$_dashboard_popup"
 fi
 
 # Mouse click on ccm status icon → open dashboard
@@ -136,6 +139,15 @@ tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_BIN inject-statu
 if ! tmux show-hooks -g 2>/dev/null | grep "session-window-changed" | grep -q "inject-status --fast"; then
     tmux set-hook -ga session-window-changed "run-shell -b '$CCM_BIN inject-status --fast 2>/dev/null || true'"
 fi
+
+# A docked dashboard follows the client to the window it switches to (the
+# window it leaves gets its layout back). Only runs while docking is on.
+_dock_follow="if-shell -F '$_dock_on' \"run-shell -b '$CCM_BIN dock follow #{window_id} 2>/dev/null || true'\""
+for _hook in session-window-changed client-session-changed; do
+    if ! tmux show-hooks -g 2>/dev/null | grep "$_hook" | grep -q "dock follow"; then
+        tmux set-hook -ga "$_hook" "$_dock_follow"
+    fi
+done
 
 # Re-lay the bar when the terminal changes width. The layout is baked
 # from the width at render time, so on resize it is simply wrong until

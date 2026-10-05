@@ -142,6 +142,12 @@ C_DIM = 6
 C_CYAN = 7
 C_YELLOW = 8
 C_SYNCING = 9
+# The ccm logo cells (rose / amber / sage, black letters) drawn at the top
+# of a docked dashboard, which has no popup title to carry the logo.
+C_LOGO_C1 = 10
+C_LOGO_C2 = 11
+C_LOGO_M = 12
+LOGO_CELLS = ((" c ", C_LOGO_C1), (" c ", C_LOGO_C2), (" m ", C_LOGO_M))
 
 STATE_COLOR_PAIR = {
     "PERMIT": C_PERMIT, "BUSY": C_BUSY,
@@ -164,7 +170,7 @@ class Dashboard(LifecycleActions):
     # `self.tree_selected`, or `self.menu_selected`.
     NAV_KEYS = frozenset((curses.KEY_UP, curses.KEY_DOWN, ord("j"), ord("k")))
 
-    def __init__(self, initial_mode="dashboard", start_in_search=False):
+    def __init__(self, initial_mode="dashboard", start_in_search=False, docked=False):
         self.projects = []
         # Frozen display order for the dashboard's lifetime: a list of
         # win_targets in the order first seen. `build_project_list`
@@ -187,6 +193,10 @@ class Dashboard(LifecycleActions):
         self.hooks_status = "Hooks: ON" if self.hooks_on else "Hooks: OFF"
         self.mode = initial_mode  # "dashboard", "tree", "menu"
         self.start_in_search = start_in_search
+        # Docked (a pane, not a popup): attaching keeps the dashboard open
+        # and the window-change hook brings the pane along; quitting asks
+        # tmux to close the pane so the other panes get their rows back.
+        self.docked = docked
         # Tree mode state
         self.tree_lines = []     # (indent, text, attr, win_target_or_none)
         self.tree_selected = 0
@@ -269,7 +279,7 @@ class Dashboard(LifecycleActions):
         # skip the main loop entirely so the popup closes immediately.
         if self.start_in_search and self.mode == "dashboard":
             action = self._do_search(stdscr)
-            if action == "attached":
+            if self._should_stop(action):
                 return
             self._render_current(stdscr)
 
@@ -297,7 +307,7 @@ class Dashboard(LifecycleActions):
                 continue
 
             action = self._dispatch_key(key, stdscr)
-            if action in ("quit", "attached"):
+            if self._should_stop(action):
                 break
 
             # Coalesce queued navigation keys. Terminal auto-repeat
@@ -330,10 +340,50 @@ class Dashboard(LifecycleActions):
                             break
                 finally:
                     stdscr.timeout(50)
-                if action in ("quit", "attached"):
+                if self._should_stop(action):
                     break
 
             self._render_current(stdscr)
+
+    def _closes_on_open(self):
+        return self.docked and tmux_cmd(
+            "show-option", "-gqv", "@ccm-dashboard-dock-close-on-open") == "on"
+
+    def _before_switch(self):
+        """Right before this dashboard switches the client to another
+        window: a dock that is about to close marks itself, so the
+        window-change hook does not first carry it into the new window
+        (which would lay that window out twice, a visible flicker).
+
+        The decision is made once here and kept, so the close that follows
+        acts on the same answer even if the option changes in between."""
+        if self._closes_on_open():
+            import ccm_dock
+            ccm_dock.mark_leaving(os.environ.get("TMUX_PANE", ""))
+            self._closing_after_switch = True
+
+    def _should_stop(self, action):
+        """Whether the main loop ends after `action`."""
+        if action not in ("quit", "attached"):
+            if getattr(self, "_closing_after_switch", False):
+                # The switch did not happen: stay, and follow again.
+                import ccm_dock
+                ccm_dock.mark_leaving(os.environ.get("TMUX_PANE", ""), False)
+                self._closing_after_switch = False
+            return False
+        if not self.docked:
+            return True
+        marked = getattr(self, "_closing_after_switch", False)
+        if action == "attached" and not marked:
+            return False
+        # tmux closes the pane and restores the layout; doing it from here
+        # would kill this process before the layout is put back.
+        import ccm_dock
+        ccm_dock.request_close()
+        # Stay alive until tmux removes the pane: exiting first would close
+        # it before the layout could be measured and restored.
+        time.sleep(5)
+        return True
 
     def _render_current(self, stdscr):
         # Self-heal external screen corruption. tmux's popup overlay
@@ -381,6 +431,10 @@ class Dashboard(LifecycleActions):
             curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
             curses.init_pair(C_YELLOW, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_SYNCING, curses.COLOR_CYAN, -1)
+            # Nearest 256-colour cells to the popup title's #E89B9B / #E8C76A / #86C99B.
+            curses.init_pair(C_LOGO_C1, 16, 174)
+            curses.init_pair(C_LOGO_C2, 16, 179)
+            curses.init_pair(C_LOGO_M, 16, 108)
         else:
             curses.init_pair(C_PERMIT, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_BUSY, curses.COLOR_RED, -1)
@@ -391,6 +445,19 @@ class Dashboard(LifecycleActions):
             curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
             curses.init_pair(C_YELLOW, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_SYNCING, curses.COLOR_CYAN, -1)
+            curses.init_pair(C_LOGO_C1, curses.COLOR_BLACK, curses.COLOR_RED)
+            curses.init_pair(C_LOGO_C2, curses.COLOR_BLACK, curses.COLOR_YELLOW)
+            curses.init_pair(C_LOGO_M, curses.COLOR_BLACK, curses.COLOR_GREEN)
+
+    def _draw_logo(self, stdscr, row):
+        """The popup title's logo and name, for a docked dashboard (a pane
+        has no title of its own). Returns the column after it."""
+        col = 2
+        for text, pair in LOGO_CELLS:
+            self._addstr(stdscr, row, col, text, curses.color_pair(pair) | curses.A_BOLD)
+            col += len(text)
+        self._addstr(stdscr, row, col, " Dashboard", curses.A_BOLD)
+        return col + len(" Dashboard") + 2
 
     def _resolve_preview_pane(self, win_target):
         """Return the pane to preview for a window: the TRACKED claude
@@ -813,15 +880,16 @@ class Dashboard(LifecycleActions):
             row = 0
 
             # Header
+            header_col = self._draw_logo(stdscr, row) if getattr(self, "docked", False) else 2
             if self.initial_load:
-                self._addstr(stdscr, row, 2, "Syncing...", curses.color_pair(C_SYNCING))
+                self._addstr(stdscr, row, header_col, "Syncing...", curses.color_pair(C_SYNCING))
             else:
                 session = get_session()
                 if session and not session.isdigit():
                     header = f"{session} — {len(self.projects)} project(s)"
                 else:
                     header = f"{len(self.projects)} project(s)"
-                self._addstr(stdscr, row, 2, header, curses.color_pair(C_DIM))
+                self._addstr(stdscr, row, header_col, header, curses.color_pair(C_DIM))
             row += 1
 
             recovery_line = self._lifecycle_banner(tmux_query)
@@ -1619,6 +1687,7 @@ class Dashboard(LifecycleActions):
                         if project is None:
                             status = "Project is not open. Open it first, then return here."
                         else:
+                            self._before_switch()
                             target_session = project.win_target.split(":")[0]
                             if target_session != get_session():
                                 tmux_cmd("switch-client", "-t", target_session)
@@ -1714,6 +1783,7 @@ class Dashboard(LifecycleActions):
         # typed instead.
         verdict, windows = self._find_bg_attach_windows(session, s.short)
         if verdict == "one":
+            self._before_switch()
             tmux_cmd("select-window", "-t", windows[0])
             return "attached"
         if verdict == "many":
@@ -1732,7 +1802,10 @@ class Dashboard(LifecycleActions):
         # window's resolved target (`session:idx`), which we then
         # send-keys to and select. Append `-c <cwd>` (NOT insert) so
         # we never sit between `-t` and its required value.
-        args = ["new-window", "-t", f"{session}:", "-P",
+        # `-d`: created without switching to it, so the switch below is the
+        # only one (a docked dashboard that is about to close is marked
+        # before it; see `_before_switch`).
+        args = ["new-window", "-d", "-t", f"{session}:", "-P",
                 "-F", "#{session_name}:#{window_index}",
                 "-n", f"bg-{s.short}"]
         # Tagged as this session's attach window so a later Enter on
@@ -1755,6 +1828,7 @@ class Dashboard(LifecycleActions):
         tmux_cmd("set-option", "-wt", new_target, BG_ATTACH_TAG, s.short)
         tmux_cmd("send-keys", "-t", new_target,
                  f"claude attach {s.short}", "Enter")
+        self._before_switch()
         tmux_cmd("select-window", "-t", new_target)
         return "attached"
 
@@ -1816,6 +1890,7 @@ class Dashboard(LifecycleActions):
         if p.state == "SHELL":
             _announce_unlaunched(auto_start_claude(p.win_target))
         reset_window_after_attach(p.win_target)
+        self._before_switch()
         # Cross-session switch
         session = get_session()
         target_session = p.win_target.split(":")[0]
@@ -2540,7 +2615,10 @@ class Dashboard(LifecycleActions):
                 time.sleep(FAST_TICK_INTERVAL)
                 self._fast_tick()
             try:
-                projects = build_project_list(fast=False)
+                # While a popup runs its own detection, a docked dashboard
+                # reads the states it writes rather than detecting twice.
+                projects = build_project_list(
+                    fast=self.docked and popup_dashboard_alive())
                 with self.lock:
                     bg_visible = self.bg_visible
                 bg_sessions = (
@@ -2832,6 +2910,7 @@ class Dashboard(LifecycleActions):
                                 _announce_unlaunched(auto_start_claude(wt))
                                 break
                     reset_window_after_attach(wt)
+                    self._before_switch()
                     target_session = wt.split(":")[0]
                     session = get_session()
                     if target_session != session:
@@ -2878,6 +2957,11 @@ class Dashboard(LifecycleActions):
         # Auto-start
         auto_start = tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
 
+        # Dashboard display: popup, or docked at the top / bottom
+        dock_mode = tmux_cmd("show-option", "-gqv", "@ccm-dashboard-dock")
+        dock_mode = dock_mode if dock_mode in ("top", "bottom") else "popup"
+        dock_close = tmux_cmd("show-option", "-gqv", "@ccm-dashboard-dock-close-on-open") or "off"
+
         is_macos = _IS_MACOS
 
         self.menu_items = [
@@ -2907,6 +2991,13 @@ class Dashboard(LifecycleActions):
             (f"Idle timeout: {idle_label}", "idle_timeout"),
             (f"Preview panel: {preview_on}", "preview_toggle"),
             (f"Preview position: {preview_pos_label}", "preview_position"),
+            (f"Dashboard display: {dock_mode}", "dock_mode"),
+        ]
+        if dock_mode != "popup":
+            self.menu_items += [
+                (f"Close dock after opening a project: {dock_close}", "dock_close"),
+            ]
+        self.menu_items += [
             (f"Background sessions: {self.bg_section_setting}", "bg_section"),
             (f"Auto-start Claude: {auto_start}", "auto_start"),
             (f"Notifications: {notify}", "notify"),
@@ -2934,7 +3025,7 @@ class Dashboard(LifecycleActions):
     # Items whose label ends in `: <current value>`.
     _MENU_SETTINGS = frozenset({
         "status_mode", "auto_restore", "idle_timeout", "preview_toggle",
-        "preview_position", "bg_section", "auto_start", "notify",
+        "preview_position", "dock_mode", "dock_close", "bg_section", "auto_start", "notify",
         "notify_sound", "sound_name"})
     # Preview lines that name a command or a current value.
     _HELP_COMMAND_PREFIXES = ("Same as: ", "CLI: ")
@@ -3247,6 +3338,28 @@ class Dashboard(LifecycleActions):
                 tmux_cmd("set", "-g", "@ccm-preview", val)
                 save_tmux_conf_setting(f"set -g @ccm-preview {val}")
                 self._build_menu()
+            elif action == "dock_mode":
+                current = tmux_cmd("show-option", "-gqv", "@ccm-dashboard-dock")
+                order = ["off", "top", "bottom"]
+                new_val = order[(order.index(current) + 1) % 3 if current in order else 1]
+                tmux_cmd("set", "-g", "@ccm-dashboard-dock", new_val)
+                save_tmux_conf_setting(f"set -g @ccm-dashboard-dock {new_val}")
+                self._build_menu()
+                if self.docked and new_val == "off":
+                    # The dock is closing with docking turned off.
+                    self._show_message(stdscr, "Dashboard display: popup (closing the dock)", 1)
+                    return "quit"
+                self._show_message(stdscr, "Dashboard display: "
+                                   + ("popup" if new_val == "off" else new_val)
+                                   + (" (when the dock next opens or moves)" if self.docked
+                                      else " (next time the dashboard opens)"), 1)
+            elif action == "dock_close":
+                current = tmux_cmd("show-option", "-gqv", "@ccm-dashboard-dock-close-on-open") or "off"
+                new_val = "off" if current == "on" else "on"
+                tmux_cmd("set", "-g", "@ccm-dashboard-dock-close-on-open", new_val)
+                save_tmux_conf_setting(f"set -g @ccm-dashboard-dock-close-on-open {new_val}")
+                self._build_menu()
+                self._show_message(stdscr, f"Close dock after opening a project: {new_val}", 0.5)
             elif action == "preview_position":
                 new_pos = "bottom" if self.preview_position == "right" else "right"
                 self.preview_position = new_pos
@@ -3359,8 +3472,21 @@ def _pid_is_dashboard(pid):
     return "dashboard.py" in out
 
 
-def acquire_pidfile():
-    pidfile = os.path.join(CCM_TMP_DIR, "dashboard.pid")
+def popup_dashboard_alive():
+    """True while a popup dashboard (or menu / tree / filter) runs."""
+    try:
+        pid = int(open(os.path.join(CCM_TMP_DIR, "dashboard.pid"), encoding="utf-8").read().strip())
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def acquire_pidfile(name="dashboard.pid"):
+    """Replace a previous dashboard of the same kind. The docked dashboard
+    keeps its own file, so opening a popup (menu, tree, filter) never
+    ends it, and a new dock replaces only an old dock."""
+    pidfile = os.path.join(CCM_TMP_DIR, name)
     os.makedirs(CCM_TMP_DIR, exist_ok=True)
     # Kill existing
     if os.path.exists(pidfile):
@@ -3389,6 +3515,7 @@ def main():
     # Parse --mode and --search arguments
     mode = "dashboard"
     start_in_search = False
+    docked = False
     for i, arg in enumerate(sys.argv[1:], 1):
         if arg == "--mode" and i < len(sys.argv):
             mode = sys.argv[i + 1]
@@ -3396,10 +3523,12 @@ def main():
             mode = arg.split("=", 1)[1]
         elif arg == "--search":
             start_in_search = True
+        elif arg == "--docked":
+            docked = True
 
-    pidfile = acquire_pidfile()
+    pidfile = acquire_pidfile("dashboard-dock.pid" if docked else "dashboard.pid")
     try:
-        dashboard = Dashboard(initial_mode=mode, start_in_search=start_in_search)
+        dashboard = Dashboard(initial_mode=mode, start_in_search=start_in_search, docked=docked)
         curses.wrapper(dashboard.run)
     except Exception:
         # Log errors for debugging

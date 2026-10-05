@@ -363,14 +363,14 @@ def auto_focus_attention_pane(win_target):
     panes_raw = ccm_core.tmux_cmd(
         "list-panes", "-t", win_target, "-F",
         "#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t"
-        "#{pane_active}\t#{pane_height}",
+        "#{pane_active}\t#{pane_height}\t#{@ccm_dock}",
     )
     if not panes_raw:
         return
     rows = []
     for line in panes_raw.split("\n"):
         parts = line.split("\t")
-        if len(parts) < 5:
+        if len(parts) < 5 or ccm_core.is_dock_field(parts, 5):
             continue
         pid, pane_id, cmd, active, height_str = parts[:5]
         try:
@@ -379,7 +379,10 @@ def auto_focus_attention_pane(win_target):
             height = 0
         rows.append((pid, pane_id, cmd, active == "1", height))
 
-    if len(rows) < 2:
+    # Nothing to move to when the only work pane already has focus. A
+    # single work pane without focus is a real case: the docked
+    # dashboard (left out of `rows`) can hold the focus.
+    if not rows or (len(rows) == 1 and rows[0][3]):
         return
 
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")

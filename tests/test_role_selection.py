@@ -260,7 +260,7 @@ def test_launch_capture_restore_preserves_main_sidekick_and_manual(world, monkey
         if command == 'list-windows':
             return f'$1\t@1\t0\talpha\t/tmp/alpha\t{shape}\t100\t30\t0\t2\tIDLE\t\tEND'
         assert command == 'list-panes'
-        return '\n'.join(f'@1\t{pid}\t{i}\t{100+i}\tsh\t/tmp/alpha\t\t{int(i==0)}\t30\t{raw}\tEND'
+        return '\n'.join(f'@1\t{pid}\t{i}\t{100+i}\tsh\t/tmp/alpha\t\t{int(i==0)}\t30\t{raw}\t\t0\tEND'
                          for i, (pid, raw) in enumerate(world.raw.items()))
     with monkeypatch.context() as capture:
         capture.setattr(core, 'tmux_query', inventory)

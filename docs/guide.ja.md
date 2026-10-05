@@ -162,6 +162,8 @@ STATUS       PROJECT              MODE     BRANCH           PORTS        DIRECTO
 | Idle timeout | アイドル状態の Claude を終了するまでの時間を指定する。 |
 | Preview panel | プロジェクトのプレビューとメニューの説明を表示・非表示にする。 |
 | Preview position | プレビューを一覧の右または下に配置する。 |
+| Dashboard display | ダッシュボードをポップアップで出すか、上か下に固定するかを選ぶ。 |
+| Close dock after opening a project | 固定表示のとき、プロジェクトを開いたら閉じるかを選ぶ。 |
 | Background sessions | ダッシュボードの背景セッション一覧を表示・非表示にする。 |
 | Auto-start Claude | シェル状態のプロジェクトを開くとき Claude を起動するか選ぶ。 |
 | Notifications | 通知する状態変化を選ぶ。 |
@@ -234,6 +236,25 @@ set -g @ccm-key-dashboard-noprefix "F1"   # F1 単独 (prefix 不要) → ダッ
 ```
 
 prefix 経由の binding と同じ `display-popup` 呼び出しを通るので、popup タイトルの色付き ccm ロゴはそのまま表示されます。自前で `bind-key -n F1 display-popup …` を書くこともできますが、`-T` の format 文字列を完全にコピーしないとロゴは出ません。
+
+### ダッシュボードの固定表示
+
+```tmux
+set -g @ccm-dashboard-dock top        # top か bottom。off（既定）はポップアップのまま
+set -g @ccm-dashboard-dock-size 40    # 窓の高さに対する割合（%、10〜80、既定 40）
+set -g @ccm-dashboard-dock-close-on-open on   # プロジェクトを開いたら閉じる（既定 off）
+```
+
+どちらもダッシュボードのメニュー（`Dashboard display`、固定表示のときは `Close dock after opening a project`）から変えられ、`~/.tmux.conf` に保存されます。
+
+固定表示を有効にすると、`prefix + Tab`（と `@ccm-key-dashboard-noprefix`）はポップアップの代わりに、現在の窓に横幅いっぱいのペインとしてダッシュボードを開きます。横のペインで作業しながら表示し続けられます。設定はキーを押すたびに読むので、再読み込みは要りません。
+
+- 同じキーで閉じます。別の窓で押すと、その窓へ呼び寄せます。
+- どの方法で窓を切り替えても、ペインは切り替え先の窓へ移ります。離れた窓は元の配置に戻ります。
+- ダッシュボードからプロジェクトを開いても閉じずに、一緒に移ります（`@ccm-dashboard-dock-close-on-open` が on なら閉じます）。`q` か `Esc` で閉じます。
+- 固定表示では、ポップアップのタイトルと同じ ccm のロゴを 1 行目に表示します。
+- ペインの高さは、ダッシュボードが描ける最小の 10 行を下回りません。
+- このペインは ccm 自身のものです。ログアウト用の保存点には、このペインを除いた窓の状態を記録し、このペインで Claude を起動することもありません。メニュー・ツリー・フィルタのキーは従来どおりポップアップで開きます。
 
 ## ツリービュー
 

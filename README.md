@@ -155,6 +155,17 @@ set -g @ccm-key-search "/"       # optional: enable prefix + / to open the dashb
 >
 > Press `F1` to open, `F1` again to close. The coloured ccm logo on the popup title is preserved (writing your own `bind-key -n F1 display-popup …` works mechanically but loses the logo unless you replicate the full `-T` format string).
 
+> [!TIP]
+> To keep the dashboard on screen while you work, dock it as a pane instead of a popup:
+>
+> ```tmux
+> set -g @ccm-dashboard-dock top        # or bottom; off (default) keeps the popup
+> set -g @ccm-dashboard-dock-size 40    # height in percent of the window (default 40)
+> set -g @ccm-dashboard-dock-close-on-open on   # optional: close it after opening a project
+> ```
+>
+> `prefix + Tab` then opens a full-width dashboard pane in the current window and closes it again. It follows you when you switch windows, and opening a project from it keeps it open; the window it leaves gets its layout back. See [the guide](docs/guide.md#docked-dashboard).
+
 ### Desktop Notifications
 
 ccm can send desktop notifications (macOS and Linux) when project states change:

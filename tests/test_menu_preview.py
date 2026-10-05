@@ -17,6 +17,9 @@ def menu(monkeypatch):
     d.preview_enabled = True
     d.preview_position = 'right'
     monkeypatch.setattr(dashboard, '_IS_MACOS', True)
+    # Docking on, so the dock-only setting is listed too.
+    monkeypatch.setattr(dashboard, 'tmux_cmd',
+                        lambda *a, **k: 'top' if a[-1:] == ('@ccm-dashboard-dock',) else '')
     d._build_menu()
     return d
 

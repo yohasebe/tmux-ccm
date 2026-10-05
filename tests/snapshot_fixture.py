@@ -18,7 +18,7 @@ def inventory_query(listing):
                                       layout(f'80x24,0,0,{idx}'), '80', '24', '0', '1', 'IDLE', '', 'END')))
             elif command == 'list-panes':
                 rows.append('\t'.join((f'@{idx}', f'%{idx}', '0', str(idx),
-                                      'zsh', cwd, '', '1', '24', '', 'END')))
+                                      'zsh', cwd, '', '1', '24', '', '', '0', 'END')))
             else:
                 raise AssertionError(command)
         return '\n'.join(rows)

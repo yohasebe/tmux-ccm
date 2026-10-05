@@ -500,9 +500,12 @@ def _inject_status_impl(force_fast=False):
     # If dashboard is running, skip full detection to avoid race conditions.
     # Both inject-status and dashboard write @ccm_prev_state via _set_win_state;
     # running both causes state flickering between different detection results.
-    dash_pidfile = os.path.join(CCM_TMP_DIR, "dashboard.pid")
+    # The popup and the docked dashboard keep separate pid files.
     dashboard_running = False
-    if os.path.exists(dash_pidfile):
+    for name in ("dashboard.pid", "dashboard-dock.pid"):
+        dash_pidfile = os.path.join(CCM_TMP_DIR, name)
+        if not os.path.exists(dash_pidfile):
+            continue
         try:
             dash_pid = int(open(dash_pidfile, encoding="utf-8").read().strip())
             os.kill(dash_pid, 0)

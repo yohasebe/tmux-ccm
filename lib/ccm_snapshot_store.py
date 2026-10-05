@@ -33,7 +33,7 @@ WINDOW_FIELDS = ('session_id', 'window_id', 'window_index', '@ccm_project',
                  'window_zoomed_flag', 'window_panes', '@ccm_prev_state', '@ccm_restore_pending')
 PANE_FIELDS = ('window_id', 'pane_id', 'pane_index', 'pane_pid',
                'pane_current_command', 'pane_current_path', '@ccm_ignore',
-               'pane_active', 'pane_height', '@ccm_restore_role')
+               'pane_active', 'pane_height', '@ccm_restore_role', '@ccm_dock', 'pane_last')
 
 
 def _query(command, fields):
@@ -212,6 +212,21 @@ def collect(name, sealed=False):
                     key=lambda p: int(p['pane_index']))
         if len(wp) != int(w['window_panes']):
             raise SnapshotError('Pane count changed during capture; retry')
+        # The docked dashboard is ccm's own, passing through: the checkpoint
+        # describes the window as it is without it.
+        layout = w['window_layout']
+        docked = [p for p in wp if p['@ccm_dock'] == '1']
+        if docked:
+            import ccm_dock
+            layout = ccm_dock.layout_without_dock(w['window_id'], layout, docked[0]['pane_id'])
+            if not layout or len(docked) > 1:
+                raise SnapshotError('Cannot set the docked dashboard aside; retry')
+        if docked and any(p['pane_active'] == '1' for p in docked):
+            focus = [p for p in wp if p['@ccm_dock'] != '1' and p['pane_last'] == '1']
+            wp = [dict(p, pane_active='1' if p in focus[:1] else '0') for p in wp]
+        wp = [p for p in wp if p['@ccm_dock'] != '1']
+        if not wp:
+            raise SnapshotError('Only the docked dashboard is in a project window; retry')
         saved = []
         for slot, p in enumerate(wp):
             claude = ccm_pane_state.find_claude_pid(p['pane_pid'], ps_lines)
@@ -239,11 +254,13 @@ def collect(name, sealed=False):
         if primary is not None:
             saved[primary]['role'] = 'primary'
         active = [i for i, p in enumerate(wp) if p['pane_active'] == '1']
+        if not active and docked:
+            active = [0]  # the dock had focus and no previous pane is known
         if len(active) != 1:
             raise SnapshotError('Cannot identify active pane')
         projects.append({'name': w['@ccm_project'], 'dir': ccm_core.shorten_home(w['@ccm_dir']),
                          'auto_start_claude': True,
-                         'restore': {'layout': w['window_layout'], 'width': int(w['window_width']),
+                         'restore': {'layout': layout, 'width': int(w['window_width']),
                                      'height': int(w['window_height']), 'index': int(w['window_index']),
                                      'zoomed': w['window_zoomed_flag'] == '1', 'panes': saved,
                                      'active_slot': active[0], 'primary_claude_slot': primary}})

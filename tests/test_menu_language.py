@@ -8,18 +8,29 @@ from ccm_render import display_width
 from test_dashboard import _stub_dashboard_environment, _make_mock_stdscr, _screen_text
 
 
-def make_menu(monkeypatch, language=''):
+def make_menu(monkeypatch, language='', dock=''):
     _stub_dashboard_environment(monkeypatch)
     monkeypatch.setattr(dashboard, '_IS_MACOS', True)
-    monkeypatch.setattr(dashboard, 'tmux_cmd', lambda *a: language if a[-1] == '@ccm-lang' else '')
+    options = {'@ccm-lang': language, '@ccm-dashboard-dock': dock}
+    monkeypatch.setattr(dashboard, 'tmux_cmd', lambda *a: options.get(a[-1], ''))
     d = dashboard.Dashboard(initial_mode='menu')
     d._build_menu()
     return d
 
 
 def test_both_languages_cover_every_action(monkeypatch):
-    d = make_menu(monkeypatch)
+    # Docking on shows every item, including the dock-only one.
+    d = make_menu(monkeypatch, dock='top')
     assert set(help_text.MENU_HELP) == set(help_text.MENU_HELP_JA) == {a for _, a in d.menu_items if a}
+
+
+@pytest.mark.parametrize('dock,shown', [('', False), ('off', False), ('top', True), ('bottom', True)])
+def test_the_close_after_open_setting_appears_only_when_docked(monkeypatch, dock, shown):
+    d = make_menu(monkeypatch, dock=dock)
+    actions = {a for _, a in d.menu_items}
+    assert ('dock_close' in actions) is shown
+    label = next(label for label, a in d.menu_items if a == 'dock_mode')
+    assert label == f"Dashboard display: {dock if shown else 'popup'}"
 
 
 @pytest.mark.parametrize('language,expected', [('', 'Create a project'), ('en', 'Create a project'), ('ja', 'プロジェクトのウィンドウ'), ('xx', 'Create a project')])

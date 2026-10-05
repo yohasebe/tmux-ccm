@@ -142,3 +142,29 @@ def plan(tree, cwd_by_leaf):
         walk(rest, new_key)
     walk(tree, '0')
     return ops, mapping
+
+
+def without(layout, pane_id):
+    """The layout string `layout` would have without pane `pane_id` (a
+    `%N` id or number): the pane's cell is dropped, a split left with one
+    child collapses into it, and the rest is rescaled to the full window.
+    Used to set aside ccm's own docked dashboard pane."""
+    target = int(str(pane_id).lstrip('%'))
+    tree = parse(layout)
+    if 'id' in tree:
+        raise store.SnapshotError('Cannot remove the only pane of a window')
+
+    def prune(node):
+        if 'id' in node:
+            return None if node['id'] == target else node
+        kept = [c for c in (prune(c) for c in node['children']) if c is not None]
+        if len(kept) == 1:
+            only = dict(kept[0])
+            return only
+        return dict(node, children=kept)
+
+    pruned = prune(tree)
+    if not leaves(pruned) or len(leaves(pruned)) == len(leaves(tree)):
+        raise store.SnapshotError(f'Pane %{target} is not in the layout')
+    fitted = scale(pruned, tree['w'], tree['h'])
+    return render(fitted, {leaf['id']: str(leaf['id']) for leaf in leaves(fitted)})

@@ -47,6 +47,7 @@ READMES = {
 #: internal plumbing, aliases, and the help/version pair.
 UNDOCUMENTED_OK = {
     "reset-window",       # internal post-attach plumbing (bash wrapper)
+    "dock",               # internal: the docked dashboard's key binding and hooks
     "inject-status",      # driven by the status bar, documented separately
     "tree-interactive",   # reached via @ccm-key-tree, not typed by hand
     "dash", "d", "ls", "st", "a", "rm", "reg", "unreg", "mv", "cap",

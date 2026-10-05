@@ -161,6 +161,8 @@ The following items complement the checkpoint, logout and recovery actions descr
 | Idle timeout | Set the wait before idle Claude sessions exit. |
 | Preview panel | Show or hide project previews and menu help. |
 | Preview position | Place the preview on the right or below the list. |
+| Dashboard display | Show the dashboard as a popup, or docked at the top or bottom. |
+| Close dock after opening a project | When docked, choose whether opening a project closes the dock. |
 | Background sessions | Show or hide background sessions on the dashboard. |
 | Auto-start Claude | Choose whether opening a shell project starts Claude. |
 | Notifications | Choose which changes generate a notification. |
@@ -233,6 +235,25 @@ set -g @ccm-key-dashboard-noprefix "F1"   # F1 alone (no prefix) → dashboard
 ```
 
 Goes through the same `display-popup` invocation as the prefix binding, so the coloured ccm logo on the popup title is preserved. Writing your own `bind-key -n F1 display-popup …` instead works mechanically but won't carry the logo unless you replicate the full `-T` format string.
+
+### Docked dashboard
+
+```tmux
+set -g @ccm-dashboard-dock top        # top or bottom; off (default) keeps the popup
+set -g @ccm-dashboard-dock-size 40    # percent of the window height, 10-80 (default 40)
+set -g @ccm-dashboard-dock-close-on-open on   # close the dock after opening a project (default off)
+```
+
+Both can also be changed from the dashboard menu (`Dashboard display`, and `Close dock after opening a project` while docked); the menu saves them to `~/.tmux.conf`.
+
+With docking on, `prefix + Tab` (and `@ccm-key-dashboard-noprefix`) opens the dashboard as a full-width pane in the current window instead of a popup, so it stays in view while you work in the panes beside it. The option is read on every key press; no reload is needed.
+
+- The same key closes it. Pressed in another window, it brings the pane there.
+- Switching windows by any means moves the pane to the window you switch to. The window it leaves gets its previous layout back.
+- Opening a project from the dashboard keeps it open and it moves along with you, unless `@ccm-dashboard-dock-close-on-open` is on. `q` or `Esc` closes it.
+- A docked dashboard shows the ccm logo on its first line, as the popup does in its title.
+- The pane is never less than 10 rows high, the smallest the dashboard draws in.
+- The pane is ccm's own: the logout checkpoint records each window as it is without it, and Claude is never started in it. Menu, tree and filter keys still open popups.
 
 ## The Tree View
 

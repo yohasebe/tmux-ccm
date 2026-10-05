@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The dashboard can be docked as a full-width pane at the top or bottom of the window (`@ccm-dashboard-dock`, `@ccm-dashboard-dock-size`), so it stays in view while you work. It follows you between windows, stays open when you open a project from it (or closes, with `@ccm-dashboard-dock-close-on-open on`), shows the ccm logo on its first line, and gives each window its layout back when it leaves. The display and the close-after-open choice can be changed from the dashboard menu.
+
 ## [0.12.0] - 2026-10-03
 
 ### Added

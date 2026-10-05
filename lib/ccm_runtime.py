@@ -410,8 +410,12 @@ def auto_exit_idle(projects):
             panes_raw = ccm_core.tmux_cmd(
                 "list-panes", "-t", win_target,
                 "-F", "#{pane_index}\t#{pane_pid}\t#{pane_current_command}"
-                "\t#{@ccm_ignore}"
+                "\t#{@ccm_ignore}\t#{@ccm_dock}"
             )
+            # The docked dashboard's python is not the project's work.
+            panes_raw = "\n".join(
+                line for line in (panes_raw or "").split("\n")
+                if not ccm_core.is_dock_field(line.split("\t"), 4))
             # `ps_snapshot()` returns the raw stdout string; the
             # process-tree helpers iterate over lines, so split here.
             # Without this `find_claude_pid` walks one character at a
