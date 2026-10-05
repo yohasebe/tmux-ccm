@@ -94,6 +94,27 @@ _ccm_should_reconcile() {
     return 0
 }
 
+# The Python interpreter. A version manager's shim (pyenv, asdf, mise)
+# runs a script before every start, which costs 0.1-0.3 s; the
+# dashboard, the status poll and every hook-driven redraw pay it. So
+# `python3` is resolved through PATH once, its real path kept in the
+# temp root, and run directly from then on. Re-resolved when that path
+# is no longer an executable file. Never taken from the environment.
+CCM_PYTHON=python3
+ccm_resolve_python() {
+    local cache="${CCM_TMP_DIR}/python" p=""
+    if [[ -f "$cache" && ! -L "$cache" ]]; then
+        read -r p < "$cache" 2>/dev/null || p=""
+    fi
+    if [[ "$p" != /* || ! -f "$p" || ! -x "$p" ]]; then
+        p=$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null) || p=""
+        [[ "$p" == /* && -f "$p" && -x "$p" ]] || return 0
+        # Failing to keep it only costs the next start a resolve.
+        { printf '%s\n' "$p" > "${cache}.$$" && mv -f "${cache}.$$" "$cache"; } 2>/dev/null \
+            || rm -f "${cache}.$$" 2>/dev/null || true
+    fi
+    CCM_PYTHON="$p"
+}
 
 ccm_init_dirs() {
     ccm_secure_tmp_root "$CCM_TMP_DIR" || ccm_die "Refusing to use $CCM_TMP_DIR: it must be a directory owned by you, not a symlink. Remove it, or set TMPDIR to a directory only you can use."
@@ -360,7 +381,7 @@ _ccm_hooks_dir() {
 # shared with `ccm doctor`; mutations use stdin and the installation
 # probe passes a path for the common reader.
 _ccm_hook_owner() {
-    python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ccm_hook_owner.py" "$@"
+    "$CCM_PYTHON" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ccm_hook_owner.py" "$@"
 }
 
 # Remove ccm's hooks from settings JSON on stdin, hook by hook: another

@@ -47,7 +47,7 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 ## 動作要件
 
 - tmux 3.2+
-- Python 3.9+
+- Python 3.9+（`PATH` 上の `python3`。ccm はその実体のパスを実行時ディレクトリの `${TMPDIR:-/tmp}/ccm-<uid>/python` に覚え、起動のたびにバージョン管理ツールの shim を通らないようにします。別の Python に切り替えるときはこのファイルを削除してください）
 - [TPM](https://github.com/tmux-plugins/tpm)（手動インストールも可）
 - jq
 - fzf

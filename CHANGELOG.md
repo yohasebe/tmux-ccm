@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The dashboard can be docked as a full-width pane at the top or bottom of the window (`@ccm-dashboard-dock`, `@ccm-dashboard-dock-size`), so it stays in view while you work. It follows you between windows, stays open when you open a project from it (or closes, with `@ccm-dashboard-dock-close-on-open on`), shows the ccm logo on its first line, and gives each window its layout back when it leaves. The display and the close-after-open choice can be changed from the dashboard menu.
 
+### Changed
+
+- The dashboard opens faster, and status redraws cost less, where `python3` is a version manager's shim (pyenv, asdf, mise). Each start used to run the shim first (0.1–0.3 s). ccm now resolves `python3` through `PATH` once, keeps its real path in the runtime directory, and runs it directly; it resolves again if that interpreter goes away.
+
 ### Security
 
 - ccm now refuses a temporary directory it cannot trust. Where `TMPDIR` is unset (common on Linux) the runtime directory is `/tmp/ccm-<uid>`, which another user could create first. ccm creates it closed to others (`0700`) and closes it if others can read it. If it is a symlink, not a directory, or owned by someone else, ccm stops with an error and hooks write nothing. If it is yours but others could write into it (as older versions left it under umask `002`), ccm moves it aside unopened to `ccm-<uid>.untrusted-<pid>` and starts a fresh one.

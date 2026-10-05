@@ -47,7 +47,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 ## Requirements
 
 - tmux 3.2+
-- Python 3.9+
+- Python 3.9+ (the `python3` on `PATH`; ccm remembers its real path in the runtime directory, `${TMPDIR:-/tmp}/ccm-<uid>/python`, so a version manager's shim is not run on every start. Delete that file to make ccm pick up a different Python.)
 - [TPM](https://github.com/tmux-plugins/tpm) (or manual install)
 - jq
 - fzf
