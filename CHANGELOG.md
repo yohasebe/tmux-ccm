@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The dashboard opens faster, and status redraws cost less, where `python3` is a version manager's shim (pyenv, asdf, mise). Each start used to run the shim first (0.1–0.3 s). ccm now resolves `python3` through `PATH` once, keeps its real path in the runtime directory, and runs it directly; it resolves again if that interpreter goes away.
 
+### Fixed
+
+- `ccm send --start` no longer types a message that looks too long for the recipient's input box, where it used to stay unsent. Right after a start, ccm sends only a message it can see whole in the input box, and the box shows about half the pane height. ccm now estimates the length before typing. A message that looks too tall is not typed, Claude is left running, and ccm says to send it again without `--start` or to send a short line pointing to a file. The estimate can be off for some characters, such as emoji sequences or tabs; a message it lets through is still checked after typing, as before.
+
 ### Security
 
 - ccm now refuses a temporary directory it cannot trust. Where `TMPDIR` is unset (common on Linux) the runtime directory is `/tmp/ccm-<uid>`, which another user could create first. ccm creates it closed to others (`0700`) and closes it if others can read it. If it is a symlink, not a directory, or owned by someone else, ccm stops with an error and hooks write nothing. If it is yours but others could write into it (as older versions left it under umask `002`), ccm moves it aside unopened to `ccm-<uid>.untrusted-<pid>` and starts a fresh one.

@@ -219,6 +219,33 @@ _START_BODY_TIMEOUT_SEC = 2.0
 _START_BODY_POLL_SEC = 0.1
 
 
+# How many rows of a body Claude Code's input box shows: half the pane
+# height less five (measured on 2.1.289 at heights 24, 25, 30, 40, 41,
+# 60 and 80). A taller body shows only its last rows, with the prompt
+# glyph on the first of them, so the check below can never see it whole.
+def _start_body_fits(pane_target, message):
+    """False when the body looks taller than the input box can show, so
+    typing it after a launch could not be confirmed. An estimate, not a
+    bound: emoji sequences count wider and tabs narrower than drawn, so
+    it can refuse a body that fits (nothing is typed) or pass one that
+    does not (the check after typing still stops it). None when the pane
+    size cannot be read."""
+    from ccm_render import display_width
+    size = ccm_core.tmux_cmd("display-message", "-p", "-t", pane_target,
+                             "#{pane_width} #{pane_height}").split()
+    if len(size) != 2 or not all(v.isdigit() for v in size):
+        return None
+    width, height = int(size[0]), int(size[1])
+    if width < 3:
+        return None
+    shown = height // 2 - 5
+    # A row holds at most `width` columns, and each line follows a
+    # 2-column prompt or indent.
+    needed = sum(-(-(display_width(line) + 2) // width)
+                 for line in message.split("\n"))
+    return needed <= shown
+
+
 def _wait_for_start_body(pane_target, message):
     """Read only until the full body appears; retain the last failure evidence."""
     deadline = time.time() + _START_BODY_TIMEOUT_SEC
@@ -1053,6 +1080,18 @@ def cmd_send(args):
     # Literal send, converting `\n` into M-Enter (Claude Code's
     # "newline without submit" key) so the body is delivered as a
     # single multi-line prompt rather than multiple submitted turns.
+    if did_launch and _start_body_fits(pane_target, message) is False:
+        if _trace_enabled():
+            _trace_record(pane_target, "send-too-tall", (f"project={project_name}",))
+        ccm_core.ccm_die(
+            f"Claude is now running in {project_name}, but the message was not "
+            "typed: it is taller than the input box can show, so right after "
+            "a start ccm could not check that it arrived whole. Nothing was "
+            f"typed. Send it again without --start ({project_name} is ready "
+            "now), or put the text in a file and send a short line pointing "
+            "to it."
+        )
+
     lines = message.split("\n")
     if _trace_enabled():
         _trace_record(pane_target, "send-start",

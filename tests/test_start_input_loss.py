@@ -28,6 +28,8 @@ def dropped_input(monkeypatch):
                 return '❯ ' + message + '\n' + screen
             return screen
         def tmux(*args, **kwargs):
+            if args[0] == 'display-message' and state.get('size'):
+                return state['size']
             if args[0] == 'capture-pane':
                 return snapshot()
             if args[0] == 'send-keys':
@@ -191,3 +193,50 @@ def test_info_is_flushed_before_error_even_with_buffered_stdout(monkeypatch):
         stdout.flush()  # Model the eventual flush at process exit.
         output = sink.getvalue().decode('utf-8')
     assert output.index('Starting Claude') < output.index('Error:')
+
+
+# Claude Code's input box shows height // 2 - 5 rows of a body (measured on
+# 2.1.289); a taller body shows only its tail and can never be confirmed.
+@pytest.mark.parametrize('height, fits, overflows', [(24, 7, 8), (25, 7, 8), (40, 15, 16), (80, 35, 36)])
+def test_body_fit_follows_the_measured_input_box_height(monkeypatch, height, fits, overflows):
+    monkeypatch.setattr(ccm_core, 'tmux_cmd', lambda *a, **k: f'120 {height}')
+    body = lambda n: '\n'.join(f'line {i} of the body' for i in range(n))
+    assert ccm_send._start_body_fits('%1', body(fits)) is True
+    assert ccm_send._start_body_fits('%1', body(overflows)) is False
+
+
+def test_wrapped_lines_count_by_the_rows_they_take(monkeypatch):
+    monkeypatch.setattr(ccm_core, 'tmux_cmd', lambda *a, **k: '120 40')
+    long_line = 'L ' + 'w' * 250                       # 3 rows at width 120
+    assert ccm_send._start_body_fits('%1', '\n'.join([long_line] * 5)) is True
+    assert ccm_send._start_body_fits('%1', '\n'.join([long_line] * 6)) is False
+
+
+@pytest.mark.parametrize('answer', ['', 'x y', '120'])
+def test_an_unreadable_pane_size_leaves_the_decision_to_the_check_after_typing(monkeypatch, answer):
+    monkeypatch.setattr(ccm_core, 'tmux_cmd', lambda *a, **k: answer)
+    assert ccm_send._start_body_fits('%1', 'x\n' * 100) is None
+
+
+def test_a_body_too_tall_for_the_input_box_is_not_typed_after_a_start(dropped_input, capsys):
+    message = '\n'.join(f'line {i} of a long request' for i in range(16))
+    state = dropped_input(message, mode='full')
+    state['size'] = '120 40'
+    with pytest.raises(SystemExit) as error:
+        ccm_send.cmd_send(['demo', '--start', '--yes', message])
+    assert error.value.code == 1
+    assert state['typed'] == [] and state['buffer'] == ''
+    assert not any(call[-1] == 'Enter' for call in state['keys'])
+    state['queue'].assert_not_called()
+    captured = capsys.readouterr()
+    out = captured.out + captured.err
+    assert 'Nothing was typed' in out and 'without --start' in out
+
+
+def test_a_body_that_fits_is_still_typed_and_sent_after_a_start(dropped_input):
+    message = '\n'.join(f'line {i} of a long request' for i in range(15))
+    state = dropped_input(message, mode='full')
+    state['size'] = '120 40'
+    ccm_send.cmd_send(['demo', '--start', '--yes', message])
+    assert state['buffer'] == message
+    assert any(call[-1] == 'Enter' for call in state['keys'])
