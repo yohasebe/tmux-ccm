@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Claude Code waits less on ccm's hooks, which run on every tool call and turn: each reads the payload with one `jq` instead of up to six, and no longer starts `cat`, `dirname`, `date`, or an unneeded `mkdir`/`rm`. A hook now starts about 6 processes instead of about 15, and takes about 25 ms instead of 45 ms. If that one read fails, each field is read as before.
 - The status line's periodic update does about a third less work: each pane is read once per pass instead of twice, the global options a pass needs are read in one tmux call, and the idle check reads the process list and panes once for all windows rather than once per window. With 44 projects a full pass went from about 0.36 s to 0.24 s of CPU.
 - Status modes 1 and 2 highlight the current project's entry with a distinct background, including one space on each side, without changing its width. Customize the color with `@ccm-status-current-bg` (default `#505050`).
 - The dashboard opens faster, and status redraws cost less, where `python3` is a version manager's shim (pyenv, asdf, mise). Each start used to run the shim first (0.1–0.3 s). ccm now resolves `python3` through `PATH` once, keeps its real path in the runtime directory, and runs it directly; it resolves again if that interpreter goes away.

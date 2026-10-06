@@ -4,7 +4,8 @@
 # Installed by: ccm setup-hooks
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ccm_src="${BASH_SOURCE[0]}"; [[ "$_ccm_src" == */* ]] || _ccm_src="./$_ccm_src"
+SCRIPT_DIR="$(cd "${_ccm_src%/*}" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 ccm_hook_init || exit 0
@@ -32,9 +33,13 @@ rm -f "$HOOK_DIR/$KEY" "$HOOK_DIR/$KEY.busy"
 # these as JSON arrays in the Stop / SubagentStop payload; on
 # older Claude Code versions the fields are absent and `// []`
 # defaults the length to 0, preserving the legacy behaviour.
-bg_remaining=$(printf '%s' "$INPUT" | \
-    jq -r '((.background_tasks // []) | length) + ((.session_crons // []) | length)' \
-    2>/dev/null) || bg_remaining=0
+if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then
+    bg_remaining="$HOOK_BG_REMAINING"
+else
+    bg_remaining=$(printf '%s' "$INPUT" | \
+        jq -r '((.background_tasks // []) | length) + ((.session_crons // []) | length)' \
+        2>/dev/null) || bg_remaining=0
+fi
 bg_remaining=${bg_remaining:-0}
 
 if [[ "$bg_remaining" == "0" ]]; then

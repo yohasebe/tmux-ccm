@@ -5,7 +5,8 @@
 # Installed by: ccm setup-hooks
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ccm_src="${BASH_SOURCE[0]}"; [[ "$_ccm_src" == */* ]] || _ccm_src="./$_ccm_src"
+SCRIPT_DIR="$(cd "${_ccm_src%/*}" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 ccm_hook_init || exit 0

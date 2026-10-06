@@ -6,7 +6,11 @@
 # (`ccm_write_signal`, `_ccm_instant_notify`) source it from here.
 # `BASH_SOURCE` resolves to hooks/lib.sh, so its sibling lib/
 # directory holds state_meta.sh via ../lib.
-_CCM_HOOK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The directory of this file, without a dirname process (hooks run on
+# every tool call, and each process they start is time Claude waits).
+_ccm_src="${BASH_SOURCE[0]}"
+[[ "$_ccm_src" == */* ]] || _ccm_src="./$_ccm_src"
+_CCM_HOOK_LIB_DIR="$(cd "${_ccm_src%/*}" && pwd)"
 # shellcheck source=../lib/state_meta.sh
 source "${_CCM_HOOK_LIB_DIR}/../lib/state_meta.sh"
 
@@ -72,9 +76,9 @@ ccm_hook_init() {
     # shellcheck source=/dev/null
     source "${_CCM_HOOK_LIB_DIR}/../lib/ccm_tmp_root.sh" 2>/dev/null \
         && ccm_secure_tmp_root "${HOOK_DIR%/hooks}" || exit 0
-    mkdir -p "$HOOK_DIR" 2>/dev/null || true
+    [[ -d "$HOOK_DIR" ]] || mkdir -p "$HOOK_DIR" 2>/dev/null || true
 
-    INPUT=$(cat)
+    IFS= read -r -d '' INPUT || true
 
     # CCM_IGNORE: launch-time opt-out (`CCM_IGNORE=1 claude`). Mark the
     # pane immediately — this only needs $TMUX_PANE, so it works even
@@ -94,14 +98,53 @@ ccm_hook_init() {
     # `workspaceRoot` is the discriminator: Grok sends it on every
     # event, Claude Code sends it on none. (a downstream consumer adopted the same
     # test for the same exposure, their commit 9813d68.)
-    if printf '%s' "$INPUT" | jq -e 'has("workspaceRoot")' >/dev/null 2>&1; then
-        return 1
+    #
+    # Every field the hooks read comes from one jq (each used to be a jq
+    # process of its own, the larger part of a hook's cost): the
+    # foreign-harness marker, session id, cwd, permission mode, event
+    # name, tool name, and the count of background work a Stop reports,
+    # NUL-separated. It gives what reading each field with `jq -r`
+    # gives: a field that is an array or object (`jq -r` prints those
+    # pretty, this would print them compact) fails the read, and trailing
+    # newlines are dropped as `$(...)` drops them. If the read fails (no
+    # jq, a payload that is not an object, such a field), each field is
+    # read the old way.
+    local _fields=() _field
+    while IFS= read -r -d '' _field; do _fields+=("$_field"); done < <(
+        printf '%s' "$INPUT" | jq -j '
+            def scalar: if type == "array" or type == "object"
+                        then error("not a scalar") else tostring end;
+            [ (has("workspaceRoot") | tostring),
+              ((.session_id // .sessionId // "") | scalar),
+              ((.cwd // "") | scalar),
+              ((.permission_mode // "") | scalar),
+              ((.hook_event_name // "") | scalar),
+              ((.tool_name // "") | scalar),
+              (((.background_tasks // []) | length) + ((.session_crons // []) | length)) ]
+            | map(tostring) | join("\u0000") + "\u0000"' 2>/dev/null)
+    _CCM_FIELDS_READ=""
+    local _i
+    for _i in 1 2 3 4 5; do
+        while [[ "${_fields[$_i]:-}" == *$'\n' ]]; do _fields[$_i]="${_fields[$_i]%$'\n'}"; done
+    done
+    if (( ${#_fields[@]} == 7 )); then
+        [[ "${_fields[0]}" == true ]] && return 1
+        SESSION_ID="${_fields[1]}"
+        _CCM_CWD="${_fields[2]}"
+        PERMISSION_MODE="${_fields[3]}"
+        HOOK_EVENT_NAME="${_fields[4]}"
+        HOOK_TOOL_NAME="${_fields[5]}"
+        HOOK_BG_REMAINING="${_fields[6]}"
+        _CCM_FIELDS_READ=1
+    else
+        if printf '%s' "$INPUT" | jq -e 'has("workspaceRoot")' >/dev/null 2>&1; then
+            return 1
+        fi
+        # session_id: the primary KEY. Try snake_case then camelCase —
+        # upstream payload schema uses both depending on the field.
+        SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || \
+            SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"sessionI?d?_?i?d?" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
     fi
-
-    # session_id: the primary KEY. Try snake_case then camelCase —
-    # upstream payload schema uses both depending on the field.
-    SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || \
-        SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"sessionI?d?_?i?d?" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
     [[ -z "$SESSION_ID" ]] && return 1
     KEY="$SESSION_ID"
 
@@ -132,8 +175,12 @@ ccm_hook_init() {
     # window for project-name lookup, and by the project-name cache
     # file. Best-effort extraction; a missing cwd is tolerable
     # (instant notification falls back to "ccm" as group name).
-    CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || \
-        CWD=$(printf '%s' "$INPUT" | grep -o '"cwd" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    if [[ -n "$_CCM_FIELDS_READ" ]]; then
+        CWD="$_CCM_CWD"
+    else
+        CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || \
+            CWD=$(printf '%s' "$INPUT" | grep -o '"cwd" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    fi
     if [[ -n "$CWD" ]] && command -v realpath &>/dev/null && [[ -e "$CWD" ]]; then
         CWD=$(realpath "$CWD" 2>/dev/null) || true
     fi
@@ -146,8 +193,10 @@ ccm_hook_init() {
     # crosses from the upstream payload into our JSONL, so it is
     # sanitized to a conservative charset and length-capped — a mode
     # name will never need escaping downstream.
-    PERMISSION_MODE=$(printf '%s' "$INPUT" | jq -r '.permission_mode // empty' 2>/dev/null) || \
-        PERMISSION_MODE=$(printf '%s' "$INPUT" | grep -o '"permission_mode" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    if [[ -z "$_CCM_FIELDS_READ" ]]; then
+        PERMISSION_MODE=$(printf '%s' "$INPUT" | jq -r '.permission_mode // empty' 2>/dev/null) || \
+            PERMISSION_MODE=$(printf '%s' "$INPUT" | grep -o '"permission_mode" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    fi
     PERMISSION_MODE="${PERMISSION_MODE//[^A-Za-z0-9_-]/}"
     PERMISSION_MODE="${PERMISSION_MODE:0:32}"
 
@@ -162,6 +211,10 @@ ccm_hook_init() {
 # rather than guessing from hook script identity.
 ccm_hook_event_name() {
     local name
+    if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then
+        printf '%s' "$HOOK_EVENT_NAME"
+        return 0
+    fi
     name=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null) || \
         name=$(printf '%s' "$INPUT" | grep -o '"hook_event_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
     printf '%s' "$name"
@@ -197,7 +250,7 @@ ccm_append_event() {
     local hook_dir="$1" key="$2" type="$3"
     local ts events_file mode
     [[ -z "$hook_dir" || -z "$key" || -z "$type" ]] && return 0
-    ts=$(date +%s)
+    ts=${EPOCHSECONDS:-$(date +%s)}
     events_file="${hook_dir}/${key}.events.jsonl"
     mode="${PERMISSION_MODE:-}"
     if [[ -n "$mode" ]]; then
@@ -218,8 +271,12 @@ ccm_hook_format_tool_detail() {
     local prefix="${1:-}"
     local tool_name tool_detail detail=""
 
-    tool_name=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || \
-        tool_name=$(printf '%s' "$INPUT" | grep -o '"tool_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then
+        tool_name="$HOOK_TOOL_NAME"
+    else
+        tool_name=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || \
+            tool_name=$(printf '%s' "$INPUT" | grep -o '"tool_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    fi
 
     if [[ -n "$tool_name" ]]; then
         case "$tool_name" in
@@ -269,9 +326,9 @@ ccm_write_signal() {
     # Write signal file (for dashboard/inject-status polling)
     # Format: "<timestamp> <state>" or "<timestamp> <state> <detail>"
     if [[ -n "$detail" ]]; then
-        printf '%s %s %s' "$(date +%s)" "$state" "$detail" > "${hook_dir}/${key}"
+        printf '%s %s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state" "$detail" > "${hook_dir}/${key}"
     else
-        printf '%s %s' "$(date +%s)" "$state" > "${hook_dir}/${key}"
+        printf '%s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state" > "${hook_dir}/${key}"
     fi
 
     # Direct tmux update for instant status bar reflection
@@ -385,7 +442,7 @@ _ccm_schedule_completed_notify() {
     local grace="${5:-${CCM_COMPLETION_GRACE_SEC:-3}}"
     local pending="${hook_dir}/${key}.pending"
 
-    printf '%s' "$(date +%s)" > "$pending" 2>/dev/null
+    printf '%s' "${EPOCHSECONDS:-$(date +%s)}" > "$pending" 2>/dev/null
 
     # Detach into its own process group so the sleep survives hook
     # exit (Claude Code gives hooks a few-second timeout; the bg
@@ -453,7 +510,7 @@ _ccm_mark_unread() {
     [[ -n "${TMUX_PANE:-}" ]] || return 0
     _ccm_pane_labels_on || return 0
     _ccm_pane_is_watched "$TMUX_PANE" && return 0
-    tmux set-option -p -t "$TMUX_PANE" @ccm_unread "$(date +%s)" 2>/dev/null || true
+    tmux set-option -p -t "$TMUX_PANE" @ccm_unread "${EPOCHSECONDS:-$(date +%s)}" 2>/dev/null || true
 }
 
 _ccm_clear_unread() {
@@ -469,7 +526,9 @@ _ccm_clear_unread() {
 # Args: $1=HOOK_DIR, $2=KEY
 _ccm_cancel_pending_completion() {
     local hook_dir="$1" key="$2"
-    rm -f "${hook_dir}/${key}.pending" 2>/dev/null || true
+    if [[ -e "${hook_dir}/${key}.pending" ]]; then
+        rm -f "${hook_dir}/${key}.pending" 2>/dev/null || true
+    fi
 }
 
 # Send desktop notification immediately for PERMIT or COMPLETED state.
@@ -511,7 +570,7 @@ _ccm_instant_notify() {
         content=$(cat "$marker" 2>/dev/null) || true
         prev_ts="${content%% *}"
         prev_state="${content##* }"
-        now_ts=$(date +%s)
+        now_ts=${EPOCHSECONDS:-$(date +%s)}
         # Validate the stored ts is numeric before doing arithmetic on
         # it — a corrupt/truncated marker would otherwise evaluate as 0
         # in (( )), making the age look huge and silently disabling the
@@ -523,7 +582,7 @@ _ccm_instant_notify() {
     fi
 
     # Write marker BEFORE sending so a concurrent invocation sees it.
-    printf '%s %s' "$(date +%s)" "$state" > "${marker}" 2>/dev/null
+    printf '%s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state" > "${marker}" 2>/dev/null
 
     # Check notification setting
     local notify_setting
