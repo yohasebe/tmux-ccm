@@ -30,14 +30,18 @@ ccm_test_new_socket() {
 }
 
 ccm_test_real_settings_sums() {
-    local f hooks
+    local f hooks keys
     for f in .claude/settings.json .claude/settings.local.json .tmux.conf \
              .codex/hooks.json .codex/config.toml; do
-        # Claude Code rewrites other keys of its settings while it runs;
-        # the hooks are what ccm writes there. Anything but an object
-        # (or no jq) is compared whole.
+        # Claude Code rewrites other keys of its settings while it runs.
+        # Compared: the hooks (what ccm writes there), and in the user
+        # settings also permissions and env (which only the user edits;
+        # the local file's permissions change with each approval).
+        # Anything but an object (or no jq) is compared whole.
+        keys='{hooks}'
+        [[ "$f" == .claude/settings.json ]] && keys='{hooks, permissions, env}'
         if [[ "$f" == .claude/* && -e "$CCM_TEST_REAL_HOME/$f" ]] && command -v jq >/dev/null \
-                && hooks=$(jq -S 'if type == "object" then .hooks else error("not an object") end' \
+                && hooks=$(jq -S "if type == \"object\" then $keys else error(\"not an object\") end" \
                                "$CCM_TEST_REAL_HOME/$f" 2>/dev/null); then
             printf '%s hooks %s\n' "$f" "$(printf '%s' "$hooks" | cksum)"
         elif [[ -e "$CCM_TEST_REAL_HOME/$f" ]]; then

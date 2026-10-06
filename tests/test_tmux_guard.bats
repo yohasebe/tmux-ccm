@@ -115,7 +115,7 @@ _fixture() {
     [[ "$output" != *"Non-isolated tmux calls were blocked"* ]]
 }
 
-@test "the settings guard compares hooks only, and whole files it cannot read as an object" {
+@test "the settings guard compares hooks (and the user settings' permissions and env), and whole files it cannot read as an object" {
     local home="$BATS_TEST_TMPDIR/home" probe="$BATS_TEST_TMPDIR/probe"
     mkdir -p "$home/.claude" "$probe/helpers"
     cp "$BATS_TEST_DIRNAME/helpers/tmux_guard.bash" "$BATS_TEST_DIRNAME/helpers/tmux_spy.bash" "$probe/helpers/"
@@ -132,6 +132,11 @@ _fixture() {
     run env HOME="$home" bats "$probe/w.bats"
     [ "$status" -ne 0 ]
     [[ "$output" == *".claude/settings.json"* ]]
+    # The user settings' permissions change: the file fails.
+    printf '{"hooks":{"Stop":[]},"permissions":{"allow":[]}}' > "$home/.claude/settings.json"
+    write '{"hooks":{"Stop":[]},"permissions":{"allow":["Bash"]}}'
+    run env HOME="$home" bats "$probe/w.bats"
+    [ "$status" -ne 0 ]
     # Not an object: compared whole, so a change still fails.
     printf '[]' > "$home/.claude/settings.json"
     write '[1]'

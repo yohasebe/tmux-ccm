@@ -316,9 +316,15 @@ def _settings_sums():
             continue
         if "/.claude/" in path:
             # Claude Code rewrites other keys of its settings while it
-            # runs; the hooks are what ccm writes there.
+            # runs. Compared: the hooks (what ccm writes there), and in
+            # the user settings also permissions and env (which only the
+            # user edits; the local file's permissions change with each
+            # approval).
+            keys = (("hooks", "permissions", "env")
+                    if path.endswith("/settings.json") else ("hooks",))
             try:
-                data = json.dumps(json.loads(data).get("hooks"), sort_keys=True).encode()
+                parsed = json.loads(data)
+                data = json.dumps({k: parsed.get(k) for k in keys}, sort_keys=True).encode()
             except (ValueError, AttributeError):
                 pass
         sums[path] = hashlib.sha256(data).hexdigest()
