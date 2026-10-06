@@ -242,6 +242,7 @@ Goes through the same `display-popup` invocation as the prefix binding, so the c
 set -g @ccm-dashboard-dock top        # top or bottom; off (default) keeps the popup
 set -g @ccm-dashboard-dock-size 40    # percent of the window height, 10-80 (default 40)
 set -g @ccm-dashboard-dock-close-on-open on   # close the dock after opening a project (default off)
+set -g @ccm-dashboard-dock-edge 179    # colour of the line on the side facing your work: a 256-colour number, or off
 ```
 
 Both can also be changed from the dashboard menu (`Dashboard display`, and `Close dock after opening a project` while docked); the menu saves them to `~/.tmux.conf`.
@@ -251,8 +252,9 @@ With docking on, `prefix + Tab` (and `@ccm-key-dashboard-noprefix`) opens the da
 - The same key closes it. Pressed in another window, it brings the pane there.
 - Switching windows by any means moves the pane to the window you switch to. The window it leaves gets its previous layout back.
 - Opening a project from the dashboard keeps it open and it moves along with you, unless `@ccm-dashboard-dock-close-on-open` is on. `q` or `Esc` closes it.
-- A docked dashboard shows the ccm logo on its first line, as the popup does in its title.
-- The pane is never less than 10 rows high, the smallest the dashboard draws in.
+- A docked dashboard shows the ccm logo on its first line, as the popup does in its title (on its second when docked at the bottom, below the edge line).
+- It draws a coloured line along the side that faces the panes you work in (its last row when docked at the top, its first when at the bottom), so the boundary stays clear whatever your tmux border settings. `@ccm-dashboard-dock-edge off` gives that row back to the dashboard.
+- The pane is never less than 10 rows high, the smallest the dashboard draws in, plus one for the edge line when it is on. A pane shrunk below that drops the line rather than the list.
 - The pane is ccm's own: the logout checkpoint records each window as it is without it, and Claude is never started in it. Menu, tree and filter keys still open popups.
 
 ## The Tree View

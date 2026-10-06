@@ -56,11 +56,18 @@ def test_position_accepts_only_top_or_bottom(tmux, value, expected):
     assert dock.position() == expected
 
 
-@pytest.mark.parametrize('size,height,rows', [('40', 40, 16), ('', 40, 16), ('5', 100, 10), ('95', 100, 80), ('x', 20, 10)])
+@pytest.mark.parametrize('size,height,rows', [('40', 40, 16), ('', 40, 16), ('5', 100, 11), ('95', 100, 80), ('x', 20, 11), ('40', 24, 11)])
 def test_rows_are_clamped_and_never_below_what_the_dashboard_draws(tmux, size, height, rows):
+    # 10 rows for the dashboard, one more for the edge line (on by default).
     _, replies = tmux
     replies[('opt', dock.SIZE_OPTION)] = size
     assert dock.rows_for(height) == rows
+
+
+def test_without_the_edge_line_the_dock_needs_no_extra_row(tmux):
+    _, replies = tmux
+    replies[('opt', dock.EDGE_OPTION)] = 'off'
+    assert dock.rows_for(24) == 10
 
 
 def test_toggle_opens_a_full_width_pane_above_and_marks_it(tmux):
@@ -421,3 +428,116 @@ def test_the_dashboard_marks_its_dock_only_when_it_will_close(monkeypatch, docke
     monkeypatch.setattr(dock, 'mark_leaving', marks.append)
     d._before_switch()
     assert marks == (['%5'] if marked else [])
+
+
+# ─── The docked dashboard's edge line ───
+
+class _FakeWin:
+    def __init__(self, h, w, y0=0, parent=None):
+        self.h, self.w, self.y0, self.parent = h, w, y0, parent
+        self.calls = []
+
+    def getmaxyx(self):
+        return (self.h, self.w)
+
+    def derwin(self, h, w, y, x):
+        child = _FakeWin(h, w, y, self)
+        self.children = getattr(self, "children", []) + [child]
+        return child
+
+    def hline(self, y, x, ch, n):
+        self.calls.append(("hline", y, n))
+
+    def noutrefresh(self):
+        self.calls.append(("noutrefresh",))
+
+    def __getattr__(self, name):
+        if name.startswith("_") or name == "children":
+            raise AttributeError(name)
+        return lambda *a: self.calls.append((name,) + a)
+
+
+@pytest.fixture
+def edge_screen(monkeypatch):
+    import dashboard
+    monkeypatch.setattr(dashboard.curses, "doupdate", lambda: None)
+    monkeypatch.setattr(dashboard.curses, "ACS_HLINE", 0, raising=False)
+    side = {"top": True}
+    screen = _FakeWin(20, 80)
+    framed = dashboard._DockEdgeScreen(screen, 0, lambda: side["top"], 10)
+    return dashboard, screen, framed, side
+
+
+def test_the_views_get_one_row_less_and_the_line_faces_the_work(edge_screen):
+    dashboard, screen, framed, side = edge_screen
+    assert framed.getmaxyx() == (19, 80)
+    assert framed._win.y0 == 0                       # docked at the top
+    framed.refresh()
+    assert ("hline", 19, 80) in screen.calls          # bottom row
+
+
+def test_a_dock_at_the_bottom_keeps_its_first_row_for_the_line(edge_screen, monkeypatch):
+    dashboard, screen, framed, side = edge_screen
+    side["top"] = False
+    framed._checked -= 10                            # side is due for a check
+    framed.refresh()
+    assert framed._win.y0 == 1
+    assert ("hline", 0, 80) in screen.calls
+
+
+def test_a_resize_rebuilds_the_area_and_replays_input_settings(edge_screen):
+    dashboard, screen, framed, side = edge_screen
+    framed.keypad(True)
+    framed.timeout(50)
+    screen.h, screen.w = 30, 100
+    assert framed.getmaxyx() == (29, 100)
+    assert ("keypad", True) in framed._win.calls and ("timeout", 50) in framed._win.calls
+
+
+@pytest.mark.parametrize("setters, wait", [
+    # The main loop's arrow-key path: nodelay for the burst, then back.
+    ([("timeout", 50), ("nodelay", True), ("timeout", 50)], 50),
+    ([("timeout", 50), ("nodelay", True)], 0),
+    ([("timeout", -1)], -1),
+    ([("nodelay", False)], -1),
+])
+def test_a_rebuild_restores_the_latest_wait_for_input(edge_screen, setters, wait):
+    dashboard, screen, framed, side = edge_screen
+    for name, arg in setters:
+        getattr(framed, name)(arg)
+    screen.h = 25                                    # rebuild
+    framed.getmaxyx()
+    waits = [c for c in framed._win.calls if c[0] in ("timeout", "nodelay")]
+    assert waits == [("timeout", wait)]
+
+
+@pytest.mark.parametrize("top", [True, False])
+@pytest.mark.parametrize("height", [1, 5, 10])
+def test_a_pane_too_low_for_the_line_gives_the_views_all_of_it(edge_screen, top, height):
+    dashboard, screen, framed, side = edge_screen
+    side["top"] = top
+    framed._checked -= 10
+    screen.h = height
+    assert framed.getmaxyx() == (height, 80)         # no derwin outside the screen
+    framed.refresh()
+    assert not any(c[0] == "hline" for c in screen.calls)
+    screen.h = 20                                    # and back again
+    assert framed.getmaxyx() == (19, 80)
+
+
+@pytest.mark.parametrize("value, expected", [("", 179), ("67", 67), ("999", 179), ("x", 179)])
+def test_the_edge_colour_comes_from_the_option(monkeypatch, value, expected):
+    import dashboard
+    pairs = []
+    monkeypatch.setattr(dashboard, "tmux_cmd", lambda *a, **k: value)
+    monkeypatch.setattr(dashboard.curses, "COLORS", 256, raising=False)
+    monkeypatch.setattr(dashboard.curses, "init_pair", lambda n, fg, bg: pairs.append((n, fg, bg)))
+    monkeypatch.setattr(dashboard.curses, "color_pair", lambda n: n << 8)
+    assert dashboard._dock_edge_attr() is not None
+    assert pairs == [(dashboard.C_DOCK_EDGE, expected, -1)]
+
+
+def test_off_gives_the_row_back(monkeypatch):
+    import dashboard
+    monkeypatch.setattr(dashboard, "tmux_cmd", lambda *a, **k: "off")
+    assert dashboard._dock_edge_attr() is None

@@ -38,6 +38,16 @@ SIZE_OPTION = '@ccm-dashboard-dock-size'
 DEFAULT_SIZE = 40
 # The dashboard refuses to draw below this many rows.
 MIN_ROWS = 10
+# The line a docked dashboard draws on the side facing the work pane:
+# a 256-colour number, or `off`. It takes one row of its own.
+EDGE_OPTION = '@ccm-dashboard-dock-edge'
+EDGE_DEFAULT = 179
+
+
+def edge_rows():
+    """Rows the edge line takes: 0 when it is off."""
+    value = (ccm_core.tmux_cmd('show-option', '-gqv', EDGE_OPTION) or '').strip().lower()
+    return 0 if value == 'off' else 1
 
 
 def position():
@@ -53,7 +63,7 @@ def rows_for(window_height):
     except ValueError:
         percent = DEFAULT_SIZE
     percent = min(max(percent, 10), 80)
-    return max(MIN_ROWS, window_height * percent // 100)
+    return max(MIN_ROWS + edge_rows(), window_height * percent // 100)
 
 
 def find(include_leaving=True):

@@ -148,6 +148,7 @@ C_SYNCING = 9
 C_LOGO_C1 = 10
 C_LOGO_C2 = 11
 C_LOGO_M = 12
+C_DOCK_EDGE = 13
 LOGO_CELLS = ((" c ", C_LOGO_C1), (" c ", C_LOGO_C2), (" m ", C_LOGO_M))
 
 STATE_COLOR_PAIR = {
@@ -159,6 +160,121 @@ STATE_COLOR_PAIR = {
 # ─── Dashboard ───
 
 from ccm_dashboard_lifecycle import LifecycleActions
+
+
+class _DockEdgeScreen:
+    """The screen of a docked dashboard: the whole pane less one row,
+    which holds a coloured line on the side facing the work pane (the
+    bottom row when docked at the top). tmux draws the border there as
+    part of the pane below, so its colour cannot mark the dock.
+
+    Every view draws through this object as if it were the screen, so
+    none of them has to know the row is taken. It is rebuilt when the
+    pane's size changes or the dock moves to the other edge. A pane too
+    low to give up the row (the dock is opened a row taller, but a pane
+    can be shrunk later) draws no line and gives the views all of it."""
+
+    _SIDE_CHECK_SEC = 2.0
+
+    def __init__(self, screen, attr, at_top, min_rows):
+        self._screen = screen
+        self._attr = attr
+        self._at_top = at_top          # callable: is the dock at the top?
+        self._min_rows = min_rows      # what the views need to draw at all
+        self._keypad = None
+        # timeout() and nodelay() set one thing, the wait for input; it is
+        # kept as one value so a rebuild restores the latest of them.
+        self._delay = None
+        self._lined = False
+        self._top = None
+        self._checked = 0.0
+        self._size = None
+        self._win = None
+        self._rebuild()
+
+    def _rebuild(self):
+        self._size = self._screen.getmaxyx()
+        self._checked = time.monotonic()
+        self._top = bool(self._at_top())
+        height, width = self._size
+        self._lined = height - 1 >= self._min_rows
+        if self._lined:
+            self._win = self._screen.derwin(height - 1, width, 0 if self._top else 1, 0)
+        else:
+            self._win = self._screen
+        if self._keypad is not None:
+            self._win.keypad(self._keypad)
+        if self._delay is not None:
+            self._win.timeout(self._delay)
+
+    def _current(self):
+        stale_side = time.monotonic() - self._checked > self._SIDE_CHECK_SEC
+        if self._screen.getmaxyx() != self._size or (
+                stale_side and bool(self._at_top()) != self._top):
+            self._rebuild()
+        elif stale_side:
+            self._checked = time.monotonic()
+        return self._win
+
+    def keypad(self, flag):
+        self._keypad = flag
+        return self._current().keypad(flag)
+
+    def timeout(self, delay):
+        self._delay = delay
+        return self._current().timeout(delay)
+
+    def nodelay(self, flag):
+        self._delay = 0 if flag else -1
+        return self._current().nodelay(flag)
+
+    def refresh(self):
+        win = self._current()
+        if self._lined:
+            height, width = self._size
+            row = height - 1 if self._top else 0
+            try:
+                self._screen.hline(row, 0, curses.ACS_HLINE | self._attr, width)
+            except curses.error:
+                pass
+            self._screen.noutrefresh()
+        win.noutrefresh()
+        curses.doupdate()
+
+    def __getattr__(self, name):
+        return getattr(self._current(), name)
+
+
+def _dock_edge_attr():
+    """The curses attribute of the dock's edge line, or None for `off`."""
+    import ccm_dock
+    raw = (tmux_cmd("show-option", "-gqv", ccm_dock.EDGE_OPTION) or "").strip().lower()
+    if raw == "off":
+        return None
+    try:
+        colour = int(raw) if raw else ccm_dock.EDGE_DEFAULT
+    except ValueError:
+        colour = ccm_dock.EDGE_DEFAULT
+    if not 0 <= colour <= 255:
+        colour = ccm_dock.EDGE_DEFAULT
+    try:
+        if curses.COLORS >= 256:
+            curses.init_pair(C_DOCK_EDGE, colour, -1)
+        else:
+            curses.init_pair(C_DOCK_EDGE, curses.COLOR_YELLOW, -1)
+    except curses.error:
+        return None
+    return curses.color_pair(C_DOCK_EDGE) | curses.A_BOLD
+
+
+def _dock_at_top():
+    """Whether this dashboard's own pane is at the top of its window;
+    taken to be when its pane is unknown or tmux does not answer."""
+    pane = os.environ.get("TMUX_PANE", "")
+    if not pane:
+        return True
+    return tmux_cmd("display-message", "-p", "-t", pane,
+                    "#{pane_at_top}").strip() != "0"
 
 
 class Dashboard(LifecycleActions):
@@ -252,6 +368,14 @@ class Dashboard(LifecycleActions):
 
         # Init colors
         self._init_colors()
+
+        # Docked: give up one row for the line that marks the dock's edge.
+        if self.docked:
+            edge = _dock_edge_attr()
+            if edge is not None:
+                stdscr = _DockEdgeScreen(stdscr, edge, _dock_at_top, self.MIN_HEIGHT)
+                stdscr.keypad(True)
+                stdscr.timeout(50)
 
         # Instant first paint from cached state. This first build
         # establishes the frozen display order for the popup's lifetime.
