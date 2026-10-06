@@ -102,7 +102,10 @@ ccm_notify.notify('${state}', '${project}', '${detail}')
 
     # Poll the log briefly; stubs are fast but Popen/& are async.
     local i
-    for i in 1 2 3 4 5 6 7 8 9 10; do
+    # Up to 5 s: the notifier is started asynchronously, and on a busy
+    # machine 0.5 s was not always enough. A fire ends the wait at once;
+    # a case that must not fire waits the full 5 s.
+    for i in $(seq 1 100); do
         [[ -s "$NOTIFY_LOG" ]] && break
         sleep 0.05
     done
@@ -225,7 +228,10 @@ ccm_notify.notify('BUSY', 'proj', '')
 "
     # Wait for Popen to complete.
     local i
-    for i in 1 2 3 4 5 6 7 8 9 10; do
+    # Up to 5 s: the notifier is started asynchronously, and on a busy
+    # machine 0.5 s was not always enough. A fire ends the wait at once;
+    # a case that must not fire waits the full 5 s.
+    for i in $(seq 1 100); do
         [[ -s "$NOTIFY_LOG" ]] && break
         sleep 0.05
     done
@@ -282,7 +288,10 @@ ccm_notify.notify('BUSY', 'proj', '')
 
     # The notification itself is dispatched async (`&`); poll briefly.
     local i
-    for i in 1 2 3 4 5 6 7 8 9 10; do
+    # Up to 5 s: the notifier is started asynchronously, and on a busy
+    # machine 0.5 s was not always enough. A fire ends the wait at once;
+    # a case that must not fire waits the full 5 s.
+    for i in $(seq 1 100); do
         [[ -s "$NOTIFY_LOG" ]] && break
         sleep 0.05
     done

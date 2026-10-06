@@ -121,6 +121,18 @@ REFRESH_INTERVAL = 2
 # waiting out the 2 s poll (worst case ~2.3 s), closing most of the
 # latency gap vs purely event-driven consumers of the same hooks.
 FAST_TICK_INTERVAL = 0.25
+# A dashboard left open (a dock, typically) and not used for a while
+# refreshes at a slower pace: the pushed channel is still checked every
+# IDLE_FAST_TICK_INTERVAL, and full detection,
+# which catches what no hook reports, runs every IDLE_REFRESH_INTERVAL.
+# The first key press restores the normal pace.
+IDLE_AFTER_SEC = 30
+IDLE_FAST_TICK_INTERVAL = 0.5
+IDLE_REFRESH_INTERVAL = 6
+# How long the main loop waits for a key between redraw checks: 50 ms
+# normally, longer when idle (a key still arrives at once; only the
+# redraw of newly fetched data waits up to this long).
+IDLE_KEY_WAIT_MS = 250
 
 # Visual cols reserved at the right edge of each project row for the
 # `* elapsed` marker (`* ` + 3-char padded elapsed + 1 col margin).
@@ -245,6 +257,30 @@ class _DockEdgeScreen:
         return getattr(self._current(), name)
 
 
+class _InputClock:
+    """The screen every view reads keys from, noting when one arrives.
+    The idle pace (see IDLE_AFTER_SEC) must end with any key, in any
+    view: the search, prompts and menus read keys in loops of their own."""
+
+    def __init__(self, screen, on_input):
+        self._screen = screen
+        self._on_input = on_input
+
+    def getch(self, *args):
+        key = self._screen.getch(*args)
+        if key != -1:
+            self._on_input()
+        return key
+
+    def get_wch(self, *args):
+        key = self._screen.get_wch(*args)     # raises when no key arrived
+        self._on_input()
+        return key
+
+    def __getattr__(self, name):
+        return getattr(self._screen, name)
+
+
 def _dock_edge_attr():
     """The curses attribute of the dock's edge line, or None for `off`."""
     import ccm_dock
@@ -314,6 +350,7 @@ class Dashboard(LifecycleActions):
         # and the window-change hook brings the pane along; quitting asks
         # tmux to close the pane so the other panes get their rows back.
         self.docked = docked
+        self._last_input = time.monotonic()
         # Tree mode state
         self.tree_lines = []     # (indent, text, attr, win_target_or_none)
         self.tree_selected = 0
@@ -377,6 +414,9 @@ class Dashboard(LifecycleActions):
                 stdscr.keypad(True)
                 stdscr.timeout(50)
 
+        # Every view reads keys through this, so any key ends the idle pace.
+        stdscr = _InputClock(stdscr, self._note_input)
+
         # Instant first paint from cached state. This first build
         # establishes the frozen display order for the popup's lifetime.
         self._set_projects_stable(build_project_list(fast=True))
@@ -412,6 +452,9 @@ class Dashboard(LifecycleActions):
         while self.running:
             touch_popup_session()
 
+            # Other views set their own waits and return; this is set
+            # each pass so the main loop's wait is always its own.
+            stdscr.timeout(IDLE_KEY_WAIT_MS if self._idle() else 50)
             key = stdscr.getch()
             if key == -1:
                 # Deferred preview restore: if a navigation burst just
@@ -2732,13 +2775,16 @@ class Dashboard(LifecycleActions):
         # Subsequent refreshes: hybrid loop. Fast ticks sample the
         # pushed-state channel between full (slow-path) detection
         # passes — see FAST_TICK_INTERVAL for the design rationale.
+        last_full = time.monotonic()
         while self.running:
-            # Check running before and after sleep to minimize exit delay
-            for _ in range(max(1, int(REFRESH_INTERVAL / FAST_TICK_INTERVAL))):
-                if not self.running:
-                    return
-                time.sleep(FAST_TICK_INTERVAL)
-                self._fast_tick()
+            tick = self._refresh_pace()[0]
+            time.sleep(tick)
+            if not self.running:
+                return
+            self._fast_tick()
+            if time.monotonic() - last_full < self._refresh_pace()[1]:
+                continue
+            last_full = time.monotonic()
             try:
                 # While a popup runs its own detection, a docked dashboard
                 # reads the states it writes rather than detecting twice.
@@ -2761,6 +2807,19 @@ class Dashboard(LifecycleActions):
                     self._last_preview_target = ""  # Force refresh
             except Exception:
                 log_caught_exception("dashboard._refresh_loop")
+
+    def _note_input(self):
+        self._last_input = time.monotonic()
+
+    def _idle(self):
+        return time.monotonic() - getattr(self, "_last_input", 0.0) > IDLE_AFTER_SEC
+
+    def _refresh_pace(self):
+        """(fast tick, full refresh) intervals: slower once nobody has
+        pressed a key for IDLE_AFTER_SEC."""
+        if self._idle():
+            return IDLE_FAST_TICK_INTERVAL, IDLE_REFRESH_INTERVAL
+        return FAST_TICK_INTERVAL, REFRESH_INTERVAL
 
     def _scan_pushed_states(self):
         """One `list-windows` subprocess reading the pushed-state

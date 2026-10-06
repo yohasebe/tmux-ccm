@@ -1690,6 +1690,40 @@ class TestDoSearch:
         assert attached == [2]
         assert d.selected == 2
 
+    def test_typing_in_the_search_keeps_the_dashboard_out_of_idle(self, monkeypatch):
+        """Keys read by the search's own loop count as use: typing for 40 s
+        (past IDLE_AFTER_SEC) and leaving with Escape keeps the normal pace."""
+        import dashboard
+        d, attached = self._dash(monkeypatch)
+        clock = {"t": 100.0}
+        monkeypatch.setattr(dashboard.time, "monotonic", lambda: clock["t"])
+        d._last_input = clock["t"]
+        keys = iter(["b", "e", "t", "a", "\x1b"])
+
+        def type_slowly(*args):
+            clock["t"] += 10
+            return next(keys)
+        stdscr = _make_mock_stdscr()
+        stdscr.get_wch.side_effect = type_slowly
+        d._do_search(dashboard._InputClock(stdscr, d._note_input))
+        assert clock["t"] - 100.0 > dashboard.IDLE_AFTER_SEC
+        assert d._last_input == clock["t"]
+        assert not d._idle()
+
+    def test_the_input_clock_notes_keys_only(self):
+        import dashboard
+        noted = []
+        screen = _make_mock_stdscr()
+        screen.getch.side_effect = [-1, 65]
+        screen.get_wch.side_effect = [dashboard.curses.error("no input"), "x"]
+        clock = dashboard._InputClock(screen, lambda: noted.append(1))
+        assert clock.getch() == -1 and noted == []
+        assert clock.getch() == 65 and noted == [1]
+        with pytest.raises(dashboard.curses.error):
+            clock.get_wch()
+        assert noted == [1]
+        assert clock.get_wch() == "x" and noted == [1, 1]
+
     def test_enter_with_empty_query_attaches_first(self, monkeypatch):
         d, attached = self._dash(monkeypatch)
         action = d._do_search(self._stdscr(["\n"]))
@@ -1947,3 +1981,35 @@ class TestInitialProjectSelection:
         d.selected = len(d.projects)
         d._set_projects_stable(list(reversed(d.projects)))
         assert d._selected_bg_index() == 0
+
+
+class TestIdlePace:
+    """A dashboard left open and unused refreshes at a slower pace; the
+    first key restores the normal one."""
+
+    def _board(self, monkeypatch, now):
+        import dashboard
+        clock = {"t": now}
+        monkeypatch.setattr(dashboard.time, "monotonic", lambda: clock["t"])
+        board = object.__new__(dashboard.Dashboard)
+        board._last_input = now
+        return dashboard, board, clock
+
+    def test_normal_pace_while_in_use(self, monkeypatch):
+        dashboard, board, clock = self._board(monkeypatch, 1000.0)
+        clock["t"] += dashboard.IDLE_AFTER_SEC - 1
+        assert board._refresh_pace() == (dashboard.FAST_TICK_INTERVAL, dashboard.REFRESH_INTERVAL)
+        assert not board._idle()
+
+    def test_slower_pace_once_unused(self, monkeypatch):
+        dashboard, board, clock = self._board(monkeypatch, 1000.0)
+        clock["t"] += dashboard.IDLE_AFTER_SEC + 1
+        assert board._refresh_pace() == (dashboard.IDLE_FAST_TICK_INTERVAL,
+                                         dashboard.IDLE_REFRESH_INTERVAL)
+        board._last_input = clock["t"]                   # a key
+        assert board._refresh_pace() == (dashboard.FAST_TICK_INTERVAL, dashboard.REFRESH_INTERVAL)
+
+    def test_the_slow_pace_is_still_quick_to_show_a_pushed_state(self):
+        import dashboard
+        assert dashboard.IDLE_FAST_TICK_INTERVAL <= 1.0
+        assert dashboard.IDLE_KEY_WAIT_MS <= 500
