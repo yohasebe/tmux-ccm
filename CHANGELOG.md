@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- A Claude session id is used to name files only when it is a plain token (letters, digits, `_`, `-`; Claude's are UUIDs). One carrying `/` or `..`, which would have named a file outside ccm's runtime directory, is ignored by the hooks and by ccm alike.
 - ccm now refuses a temporary directory it cannot trust. Where `TMPDIR` is unset (common on Linux) the runtime directory is `/tmp/ccm-<uid>`, which another user could create first. ccm creates it closed to others (`0700`) and closes it if others can read it. If it is a symlink, not a directory, or owned by someone else, ccm stops with an error and hooks write nothing. If it is yours but others could write into it (as older versions left it under umask `002`), ccm moves it aside unopened to `ccm-<uid>.untrusted-<pid>` and starts a fresh one.
 
 ## [0.12.0] - 2026-10-03

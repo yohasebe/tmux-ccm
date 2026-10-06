@@ -64,7 +64,9 @@ _old() { touch -t 202001010000 "$1"; }
 @test "init_dirs: creates the directories it needs" {
     rm -rf "${CCM_TMP_DIR}" "${CCM_DATA_DIR}"
     ccm_init_dirs
-    [ -d "${CCM_TMP_DIR}/git-cache" ] && [ -d "${CCM_TMP_DIR}/port-cache" ] && [ -d "${CCM_HOOK_DIR}" ]
+    [ -d "${CCM_TMP_DIR}/git-cache" ]
+    [ -d "${CCM_TMP_DIR}/port-cache" ]
+    [ -d "${CCM_HOOK_DIR}" ]
 }
 
 @test "init_dirs: does not sweep caches itself" {
@@ -79,5 +81,7 @@ _old() { touch -t 202001010000 "$1"; }
     # The call sits inside a guard that excludes --fast invocations.
     guard_line=$(grep -n '"\$\*" != \*--fast\*' "${CCM_ROOT}/ccm" | tail -1 | cut -d: -f1)
     call_line=$(grep -n '^    ccm_gc_tmp' "${CCM_ROOT}/ccm" | head -1 | cut -d: -f1)
-    [ -n "$guard_line" ] && [ -n "$call_line" ] && [ "$call_line" -gt "$guard_line" ]
+    [ -n "$guard_line" ]
+    [ -n "$call_line" ]
+    [ "$call_line" -gt "$guard_line" ]
 }

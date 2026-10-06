@@ -145,7 +145,10 @@ ccm_hook_init() {
         SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || \
             SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"sessionI?d?_?i?d?" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
     fi
-    [[ -z "$SESSION_ID" ]] && return 1
+    # The id names files under the hook directory: only a plain token
+    # (Claude's are UUIDs) is used, so a `/` or `..` cannot reach outside
+    # it. ccm_core.is_safe_session_id applies the same rule.
+    [[ "$SESSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
     KEY="$SESSION_ID"
 
     # Ignore gate. Two entry points converge on the same suppression:

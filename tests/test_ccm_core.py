@@ -1032,3 +1032,33 @@ class TestPrefetchGlobalOptions:
         ccm_core.prefetch_global_options(["@a"])
         assert ccm_core.tmux_cmd("show-option", "-wqv", "@a") == "LIVE"
         assert ccm_core.tmux_cmd("show-option", "-gqv", "-t", "s:1", "@a") == "LIVE"
+
+
+class TestSessionIdIsAPlainToken:
+    @pytest.mark.parametrize("sid", ["../x", "a/b", "", None, ".", "..", "a b", "x\n",
+                                     123, True, ["x"], {"id": "x"}])
+    def test_anything_but_a_plain_token_names_no_file(self, sid, tmp_path, monkeypatch):
+        import ccm_signals, ccm_jsonl
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(tmp_path))
+        assert not ccm_core.is_safe_session_id(sid)
+        if sid is not None:
+            assert ccm_signals._hook_signal_path("/p", session_id=sid) is None
+            assert ccm_signals._events_log_path("/p", session_id=sid) is None
+            assert ccm_jsonl.jsonl_path_for_session("/p", sid) is None
+
+    def test_a_uuid_is_used(self, tmp_path, monkeypatch):
+        import ccm_signals
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(tmp_path))
+        sid = "0123abcd-0000-0000-0000-000000000000"
+        assert ccm_signals._hook_signal_path("/p", session_id=sid) == str(tmp_path / sid)
+
+
+@pytest.mark.parametrize("bad", [123, True, ["x"], {"id": "x"}])
+def test_a_malformed_registry_session_id_resolves_to_no_session(bad, monkeypatch):
+    import ccm_commands, ccm_jsonl, ccm_pane_state
+    monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **k: "4242")
+    monkeypatch.setattr(ccm_pane_state, "find_claude_pid", lambda pid, ps: "4243")
+    monkeypatch.setattr(ccm_jsonl, "read_session_info",
+                        lambda pid, ps=None: {"sessionId": bad, "cwd": "/missing"})
+    assert ccm_commands._pane_session_id("%1", []) is None
+    assert ccm_jsonl.jsonl_path_for_session("/missing", bad) is None

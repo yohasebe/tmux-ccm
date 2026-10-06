@@ -286,7 +286,7 @@ def jsonl_path_for_session(cwd: str, session_id: str) -> Optional[str]:
     """The transcript path for one session id, or None when no such
     file exists: `<slug(cwd)>/<session_id>.jsonl` first, then any
     project directory that holds `<session_id>.jsonl` — see below."""
-    if not cwd or not session_id:
+    if not cwd or not ccm_core.is_safe_session_id(session_id):
         return None
     # Same sanitisation as _project_slug — Claude Code dashes every
     # non-alphanumeric character, not just `/`.

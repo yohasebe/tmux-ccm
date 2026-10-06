@@ -101,3 +101,13 @@ read_fields() {
     [[ "$output" == *"read-once="$'\n'* || "$output" == *"read-once=" ]]
     [[ "$output" == rc=1* ]]
 }
+
+@test "a session id that is not a plain token writes nothing" {
+    local hook_dir="${TMPDIR}/ccm-${UID}/hooks"
+    run bash "${CCM_ROOT}/hooks/on-pre-tool-use.sh" \
+        <<< '{"session_id":"../../escaped","cwd":"/x","hook_event_name":"PreToolUse"}'
+    [ "$status" -eq 0 ]
+    [ ! -e "${TMPDIR}/escaped" ]
+    [ ! -e "${TMPDIR}/escaped.events.jsonl" ]
+    [ -z "$(ls -A "$hook_dir" 2>/dev/null)" ]
+}

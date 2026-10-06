@@ -757,7 +757,8 @@ def _pane_session_id(pane_id, ps_lines):
     if not claude_pid:
         return None
     info = ccm_jsonl.read_session_info(claude_pid, ps_lines)
-    return info.get("sessionId") if info else None
+    sid = info.get("sessionId") if info else None
+    return sid if ccm_core.is_safe_session_id(sid) else None
 
 
 def _ignore_marker_path(session_id):

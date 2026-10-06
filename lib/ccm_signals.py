@@ -114,7 +114,7 @@ def _hook_signal_path(project_dir, session_id: Optional[str] = None):
     """
     if session_id is None:
         session_id = _session_id_from_tmux(project_dir)
-    if not session_id:
+    if not ccm_core.is_safe_session_id(session_id):
         return None
     return os.path.join(ccm_core.CCM_HOOK_DIR, session_id)
 
@@ -210,7 +210,7 @@ def _events_log_path(project_dir: str,
     """
     if session_id is None:
         session_id = _session_id_from_tmux(project_dir)
-    if not session_id:
+    if not ccm_core.is_safe_session_id(session_id):
         return None
     return os.path.join(ccm_core.CCM_HOOK_DIR, session_id + ".events.jsonl")
 
@@ -366,7 +366,7 @@ def cleanup_project_runtime_files(project_dir):
 
     session_ids = set()
     cached_sid = _session_id_from_tmux(project_dir)
-    if cached_sid:
+    if ccm_core.is_safe_session_id(cached_sid):
         session_ids.add(cached_sid)
 
     for sid in session_ids:

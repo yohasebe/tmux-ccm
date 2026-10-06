@@ -456,6 +456,20 @@ def secure_tmp_root(path=None):
         os.umask(old)
 
 
+# A Claude session id names files under the hook directory (signals,
+# event logs, markers) and is looked up in transcript paths. It comes from
+# outside ccm (the hook payload, the session registry), so it is used
+# only when it is a plain token: one with a `/` or `..` would name a
+# file elsewhere. Claude's are UUIDs. hooks/lib.sh applies the same rule.
+_SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def is_safe_session_id(session_id):
+    # A malformed registry can hold a number, list or object here; that is
+    # no session id either, and must not raise.
+    return isinstance(session_id, str) and _SAFE_SESSION_ID.fullmatch(session_id) is not None
+
+
 def get_session():
     """The tmux session this command acts in.
 
