@@ -1152,3 +1152,10 @@ class TestPermitPendingTargetsOneWindow:
         ps[0].state = "PERMIT"
         inject_status._apply_permit_pending(ps, "A:1")
         assert ps[0].state == "PERMIT" and ps[1].state == "IDLE"
+
+
+def test_flags_that_hooks_write_are_not_read_from_the_start_of_a_pass():
+    # @ccm-permit-pending is written by hooks and consumed (then
+    # cleared) by a pass; read from the pass's start, a newer flag
+    # would be cleared unread.
+    assert "@ccm-permit-pending" not in inject_status.PASS_OPTIONS

@@ -1104,11 +1104,29 @@ def _write_cache(cache_file, content):
         pass
 
 
+# The global options a pass reads, fetched in one tmux process when it
+# starts (each separately cost a process of its own). Any not listed is
+# read as before; this list only saves work. Settings only: a flag
+# that hooks write and a pass consumes (@ccm-permit-pending) must be
+# read when it is consumed, never from the start of the pass.
+PASS_OPTIONS = (
+    "status-right", "status-right-length",
+    "@ccm-orig-status-right", "@ccm-orig-sr-length", "@ccm-status-line",
+    "@ccm-status-line-position", "@ccm-status-line-hide-shell",
+    "@ccm-mock-state", "@ccm-idle-timeout",
+    "@ccm-ambiguous-width", "@ccm-notify", "@ccm-notify-sound",
+    "@ccm-notify-sound-name", "@ccm-status-current-bg", "@ccm-status-bg",
+    "@ccm-status-gutter-bg", "@ccm-status-fg", "@ccm-status-fg-dim",
+)
+
+
 if __name__ == "__main__":
     try:
         # `--fast` forces the cached-state render (focus-refresh on
         # window switch); the default path runs full detection.
         import sys as _sys
+        import ccm_core as _core
+        _core.prefetch_global_options(PASS_OPTIONS)
         inject_status(force_fast="--fast" in _sys.argv[1:])
     except Exception:
         # Never crash — tmux will retry. But log so the next

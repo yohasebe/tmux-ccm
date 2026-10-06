@@ -8,6 +8,8 @@ import time
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock, call
 
+import subprocess
+
 import pytest
 
 # Add lib to path
@@ -974,3 +976,59 @@ class TestOwnHookEntryCount:
     def test_unreadable_settings_are_unknown_not_zero(self, tmp_path, monkeypatch):
         monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "nope.json"))
         assert ccm_core.own_hook_entry_count() is None
+
+
+# ─── Global options read once per pass ───
+
+class TestPrefetchGlobalOptions:
+    SEP = ccm_core._OPTION_SEP
+
+    def _answer(self, monkeypatch, stdout, returncode=0):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            batched = args[1] == "show-option" and ";" in args
+            out = stdout if batched else "LIVE"
+            code = returncode if batched else 0
+            return subprocess.CompletedProcess(args, code, out.encode(), b"")
+        monkeypatch.setattr(ccm_core.subprocess, "run", run)
+        monkeypatch.setattr(ccm_core, "_GLOBAL_OPTIONS", None)
+        return calls
+
+    def test_one_process_reads_them_all_and_unset_ones_are_empty(self, monkeypatch):
+        calls = self._answer(monkeypatch, f"red\n{self.SEP}\n{self.SEP}\nline1\nline2\n")
+        ccm_core.prefetch_global_options(["@a", "@unset", "@multi"])
+        assert len(calls) == 1
+        assert ccm_core._GLOBAL_OPTIONS == {"@a": "red", "@unset": "", "@multi": "line1\nline2"}
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@a") == "red"
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@unset") == ""
+        assert len(calls) == 1                                  # served from memory
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@other") == "LIVE"
+
+    @pytest.mark.parametrize("stdout,code", [("a\n", 1), (f"a\n{SEP}\nb\n{SEP}\nc\n", 0)])
+    def test_a_failure_or_a_count_mismatch_keeps_nothing(self, monkeypatch, stdout, code):
+        self._answer(monkeypatch, stdout, returncode=code)
+        ccm_core.prefetch_global_options(["@a", "@b"])
+        assert ccm_core._GLOBAL_OPTIONS is None
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@a") == "LIVE"
+
+    def test_a_write_drops_the_option_so_it_is_read_live(self, monkeypatch):
+        self._answer(monkeypatch, f"x\n{self.SEP}\ny\n{self.SEP}\nz\n")
+        ccm_core.prefetch_global_options(["@a", "@b", "@c"])
+        ccm_core.tmux_cmd("set-option", "-g", "@a", "new")
+        ccm_core.tmux_batch(("set", "-g", "@b", "new"), ("set", "-wt", "s:1", "@c", "v"))
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@a") == "LIVE"
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@b") == "LIVE"
+        # A window write (`-wt s:1`, whose target is not the option)
+        # leaves the global value, so the prefetched one still answers.
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@c") == "z"
+        # A global write whose target comes first still names `@c`.
+        ccm_core.tmux_cmd("set", "-t", "main", "-g", "@c", "new")
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@c") == "LIVE"
+
+    def test_window_and_pane_reads_are_never_served_from_the_global_cache(self, monkeypatch):
+        self._answer(monkeypatch, "x\n")
+        ccm_core.prefetch_global_options(["@a"])
+        assert ccm_core.tmux_cmd("show-option", "-wqv", "@a") == "LIVE"
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "-t", "s:1", "@a") == "LIVE"

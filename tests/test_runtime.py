@@ -281,6 +281,9 @@ class TestAutoExitIdle:
                 if fmt == "#{pane_current_command}":
                     return post_exit_cmd
             if args[0] == "list-panes":
+                # One listing of every pane, each row led by its window.
+                if "-a" in args:
+                    return "\n".join(f"main:1\t{row}" for row in panes_listing.split("\n") if row)
                 return panes_listing
             if args[0] == "list-windows":
                 # Single ccm window at main:1 (NOT main:0 → not focused),
@@ -316,6 +319,63 @@ class TestAutoExitIdle:
         if return_side_effects:
             return send_calls, mock_set_state, mock_autosave, mock_notify
         return send_calls
+
+    def _run_windows(self, windows, ps_output=None, pane_pid=None):
+        """auto_exit_idle over several expired windows; returns
+        (send-keys calls, ps_snapshot mock, tmux calls). `pane_pid`
+        gives every window the same pane, as a linked window does."""
+        calls, sends = [], []
+        base = self._build_tmux_side_effect("zsh", self.DEFAULT_PANES_LISTING)
+
+        def tmux(*args):
+            calls.append(args)
+            if args[0] == "send-keys":
+                sends.append(args)
+            if args[0] == "list-windows":
+                return "\n".join(
+                    f"main:{idx}\tdemo{idx}\tIDLE\t1\t1\t{self.SESSION_ID}\t{pending}"
+                    for idx, pending in windows)
+            if args[0] == "list-panes" and "-a" in args:
+                pid = pane_pid if isinstance(pane_pid, dict) else {}
+                return "\n".join(f"main:{idx}\t0\t{pid.get(idx, pane_pid or 1000)}"
+                                  for idx, _ in windows)
+            return base(*args)
+
+        with patch("ccm_core.tmux_cmd", side_effect=tmux), \
+             patch("ccm_core.ps_snapshot",
+                   return_value=ps_output or self.DEFAULT_PS_OUTPUT) as ps, \
+             patch("ccm_detection._set_win_state"), \
+             patch("ccm_runtime._force_autosave"), \
+             patch("ccm_runtime.ccm_notify"), \
+             patch("ccm_runtime.time.sleep"):
+            ccm_runtime.auto_exit_idle([])
+        return sends, ps, calls
+
+    def test_a_window_waiting_for_restore_is_left_alone(self):
+        sends, ps, calls = self._run_windows([("1", "1")])
+        assert sends == []
+        assert not any(c[:2] == ("show-option", "-wqv") for c in calls)
+
+    def test_windows_only_looked_at_share_one_ps_and_one_pane_listing(self):
+        # No Claude in any of them: each is looked at and left.
+        sends, ps, calls = self._run_windows(
+            [("1", ""), ("2", ""), ("3", "")], ps_output="1000 999 1000 zsh 00:01:00\n")
+        assert sends == []
+        assert ps.call_count == 1
+        assert sum(1 for c in calls if c[0] == "list-panes") == 1
+
+    def test_acting_on_a_window_rereads_before_the_next_decision(self):
+        # The exit waits, and another Claude may end meanwhile: no later
+        # window may be judged from a list taken before an exit.
+        sends, ps, calls = self._run_windows([("1", ""), ("2", "")], pane_pid="1000")
+        exits = [c for c in sends if "/exit" in c]
+        assert len(exits) == 1                           # both names, one pane
+        two = ("2001 999 2001 zsh 00:01:00\n2002 2001 2002 claude 00:00:30\n"
+               "3001 999 3001 zsh 00:01:00\n3002 3001 3002 claude 00:00:30\n")
+        sends, ps, calls = self._run_windows(
+            [("1", ""), ("2", "")], ps_output=two, pane_pid={"1": "2001", "2": "3001"})
+        assert len([c for c in sends if "/exit" in c]) == 2
+        assert ps.call_count == 2
 
     def test_clear_sent_when_shell_foreground(self):
         """Happy path: `/exit` completed, pane returned to zsh, so
@@ -370,6 +430,8 @@ class TestAutoExitIdle:
             if args[0] == "list-windows":
                 return "main:1\tdemo\tIDLE\t1\t1"
             if args[0] == "list-panes":
+                if "-a" in args:
+                    return "\n".join(f"main:1\t{row}" for row in self.DEFAULT_PANES_LISTING.split("\n") if row)
                 return self.DEFAULT_PANES_LISTING
             if args and args[0] == "send-keys":
                 send_calls.append(args)

@@ -13,6 +13,7 @@ import ccm_snapshot
 
 @pytest.fixture
 def isolated_session(tmp_path, monkeypatch):
+    monkeypatch.delenv("TMUX_PANE", raising=False)
     monkeypatch.setattr(ccm_core, "CCM_TMP_DIR", str(tmp_path))
     monkeypatch.setattr(ccm_core, "CCM_SNAPSHOT_DIR", str(tmp_path))
     (tmp_path / "saved.json").write_text(json.dumps({"version": 1, "projects": []}))
@@ -65,7 +66,8 @@ def test_blocked_connection_names_error_and_remedy(
     assert "Not inside a tmux session" not in error
     assert "Project not found" not in error
     assert calls
-    assert all(args[1] in {"display-message", "list-clients", "list-sessions", "list-windows"}
+    assert all(args[1] in {"display-message", "list-clients", "list-sessions", "list-windows",
+                           "has-session"}
                for args in calls)
 
 
@@ -94,7 +96,7 @@ def test_reachable_server_missing_project(isolated_session, monkeypatch, capsys)
     (isolated_session / "popup-session").write_text("main")
 
     def available(args, **kwargs):
-        assert args[1] in {"list-sessions", "list-windows"}
+        assert args[1] in {"list-sessions", "list-windows", "has-session"}
         return subprocess.CompletedProcess(args, 0, b"main" if args[1] == "list-sessions" else b"", b"")
 
     monkeypatch.setattr(ccm_core.subprocess, "run", available)
@@ -146,3 +148,57 @@ def test_reachable_server_without_current_session(isolated_session, monkeypatch,
     error = capsys.readouterr().err
     assert "attach-session" in error
     assert "Not inside" not in error and "sandbox" not in error
+
+
+def _tmux_answers(monkeypatch, answers):
+    """tmux calls answered by subcommand; a missing session fails like tmux."""
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args[1:])
+        out = answers.get(args[1])
+        if out is None:
+            return subprocess.CompletedProcess(args, 1, b"", b"can't find session")
+        return subprocess.CompletedProcess(args, 0, out.encode(), b"")
+    monkeypatch.setattr(ccm_core.subprocess, "run", run)
+    return calls
+
+
+def test_a_pane_uses_its_own_session_not_a_popup_record(isolated_session, monkeypatch):
+    (isolated_session / "popup-session").write_text("2")
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    calls = _tmux_answers(monkeypatch, {"display-message": "work"})
+    assert ccm_core.get_session() == "work"
+    assert calls[0] == ["display-message", "-p", "-t", "%7", "#{session_name}"]
+
+
+def test_a_popup_record_naming_a_gone_session_is_ignored(isolated_session, monkeypatch):
+    (isolated_session / "popup-session").write_text("2")
+    calls = _tmux_answers(monkeypatch, {"display-message": "main"})   # has-session fails
+    assert ccm_core.get_session() == "main"
+    assert ["has-session", "-t", "=2"] in calls
+
+
+def test_a_recent_popup_record_of_a_live_session_is_used(isolated_session, monkeypatch):
+    (isolated_session / "popup-session").write_text("main")
+    _tmux_answers(monkeypatch, {"has-session": "", "display-message": "other"})
+    assert ccm_core.get_session() == "main"
+
+
+def test_a_pane_that_cannot_be_resolved_does_not_take_a_popup_record(isolated_session, monkeypatch):
+    # The pane is gone (or tmux fails for it); a live popup record of
+    # another session is still no answer for a command run in a pane.
+    (isolated_session / "popup-session").write_text("other-session")
+    monkeypatch.setenv("TMUX_PANE", "%999999")
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args[1:])
+        if args[1] == "display-message" and "-t" in args:
+            return subprocess.CompletedProcess(args, 1, b"", b"can't find pane")
+        if args[1] == "display-message":
+            return subprocess.CompletedProcess(args, 0, b"current-client-session", b"")
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+    monkeypatch.setattr(ccm_core.subprocess, "run", run)
+    assert ccm_core.get_session() == "current-client-session"
+    assert not any(c[0] == "has-session" for c in calls)

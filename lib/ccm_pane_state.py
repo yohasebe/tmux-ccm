@@ -160,7 +160,11 @@ def has_children(pid, ps_lines, own_pgid):
     return False
 
 
-def capture_pane_bottom(pane_target, lines=8):
+# The rows a modal footer can sit in.
+BOTTOM_LINES = 8
+
+
+def capture_pane_bottom(pane_target, lines=BOTTOM_LINES):
     """Capture the bottom `lines` non-empty lines of a pane.
 
     Used for footer matching (PERMIT modal detection) where the
@@ -459,11 +463,16 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
 
     has_child = has_children(claude_pid, ps_lines, own_pgid)
 
+    # One capture of the visible area serves every check below: the
+    # footer rows are its last lines, and a second read cost a tmux
+    # process per pane per poll.
+    visible = capture_pane_visible(pane_target)
+
     # PERMIT footer is always rendered at the very bottom of the
-    # pane — a tail-only capture is sufficient and avoids
+    # pane — the last few lines are read, which avoids
     # false-positives from "permit footer"-shaped strings appearing
     # in conversation content above.
-    bottom = capture_pane_bottom(pane_target)
+    bottom = visible[-BOTTOM_LINES:]
     for line in bottom:
         if PATTERN_PERMIT_FOOTER.match(line):
             return "PERMIT"
@@ -481,7 +490,6 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
         # — a belief that cost the send path a real bug. Nothing here
         # depends on which row matched, and the BUSY/IDLE call below
         # is made by the spinner, not by this.
-        visible = capture_pane_visible(pane_target)
         prompt_visible = any(
             PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line)
             for line in visible
@@ -529,7 +537,6 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
     # The claim is gated on the clock ticking because raw=BUSY has no
     # release path: a static footer (frozen frame, quoted text) must
     # age out on its own — see `_clock_is_ticking`.
-    visible = capture_pane_visible(pane_target)
     if _scan_work_clock(visible, stored_clock, _now(), clock_out):
         return "BUSY"
     if _spinner_moves(pane_target, visible, stored_clock, _now(), clock_out):

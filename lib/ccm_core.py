@@ -83,6 +83,79 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
 
 # ─── Subprocess helpers ───
 
+# Global options read once for a pass (see `prefetch_global_options`):
+# name -> value, or None when nothing is prefetched.
+_GLOBAL_OPTIONS = None
+_OPTION_SEP = "==ccm==option==sep=="
+
+
+def prefetch_global_options(names):
+    """Read several global options in one tmux process, for the pass
+    that follows. Each is read by the same `show-option -gqv` a single
+    read would use, so the answers do not change; a separator line
+    keeps them apart (an unset option prints nothing). Reads of these
+    names are then served from memory until `clear_global_options`, and
+    a write to one of them through `tmux_cmd` or `tmux_batch` drops it,
+    so it is read again live. On any failure nothing is kept and every
+    read goes to tmux as before."""
+    global _GLOBAL_OPTIONS
+    names = list(dict.fromkeys(names))
+    args = []
+    for i, name in enumerate(names):
+        if i:
+            args += [";", "display-message", "-p", _OPTION_SEP, ";"]
+        args += ["show-option", "-gqv", name]
+    out = tmux_query(*args) if args else None
+    if out is None:
+        _GLOBAL_OPTIONS = None
+        return
+    values, current = [], []
+    for line in out.split("\n"):
+        if line == _OPTION_SEP:
+            values.append("\n".join(current))
+            current = []
+        else:
+            current.append(line)
+    values.append("\n".join(current))
+    if len(values) != len(names):
+        _GLOBAL_OPTIONS = None
+        return
+    _GLOBAL_OPTIONS = {n: v.strip() for n, v in zip(names, values)}
+
+
+def clear_global_options():
+    global _GLOBAL_OPTIONS
+    _GLOBAL_OPTIONS = None
+
+
+def _prefetched_option(args):
+    """The prefetched answer to a global option read, or None."""
+    if (_GLOBAL_OPTIONS is not None and len(args) == 3
+            and args[0] in ("show-option", "show-options")
+            and args[1] in ("-gqv", "-gv")):
+        return _GLOBAL_OPTIONS.get(args[2])
+    return None
+
+
+def _forget_written_option(args):
+    """Drop a prefetched option that this command writes globally. A
+    window or pane write leaves the global value, and so the cache,
+    as it was."""
+    if _GLOBAL_OPTIONS is None or not args or args[0] not in ("set", "set-option"):
+        return
+    flags = ""
+    rest = iter(args[1:])
+    for arg in rest:
+        if arg.startswith("-") and arg != "-":
+            flags += arg[1:]
+            if "t" in arg[1:]:
+                next(rest, None)          # the target, not the option
+        else:
+            if "g" in flags:
+                _GLOBAL_OPTIONS.pop(arg, None)
+            return
+
+
 def tmux_cmd(*args, timeout=5):
     """Run tmux command, return stdout.
 
@@ -94,6 +167,10 @@ def tmux_cmd(*args, timeout=5):
     cycle (inject_status / dashboard refresh), leaving every
     project's `@ccm_prev_state` frozen.
     """
+    cached = _prefetched_option(args)
+    if cached is not None:
+        return cached
+    _forget_written_option(args)
     try:
         r = subprocess.run(
             ["tmux"] + list(args), capture_output=True, timeout=timeout
@@ -147,6 +224,8 @@ def tmux_batch(*commands):
     """
     if not commands:
         return
+    for cmd in commands:
+        _forget_written_option(tuple(cmd))
     args = ["tmux"]
     for i, cmd in enumerate(commands):
         if i > 0:
@@ -378,13 +457,30 @@ def secure_tmp_root(path=None):
 
 
 def get_session():
+    """The tmux session this command acts in.
+
+    In a pane, that pane's own session, asked by its id: a popup's
+    record names whatever session last opened one, which is not this
+    pane's, and may be gone. Without a pane (inside a popup, where tmux
+    cannot say which session the popup belongs to), the record left by
+    the key that opened it, if it is recent and the session still
+    exists. Otherwise the current client's session."""
+    pane = os.environ.get("TMUX_PANE", "")
+    if pane:
+        session = tmux_cmd("display-message", "-p", "-t", pane, "#{session_name}")
+        if session:
+            return session
     popup_file = os.path.join(CCM_TMP_DIR, "popup-session")
     try:
-        if os.path.exists(popup_file):
+        # A pane that cannot be resolved (gone, or tmux failing) is still
+        # not in a popup: another session's record is no answer for it.
+        if not pane and os.path.exists(popup_file):
             age = time.time() - os.path.getmtime(popup_file)
             if age < 60:
                 with open(popup_file, encoding="utf-8") as f:
-                    return f.read().strip()
+                    recorded = f.read().strip()
+                if recorded and tmux_query("has-session", "-t", f"={recorded}") is not None:
+                    return recorded
     except OSError:
         pass
     session = tmux_cmd("display-message", "-p", "#{session_name}")

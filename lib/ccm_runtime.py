@@ -341,16 +341,48 @@ def auto_exit_idle(projects):
     activity_raw = ccm_core.tmux_cmd(
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t#{@ccm_session_id}"
+        f"\t#{{{ccm_roles.PENDING_OPTION}}}"
     )
     if not activity_raw:
         return
 
+    # A window past the timeout whose Claude stays (a guard holds it) is
+    # looked at again every poll. What it needs from tmux and ps is read
+    # once and shared while windows are only looked at, not once per
+    # window: ps alone costs tens of milliseconds. Acting on a window
+    # (the exit waits, and other Claudes may end meanwhile) discards
+    # them, so no later decision rests on a list taken before it.
+    shared = {}
+    # Panes acted on in this pass, by pane pid: a linked window lists
+    # the same pane under each of its names.
+    acted = set()
+
+    def ps_lines_once():
+        if "ps" not in shared:
+            shared["ps"] = ccm_core.ps_snapshot().strip().split("\n")
+        return shared["ps"]
+
+    def panes_of(target):
+        if "panes" not in shared:
+            listing = ccm_core.tmux_cmd(
+                "list-panes", "-a",
+                "-F", "#{session_name}:#{window_index}\t#{pane_index}\t#{pane_pid}"
+                "\t#{pane_current_command}\t#{@ccm_ignore}\t#{@ccm_dock}"
+            ) or ""
+            grouped = {}
+            for row in listing.split("\n"):
+                if row:
+                    owner, _, rest = row.partition("\t")
+                    grouped.setdefault(owner, []).append(rest)
+            shared["panes"] = grouped
+        return "\n".join(shared["panes"].get(target, []))
+
     for line in activity_raw.split("\n"):
         parts = line.split("\t")
-        while len(parts) < 6:
+        while len(parts) < 7:
             parts.append("")
         (win_target, project, prev_state, completed_at_str,
-         win_activity_str, session_id) = parts[:6]
+         win_activity_str, session_id, restore_pending) = parts[:7]
 
         if not project or prev_state != "IDLE":
             continue
@@ -381,7 +413,7 @@ def auto_exit_idle(projects):
 
         idle_duration = now - idle_since
         if idle_duration >= idle_timeout:
-            if ccm_roles.pending(win_target):
+            if restore_pending == "1":
                 continue
             # Target the Claude pane specifically, NOT `win_target`
             # (which routes send-keys to the window's currently
@@ -407,11 +439,7 @@ def auto_exit_idle(projects):
             # `p_comm` explicitly), so the process-tree path stays
             # correct across installs while string-matching the
             # foreground command would silently mis-fire.
-            panes_raw = ccm_core.tmux_cmd(
-                "list-panes", "-t", win_target,
-                "-F", "#{pane_index}\t#{pane_pid}\t#{pane_current_command}"
-                "\t#{@ccm_ignore}\t#{@ccm_dock}"
-            )
+            panes_raw = panes_of(win_target)
             # The docked dashboard's python is not the project's work.
             panes_raw = "\n".join(
                 line for line in (panes_raw or "").split("\n")
@@ -421,7 +449,7 @@ def auto_exit_idle(projects):
             # Without this `find_claude_pid` walks one character at a
             # time and never matches anything, which is what made the
             # first cut of this fix silently no-op forever.
-            ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+            ps_lines = ps_lines_once()
 
             # Background-work guard: a window that still hosts live
             # work must not have its Claude exited, no matter how
@@ -493,6 +521,7 @@ def auto_exit_idle(projects):
                 if str(claude_pid) == str(parts[1]):
                     continue
                 claude_pane = f"{win_target}.{parts[0]}"
+                claude_pane_pid = parts[1]
                 break
             if not claude_pane:
                 # No pane currently hosts a Claude process — the
@@ -501,8 +530,14 @@ def auto_exit_idle(projects):
                 # Defensive skip; the next polling cycle re-evaluates.
                 continue
 
+            if claude_pane_pid in acted:
+                continue
+            acted.add(claude_pane_pid)
             from ccm_exit import exit_pane
-            outcome = exit_pane(claude_pane, capture=_pane_tail, sleep=time.sleep)
+            try:
+                outcome = exit_pane(claude_pane, capture=_pane_tail, sleep=time.sleep)
+            finally:
+                shared.clear()
             if outcome in (DECLINED_CAPTURE_UNREADABLE, DECLINED_AGENTS_VIEW):
                 _log_auto_exit_declined(project, session_id, outcome, now)
                 continue

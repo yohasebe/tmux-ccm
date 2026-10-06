@@ -14,11 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The status line's periodic update does about a third less work: each pane is read once per pass instead of twice, the global options a pass needs are read in one tmux call, and the idle check reads the process list and panes once for all windows rather than once per window. With 44 projects a full pass went from about 0.36 s to 0.24 s of CPU.
 - Status modes 1 and 2 highlight the current project's entry with a distinct background, including one space on each side, without changing its width. Customize the color with `@ccm-status-current-bg` (default `#505050`).
 - The dashboard opens faster, and status redraws cost less, where `python3` is a version manager's shim (pyenv, asdf, mise). Each start used to run the shim first (0.1–0.3 s). ccm now resolves `python3` through `PATH` once, keeps its real path in the runtime directory, and runs it directly; it resolves again if that interpreter goes away.
 
 ### Fixed
 
+- A command run in a pane, such as `ccm send` from Claude, could act in the wrong tmux session, or fail with `can't find session`, for a minute after a popup was opened from another session, or from one that has since closed. It now uses its own pane's session; inside a popup, the recorded session is used only while it still exists.
 - `ccm send --start` no longer types a message that looks too long for the recipient's input box, where it used to stay unsent. Right after a start, ccm sends only a message it can see whole in the input box, and the box shows about half the pane height. ccm now estimates the length before typing. A message that looks too tall is not typed, Claude is left running, and ccm says to send it again without `--start` or to send a short line pointing to a file. The estimate can be off for some characters, such as emoji sequences or tabs; a message it lets through is still checked after typing, as before.
 
 ### Security
