@@ -7,7 +7,11 @@ setup_file() {
     # environment; ccm.tmux starts `ccm setup-hooks` that way, which edits
     # $HOME/.claude/settings.json. The spy starts servers away from it.
     export CCM_TEST_REAL_HOME="$HOME"
+    # The user's own settings must come out of a test file as they went
+    # in; a test that writes them fails the file by name (see
+    # teardown_file). Checksums only: nothing is read beyond that.
     mkdir -p "$CCM_TEST_GUARD_DIR/bin" "$CCM_TEST_GUARD_DIR/sockets" "$CCM_TEST_GUARD_DIR/home"
+    ccm_test_real_settings_sums > "$CCM_TEST_GUARD_DIR/settings-before"
     : > "$CCM_TEST_GUARD_DIR/denied"
     cp "${BATS_TEST_DIRNAME}/helpers/tmux_spy.bash" "$CCM_TEST_GUARD_DIR/bin/tmux"
     chmod +x "$CCM_TEST_GUARD_DIR/bin/tmux"
@@ -25,6 +29,18 @@ ccm_test_new_socket() {
     basename "$registration"
 }
 
+ccm_test_real_settings_sums() {
+    local f
+    for f in .claude/settings.json .claude/settings.local.json .tmux.conf \
+             .codex/hooks.json .codex/config.toml; do
+        if [[ -e "$CCM_TEST_REAL_HOME/$f" ]]; then
+            printf '%s %s\n' "$f" "$(cksum < "$CCM_TEST_REAL_HOME/$f")"
+        else
+            printf '%s absent\n' "$f"
+        fi
+    done
+}
+
 teardown_file() {
     local registration
     # A failing test may not reach its normal server shutdown. Only
@@ -34,6 +50,11 @@ teardown_file() {
         "$CCM_TEST_GUARD_DIR/bin/tmux" -L "${registration##*/}" kill-server 2>/dev/null || true
     done
     rm -rf "$TMUX_TMPDIR"
+    if ! ccm_test_real_settings_sums | cmp -s - "$CCM_TEST_GUARD_DIR/settings-before"; then
+        echo "The user's own settings (\$HOME) changed while this test file ran (a test wrote them, or they were edited meanwhile):"
+        ccm_test_real_settings_sums | diff "$CCM_TEST_GUARD_DIR/settings-before" - | grep '^[<>]' || true
+        return 1
+    fi
     if [[ -s "$CCM_TEST_GUARD_DIR/denied" ]]; then
         echo "Non-isolated tmux calls were blocked (exit 99):"
         cat "$CCM_TEST_GUARD_DIR/denied"

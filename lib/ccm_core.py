@@ -1121,6 +1121,15 @@ def build_project_list(fast=False):
             agent = 'claude' if ccm_detection.find_claude_pid(pc[1], ps_lines) else external_agent_name(pc[3])
             ccm_roles.reconcile(pc[2], pc[7], agent)
     own_pgid = str(os.getpgrp())
+    if not fast:
+        # The panes detection is about to capture, in one tmux process.
+        # Only a hint: a pane it leaves out is captured on its own, one
+        # it adds costs nothing but its text.
+        ccm_pane_state.prefetch_visible([
+            pc[2] for pc in panes_cache
+            if not _pane_is_ignored(pc)
+            and pc[3] not in SHELL_FOREGROUND_COMMANDS
+            and ccm_detection.find_claude_pid(pc[1], ps_lines)])
     # Sidekick attention markers: read once per build (a single
     # readdir), lazily on the first row because the global
     # @ccm-sidekick-attention toggle rides the bulk window query
@@ -1215,6 +1224,8 @@ def build_project_list(fast=False):
         ))
 
     projects.sort(key=lambda p: p.sort_key)
+    if not fast:
+        ccm_pane_state.clear_prefetched()
     return projects
 
 
@@ -1529,6 +1540,7 @@ import ccm_commands  # noqa: E402, F401
 import ccm_detection  # noqa: E402, F401
 import ccm_jsonl  # noqa: E402, F401
 import ccm_notify  # noqa: E402, F401
+import ccm_pane_state  # noqa: E402, F401
 import ccm_render  # noqa: E402, F401
 import ccm_rules  # noqa: E402, F401
 import ccm_runtime  # noqa: E402, F401

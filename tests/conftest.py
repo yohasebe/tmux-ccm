@@ -177,8 +177,8 @@ def isolate_agentview_home(tmp_path, monkeypatch):
     monkeypatch.setattr(ccm_agentview, "DAEMON_STATUS_PATH",
                         str(home / "daemon.status.json"))
     monkeypatch.setattr(ccm_agentview, "JOBS_DIR", str(home / "jobs"))
-    monkeypatch.setattr(ccm_agentview, "_claim_cache", {})
-    monkeypatch.setattr(ccm_agentview, "_handoff_cache", {})
+    monkeypatch.setattr(ccm_agentview, "_claim_cache", ccm_agentview._BoundedCache(ccm_agentview._CACHE_LIMIT))
+    monkeypatch.setattr(ccm_agentview, "_handoff_cache", ccm_agentview._BoundedCache(ccm_agentview._CACHE_LIMIT))
 
 
 @pytest.fixture(autouse=True)
@@ -291,3 +291,44 @@ def make_ctx(**overrides):
     )
     defaults.update(overrides)
     return ccm_rules.DetectionContext(**defaults)
+
+
+# ─── The user's own settings come out of the run as they went in ───
+#
+# A test that writes the real ~/.claude/settings.json, ~/.tmux.conf or
+# the Codex config fails the run, naming the file. Only checksums are
+# taken. Read once at session start, before any test can repoint HOME.
+
+_REAL_SETTINGS = [os.path.join(os.path.expanduser("~"), f) for f in (
+    ".claude/settings.json", ".claude/settings.local.json", ".tmux.conf",
+    ".codex/hooks.json", ".codex/config.toml")]
+
+
+def _settings_sums():
+    import hashlib
+    sums = {}
+    for path in _REAL_SETTINGS:
+        try:
+            with open(path, "rb") as f:
+                sums[path] = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            sums[path] = None
+    return sums
+
+
+def pytest_sessionstart(session):
+    session.config._ccm_settings_before = _settings_sums()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    before = getattr(session.config, "_ccm_settings_before", None)
+    if before is None:
+        return
+    changed = [p for p, digest in _settings_sums().items() if digest != before.get(p)]
+    if changed:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter:
+            reporter.write_line("The user's own settings changed during the test run "
+                                "(a test wrote them, or they were edited meanwhile): "
+                                + ", ".join(changed), red=True)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED

@@ -454,8 +454,8 @@ def handoff_env(fake_claude_home, cli_says_live, tmp_path, monkeypatch):
     projects_dir = tmp_path / ".claude" / "projects"
     projects_dir.mkdir(parents=True)
     monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects_dir))
-    monkeypatch.setattr(ccm_agentview, "_claim_cache", {})
-    monkeypatch.setattr(ccm_agentview, "_handoff_cache", {})
+    monkeypatch.setattr(ccm_agentview, "_claim_cache", ccm_agentview._BoundedCache(ccm_agentview._CACHE_LIMIT))
+    monkeypatch.setattr(ccm_agentview, "_handoff_cache", ccm_agentview._BoundedCache(ccm_agentview._CACHE_LIMIT))
     return project_dir, projects_dir
 
 
@@ -1230,3 +1230,15 @@ class TestContinueBlockerWarnings:
     def test_unknown_state_reads_as_live(self):
         bg = _bg("0b900000", BG_ID, "/p", state="UNKNOWN")
         assert "(live)" in ccm_agentview.format_continue_blocker("proj", bg)
+
+
+def test_transcript_caches_forget_their_oldest_entries_past_the_limit():
+    cache = ccm_agentview._BoundedCache(3)
+    for i in range(5):
+        cache[f"/t/{i}.jsonl"] = (i, i, None)
+    assert list(cache) == ["/t/2.jsonl", "/t/3.jsonl", "/t/4.jsonl"]
+    cache["/t/2.jsonl"] = (9, 9, None)          # rewritten → newest
+    cache["/t/5.jsonl"] = (5, 5, None)
+    assert list(cache) == ["/t/4.jsonl", "/t/2.jsonl", "/t/5.jsonl"]
+    assert isinstance(ccm_agentview._claim_cache, ccm_agentview._BoundedCache)
+    assert isinstance(ccm_agentview._handoff_cache, ccm_agentview._BoundedCache)

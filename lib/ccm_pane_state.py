@@ -193,6 +193,67 @@ def capture_composer_snapshot(pane_target):
     return strip_sgr(attributed), attributed
 
 
+# Panes captured ahead in one tmux process for the pass that follows
+# (see `prefetch_visible`): pane id -> text. Each is served once, to the
+# pass's first look at that pane; a second look (the spinner resample)
+# goes to tmux. Entries expire, so a pass that ends early cannot leave
+# old screens for a later one.
+_PREFETCHED = {}
+_PREFETCH_TTL_SEC = 1.0
+_prefetched_until = 0.0
+
+
+def prefetch_visible(pane_ids):
+    """Capture several panes' visible areas in one tmux process. The
+    capture is the one `capture_pane_visible` makes, with a separator
+    line between panes that carries a fresh random token, so no screen
+    can contain it. If the separators do not come back one per pane, or
+    tmux fails (a pane closed meanwhile aborts the rest), nothing is
+    kept and each pane is captured on its own as before. An empty
+    capture (an alternate-screen app) still takes the existing
+    alternate-screen read in `capture_pane_visible`."""
+    global _prefetched_until
+    import uuid
+    _PREFETCHED.clear()
+    pane_ids = list(dict.fromkeys(pane_ids))
+    if len(pane_ids) < 2:
+        return
+    sep = f"==ccm-capture-{uuid.uuid4().hex}=="
+    args = []
+    for i, pane in enumerate(pane_ids):
+        if i:
+            args += [";", "display-message", "-p", sep, ";"]
+        args += ["capture-pane", "-t", pane, "-p"]
+    # A failure comes back empty: one segment, never one per pane.
+    out = ccm_core.tmux_cmd(*args)
+    segments, current = [], []
+    for line in out.split("\n"):
+        if line == sep:
+            segments.append("\n".join(current))
+            current = []
+        else:
+            current.append(line)
+    segments.append("\n".join(current))
+    if len(segments) != len(pane_ids):
+        return
+    for pane, text in zip(pane_ids, segments):
+        _PREFETCHED[pane] = text.strip()
+    _prefetched_until = time.monotonic() + _PREFETCH_TTL_SEC
+
+
+def clear_prefetched():
+    _PREFETCHED.clear()
+
+
+def _take_prefetched(pane_target):
+    if not _PREFETCHED:
+        return None
+    if time.monotonic() > _prefetched_until:
+        _PREFETCHED.clear()
+        return None
+    return _PREFETCHED.pop(pane_target, None)
+
+
 def capture_pane_visible(pane_target):
     """Capture the entire visible area of a pane (no scrollback).
 
@@ -204,7 +265,9 @@ def capture_pane_visible(pane_target):
     fixed-cost capture regardless of scrollback length.
 
     Returns a list of stripped non-empty lines, oldest first."""
-    raw = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p")
+    raw = _take_prefetched(pane_target)
+    if raw is None:
+        raw = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p")
     if not raw or not raw.strip():
         raw = ccm_core.tmux_cmd("capture-pane", "-a", "-t", pane_target, "-p")
     if not raw:

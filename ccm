@@ -7,11 +7,13 @@ _ccm_resolve() {
     local src="$1"
     while [[ -L "$src" ]]; do
         local dir
-        dir=$(cd -P "$(dirname "$src")" && pwd)
+        [[ "$src" == */* ]] || src="./$src"
+        dir=$(cd -P "${src%/*}" && pwd)
         src=$(readlink "$src")
         [[ "$src" != /* ]] && src="$dir/$src"
     done
-    cd -P "$(dirname "$src")" && pwd
+    [[ "$src" == */* ]] || src="./$src"
+    cd -P "${src%/*}" && pwd
 }
 CCM_ROOT="$(_ccm_resolve "$0")"
 
@@ -25,20 +27,18 @@ case "${1:-}" in
     *) set -euo pipefail ;;
 esac
 
+# The periodic status pass skips most seconds; decide that before
+# reading the rest of ccm (see lib/ccm_reconcile_gate.sh).
+# `--fast` is the hook-driven push and is never rate-limited.
+if [[ "${1:-}" == "inject-status" && "$*" != *--fast* ]]; then
+    source "${CCM_ROOT}/lib/ccm_tmp_root.sh"
+    source "${CCM_ROOT}/lib/ccm_reconcile_gate.sh"
+    _ccm_should_reconcile || exit 0
+fi
+
 # Source common library (init, hooks, deps, output helpers)
 source "${CCM_ROOT}/lib/common.sh"
 
-# Rate-limit the periodic status poll before doing ANY setup work.
-# tmux fires `#(ccm inject-status)` once per status-interval — every
-# second on a config with a seconds clock — and on the seconds this
-# skips, the whole invocation must cost nothing beyond the shell
-# itself. That means jumping the queue ahead of `ccm_init_dirs`,
-# whose mkdir and two find sweeps are three more processes per
-# second for housekeeping that does not need to run at 1 Hz.
-# `--fast` is the hook-driven push and is never rate-limited.
-if [[ "${1:-}" == "inject-status" && "$*" != *--fast* ]]     && ! _ccm_should_reconcile; then
-    exit 0
-fi
 
 # Initialize runtime directories. The cache sweep is skipped on the
 # hook-driven fast path: it fires on every state transition, and two

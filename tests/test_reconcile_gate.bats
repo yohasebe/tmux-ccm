@@ -128,3 +128,19 @@ teardown() {
     [[ -n "$gate_line" && -n "$init_line" ]]
     [ "$gate_line" -lt "$init_line" ]
 }
+
+@test "ccm dispatcher: a skipped second reads nothing past the gate" {
+    # A copy of the plugin whose common.sh would stop the run: the skip
+    # path must exit before it is read, a due pass must read it.
+    local plugin="${BATS_TEST_TMPDIR}/plugin"
+    mkdir -p "$plugin"
+    cp "${CCM_ROOT}/ccm" "$plugin/ccm"
+    cp -R "${CCM_ROOT}/lib" "$plugin/lib"
+    printf 'exit 99\n' > "$plugin/lib/common.sh"
+    printf '%s\n' "$(date +%s)" > "$STAMP"
+    run env -u TMUX bash "$plugin/ccm" inject-status
+    [ "$status" -eq 0 ]
+    rm -f "$STAMP"
+    run env -u TMUX bash "$plugin/ccm" inject-status
+    [ "$status" -eq 99 ]
+}

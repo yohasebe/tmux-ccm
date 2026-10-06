@@ -1308,3 +1308,56 @@ class TestEnumerateWindowPanes:
         p = ccm_pane_state.enumerate_window_panes("0:5", [])[0]
         assert (p.pane_id, p.pane_pid, p.active, p.current_command,
                 p.ignored) == ("%0", "100", False, "", False)
+
+
+# ─── Panes captured ahead in one tmux process ───
+
+class TestPrefetchVisible:
+    def _tmux(self, monkeypatch, reply):
+        calls = []
+
+        def tmux_cmd(*args, **kwargs):
+            calls.append(args)
+            if ";" in args:
+                sep = args[args.index("display-message") + 2]
+                return reply(sep) if callable(reply) else reply
+            return "LIVE ❯"
+        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux_cmd)
+        ccm_pane_state.clear_prefetched()
+        return calls
+
+    def test_each_pane_is_served_once_then_read_live(self, monkeypatch):
+        calls = self._tmux(monkeypatch, lambda sep: f"A1\nA2\n{sep}\nB1\n")
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        assert ccm_pane_state.capture_pane_visible("%1") == ["A1", "A2"]
+        assert ccm_pane_state.capture_pane_visible("%2") == ["B1"]
+        assert ccm_pane_state.capture_pane_visible("%1") == ["LIVE ❯"]   # a second look
+        assert sum(1 for c in calls if ";" in c) == 1
+
+    @pytest.mark.parametrize("reply", [
+        "",                                              # tmux failed
+        lambda sep: f"A\n{sep}\nB\n{sep}\nC\n",          # a screen held the separator
+        lambda sep: "A only\n",                          # separators lost
+    ])
+    def test_anything_but_one_screen_per_pane_keeps_nothing(self, monkeypatch, reply):
+        self._tmux(monkeypatch, reply)
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        assert ccm_pane_state.capture_pane_visible("%1") == ["LIVE ❯"]
+
+    def test_an_empty_screen_takes_the_existing_fallback(self, monkeypatch):
+        self._tmux(monkeypatch, lambda sep: f"\n{sep}\nB\n")
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        assert ccm_pane_state.capture_pane_visible("%1") == ["LIVE ❯"]
+
+    def test_screens_left_by_an_unfinished_pass_expire(self, monkeypatch):
+        self._tmux(monkeypatch, lambda sep: f"A\n{sep}\nB\n")
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        monkeypatch.setattr(ccm_pane_state, "_prefetched_until", 0.0)
+        assert ccm_pane_state.capture_pane_visible("%1") == ["LIVE ❯"]
+
+    def test_the_separator_is_new_each_pass(self, monkeypatch):
+        seen = []
+        self._tmux(monkeypatch, lambda sep: seen.append(sep) or "")
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        assert len(set(seen)) == 2

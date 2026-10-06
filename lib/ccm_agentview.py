@@ -51,6 +51,7 @@ roster so only currently-active sessions surface — matching the
 behavior of `claude agents` itself.
 """
 
+from collections import OrderedDict
 import glob
 import json
 import os
@@ -388,8 +389,27 @@ _CONVERSATION_RE = re.compile(r'"type"\s*:\s*"(?:user|assistant)"')
 #: also a canonical path, so a re-pointed symlink stales it without
 #: the file changing. None of these is a shape the CLI has been seen
 #: to produce; they are named so the key's reach is not overstated.
-_claim_cache = {}      # path → (mtime_ns, size, recorded cwd or None)
-_handoff_cache = {}    # path → (mtime_ns, size, target or None)
+class _BoundedCache(OrderedDict):
+    """A dict that forgets its oldest entries past `limit`. A long-lived
+    dashboard reads transcripts the CLI later deletes; their entries
+    would otherwise stay for the life of the process. The limit is far
+    above a working set (the CLI keeps transcripts for weeks, not
+    thousands), so a scan never evicts what it is about to reuse."""
+
+    def __init__(self, limit):
+        super().__init__()
+        self.limit = limit
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.limit:
+            self.popitem(last=False)
+
+
+_CACHE_LIMIT = 1024
+_claim_cache = _BoundedCache(_CACHE_LIMIT)    # path → (mtime_ns, size, recorded cwd or None)
+_handoff_cache = _BoundedCache(_CACHE_LIMIT)  # path → (mtime_ns, size, target or None)
 
 #: Registry root: the CLI's config home. `CLAUDE_CONFIG_DIR` moves it;
 #: ccm's transcript readers are anchored at `~/.claude`, so when the
