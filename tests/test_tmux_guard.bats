@@ -114,3 +114,27 @@ _fixture() {
     [[ ! -d "$(cat "$CASE_DIR/socket-dir")" ]]
     [[ "$output" != *"Non-isolated tmux calls were blocked"* ]]
 }
+
+@test "the settings guard compares hooks only, and whole files it cannot read as an object" {
+    local home="$BATS_TEST_TMPDIR/home" probe="$BATS_TEST_TMPDIR/probe"
+    mkdir -p "$home/.claude" "$probe/helpers"
+    cp "$BATS_TEST_DIRNAME/helpers/tmux_guard.bash" "$BATS_TEST_DIRNAME/helpers/tmux_spy.bash" "$probe/helpers/"
+    write() {
+        printf '#!/usr/bin/env bats\nload helpers/tmux_guard.bash\n@test w { printf %%s %q > "$CCM_TEST_REAL_HOME/.claude/settings.json"; }\n' "$1" > "$probe/w.bats"
+    }
+    # Another key changes (as Claude Code does): no failure.
+    printf '{"hooks":{"Stop":[]},"theme":"dark"}' > "$home/.claude/settings.json"
+    write '{"hooks":{"Stop":[]},"theme":"light"}'
+    run env HOME="$home" bats "$probe/w.bats"
+    [ "$status" -eq 0 ]
+    # The hooks change: the file fails.
+    write '{"hooks":{"Stop":[{"x":1}]},"theme":"light"}'
+    run env HOME="$home" bats "$probe/w.bats"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *".claude/settings.json"* ]]
+    # Not an object: compared whole, so a change still fails.
+    printf '[]' > "$home/.claude/settings.json"
+    write '[1]'
+    run env HOME="$home" bats "$probe/w.bats"
+    [ "$status" -ne 0 ]
+}

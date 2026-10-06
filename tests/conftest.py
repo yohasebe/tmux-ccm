@@ -310,9 +310,18 @@ def _settings_sums():
     for path in _REAL_SETTINGS:
         try:
             with open(path, "rb") as f:
-                sums[path] = hashlib.sha256(f.read()).hexdigest()
+                data = f.read()
         except OSError:
             sums[path] = None
+            continue
+        if "/.claude/" in path:
+            # Claude Code rewrites other keys of its settings while it
+            # runs; the hooks are what ccm writes there.
+            try:
+                data = json.dumps(json.loads(data).get("hooks"), sort_keys=True).encode()
+            except (ValueError, AttributeError):
+                pass
+        sums[path] = hashlib.sha256(data).hexdigest()
     return sums
 
 
