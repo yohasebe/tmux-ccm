@@ -14,18 +14,11 @@ import re
 import tempfile
 import time
 
+from ccm_snapshot_errors import EmptySnapshot, SnapshotError, WindowProblem  # noqa: F401
 import ccm_core
 import ccm_detection
 import ccm_pane_state
 import ccm_roles
-
-
-class SnapshotError(RuntimeError):
-    pass
-
-
-class EmptySnapshot(SnapshotError):
-    pass
 
 
 WINDOW_FIELDS = ('session_id', 'window_id', 'window_index', '@ccm_project',

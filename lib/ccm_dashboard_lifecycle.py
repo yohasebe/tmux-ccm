@@ -60,6 +60,10 @@ def restore_status(query):
             phrase = ccm_restore.describe(record) if ours else 'in progress'
             return 'Restoring ' + phrase + ' …', job_name or (record['source'] if ours else None)
         if job_name:
+            if record.get('source') == job_name and record.get('state') == 'incomplete':
+                count = len(record.get('failed') or {})
+                return (f'Restore incomplete: {count} window(s) need attention; autosave paused; '
+                        'open Menu \u2192 Continue restore.'), job_name
             if record.get('source') == job_name and record.get('state') in ('stopped', 'running'):
                 return _stopped_line(record), job_name
             return 'Restore incomplete; open Menu → Continue restore.', job_name

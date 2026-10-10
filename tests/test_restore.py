@@ -1,5 +1,6 @@
 """Restore contracts that must hold before tmux mutations or agent launch."""
 import copy
+from pathlib import Path
 import json
 from unittest.mock import Mock
 
@@ -68,6 +69,8 @@ def test_too_small_and_bad_geometry_are_rejected():
 
 @pytest.mark.parametrize('conflict', ['missing', 'tag-name', 'tag-cwd', 'untag-name', 'untag-cwd', 'other-session', 'invalid-name'])
 def test_preflight_refuses_conflicts_before_creating(checkpoint, monkeypatch, conflict):
+    # A conflict of one project keeps only that project back; the session
+    # or the snapshot being wrong stops the restore.
     data = copy.deepcopy(checkpoint)
     job = {'id': 'test-job'}
     cwd = data['projects'][0]['dir']
@@ -93,8 +96,14 @@ def test_preflight_refuses_conflicts_before_creating(checkpoint, monkeypatch, co
     monkeypatch.setattr(store, '_query', lambda *a: [pc])
     commands = Mock(return_value='$1')
     monkeypatch.setattr(restore, 'run', commands)
-    with pytest.raises(store.SnapshotError):
-        restore.preflight(data, 'test', job)
+    if conflict in ('other-session', 'invalid-name'):
+        with pytest.raises(store.SnapshotError) as caught:
+            restore.preflight(data, 'test', job)
+        assert not isinstance(caught.value, restore.WindowProblem)
+    else:
+        existing, problems = restore.preflight(data, 'test', job)
+        assert existing == {}
+        assert list(problems) == ['0']
     assert all(call.args[0] == 'display-message' for call in commands.call_args_list)
 
 
@@ -282,11 +291,19 @@ def test_startup_waits_for_transient_child_and_never_terminates_work(monkeypatch
     ('100 1 100 /bin/zsh 00:01\n101 100 100 sleep 00:01', False),
     ('100 1 100 /bin/zsh 00:01\n101 100 101 worker 00:01', True),
     ('100 1 100 worker 00:01', False),
-    ('', False),
 ])
 def test_shell_name_does_not_hide_rc_children(monkeypatch, processes, expected):
     monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: processes)
     assert restore.idle_shells({'%1': {'pid': '100', 'command': 'zsh'}}) is expected
+
+
+def test_unreadable_process_list_stops_the_restore_not_one_window(monkeypatch):
+    # Not seeing processes says nothing about one window's rc, so it must
+    # not become that window's startup timeout.
+    monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: '')
+    with pytest.raises(store.SnapshotError) as caught:
+        restore.idle_shells({'%1': {'pid': '100', 'command': 'zsh'}})
+    assert not isinstance(caught.value, restore.WindowProblem)
 
 
 @pytest.mark.parametrize('layout,expected', [
@@ -680,3 +697,100 @@ def test_notice_styles_reset_inherited_attributes_first():
     # A reverse or underscore message-style would otherwise carry over.
     for style in (*restore._NOTICE_BADGES.values(), restore._NOTICE_BODY):
         assert style.startswith('#[none,')
+
+
+def test_a_job_from_the_previous_version_resumes_publication_it_began():
+    legacy = {'id': 'j', 'source': '_autosave', 'digest': 'd', 'publishing': True,
+              'windows': {'0': {'window': '@1', 'ready': True}, '1': {'window': '@2', 'ready': True}}}
+    job = restore._upgrade_job(copy.deepcopy(legacy))
+    assert job['version'] == restore.JOB_VERSION
+    assert 'publishing' not in job
+    assert [s['publish'] for s in job['windows'].values()] == ['started', 'started']
+    assert job['failed'] == {}
+    plain = restore._upgrade_job({'id': 'j', 'windows': {'0': {'window': '@1'}}})
+    assert 'publish' not in plain['windows']['0']
+
+
+def _publishing(monkeypatch, project, mark, state=None, **window):
+    w = {field: '' for field in restore.WF}
+    w.update({'session_id': '$1', 'window_id': '@1', '@ccm_restore_job': 'j:0',
+              '@ccm_restore_pending': mark})
+    w.update(window)
+    job = {'id': 'j', 'windows': {'0': state} if state else {}, 'failed': {}}
+    monkeypatch.setattr(restore, 'windows', lambda: [w])
+    writes = Mock(return_value='')
+    monkeypatch.setattr(restore, 'run', writes)
+    monkeypatch.setattr(restore, 'save_job', Mock())
+    return job, writes
+
+
+def test_a_window_released_before_a_stop_is_confirmed_never_rewritten(checkpoint, monkeypatch):
+    project = checkpoint['projects'][0]
+    job, writes = _publishing(monkeypatch, project, '0', {'window': '@1', 'publish': 'started'},
+                              **{'@ccm_project': project['name'], '@ccm_dir': project['dir']})
+    monkeypatch.setattr(restore, '_verify', Mock(side_effect=AssertionError('verified a usable window')))
+    restore._restore_and_publish(job, '0', project, '$1', False)
+    assert job['windows']['0']['publish'] == 'done'
+    writes.assert_not_called()
+
+
+@pytest.mark.parametrize('mark,state,window', [
+    # released by ccm, then registered to something else
+    ('0', {'window': '@1', 'publish': 'started'}, {'@ccm_project': 'other'}),
+    # not yet released, but someone registered it elsewhere meanwhile
+    ('1', {'window': '@1', 'publish': 'started'}, {'@ccm_project': 'other'}),
+    # never published by ccm, yet released
+    ('0', {'window': '@1'}, {}),
+    # never published by ccm, yet registered
+    ('1', None, {'@ccm_project': 'alpha'}),
+])
+def test_outside_changes_hold_back_only_that_window(checkpoint, monkeypatch, mark, state, window):
+    project = checkpoint['projects'][0]
+    job, writes = _publishing(monkeypatch, project, mark, state, **window)
+    with pytest.raises(restore.WindowProblem):
+        restore._restore_and_publish(job, '0', project, '$1', False)
+    assert not [c for c in writes.call_args_list if c.args[0] in ('set-option', 'rename-window')]
+
+
+def test_estimate_leaves_out_windows_already_held_back():
+    record = {'samples': 3, 'spent': 6.0, 'total': 10, 'done': 3, 'failed': {'4': 'x', '5': 'y'}}
+    assert restore.remaining_seconds(record) == 10
+
+
+def test_a_waiter_reports_an_incomplete_run_instead_of_retrying(checkpoint, capsys):
+    restore._publish({'run': 'r1', 'source': '_autosave', 'state': 'incomplete',
+                      'summary': ['Restored 2/3; 1 window(s) need attention.']})
+    with pytest.raises(SystemExit) as ended:
+        restore.seen_result('_autosave', {'r1'})
+    assert ended.value.code == 1
+    out = capsys.readouterr().out
+    assert 'windows needing attention' in out
+    assert 'Restored 2/3' in out
+
+
+def test_dashboard_names_an_incomplete_restore(checkpoint):
+    import ccm_dashboard_lifecycle as life
+    restore.save_job({'id': 'j', 'source': '_autosave', 'windows': {}, 'failed': {'1': 'x'}})
+    restore._publish({'run': 'r1', 'source': '_autosave', 'state': 'incomplete', 'failed': {'1': 'x'}})
+    line, name = life.restore_status(lambda *a: '')
+    assert line.startswith('Restore incomplete: 1 window(s) need attention')
+    assert name == '_autosave'
+
+
+def test_quiet_autosave_does_not_wait_for_a_restore(checkpoint, monkeypatch):
+    restore.save_job({'id': 'j', 'source': '_autosave', 'windows': {}, 'failed': {}})
+    monkeypatch.setattr(store, 'locked', Mock(side_effect=AssertionError('waited for the writer lock')))
+    assert snapshot.cmd_snapshot_save('_autosave', quiet=True) is False
+
+
+@pytest.mark.parametrize('module', sorted(
+    p.stem for p in (Path(restore.__file__).parent).glob('ccm_*.py')))
+def test_every_module_imports_first_in_a_fresh_interpreter(module):
+    # Import order differs between entry points (a fixture may import the
+    # store first); a class built at import time from a module still being
+    # initialized fails only in some of those orders.
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, '-c', f'import {module}'], capture_output=True, text=True,
+                            env={'PYTHONPATH': str(Path(restore.__file__).parent), 'PATH': '/usr/bin:/bin'})
+    assert result.returncode == 0, result.stderr

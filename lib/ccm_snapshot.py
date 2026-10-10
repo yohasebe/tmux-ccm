@@ -45,6 +45,11 @@ def cmd_snapshot_save(name="", quiet=False):
         except (EOFError, KeyboardInterrupt):
             return
     name = _sanitize_snapshot_name(name)
+    # A background autosave during a restore would only wait for the
+    # restore's writer lock to learn it may not save; say so at once. The
+    # check under the lock below still decides.
+    if quiet and ccm_restore.paused():
+        return False
     try:
         with store.locked():
             if ccm_restore.paused():

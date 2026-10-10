@@ -58,22 +58,22 @@ SHIM
     restore_probe stop-after-create
 }
 
-@test "restore v2: a restored window changed before publication stops, and resumes once put back" {
+@test "restore v2: a published window changed while others restore is left as the user set it" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe ready-changed
 }
 
-@test "restore v2: a window moved to another session after creation is not published" {
+@test "restore v2: a window moved to another session after creation is held back; the rest are published" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe moved
 }
 
-@test "restore v2: a window linked into another session after creation is not published" {
+@test "restore v2: a window linked into another session after creation is held back; the rest are published" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe linked
 }
 
-@test "restore v2: a restored window that lost its token is not published or re-marked" {
+@test "restore v2: a window that lost its marker is held back and not re-marked; the rest are published" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe token-lost
 }
@@ -86,6 +86,16 @@ SHIM
 @test "restore v2: a failed progress cleanup is released by the retry it asks for" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe unlink-failed
+}
+
+@test "restore v2: a missing directory holds back one project; fixing it lets the same restore finish" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe missing-dir
+}
+
+@test "restore v2: a window that lost its marker part way through publication is held back, not adopted" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe started-unmarked
 }
 
 @test "restore v2: a lost new-window reply is resumed by ownership marker" {
@@ -108,7 +118,7 @@ SHIM
     restore_probe login-shell
 }
 
-@test "restore v2: persistent rc work is preserved across failed retries" {
+@test "restore v2: persistent rc work is preserved across retries and holds back only its window" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe rc-work
 }
