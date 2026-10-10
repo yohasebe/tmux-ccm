@@ -1553,6 +1553,9 @@ class TestCmdDebugTrace:
                 return rows
             if args[0] == "list-panes":
                 return ""
+            if args[0] == "display-message":
+                return (f"{args[3]}\t@1\t100" if ":" in args[3]
+                        else "main:1\t@1\t100")
             return ""  # show-option etc.
         monkeypatch.setattr(ccm_core, "tmux_cmd", tmux_side_effect)
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
@@ -1624,6 +1627,148 @@ class TestCmdDebugTrace:
         monkeypatch.setattr(ccm_core, "get_session", lambda: None)
         with pytest.raises(SystemExit):
             ccm_commands.cmd_debug_trace("alpha")
+
+
+class TestDebugTraceStopsByItself:
+    """A trace started in the background outlives whatever started it,
+    so it has to end on its own: when the window it watches is gone
+    (or its server was replaced), and after a time limit."""
+
+    LIVE = "main:1\t@1\t100"
+
+    def _run(self, monkeypatch, capsys, *, windows, max_time=0,
+             interval=1.0, ticks=50):
+        """windows: display-message replies, one per loop pass (the
+        first is the lookup at start); the last one repeats. A fake
+        clock advances by `interval` per sleep. Returns (stderr,
+        session:index targets scanned, display-message targets,
+        clock at exit)."""
+        clock = {"now": 1000.0}
+        replies = list(windows)
+        scanned_targets = []
+        looked_up = []
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
+        monkeypatch.setattr(ccm_commands, "_resolve_trace_target",
+                            lambda _: ("main:1", "alpha", "/dir/alpha"))
+
+        def tmux(*args, **kw):
+            if args[0] == "display-message":
+                looked_up.append(args[args.index("-t") + 1])
+                return replies.pop(0) if len(replies) > 1 else replies[0]
+            if args[0] == "show-option":
+                scanned_targets.append(args[args.index("-t") + 1])
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_detection, "build_detection_context",
+                            lambda *a, **kw: make_ctx(raw="IDLE"))
+        rule = ccm_rules.Rule(name="default", phase="idle")
+        monkeypatch.setattr(ccm_detection, "resolve_state_from_context",
+                            lambda ctx, d: ("IDLE", rule, None))
+        monkeypatch.setattr("signal.signal", lambda *a, **kw: None)
+        monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) > ticks:
+                raise _StopTrace
+            clock["now"] += interval
+        monkeypatch.setattr("time.sleep", sleep)
+        ccm_commands.cmd_debug_trace("alpha", interval=interval,
+                                     max_time=max_time)
+        return (capsys.readouterr().err, scanned_targets, looked_up,
+                clock["now"] - 1000.0)
+
+    def test_stops_when_window_is_gone_past_the_grace(self, monkeypatch,
+                                                      capsys):
+        # Seen at t=0 and t=1, gone from t=2 (":\t\t" is what tmux
+        # returns for a closed window; a dead server gives "").
+        err, scanned, _, elapsed = self._run(
+            monkeypatch, capsys,
+            windows=[self.LIVE, self.LIVE, self.LIVE, ":\t\t"])
+        assert "window @1 is gone" in err
+        assert len(scanned) == 2
+        # Missing since t=2, so it stops at t=2+5.
+        assert elapsed == 2 + ccm_commands.TRACE_TARGET_GONE_GRACE
+
+    def test_grace_is_five_seconds(self):
+        assert ccm_commands.TRACE_TARGET_GONE_GRACE == 5.0
+
+    def test_missing_just_under_the_grace_does_not_stop(self, monkeypatch,
+                                                       capsys):
+        # Missing at t=1..t=5 (4 s since first miss at t=1 when last
+        # checked), then back: no stop until the time limit.
+        err, scanned, _, _ = self._run(
+            monkeypatch, capsys, max_time=12,
+            windows=[self.LIVE, self.LIVE, "", "", "", "", "", self.LIVE])
+        assert "is gone" not in err
+        assert "reached the 12s limit" in err
+        assert len(scanned) == 7
+
+    def test_looks_up_the_pinned_window_id(self, monkeypatch, capsys):
+        _, _, looked_up, _ = self._run(monkeypatch, capsys, max_time=3,
+                                       windows=[self.LIVE])
+        assert looked_up[0] == "main:1"
+        assert set(looked_up[1:]) == {"@1"}
+
+    def test_restarted_server_stops_the_trace(self, monkeypatch, capsys):
+        # Same window id and position, different server pid: a window
+        # of a new server, not the one traced.
+        err, scanned, _, elapsed = self._run(
+            monkeypatch, capsys, max_time=10,
+            windows=[self.LIVE, self.LIVE, "main:1\t@1\t200"])
+        assert "tmux server restarted" in err
+        assert len(scanned) == 1
+        assert elapsed == 1
+
+    def test_stops_at_the_time_limit(self, monkeypatch, capsys):
+        err, scanned, _, _ = self._run(monkeypatch, capsys, max_time=3,
+                                       windows=[self.LIVE])
+        assert "reached the 3s limit" in err
+        assert len(scanned) == 3
+
+    def test_zero_means_no_limit(self, monkeypatch, capsys):
+        with pytest.raises(_StopTrace):
+            self._run(monkeypatch, capsys, max_time=0, ticks=200,
+                      windows=[self.LIVE])
+
+    def test_follows_a_moved_window(self, monkeypatch, capsys):
+        _, scanned, _, _ = self._run(monkeypatch, capsys, max_time=3, windows=[
+            self.LIVE, self.LIVE, "main:7\t@1\t100"])
+        assert scanned == ["main:1", "main:7", "main:7"]
+
+    def test_header_states_how_it_stops(self, monkeypatch, capsys):
+        with pytest.raises(_StopTrace):
+            self._run(monkeypatch, capsys, max_time=43200,
+                      windows=[self.LIVE], ticks=0)
+        err = capsys.readouterr().err
+        assert "stops by itself when the window closes or after 12h" in err
+
+    def test_unidentifiable_window_exits(self, monkeypatch, capsys):
+        with pytest.raises(SystemExit):
+            self._run(monkeypatch, capsys, windows=[":\t\t"])
+
+
+class TestDebugTraceMaxTimeArgument:
+    def _parse(self, *extra):
+        parser, _ = ccm_core._build_parser()
+        return parser.parse_args(
+            ["debug", "trace", "alpha", *extra])
+
+    def test_default_is_twelve_hours(self):
+        assert self._parse().max_time == 12 * 3600
+
+    def test_zero_is_accepted(self):
+        assert self._parse("--max-time", "0").max_time == 0
+
+    def test_negative_is_rejected(self):
+        with pytest.raises(SystemExit):
+            self._parse("--max-time", "-1")
+
+    def test_non_number_is_rejected(self):
+        with pytest.raises(SystemExit):
+            self._parse("--max-time", "1h")
 
 
 class TestResolveTraceTarget:

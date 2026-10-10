@@ -1329,7 +1329,51 @@ def _resolve_trace_target(target):
     return None
 
 
-def cmd_debug_trace(target_match, interval=0.3):
+# A trace is an endless loop, so one started in the background by a
+# script outlives the script. It stops on its own when the window it
+# watches has been gone this long (a short grace, so one failed tmux
+# call does not end it), and after TRACE_MAX_TIME_DEFAULT seconds
+# unless the caller chooses otherwise.
+TRACE_TARGET_GONE_GRACE = 5.0
+TRACE_MAX_TIME_DEFAULT = 12 * 3600
+
+
+def _trace_window(target):
+    """Return (session:index, window_id, server_pid) for a tmux target,
+    or None.
+
+    `display-message` exits 0 for a window that no longer exists and
+    fills the fields with nothing (measured), and fails outright once
+    the server is gone; both come back as None. The window id is what
+    the trace follows, because a session:index can be renumbered or
+    reused by a different window. Window ids restart with the server,
+    so the server pid comes along to tell a restarted server's window
+    from the one being traced.
+    """
+    reply = ccm_core.tmux_cmd(
+        "display-message", "-p", "-t", target,
+        "#{session_name}:#{window_index}\t#{window_id}\t#{pid}",
+    )
+    fields = (reply or "").split("\t")
+    if len(fields) != 3:
+        return None
+    where, window_id, server_pid = fields
+    sess, _, index = where.partition(":")
+    if not (sess and index and window_id.startswith("@") and server_pid):
+        return None
+    return where, window_id, server_pid
+
+
+def _format_duration(seconds):
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def cmd_debug_trace(target_match, interval=0.3,
+                    max_time=TRACE_MAX_TIME_DEFAULT):
     """Print one line per scan showing every DetectionContext input,
     the rule that would match, and the resolved state. Read-only — this
     does NOT mutate @ccm_prev_state or any runtime file, so it can be
@@ -1346,6 +1390,10 @@ def cmd_debug_trace(target_match, interval=0.3):
     interval: seconds between scans. Smaller values catch faster
     transients but cost more CPU; 0.3 s is enough to observe the
     sub-second ordering that matters for detection bugs.
+
+    max_time: whole seconds before the trace stops by itself; 0 means
+    no limit. It also stops once the traced window has been gone for
+    TRACE_TARGET_GONE_GRACE seconds.
     """
     import signal as _signal
     import time as _time
@@ -1362,6 +1410,10 @@ def cmd_debug_trace(target_match, interval=0.3):
             "(e.g. %42, @7, probe:0) to trace a session ccm does not manage."
         )
     win_target, proj_name, proj_dir = resolved
+    located = _trace_window(win_target)
+    if located is None:
+        ccm_core.ccm_die(f"Could not identify the tmux window for {win_target}")
+    win_target, window_id, server_pid = located
 
     # Graceful Ctrl-C.
     stop = {"flag": False}
@@ -1371,15 +1423,40 @@ def cmd_debug_trace(target_match, interval=0.3):
 
     sys.stderr.write(
         f"# ccm debug trace: {proj_name} ({win_target}) — {proj_dir}\n"
-        f"# interval={interval}s  Ctrl-C to stop\n"
+        f"# interval={interval}s  Ctrl-C to stop; stops by itself when the window closes"
+        f"{f' or after {_format_duration(max_time)}' if max_time else ''}\n"
         "# read-only: unresolved idle history advances only when detection commits; "
         "idle_credit shows stored->candidate seconds, gap is the allowed interval\n"
         f"# columns: time  raw  prev  hook(state,age)  pid_age  jsonl(age,stop)  ev(derive)  rule[phase]  →  state[action]\n"
     )
     sys.stderr.flush()
 
+    started = _time.monotonic()
+    missing_since = None
     while not stop["flag"]:
         t0 = _time.monotonic()
+        if max_time and t0 - started >= max_time:
+            sys.stderr.write(
+                f"# trace stopped: reached the {_format_duration(max_time)} limit\n")
+            return
+        located = _trace_window(window_id)
+        if located is not None and located[2] != server_pid:
+            sys.stderr.write(
+                f"# trace stopped: the tmux server restarted, so window "
+                f"{window_id} is no longer the one traced\n")
+            return
+        if located is None:
+            if missing_since is None:
+                missing_since = t0
+            if t0 - missing_since >= TRACE_TARGET_GONE_GRACE:
+                sys.stderr.write(
+                    f"# trace stopped: window {window_id} is gone\n")
+                return
+            _time.sleep(interval)
+            continue
+        missing_since = None
+        # Follow the window if it was moved or renumbered.
+        win_target = located[0]
 
         # Fresh ps + pane snapshots each tick. No caching — we want to
         # observe real kernel/tmux state, not anything ccm has

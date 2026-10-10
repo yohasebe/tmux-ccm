@@ -306,7 +306,13 @@ tmux show-option -gqv @ccm-status-line  # 現在のモード（0/1/2）
 # 別ペインで実行してから、メインペインで問題の操作を再現する
 ccm debug trace <project-name>           # デフォルト 0.3 秒間隔
 ccm debug trace <project-name> 0.5       # 間隔指定
+ccm debug trace <project-name> --max-time 600   # 10 分で止める
 ```
+
+trace は、対象の窓が 5 秒続けて見つからなくなると（tmux サーバーの終了を含む）自分で止まります。
+tmux サーバーが新しいサーバーに置き換わったことが分かった場合は、その時点で止まります。
+また、12 時間たつと止まります。上限は `--max-time 秒数` で変えられ、`--max-time 0` で
+上限なしになります。窓を移動したり番号が変わったりしても、同じ窓を追い続けます。
 
 trace は読み取り専用で、保存された unresolved の入力待ち履歴を進めません。
 `idle_credit=保存済み->候補` は保存済みの証拠時間と、その時点で完全判定を確定した場合の

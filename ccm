@@ -94,7 +94,7 @@ Usage:
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
   ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
-  ccm debug trace <target> [interval]  Live state-detection trace; target is a project name or tmux pane/window (read-only)
+  ccm debug trace <target> [interval] [--max-time SECONDS]  Live state-detection trace; target is a project name or tmux pane/window (read-only; stops when the window closes or after 12 hours)
   ccm errors [--clear]              View / clear the silent-exception log
   ccm reset <name>                  Clear stuck runtime state for a project (last-resort recovery)
   ccm doctor [--verbose]            Show issues; --verbose includes all diagnostic details

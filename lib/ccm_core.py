@@ -1597,7 +1597,8 @@ def _debug_handler(args):
         print(f"Unknown debug subcommand: {args.subcommand!r}", file=sys.stderr)
         print("Available: trace", file=sys.stderr)
         sys.exit(2)
-    ccm_commands.cmd_debug_trace(args.target, interval=args.interval)
+    ccm_commands.cmd_debug_trace(args.target, interval=args.interval,
+                                 max_time=args.max_time)
 
 
 def _add_debug_args(p):
@@ -1609,6 +1610,22 @@ def _add_debug_args(p):
                         "session ccm does not manage")
     p.add_argument("interval", nargs="?", type=float, default=0.3,
                    help="Polling interval in seconds (default: 0.3)")
+    p.add_argument("--max-time", type=_non_negative_int,
+                   default=ccm_commands.TRACE_MAX_TIME_DEFAULT,
+                   help="Stop after this many seconds; 0 for no limit "
+                        "(default: 43200, 12 hours). The trace also stops "
+                        "when the traced window closes")
+
+
+def _non_negative_int(text):
+    import argparse
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}")
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return value
 
 
 def _add_name_arg(p, *, optional=True):

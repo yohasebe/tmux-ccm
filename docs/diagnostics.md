@@ -312,7 +312,14 @@ If a project shows BUSY when you expect IDLE (or vice-versa), use one of the two
 # In a separate pane, then reproduce the problematic event in the main pane
 ccm debug trace <project-name>           # default 0.3 s interval
 ccm debug trace <project-name> 0.5       # or specify interval
+ccm debug trace <project-name> --max-time 600   # stop after 10 minutes
 ```
+
+The trace stops by itself once the traced window has been gone for 5 seconds
+(including when the tmux server exits), at once when the tmux server has been
+replaced by a new one, and after 12 hours. `--max-time SECONDS`
+changes the limit; `--max-time 0` removes it. A window that is moved or
+renumbered is still followed.
 
 Trace is read-only: it does not advance the saved unresolved-idle history.
 `idle_credit=stored->candidate` shows the saved evidence and what a detection

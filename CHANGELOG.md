@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `ccm debug trace` no longer runs forever when it is left behind, for example when a script starts it in the background and exits. It stops by itself once the traced window has been gone for 5 seconds (including when the tmux server exits), at once when the tmux server has been replaced by a new one, and after 12 hours; `--max-time SECONDS` changes the limit, and `--max-time 0` removes it. A window that is moved or renumbered is still followed.
 - A command run in a pane, such as `ccm send` from Claude, could act in the wrong tmux session, or fail with `can't find session`, for a minute after a popup was opened from another session, or from one that has since closed. It now uses its own pane's session; inside a popup, the recorded session is used only while it still exists.
 - `ccm send --start` no longer types a message that looks too long for the recipient's input box, where it used to stay unsent. Right after a start, ccm sends only a message it can see whole in the input box, and the box shows about half the pane height. ccm now estimates the length before typing. A message that looks too tall is not typed, Claude is left running, and ccm says to send it again without `--start` or to send a short line pointing to a file. The estimate can be off for some characters, such as emoji sequences or tabs; a message it lets through is still checked after typing, as before.
 

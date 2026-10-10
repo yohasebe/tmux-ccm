@@ -138,6 +138,8 @@ def test_trace_is_read_only_and_reports_persisted_credit(polling, monkeypatch, c
         calls.append(args)
         if args[0] == 'list-panes':
             return 'test:1\t40\t%1\tclaude\t1\t48'
+        if args[0] == 'display-message':
+            return 'test:1\t@1\t100'
         return actual_tmux(*args)
     monkeypatch.setattr(ccm_core, 'tmux_cmd', tmux)
     monkeypatch.setattr(ccm_core, 'get_session', lambda: 'test')
