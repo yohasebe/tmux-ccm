@@ -794,3 +794,74 @@ def test_every_module_imports_first_in_a_fresh_interpreter(module):
     result = subprocess.run([sys.executable, '-c', f'import {module}'], capture_output=True, text=True,
                             env={'PYTHONPATH': str(Path(restore.__file__).parent), 'PATH': '/usr/bin:/bin'})
     assert result.returncode == 0, result.stderr
+
+
+def test_finish_without_confirmation_is_refused_when_not_interactive(checkpoint, monkeypatch, capsys):
+    calls = []
+
+    def finish(confirm):
+        calls.append(confirm({'source': '_autosave', 'dropped': ['beta'], 'archive': '_autosave-held-back-1234abcd'}))
+        return {'source': '_autosave', 'dropped': ['beta'], 'archive': '_autosave-held-back-1234abcd', 'autosave': 'present'}
+    monkeypatch.setattr(restore, 'finish', finish)
+    monkeypatch.setattr('sys.stdin.isatty', lambda: False)
+    with pytest.raises(SystemExit):
+        snapshot.cmd_finish_restore([])
+    assert calls == []
+    out = capsys.readouterr()
+    assert 'beta' in out.out and '_autosave-held-back-1234abcd' in out.out
+    assert 'use -y' in out.err
+
+
+def test_finish_with_nothing_incomplete_changes_nothing(checkpoint, capsys):
+    before = (store.directory() / '_autosave.json').read_bytes()
+    with pytest.raises(SystemExit):
+        snapshot.cmd_finish_restore(['-y'])
+    assert 'No incomplete restore' in capsys.readouterr().err
+    assert (store.directory() / '_autosave.json').read_bytes() == before
+    assert not list(store.directory().glob('*-held-back*'))
+
+
+@pytest.mark.parametrize('failing', ['@ccm_project', '@ccm_dir'])
+def test_release_keeps_the_job_marker_when_unregistering_fails(checkpoint, monkeypatch, failing):
+    # A held-back window part way through publication: if its registration
+    # cannot be removed, the marker that lets a retry find it must stay.
+    project = checkpoint['projects'][0]
+    w = {field: '' for field in restore.WF}
+    w.update({'session_id': '$1', 'window_id': '@1', '@ccm_restore_job': 'j:0', '@ccm_restore_pending': '1',
+              '@ccm_project': project['name'], '@ccm_dir': project['dir']})
+    monkeypatch.setattr(restore, 'windows', lambda: [dict(w)])
+    unset = []
+
+    def run(*args):
+        if args[-1] == failing:
+            raise store.SnapshotError('synthetic tmux failure')
+        unset.append(args[-1])
+        w[args[-1]] = ''
+        return ''
+    monkeypatch.setattr(restore, 'run', run)
+    with pytest.raises(store.SnapshotError):
+        restore._release_marks({'id': 'j'}, checkpoint)
+    assert '@ccm_restore_job' not in unset
+    assert w['@ccm_restore_job'] == 'j:0'
+
+
+def test_release_checks_the_marks_are_gone(checkpoint, monkeypatch):
+    project = checkpoint['projects'][0]
+    w = {field: '' for field in restore.WF}
+    w.update({'session_id': '$1', 'window_id': '@1', '@ccm_restore_job': 'j:0', '@ccm_restore_pending': '1'})
+    monkeypatch.setattr(restore, 'windows', lambda: [dict(w)])
+    monkeypatch.setattr(restore, 'run', Mock(return_value=''))  # reports success, changes nothing
+    with pytest.raises(store.SnapshotError, match='could not be removed'):
+        restore._release_marks({'id': 'j'}, checkpoint)
+
+
+def test_dashboard_tells_a_running_finish_from_a_stopped_one(checkpoint):
+    import ccm_dashboard_lifecycle as life
+    restore.save_job({'id': 'j', 'source': '_autosave', 'windows': {}, 'failed': {},
+                      'finishing': {'stage': 'clean', 'dropped': ['beta'], 'archive': None}})
+    assert life.restore_status(lambda *a: '')[0].startswith('Finishing the restore stopped part way')
+    held, _ = _hold()
+    try:
+        assert life.restore_status(lambda *a: '')[0] == 'Finishing the restore …'
+    finally:
+        restore.os.close(held)

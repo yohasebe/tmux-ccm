@@ -391,6 +391,7 @@ ccm menu                          インタラクティブメニュー
 ccm snapshot save|load|list|delete  スナップショット管理
 ccm roles [target] [--clear]      復元したペインの役割を表示・解除
 ccm prepare-logout [-y|--cancel]   保存点の保存・保護・解除
+ccm finish-restore [-y]            未完了の復元を、戻った分で終える
 ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
 ccm send <name> <msg> [flags]     他プロジェクトのClaude Codeセッションにプロンプト送信

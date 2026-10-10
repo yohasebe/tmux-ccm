@@ -181,6 +181,7 @@ Open the menu with `m` or `?`. These actions have no new single-key shortcut.
 | Prepare for logout | Save and protect `_autosave` through `ccm prepare-logout`. If projects are BUSY or PERMIT, their names appear and `[y/N]` defaults to No |
 | Cancel logout protection | Confirm releasing protection while keeping the saved checkpoint |
 | Continue restore | Continue the checkpoint recorded by an incomplete restoration. If it cannot be identified, choose from saved checkpoints |
+| Finish restore (keep what is restored) | End an incomplete restoration with the projects restored so far, through `ccm finish-restore`. Shows how many projects would no longer be restored and asks `[y/N]` |
 | Saved checkpoints (load / delete) | Select by name, creation time, project count, v1/v2 and protection status. Enter loads; `d` asks `[y/N]` before deleting; Esc returns. `_autosave.prev` is excluded, and protected `_autosave` cannot be deleted |
 | Reset selected project's runtime state | Confirm clearing its runtime signals and caches using `ccm reset`. Conversation files, running processes, windows and checkpoints remain |
 | Exit Claude in selected project | Confirm `ccm exit <name>`. Its window, shell and sidekicks remain |
@@ -606,6 +607,15 @@ ccm prepare-logout --cancel    # Unseal without deleting the checkpoint
 ```
 
 The prompt is `Save anyway? [y/N]`. `y` and Enter save; N, Enter alone, Esc, EOF and Ctrl-C exit nonzero without saving. Non-interactive use with PERMIT/BUSY requires `-y`. Changes to configuration or states during confirmation also refuse the save and ask for a retry.
+
+### Finish an incomplete restore
+
+```bash
+ccm finish-restore             # asks before changing anything
+ccm finish-restore -y          # --yes: no confirmation
+```
+
+When windows stay held back and cannot be fixed now (a project directory was deleted, say), `ccm finish-restore` ends the restore with the projects restored so far. It names the projects that will no longer be restored and asks first. For `_autosave` it then keeps the full checkpoint as `_autosave-held-back-<id>` (one per restore, never replacing an earlier one; restore it later with `ccm start _autosave-held-back-<id>`), removes ccm's restore marks from the held-back windows it created (their shells keep running as plain tmux windows), and saves the projects in use as `_autosave`; with no project in use, `_autosave` is removed instead, so the abandoned checkpoint is not restored at the next start. A named snapshot is left unchanged, and loading it again restores all its projects. Finally the restore is released. If `_autosave` is also protected for logout, autosave stays paused until `ccm prepare-logout --cancel`, and the command says so. Each step is recorded first, so if it stops part way, running it again completes it without asking again; the dashboard then shows `Finishing the restore stopped part way`. Non-interactive use requires `-y`.
 
 Windows and agents keep running after protection. Run prepare again after configuration changes. Protection survives logout and is released automatically only after a complete restore. Prepare/cancel refuse while restoration is incomplete; finish the same snapshot restore first. `ccm stop --all` closes windows even if saving fails, so confirm a successful prepare first when you need a confirmed save.
 

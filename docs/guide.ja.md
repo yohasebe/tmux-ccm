@@ -182,6 +182,7 @@ STATUS       PROJECT              MODE     BRANCH           PORTS        DIRECTO
 | Prepare for logout | `ccm prepare-logout` で `_autosave` を保存・保護。BUSY／PERMIT のプロジェクトがあれば名前と `[y/N]` を表示し、既定は No |
 | Cancel logout protection | 確認後、保存点を残したまま保護を解除 |
 | Continue restore | 復元途中の記録にある保存点から続行。特定できない場合は一覧から選択 |
+| Finish restore (keep what is restored) | `ccm finish-restore` で、未完了の復元をここまでに戻ったプロジェクトで終える。復元しなくなるプロジェクトの数を示し、`[y/N]` で確認 |
 | Saved checkpoints (load / delete) | 名前・作成日時・プロジェクト数・v1/v2・保護状態から選択。Enter で読み込み、`d` は `[y/N]` 確認後に削除、Esc で戻る。`_autosave.prev` は一覧に出ず、保護中の `_autosave` は削除不可 |
 | Reset selected project's runtime state | 確認後、`ccm reset` で実行時のシグナルとキャッシュを消去。会話ファイル・実行中のプロセス・窓・保存点は保持 |
 | Exit Claude in selected project | 確認後、`ccm exit <name>` を実行。窓・シェル・サイドキックは保持 |
@@ -602,6 +603,22 @@ ccm prepare-logout --cancel    # 保存点を残して保護を解除
 ```
 
 確認は `Save anyway? [y/N]` です。`y` と Enter で保存し、N・Enter のみ・Esc・EOF・Ctrl-C は保存せず非ゼロ終了します。非対話で PERMIT/BUSY がある場合は `-y` が必要です。確認中に構成や状態が変わった場合も保存せず、再実行を求めます。
+
+### 未完了の復元を終える
+
+```bash
+ccm finish-restore             # 変更する前に確認する
+ccm finish-restore -y          # --yes: 確認しない
+```
+
+保留の窓がいまは直せないとき（プロジェクトのディレクトリを削除した場合など）は、`ccm finish-restore` で、ここまでに戻ったプロジェクトで復元を終えられます。復元しなくなるプロジェクトの名前を示したあと、次の順に処理します。
+
+1. 保存点が `_autosave` なら、元の保存点を丸ごと `_autosave-held-back-<識別子>` として残す。復元ごとに別の名前で、以前のものを上書きしない。あとで `ccm start _autosave-held-back-<識別子>` で戻せる。
+2. ccm が作った保留の窓から復元用の印を外す。シェルはそのまま、普通の tmux の窓として残る。
+3. 保存点が `_autosave` なら、使用中のプロジェクトを `_autosave` に保存する。使用中のプロジェクトが 1 つもなければ `_autosave` を削除し、諦めた保存点が次の起動で復元されないようにする。名前付きのスナップショットは変更せず、読み込み直せば全プロジェクトが対象になる。
+4. 復元の記録を外す。
+
+`_autosave` がログアウト用に保護されている場合は、`ccm prepare-logout --cancel` を実行するまで自動保存は止まったままで、コマンドもそう表示します。各段階は先に記録してから実行するので、途中で止まっても、もう一度実行すれば確認なしで完了します。その間、ダッシュボードには `Finishing the restore stopped part way` と出ます。非対話で使うときは `-y` が必要です。
 
 保護後も窓やエージェントは動き続けます。構成を変えた場合は prepare を再実行してください。保護はログアウトをまたいで残り、全件の復元成功時にだけ自動解除します。途中失敗中の prepare／cancel は拒否し、同じ snapshot の復元を先に完了させます。`ccm stop --all` は保存に失敗しても窓を閉じるため、保存の保証が必要な場合は先に prepare の成功を確認してください。
 

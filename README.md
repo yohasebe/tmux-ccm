@@ -385,6 +385,7 @@ ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
 ccm roles [target] [--clear]      Inspect or release restored pane roles
 ccm prepare-logout [-y|--cancel]   Save, protect or unseal a checkpoint
+ccm finish-restore [-y]            End an incomplete restore with what is restored
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session

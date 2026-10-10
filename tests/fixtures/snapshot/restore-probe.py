@@ -51,7 +51,8 @@ try:
     data['checkpoint']['sealed'] = True
     data['checkpoint']['interrupted'] = [{'name': 'alpha', 'state': 'PERMIT'}]
     small = ('stop-after-create', 'ready-changed', 'moved', 'linked', 'token-lost',
-             'publish-lost', 'unlink-failed', 'missing-dir', 'started-unmarked')
+             'publish-lost', 'unlink-failed', 'missing-dir', 'started-unmarked', 'finish',
+             'finish-collision', 'finish-empty', 'finish-named')
     if mode in ('performance', 'concurrent') + small:
         projects = []
         for i in range({'performance': 46, 'concurrent': 12}.get(mode, 3)):
@@ -227,6 +228,103 @@ try:
             sys.exit(0)
         # Once the cause is fixed, the same restore finishes the rest.
         away.rename(gone)
+    if mode.startswith('finish'):
+        # Windows are held back (one, or all for finish-empty); finishing
+        # keeps what is restored. Stops part way are completed by running
+        # finish again, which neither asks again nor repeats finished steps.
+        source = '_autosave'
+        if mode == 'finish-named':
+            # A named snapshot is the source while _autosave is separately
+            # protected for logout.
+            source = 'daily'
+            with store.locked():
+                store.write('daily', data)
+                assert store.sealed(store.read(store.directory() / '_autosave.json'))
+            named = (store.directory() / 'daily.json').read_bytes()
+        held_keys = {'0', '1', '2'} if mode == 'finish-empty' else {'1'}
+        original_initialize = ccm_restore._initialize
+        def hold(w, project, job, key):
+            if key in held_keys:
+                raise ccm_restore.WindowProblem('synthetic problem in this window')
+            return original_initialize(w, project, job, key)
+        ccm_restore._initialize = hold
+        try:
+            ccm_restore.load(source)
+            raise AssertionError('Expected an incomplete restore')
+        except SystemExit as exc:
+            assert exc.code != 0
+        ccm_restore._initialize = original_initialize
+        job_id = json.loads(ccm_restore.job_path().read_text())['id']
+        archive = '_autosave-held-back-' + job_id[:8] if source == '_autosave' else None
+        held = [w for w in ccm_restore.windows() if w['@ccm_restore_job'].split(':')[-1] in held_keys]
+        assert len(held) == len(held_keys), held
+        asked = []
+        def confirm(plan):
+            asked.append((plan['source'], plan['dropped'], plan['archive']))
+            return True
+        if mode == 'finish-collision':
+            # An unrelated snapshot already holds the archive name.
+            other = copy.deepcopy(data)
+            other['projects'] = other['projects'][:1]
+            with store.locked():
+                store.write(archive, other)
+            try:
+                ccm_restore.finish(confirm)
+                raise AssertionError('A different snapshot under the archive name must not be replaced')
+            except store.SnapshotError as exc:
+                assert 'different snapshot' in str(exc), exc
+            assert len(store.read(store.directory() / (archive + '.json'))['projects']) == 1
+            (store.directory() / (archive + '.json')).unlink()
+        if mode == 'finish':
+            original_write = store.write
+            def failing_save(name, *args, **kwargs):
+                if name == '_autosave':
+                    raise store.SnapshotError('synthetic failure saving the checkpoint')
+                return original_write(name, *args, **kwargs)
+            store.write = failing_save
+            try:
+                ccm_restore.finish(confirm)
+                raise AssertionError('Expected the save to fail')
+            except store.SnapshotError:
+                pass
+            store.write = original_write
+            assert json.loads(ccm_restore.job_path().read_text())['finishing']['stage'] == 'save'
+            try:
+                ccm_restore.load('_autosave')
+                raise AssertionError('A load must not run while finishing is under way')
+            except SystemExit as exc:
+                assert exc.code != 0
+            assert 'under way' in ccm_restore.read_progress()['error']
+        if asked:
+            result = ccm_restore.finish(lambda plan: (_ for _ in ()).throw(AssertionError('asked twice')))
+        else:
+            result = ccm_restore.finish(confirm)
+        names = [p['name'] for p in data['projects']]
+        dropped = [names[int(k)] for k in sorted(held_keys)]
+        assert asked == [(source, dropped, archive)], asked
+        assert not ccm_restore.paused()
+        rows = {w['window_id']: w for w in ccm_restore.windows()}
+        for w in held:
+            after = rows[w['window_id']]
+            assert after['@ccm_restore_job'] == '' and after['@ccm_restore_pending'] == '' and after['@ccm_project'] == '', after
+            assert all(r['command'] in ccm_core.SHELL_FOREGROUND_COMMANDS for r in ccm_restore.panes(w['window_id']).values())
+        if mode == 'finish-named':
+            assert result['autosave'] == 'sealed', result
+            assert (store.directory() / 'daily.json').read_bytes() == named
+            assert not list(store.directory().glob('*-held-back-*.json'))
+        else:
+            kept = store.read(store.directory() / (archive + '.json'))
+            assert [p['name'] for p in kept['projects']] == names and not store.sealed(kept)
+            if mode == 'finish-empty':
+                assert result['autosave'] == 'absent', result
+                assert not (store.directory() / '_autosave.json').exists()
+            else:
+                saved = store.read(store.directory() / '_autosave.json')
+                assert [p['name'] for p in saved['projects']] == [n for n in names if n not in dropped]
+                assert not store.sealed(saved)
+                assert result['autosave'] == 'present', result
+        print(json.dumps({'mode': mode, 'dropped': len(dropped), 'autosave': result['autosave']}))
+        sys.exit(0)
     if mode == 'started-unmarked':
         # Publication of the first window stops after its project and
         # directory are set, then the window loses its marker. A retry does

@@ -152,12 +152,60 @@ def cmd_prepare_logout(args):
         ccm_core.ccm_die(str(exc))
 
 
+def cmd_finish_restore(args):
+    """Keep what an incomplete restore restored and resume autosave."""
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(prog="ccm finish-restore")
+    parser.add_argument("-y", "--yes", action="store_true", help="Do not ask for confirmation")
+    opts = parser.parse_args(args)
+
+    def confirm(plan):
+        source, dropped, archive = plan['source'], plan['dropped'], plan['archive']
+        if archive:
+            print(f"Checkpoint {source}: {len(dropped)} project(s) will no longer be restored from it:")
+        else:
+            print(f"This restore of snapshot {source} ends without {len(dropped)} project(s):")
+        for name in dropped:
+            print(f"  {name}")
+        if archive:
+            print(f"The full checkpoint is kept as {archive}; restore it later with: ccm start {archive}")
+        else:
+            print(f"Snapshot {source} itself is unchanged; loading it again restores all its projects.")
+        print("Windows held back keep running as plain tmux windows, outside ccm.")
+        if opts.yes:
+            return True
+        if not sys.stdin.isatty():
+            raise store.SnapshotError("Non-interactive finish refused; use -y to confirm")
+        try:
+            return _confirmation().strip().lower() == 'y'
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+    try:
+        result = ccm_restore.finish(confirm)
+    except (store.SnapshotError, OSError, ValueError) as exc:
+        ccm_core.ccm_die(str(exc))
+    done = f"Restore finished without {len(result['dropped'])} project(s)"
+    if result['autosave'] == 'sealed':
+        ccm_core.ccm_info(f"{done}. Autosave stays paused: _autosave is protected for logout; "
+                          "release it with ccm prepare-logout --cancel")
+    elif result['source'] == '_autosave' and result['autosave'] == 'absent':
+        ccm_core.ccm_info(f"{done}. No project is in use, so _autosave was removed (kept as "
+                          f"{result['archive']}); autosave starts again once a project is open")
+    elif result['source'] == '_autosave':
+        ccm_core.ccm_info(f"{done}. _autosave now holds the projects in use; autosave resumes")
+    else:
+        ccm_core.ccm_info(f"{done}. Snapshot {result['source']} is unchanged; autosave resumes")
+
+
 def snapshot_diagnostics():
     """Read only: doctor must not recover, create files or acquire a write lock."""
     rows = []
     try:
         if ccm_restore.paused():
-            rows.append((True, 'restore incomplete; retry the same snapshot load to resume autosave'))
+            rows.append((True, 'restore incomplete; retry the same snapshot load, or ccm finish-restore, '
+                               'to resume autosave'))
         if (store.directory() / '.snapshot-transaction').exists():
             rows.append((True, "snapshot transaction pending; next snapshot write will recover it"))
         data = store.read(store.directory() / '_autosave.json')

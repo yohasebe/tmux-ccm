@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The dashboard can be docked as a full-width pane at the top or bottom of the window (`@ccm-dashboard-dock`, `@ccm-dashboard-dock-size`), so it stays in view while you work. It follows you between windows, stays open when you open a project from it (or closes, with `@ccm-dashboard-dock-close-on-open on`), shows the ccm logo on its first line, and gives each window its layout back when it leaves. The display and the close-after-open choice can be changed from the dashboard menu.
 - A docked dashboard draws a coloured line along the side that faces the panes you work in, so the boundary stays clear whatever the tmux border settings. `@ccm-dashboard-dock-edge` sets its colour (a 256-colour number, default 179) or turns it `off`.
+- `ccm finish-restore` (dashboard Menu → Finish restore) ends an incomplete restore with the projects restored so far, when the held-back ones cannot be fixed now. For `_autosave` the full checkpoint is kept as `_autosave-held-back-<id>` (one per restore), ccm's restore marks are removed from the held-back windows it created (their shells keep running), and the projects in use become `_autosave` (with none in use, `_autosave` is removed so the abandoned checkpoint is not restored at the next start). A named snapshot is left unchanged. A stop part way is completed by running it again.
 
 ### Changed
 

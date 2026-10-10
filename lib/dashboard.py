@@ -3167,6 +3167,7 @@ class Dashboard(LifecycleActions):
             ("Prepare for logout", "prepare_logout"),
             ("Cancel logout protection", "cancel_logout"),
             ("Continue restore", "continue_restore"),
+            ("Finish restore (keep what is restored)", "finish_restore"),
             ("Reset selected project's runtime state", "reset"),
             ("Exit Claude in selected project (keep window)", "exit"),
             ("Settings", ""),  # heading
@@ -3490,6 +3491,8 @@ class Dashboard(LifecycleActions):
                 self._do_prepare_logout(stdscr, cancel=action == "cancel_logout")
             elif action == "continue_restore":
                 self._do_continue_restore(stdscr, tmux_query)
+            elif action == "finish_restore":
+                self._do_finish_restore(stdscr)
             elif action in ("reset", "exit"):
                 self._do_project_recovery(stdscr, action)
             elif action == "status_mode":

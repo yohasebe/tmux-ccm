@@ -647,12 +647,150 @@ def _finish_incomplete(data, job, record, done, total, session, say, summary):
         'The checkpoint stays protected and autosave paused until they are restored.')
     for key in sorted(failed, key=int):
         say(f"  {data['projects'][int(key)]['name']}: {failed[key]}")
-    say('Fix the cause, then open Menu \u2192 Continue restore or load the same snapshot again.')
+    say('Fix the cause, then open Menu \u2192 Continue restore or load the same snapshot again. '
+        'To keep what is restored and resume autosave instead: Menu \u2192 Finish restore, or ccm finish-restore.')
     _guidance(data, job, say)
     _publish(record, state='incomplete', done=done, current='', failed=dict(failed), summary=summary)
     _announce('incomplete', f'restored {done}/{total} \u00b7 {len(failed)} need attention \u00b7 '
               'dashboard menu: Continue restore', ANNOUNCE_STOPPED_MS, session)
     raise SystemExit(1)
+
+
+def archive_name(job):
+    """Where `finish` keeps the full `_autosave` checkpoint: one name per
+    restore job, so finishing a later restore never replaces it. A named
+    snapshot is left unchanged and needs none."""
+    return job['source'] + '-held-back-' + job['id'][:8] if job['source'] == '_autosave' else None
+
+
+def finish_plan():
+    """What `finish` would do, read without changing anything. None when no
+    restore is incomplete. Once finishing has begun the plan is the one it
+    recorded, and the checkpoint may already have moved to its archive."""
+    if not job_path().exists():
+        return None
+    job = _upgrade_job(json.loads(job_path().read_text()))
+    source = job['source']
+    finishing = job.get('finishing')
+    data = store.read(store.directory() / (source + '.json'))
+    if finishing and finishing.get('archive') and not data:
+        data = store.read(store.directory() / (finishing['archive'] + '.json'))
+    if not data or data.get('version') != 2:
+        raise store.SnapshotError('The checkpoint of this restore cannot be read')
+    if finishing:
+        return {'job': job, 'data': data, 'source': source,
+                'dropped': finishing['dropped'], 'archive': finishing.get('archive')}
+    live = {(w['@ccm_project'], canonical(w['@ccm_dir'])) for w in windows()
+            if w['@ccm_project'] and w['@ccm_restore_pending'] != '1'}
+    dropped = [p['name'] for p in data['projects']
+               if (p['name'], canonical(p['dir'])) not in live]
+    return {'job': job, 'data': data, 'source': source, 'dropped': dropped, 'archive': archive_name(job)}
+
+
+def finish(confirm):
+    """End an incomplete restore with what is usable now. For `_autosave`
+    the full checkpoint is kept under an archive name first; ccm's own
+    marks are removed from the windows this restore still owns (their
+    shells keep running); the projects in use become `_autosave` (or, with
+    none in use, `_autosave` is removed so nothing abandoned is restored at
+    the next start); then the restore record is released. Each step is
+    recorded before it runs, so a stop part way through is completed by
+    running it again without asking again."""
+    fd, run_id = _acquire_running()
+    if fd is None:
+        raise store.SnapshotError('A restore is running; wait for it to finish')
+    try:
+        with store.locked():
+            plan = finish_plan()
+            if plan is None:
+                raise store.SnapshotError('No incomplete restore to finish')
+            job, data, source = plan['job'], plan['data'], plan['source']
+            if not job.get('finishing'):
+                if identity(data) != job.get('digest'):
+                    raise store.SnapshotError('The checkpoint changed since this restore began; inspect it first')
+                if not confirm(plan):
+                    raise store.SnapshotError('Cancelled; the restore stays incomplete')
+                job['finishing'] = {'stage': 'archive', 'dropped': plan['dropped'], 'archive': plan['archive']}
+                save_job(job)
+            archive = job['finishing']['archive']
+            stage = job['finishing']['stage']
+            if stage == 'archive':
+                if archive:
+                    kept = copy.deepcopy(data)
+                    kept['checkpoint']['sealed'] = False
+                    old = store.read(store.directory() / (archive + '.json'))
+                    if old is not None and store.comparable(old) != store.comparable(kept):
+                        raise store.SnapshotError(f'A different snapshot named {archive} exists; move it aside, '
+                                                  'then run ccm finish-restore again')
+                    store.write(archive, kept, backup=False)
+                stage = _advance(job, 'clean')
+            if stage == 'clean':
+                _release_marks(job, data)
+                stage = _advance(job, 'save')
+            if stage == 'save':
+                if source == '_autosave':
+                    try:
+                        store.write(source, store.collect(source))
+                    except store.EmptySnapshot:
+                        # Nothing in use to save; the full checkpoint is in
+                        # the archive, and the abandoned one must not be
+                        # restored automatically at the next start.
+                        (store.directory() / (source + '.json')).unlink(missing_ok=True)
+                        store._sync_dir()
+                stage = _advance(job, 'release')
+            job_path().unlink()
+            store._sync_dir()
+            dropped = job['finishing']['dropped']
+            _publish({'run': run_id, 'pid': os.getpid(), 'source': source, 'state': 'done',
+                      'summary': [f'Finished without {len(dropped)} held-back project(s)'],
+                      'total': len(data['projects']), 'done': len(data['projects']) - len(dropped)})
+            autosave = store.read(store.directory() / '_autosave.json')
+            return {'source': source, 'dropped': dropped, 'archive': archive,
+                    'autosave': 'sealed' if autosave and store.sealed(autosave)
+                    else 'present' if autosave else 'absent'}
+    finally:
+        os.close(fd)
+
+
+def _advance(job, stage):
+    job['finishing']['stage'] = stage
+    save_job(job)
+    return stage
+
+
+def _release_marks(job, data):
+    """Remove ccm's restore marks from windows this restore still owns and
+    did not publish. Only values ccm itself set are removed, the job marker
+    last, so a failure leaves the window findable by a retry; a window
+    without this job's marker is not touched."""
+    prefix = job['id'] + ':'
+    released = {}
+    for w in windows():
+        token = w['@ccm_restore_job']
+        if not token.startswith(prefix) or w['@ccm_restore_pending'] == '0':
+            continue
+        key = token[len(prefix):]
+        if not key.isdigit() or int(key) >= len(data['projects']):
+            continue
+        project = data['projects'][int(key)]
+        target = w['window_id']
+        try:
+            if w['@ccm_project'] == project['name']:
+                run('set-option', '-wu', '-t', target, '@ccm_project')
+            if w['@ccm_dir'] and canonical(w['@ccm_dir']) == canonical(project['dir']):
+                run('set-option', '-wu', '-t', target, '@ccm_dir')
+            for option in (roles.PENDING_OPTION, roles.MANAGED_OPTION, '@ccm_restore_job'):
+                run('set-option', '-wu', '-t', target, option)
+        except store.SnapshotError:
+            if any(x['window_id'] == target for x in windows()):
+                raise
+            continue  # closed meanwhile: nothing of it is left to release
+        released[target] = project
+    rows = {x['window_id']: x for x in windows()}
+    for target, project in released.items():
+        x = rows.get(target)
+        if x and (x['@ccm_restore_job'] or x['@ccm_restore_pending'] or x['@ccm_project'] == project['name']):
+            raise store.SnapshotError('Restore marks could not be removed; run ccm finish-restore again')
 
 
 def _file_digest(name):
@@ -743,6 +881,9 @@ def _load(name, record):
             else:
                 job = {'id': uuid.uuid4().hex, 'source': name, 'digest': digest, 'windows': {}}
             job = _upgrade_job(job)
+            if job.get('finishing'):
+                raise store.SnapshotError('Finishing this restore without its held-back windows is under way; '
+                                          'run ccm finish-restore again to complete it')
             session = ccm_core.require_session()
             record['session'] = session
             session_id = run('display-message', '-p', '-t', session, '#{session_id}')

@@ -50,9 +50,14 @@ def restore_status(query):
         progress = store.directory() / '.restore-state'
         job_name = None
         if progress.exists():
-            job_name = json.loads(progress.read_text()).get('source')
+            job = json.loads(progress.read_text())
+            job_name = job.get('source')
             if not _checkpoint_name(job_name):
                 return 'Restore needs attention; open Menu → Continue restore.', None
+            if job.get('finishing'):
+                if ccm_restore.holder() is not None:
+                    return 'Finishing the restore \u2026', job_name
+                return 'Finishing the restore stopped part way; open Menu \u2192 Finish restore to complete it.', job_name
         current = ccm_restore.holder()
         if current is not None:
             # Details only from the record of the run holding the lock.
@@ -63,7 +68,7 @@ def restore_status(query):
             if record.get('source') == job_name and record.get('state') == 'incomplete':
                 count = len(record.get('failed') or {})
                 return (f'Restore incomplete: {count} window(s) need attention; autosave paused; '
-                        'open Menu \u2192 Continue restore.'), job_name
+                        'open Menu \u2192 Continue restore or Finish restore.'), job_name
             if record.get('source') == job_name and record.get('state') in ('stopped', 'running'):
                 return _stopped_line(record), job_name
             return 'Restore incomplete; open Menu → Continue restore.', job_name
@@ -167,6 +172,10 @@ class LifecycleActions:
             self._run_terminal_command(stdscr, 'Continue restore', snapshot.cmd_snapshot_load, name)
         else:
             self._do_snapshots(stdscr)
+
+    def _do_finish_restore(self, stdscr):
+        # The command lists the projects and the archive before it asks.
+        self._run_terminal_command(stdscr, 'Finish restore', snapshot.cmd_finish_restore, [])
 
     def _do_snapshots(self, stdscr):
         selected = 0

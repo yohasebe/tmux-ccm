@@ -1734,6 +1734,8 @@ _SUBCOMMANDS = (
      lambda a: __import__("ccm_roles").cmd_roles(a.rest)),
     ("prepare-logout", _passthrough_argparse_config,
      lambda a: ccm_snapshot.cmd_prepare_logout(a.rest)),
+    ("finish-restore", _passthrough_argparse_config,
+     lambda a: ccm_snapshot.cmd_finish_restore(a.rest)),
     ("snapshot-save", _add_name_arg,
      lambda a: ccm_snapshot.cmd_snapshot_save(a.name)),
     ("snapshot-load", _add_name_arg,

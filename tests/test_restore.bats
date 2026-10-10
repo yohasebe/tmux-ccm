@@ -98,6 +98,26 @@ SHIM
     restore_probe started-unmarked
 }
 
+@test "restore v2: finishing an incomplete restore keeps what is restored and resumes after a stop" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe finish
+}
+
+@test "restore v2: finishing never replaces a different snapshot under its archive name" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe finish-collision
+}
+
+@test "restore v2: finishing with every window held back removes _autosave and keeps the archive" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe finish-empty
+}
+
+@test "restore v2: finishing a named snapshot leaves it and a protected _autosave unchanged" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe finish-named
+}
+
 @test "restore v2: a lost new-window reply is resumed by ownership marker" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe retry-new

@@ -76,6 +76,7 @@ Usage:
   ccm snapshot delete [name]        Delete a snapshot
   ccm roles [target] [--clear]      Inspect or release restored pane roles
   ccm prepare-logout [-y|--cancel]   Save and protect / unseal _autosave
+  ccm finish-restore [-y]           Keep what an incomplete restore restored; resume autosave
   ccm start <snapshot>              Start from a snapshot
   ccm exit <name> [-y]             Exit Claude; keep window and sidekicks
   ccm stop [--all|name]             Stop project window(s)
@@ -232,6 +233,10 @@ case "${1:-help}" in
     prepare-logout)
         shift
         "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" prepare-logout "$@"
+        ;;
+    finish-restore)
+        shift
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" finish-restore "$@"
         ;;
     start)
         ccm_check_deps
