@@ -36,10 +36,12 @@ PANE_FIELDS = ('window_id', 'pane_id', 'pane_index', 'pane_pid',
                'pane_active', 'pane_height', '@ccm_restore_role', '@ccm_dock', 'pane_last')
 
 
-def _query(command, fields):
+def _query(command, fields, target=None):
     # A sentinel retains empty final fields despite tmux_query's strip().
+    # Without a target the listing covers the whole server.
     fmt = '\t'.join('#{' + f + '}' for f in fields) + '\tEND'
-    raw = ccm_core.tmux_query(command, '-a', '-F', fmt)
+    scope = ('-t', target) if target else ('-a',)
+    raw = ccm_core.tmux_query(command, *scope, '-F', fmt)
     if raw is None:
         raise SnapshotError(f'Cannot collect {command}; snapshot unchanged')
     rows = []

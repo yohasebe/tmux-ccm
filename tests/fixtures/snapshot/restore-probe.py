@@ -50,9 +50,11 @@ try:
         r['primary_claude_slot'] = None
     data['checkpoint']['sealed'] = True
     data['checkpoint']['interrupted'] = [{'name': 'alpha', 'state': 'PERMIT'}]
-    if mode in ('performance', 'concurrent'):
+    small = ('stop-after-create', 'ready-changed', 'moved', 'linked', 'token-lost',
+             'publish-lost', 'unlink-failed')
+    if mode in ('performance', 'concurrent') + small:
         projects = []
-        for i in range(46 if mode == 'performance' else 12):
+        for i in range({'performance': 46, 'concurrent': 12}.get(mode, 3)):
             p = copy.deepcopy(project)
             p['name'] = f'project-{i:02d}'
             path = base / p['name']
@@ -60,7 +62,7 @@ try:
             p['dir'] = str(path)
             for pane in p['restore']['panes']:
                 pane['cwd'] = str(path)
-            if i >= 4:
+            if i >= (1 if mode in small else 4):
                 rp = p['restore']
                 rp['panes'] = [rp['panes'][0]]
                 rp['active_slot'] = 0
@@ -148,6 +150,132 @@ try:
         assert ccm_restore.paused()
         assert ccm_snapshot.cmd_snapshot_save('_autosave', quiet=True) is False
         ccm_restore.run = original_run
+    if mode == 'stop-after-create':
+        # Every window is created before any is initialized; a stop after
+        # the first leaves the rest created but uninitialized, all marked,
+        # and a retry resumes them without duplicates.
+        original_initialize = ccm_restore._initialize
+        def stop_second(*args):
+            if len(json.loads(ccm_restore.job_path().read_text())['windows']) == 1:
+                raise store.SnapshotError('synthetic stop before initializing')
+            return original_initialize(*args)
+        ccm_restore._initialize = stop_second
+        try:
+            ccm_restore.load('_autosave')
+            raise AssertionError('Expected incomplete restoration')
+        except SystemExit as exc:
+            assert exc.code != 0
+        ccm_restore._initialize = original_initialize
+        owned = [w for w in ccm_restore.windows() if w['@ccm_restore_job']]
+        assert len(owned) == len(data['projects']), owned
+        assert all(w['@ccm_restore_pending'] == '1' and not w['@ccm_project'] for w in owned), owned
+        assert (store.directory() / '_autosave.json').read_bytes() == original
+        assert ccm_restore.paused()
+    if mode in ('ready-changed', 'moved', 'linked', 'token-lost'):
+        # A window changed after it was created or restored stops the
+        # restore before publication: nothing is published, the checkpoint
+        # and job are kept, and nothing is re-marked or repaired.
+        changed = {}
+        original_create, original_window = ccm_restore._create, ccm_restore.restore_window
+        def first_of(job):
+            return next(w for w in ccm_restore.windows() if w['@ccm_restore_job'] == job['id'] + ':0')
+        def after_last_create(session, project, index, job):
+            result = original_create(session, project, index, job)
+            if index == len(data['projects']) - 1 and mode in ('moved', 'linked'):
+                tmux('new-session', '-d', '-s', 'other', '-c', str(control), '/bin/sh')
+                verb = 'move-window' if mode == 'moved' else 'link-window'
+                tmux(verb, '-s', first_of(job)['window_id'], '-t', 'other:')
+            return result
+        def during_restore(w, project, state, job, **kwargs):
+            result = original_window(w, project, state, job, **kwargs)
+            first = job['windows']['0']
+            if mode == 'ready-changed' and project['name'] == data['projects'][1]['name']:
+                active = tmux('display-message', '-p', '-t', first['window'], '#{pane_id}')
+                changed['active'] = active
+                tmux('select-pane', '-t', next(p for p in first['keys'].values() if p != active))
+            if mode == 'token-lost' and project['name'] == data['projects'][-1]['name']:
+                tmux('set-option', '-wu', '-t', first['window'], '@ccm_restore_job')
+            return result
+        ccm_restore._create, ccm_restore.restore_window = after_last_create, during_restore
+        try:
+            ccm_restore.load('_autosave')
+            raise AssertionError('A changed window must stop publication')
+        except SystemExit as exc:
+            assert exc.code != 0
+        ccm_restore._create, ccm_restore.restore_window = original_create, original_window
+        assert not [w for w in ccm_restore.windows() if w['@ccm_project']]
+        assert (store.directory() / '_autosave.json').read_bytes() == original
+        assert ccm_restore.paused()
+        progress = ccm_restore.read_progress()
+        assert progress['state'] == 'stopped', progress
+        expected = {'ready-changed': 'active pane', 'moved': 'another session',
+                    'linked': 'Linked', 'token-lost': 'ownership changed'}[mode]
+        assert expected in progress['error'], progress
+        if mode == 'token-lost':
+            assert not [w for w in ccm_restore.windows()
+                        if w['window_id'] == json.loads(ccm_restore.job_path().read_text())['windows']['0']['window']
+                        and w['@ccm_restore_job']]
+        if mode != 'ready-changed':
+            print(json.dumps({'mode': mode, 'published': 0}))
+            sys.exit(0)
+        # Putting the active pane (and the zoom it cleared) back lets the
+        # same restore finish.
+        first = json.loads(ccm_restore.job_path().read_text())['windows']['0']['window']
+        tmux('select-pane', '-t', changed['active'])
+        if tmux('display-message', '-p', '-t', first, '#{window_zoomed_flag}') != ('1' if data['projects'][0]['restore']['zoomed'] else '0'):
+            tmux('resize-pane', '-Z', '-t', changed['active'])
+    if mode == 'publish-lost':
+        # Publication stops after ccm cleared the first window's pending
+        # mark; a retry finishes it instead of calling that a change.
+        original_run = ccm_restore.run
+        fired = [False]
+        def lost_after_release(*args):
+            result = original_run(*args)
+            if args[:2] == ('set-option', '-w') and args[-2:] == (ccm_roles.PENDING_OPTION, '0') and not fired[0]:
+                fired[0] = True
+                raise store.SnapshotError('synthetic lost reply after clearing pending')
+            return result
+        ccm_restore.run = lost_after_release
+        try:
+            ccm_restore.load('_autosave')
+            raise AssertionError('Expected incomplete publication')
+        except SystemExit as exc:
+            assert exc.code != 0
+        ccm_restore.run = original_run
+        marks = sorted(w['@ccm_restore_pending'] for w in ccm_restore.windows() if w['@ccm_restore_job'])
+        assert marks == ['0', '1', '1'], marks
+        assert ccm_restore.paused()
+        assert (store.directory() / '_autosave.json').read_bytes() == original
+        # The released window is usable; what the user does with it before
+        # the retry is kept, not restored or verified again.
+        used = next(w for w in ccm_restore.windows() if w['@ccm_restore_pending'] == '0')
+        tmux('split-window', '-d', '-t', used['window_id'], '-c', str(control), '/bin/sh')
+        tmux('rename-window', '-t', used['window_id'], 'renamed-by-user')
+        used_panes = len(ccm_restore.panes(used['window_id']))
+    if mode == 'unlink-failed':
+        # The job cannot be removed once; the retry the warning asks for
+        # releases it and leaves the windows as they are.
+        original_unlink = Path.unlink
+        fired = [False]
+        def failing_unlink(self, *args, **kwargs):
+            if self.name == ccm_restore.JOB and not fired[0]:
+                fired[0] = True
+                raise OSError('synthetic unlink failure')
+            return original_unlink(self, *args, **kwargs)
+        Path.unlink = failing_unlink
+        try:
+            ccm_restore.load('_autosave')
+        finally:
+            Path.unlink = original_unlink
+        assert fired[0]
+        assert ccm_restore.paused()
+        before = sorted((w['window_id'], w['@ccm_project']) for w in ccm_restore.windows() if w['@ccm_project'])
+        assert len(before) == len(data['projects'])
+        ccm_restore.load('_autosave')
+        assert not ccm_restore.paused()
+        assert sorted((w['window_id'], w['@ccm_project']) for w in ccm_restore.windows() if w['@ccm_project']) == before
+        print(json.dumps({'mode': mode, 'released_on_retry': True}))
+        sys.exit(0)
     start = time.monotonic()
     if mode == 'concurrent':
         # A second load while the first runs reports progress and the first
@@ -159,9 +287,9 @@ try:
         gate = threading.Event()
         original_window = ccm_restore.restore_window
 
-        def gated(*args):
+        def gated(*args, **kwargs):
             assert gate.wait(30), 'second load never reported waiting'
-            return original_window(*args)
+            return original_window(*args, **kwargs)
         ccm_restore.restore_window = gated
         first = threading.Thread(target=ccm_restore.load, args=('_autosave',))
         first.start()
@@ -201,6 +329,8 @@ try:
     assert not store.sealed(store.read(store.directory() / '_autosave.json'))
     assert not ccm_restore.paused()
     for w, p in zip(managed, data['projects']):
+        if mode == 'publish-lost' and w['window_id'] == used['window_id']:
+            continue
         rows = ccm_restore.panes(w['window_id'])
         assert len(rows) == len(p['restore']['panes'])
         assert all(r['command'] in ccm_core.SHELL_FOREGROUND_COMMANDS for r in rows.values()), rows
@@ -211,7 +341,12 @@ try:
         assert finished.read_text().splitlines() == ['done'] * 3
         assert elapsed >= 2.4, elapsed
         assert all(r['command'] == 'bash' for r in rows.values()), rows
-    if mode != 'performance':
+    if mode in ('stop-after-create', 'publish-lost'):
+        assert len([w for w in all_windows if w['@ccm_restore_job']]) == len(data['projects'])
+    if mode == 'publish-lost':
+        assert tmux('display-message', '-p', '-t', used['window_id'], '#{window_name}') == 'renamed-by-user'
+        assert len(ccm_restore.panes(used['window_id'])) == used_panes
+    if mode not in ('performance', 'stop-after-create', 'ready-changed', 'publish-lost'):
         ids = {int(pid[1:]) for pid in ccm_restore.panes(managed[0]['window_id'])}
         assert old_ids & ids and old_ids != ids, (old_ids, ids)
     # The immediately following normal autosave retains reserved roles.

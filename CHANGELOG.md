@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A dashboard left open and unused (a docked one, typically) refreshes at a slower pace after 30 seconds without a key, in any of its views: pushed state changes are checked every half second, and full detection runs every 6 seconds instead of every 2. The first key restores the normal pace. Idle CPU fell from about 5.7% to 1.6% in a measurement with 44 projects.
 - Status modes 1 and 2 highlight the current project's entry with a distinct background, including one space on each side, without changing its width. Customize the color with `@ccm-status-current-bg` (default `#505050`).
 - The dashboard opens faster, and status redraws cost less, where `python3` is a version manager's shim (pyenv, asdf, mise). Each start used to run the shim first (0.1–0.3 s). ccm now resolves `python3` through `PATH` once, keeps its real path in the runtime directory, and runs it directly; it resolves again if that interpreter goes away.
+- Restoring a checkpoint is faster with many windows. Every missing window is created first, so the login shells start side by side instead of one after another; a window without splits no longer waits for its shell a second time; and the wait for a window's shells reads only that window's panes. Every restored window is checked again before any is published. Restoring 49 windows with a shell that takes 0.75 seconds to start went from about 85 to 37 seconds in a measurement.
 
 ### Fixed
 

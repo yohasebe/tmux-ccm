@@ -250,8 +250,35 @@ def windows():
     return store._query('list-windows', WF)
 
 
+def released(w, project):
+    """True when ccm finished publishing this window: pending cleared and
+    the project's name and directory in place. Only meaningful while the
+    job records that publication began."""
+    return (w['@ccm_restore_pending'] == '0' and w['@ccm_project'] == project['name']
+            and bool(w['@ccm_dir']) and canonical(w['@ccm_dir']) == canonical(project['dir']))
+
+
+def owned_window(job, key, session_id, live):
+    """The one window carrying this job's token for `key`, in the restoring
+    session and linked nowhere else. Anything else stops the restore: a
+    window that moved, was linked or lost its token is not adopted."""
+    rows = [w for w in live if w['@ccm_restore_job'] == job['id'] + ':' + key]
+    if len(rows) > 1 and len({w['window_id'] for w in rows}) == 1:
+        raise store.SnapshotError('Linked project windows are not supported')
+    if len(rows) != 1:
+        raise store.SnapshotError('Restore window ownership changed; inspect it before retrying')
+    w = rows[0]
+    if w['session_id'] != session_id:
+        raise store.SnapshotError('Restore window moved to another session')
+    if sum(x['window_id'] == w['window_id'] for x in live) != 1:
+        raise store.SnapshotError('Linked project windows are not supported')
+    return w
+
+
 def panes(window):
-    rows = [p for p in store._query('list-panes', PF) if p['window_id'] == window]
+    # Only this window's panes: the restore polls this while shells start,
+    # and a whole-server listing grows with every window already restored.
+    rows = [p for p in store._query('list-panes', PF, target=window) if p['window_id'] == window]
     return {p['pane_id']: {'cwd': canonical(p['pane_current_path']),
                           'rect': [int(p[k]) for k in ('pane_left', 'pane_top', 'pane_width', 'pane_height')],
                           'command': p['pane_current_command'], 'pid': p['pane_pid']} for p in rows}
@@ -461,15 +488,18 @@ def _verify_roles(window, project, state):
         raise store.SnapshotError('Restored active pane or zoom differs from the checkpoint')
 
 
-def restore_window(w, project, state, job):
+def restore_window(w, project, state, job, settled=False):
+    """`settled`: the caller has just waited for this window's shells with
+    nothing changed since, so a window without splits need not wait again."""
     window = w['window_id']
     if state['ready']:
         _verify(window, state)
         _verify_roles(window, project, state)
         return
-    while state['next'] < len(state['ops']):
-        _split(state, state['ops'][state['next']], job)
-    stable_panes(window)
+    if state['ops'] or not settled:
+        while state['next'] < len(state['ops']):
+            _split(state, state['ops'][state['next']], job)
+        stable_panes(window)
     _verify(window, state)
     mapping = {int(old): state['keys'][key] for old, key in state['leaves'].items()}
     run('select-layout', '-t', window, layout.render(state['tree'], mapping))
@@ -572,6 +602,7 @@ def _load(name, record):
                 job = {'id': uuid.uuid4().hex, 'source': name, 'digest': digest, 'windows': {}}
             session = ccm_core.require_session()
             record['session'] = session
+            session_id = run('display-message', '-p', '-t', session, '#{session_id}')
             _announce('progress', f'restoring {total} window(s)\u2026', ANNOUNCE_PROGRESS_MS, session)
             existing = preflight(data, session, job)
             if 'shell' not in job and any(
@@ -579,29 +610,57 @@ def _load(name, record):
                     for i in range(total)):
                 job['shell'] = shell_command(session)
             save_job(job)
+            # Create every missing window first so the shells' login rc files
+            # run side by side; each window is then initialized and checked
+            # in turn exactly as before. A window created here carries its
+            # token and pending mark, so a stop before it is initialized is
+            # resumed from the token like a lost new-window reply.
+            created = set()
+            pending = []
             for index, project in enumerate(data['projects']):
+                key = str(index)
+                w = existing.get(key)
+                owned = w and w['@ccm_restore_job'] == job['id'] + ':' + key
+                _publish(record, done=done, current=(project['name'] if w else 'creating ' + project['name']))
+                _announce('progress', describe(record), ANNOUNCE_PROGRESS_MS, session)
+                if w and not owned:
+                    done += 1
+                    print(roles.clean(f"Restored {done}/{total}: {project['name']} (matching registered window retained)"), flush=True)
+                    continue
+                pending.append(index)
+                if w:
+                    continue
+                # Repeat overlap checks so an external creator between
+                # preflight and this iteration is never silently adopted.
+                fresh = preflight(data, session, job)
+                if key in fresh:
+                    raise store.SnapshotError('A window appeared during restore; retry')
+                _create(session, project, index, job)
+                created.add(key)
+            _publish(record, done=done, current='')
+            for index in pending:
+                project = data['projects'][index]
                 key = str(index)
                 _publish(record, done=done, current=project['name'])
                 _announce('progress', describe(record), ANNOUNCE_PROGRESS_MS, session)
-                w = existing.get(key)
-                owned = w and w['@ccm_restore_job'] == job['id'] + ':' + key
-                if w and not owned:
-                    print(roles.clean(f"Restored {index + 1}/{total}: {project['name']} (matching registered window retained)"), flush=True)
-                    done += 1
-                    continue
                 started = time.monotonic()
-                created = not w
-                if not w:
-                    # Repeat overlap checks so an external creator between
-                    # preflight and this iteration is never silently adopted.
-                    fresh = preflight(data, session, job)
-                    if key in fresh:
-                        raise store.SnapshotError('A window appeared during restore; retry')
-                    w = _create(session, project, index, job)
+                # Read the window again: its size may have changed since it
+                # was created, and the split plan is scaled to the size now.
+                w = owned_window(job, key, session_id, windows())
+                if job.get('publishing') and w['@ccm_restore_pending'] != '1':
+                    # Published by an earlier run that stopped before the
+                    # job was cleared; the window may be in use, so it is
+                    # only checked, never restored or verified again.
+                    if not released(w, project):
+                        raise store.SnapshotError('Restore window ownership changed; inspect it before retrying')
+                    done += 1
+                    print(roles.clean(f"Restored {done}/{total}: {project['name']} (already published)"), flush=True)
+                    continue
                 state = job['windows'].get(key)
-                if created or not state or state['window'] != w['window_id']:
+                settled = key in created or not state or state['window'] != w['window_id']
+                if settled:
                     state = _initialize(w, project, job, key)
-                restore_window(w, project, state, job)
+                restore_window(w, project, state, job, settled=settled)
                 done += 1
                 record['samples'] += 1
                 record['spent'] += time.monotonic() - started
@@ -609,17 +668,45 @@ def _load(name, record):
                 eta = remaining_seconds(record)
                 left = f' · about {eta}s left' if eta is not None else ''
                 print(roles.clean(f"Restored {done}/{total}: {project['name']}{left}"), flush=True)
+            # Windows finished earlier may have changed while later ones
+            # were restored; check them all again before publishing any.
+            _publish(record, done=done, current='checking restored windows')
+            live = windows()
+            published = set()
+            for key, state in job['windows'].items():
+                p = data['projects'][int(key)]
+                w = owned_window(job, key, session_id, live)
+                if w['window_id'] != state['window']:
+                    raise store.SnapshotError('Restore window ownership changed; inspect it before retrying')
+                if job.get('publishing') and w['@ccm_restore_pending'] != '1':
+                    if not released(w, p):
+                        raise store.SnapshotError('Restore window ownership changed; inspect it before retrying')
+                    published.add(key)
+                    continue
+                if w['@ccm_restore_pending'] != '1':
+                    raise store.SnapshotError('Restore window ownership changed; inspect it before retrying')
+                _verify(state['window'], state)
+                _verify_roles(state['window'], p, state)
             # Publish only verified windows. Pending remains set until every
             # new window is ready; the durable job pauses all snapshot writers.
+            # The job records that publication began, so a stop part way
+            # through resumes here instead of reading ccm's own cleared
+            # pending marks as an outside change.
+            if not job.get('publishing'):
+                job['publishing'] = True
+                save_job(job)
             for key, state in job['windows'].items():
+                if key in published:
+                    continue
                 p = data['projects'][int(key)]
                 window = state['window']
                 run('set-option', '-w', '-t', window, '@ccm_project', p['name'])
                 run('set-option', '-w', '-t', window, '@ccm_dir', canonical(p['dir']))
                 run('rename-window', '-t', window, roles.clean(p['name']))
                 run('set-option', '-w', '-t', window, 'automatic-rename', 'off')
-            for state in job['windows'].values():
-                run('set-option', '-w', '-t', state['window'], roles.PENDING_OPTION, '0')
+            for key, state in job['windows'].items():
+                if key not in published:
+                    run('set-option', '-w', '-t', state['window'], roles.PENDING_OPTION, '0')
             was_sealed = store.sealed(data)
             if was_sealed:
                 unsealed = copy.deepcopy(data)

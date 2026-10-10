@@ -53,6 +53,41 @@ SHIM
     restore_probe performance
 }
 
+@test "restore v2: a stop after creating every window resumes without duplicates" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe stop-after-create
+}
+
+@test "restore v2: a restored window changed before publication stops, and resumes once put back" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe ready-changed
+}
+
+@test "restore v2: a window moved to another session after creation is not published" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe moved
+}
+
+@test "restore v2: a window linked into another session after creation is not published" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe linked
+}
+
+@test "restore v2: a restored window that lost its token is not published or re-marked" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe token-lost
+}
+
+@test "restore v2: a stop after clearing the first pending mark resumes publication" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe publish-lost
+}
+
+@test "restore v2: a failed progress cleanup is released by the retry it asks for" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe unlink-failed
+}
+
 @test "restore v2: a lost new-window reply is resumed by ownership marker" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe retry-new
