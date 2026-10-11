@@ -571,7 +571,7 @@ Running conversation state, approval waits and agent processes are not restored.
 ccm snapshot save my-workspace
 ```
 
-Saving supports one managed session. v2 retains windows, horizontal/vertical splits, cwd, roles, ignore intent, selected panes and zoom.
+Saving supports one managed session. v2 retains windows, horizontal/vertical splits, cwd, roles, ignore intent, selected panes and zoom. Floating panes (tmux 3.8) cannot be saved: while a project window has one, saving stops with an error and the last checkpoint stays as it was.
 
 ### Restore
 

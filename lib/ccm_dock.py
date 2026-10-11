@@ -100,6 +100,10 @@ def _window_size(window):
     raw = ccm_core.tmux_query('display-message', '-p', '-t', window,
                               '#{window_layout}\t#{window_height}') or ''
     layout, _, height = raw.partition('\t')
+    try:
+        layout = store.normalize_layout(layout)
+    except store.SnapshotError:
+        layout = ''  # a layout the dock cannot keep (floating panes)
     return layout, int(height) if height.isdigit() else 0
 
 

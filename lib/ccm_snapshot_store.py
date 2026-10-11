@@ -67,16 +67,70 @@ def _text(value):
     return isinstance(value, str) and bool(value) and not any(ord(c) < 32 for c in value)
 
 
+def _layout_checksum(body):
+    checksum = 0
+    for byte in body.encode('ascii'):
+        checksum = ((checksum >> 1) | ((checksum & 1) << 15)) + byte
+        checksum &= 0xffff
+    return checksum
+
+
+def normalize_layout(layout):
+    """A layout string as tmux gave it, in the classic form ccm keeps.
+
+    tmux 3.8 reports layouts in a JSON form (`{"V":2,"L":{...}}`) and
+    still accepts the classic `csum,WxH,X,Y{...}` form as input. A JSON
+    layout is rewritten here into the classic string tmux 3.7 printed
+    for the same tree, so every reader (snapshots, restore, the dock)
+    keeps one format, and a checkpoint saved under either version
+    restores under both. Leaves keep their pane number (`"I":"%3"` → 3);
+    `h` containers are `{...}`, `v` containers `[...]`. A floating pane
+    (a leaf carrying a stacking order `z`, new in 3.8) has no classic
+    form, so such a window is refused rather than saved without it.
+    Anything that is not JSON is returned unchanged for the classic
+    parser to judge."""
+    if not isinstance(layout, str) or not layout.startswith('{'):
+        return layout
+    try:
+        data = json.loads(layout)
+    except ValueError:
+        raise SnapshotError('Invalid layout')
+
+    def number(value):
+        if type(value) is not int or value < 0:
+            raise SnapshotError('Invalid layout geometry')
+        return value
+
+    def node(n):
+        if not isinstance(n, dict):
+            raise SnapshotError('Invalid layout')
+        if 'z' in n:
+            raise SnapshotError('Windows with floating panes are not supported')
+        cell = '%dx%d,%d,%d' % (number(n.get('w')), number(n.get('h')),
+                                number(n.get('x')), number(n.get('y')))
+        kind = n.get('t')
+        if kind == 'p':
+            pane = n.get('I')
+            if not isinstance(pane, str) or not re.fullmatch(r'%[0-9]+', pane):
+                raise SnapshotError('Invalid layout pane')
+            return '%s,%d' % (cell, int(pane[1:]))
+        if kind in ('h', 'v') and isinstance(n.get('c'), list) and n['c']:
+            inner = ','.join(node(c) for c in n['c'])
+            return cell + ('{%s}' % inner if kind == 'h' else '[%s]' % inner)
+        raise SnapshotError('Invalid layout')
+
+    if not isinstance(data, dict) or data.get('V') != 2:
+        raise SnapshotError('Unsupported layout version')
+    body = node(data.get('L'))
+    return '%04x,%s' % (_layout_checksum(body), body)
+
+
 def _layout_ids(layout):
     """Parse tmux's unzoomed layout tree; return leaf IDs, width and height."""
     if not isinstance(layout, str) or not re.fullmatch(r'[0-9a-f]{4},[0-9x,{}\[\]]+', layout):
         raise SnapshotError('Invalid layout')
     body = layout[5:]
-    checksum = 0
-    for byte in body.encode('ascii'):
-        checksum = ((checksum >> 1) | ((checksum & 1) << 15)) + byte
-        checksum &= 0xffff
-    if checksum != int(layout[:4], 16):
+    if _layout_checksum(body) != int(layout[:4], 16):
         raise SnapshotError('Invalid layout checksum')
 
     def node(pos):
@@ -209,7 +263,7 @@ def collect(name, sealed=False):
             raise SnapshotError('Pane count changed during capture; retry')
         # The docked dashboard is ccm's own, passing through: the checkpoint
         # describes the window as it is without it.
-        layout = w['window_layout']
+        layout = normalize_layout(w['window_layout'])
         docked = [p for p in wp if p['@ccm_dock'] == '1']
         if docked:
             import ccm_dock

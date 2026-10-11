@@ -292,7 +292,7 @@ def panes(window):
 def layout_geometry(window, rows):
     # pane_height excludes a pane-border-status line and zoom changes visible
     # pane dimensions. Layout cells are the stable geometry for split sizes.
-    raw = run('display-message', '-p', '-t', window, '#{window_layout}')
+    raw = store.normalize_layout(run('display-message', '-p', '-t', window, '#{window_layout}'))
     rects = {'%' + str(n['id']): layout.rect(n) for n in layout.leaves(layout.parse(raw))}
     if set(rects) != set(rows):
         raise WindowProblem('Layout and pane inventory disagree')
