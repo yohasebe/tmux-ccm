@@ -660,9 +660,15 @@ def _parse_jsonl_tail(
 
     Cached by (path, mtime, size): the second call with an unchanged
     mtime AND size returns the cached tuple without re-reading the
-    file. A new write changes the size (JSONL is append-only during
-    a session), so cache invalidation is reliable even within the
-    same wall-clock second.
+    file; `mtime` is in nanoseconds, so a rewrite is noticed even
+    within one second. Transcripts are mostly appended, but they can
+    also be rewritten: Claude Code removes a retracted message either
+    by truncating the file at its line and writing the lines after it
+    back, or by rewriting the whole file without it. A read between a
+    truncation and its write-back may see an incomplete tail, and that
+    parse is cached until mtime or size changes. What it does to the
+    activity and stop-reason readings depends on the records the read
+    happened to see; this has not been observed under a live rewrite.
     """
     key = (mtime, size)
     cached = _jsonl_activity_cache.get(path)
