@@ -878,7 +878,7 @@ The conventions that make the relay work:
 
 ## Sidekick attention: knowing when it needs you
 
-A sidekick's approval dialog is easy to miss: ccm deliberately reads no state from a non-Claude pane, so a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships:
+A sidekick's approval dialog is easy to miss: without its hooks, a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships. Codex is the one exception, described below: its hooks cannot say when an approval is answered, so ccm also reads its screen.
 
 ```bash
 ccm setup-sidekick-hooks kimi     # writes [[hooks]] entries into ~/.kimi-code/config.toml
@@ -947,6 +947,20 @@ Codex running outside tmux) is indistinguishable and takes over the binding
 when it sends events. This is a heuristic, so read the named pane before acting.
 SessionStart may not arrive until the first turn. The hook's own pane variable
 and process ancestry are not used for routing.
+
+**Codex working and waiting.** The `▸codex` badge shows three states:
+`▸codex⚠` in PERMIT's yellow while a Codex dialog waits for a key (an approval,
+or the hook review at start-up), `▸codex◉` in BUSY's colour while Codex works on
+a turn, and a dim `▸codex` otherwise. The window's own state is unaffected.
+Codex's hooks report when a turn starts and ends and when it asks for approval,
+but nothing fires when the approval is answered: the next event comes when the
+approved command finishes, minutes later for a long one. So ccm reads the Codex
+pane's screen, which shows the answer at once: the dialog's key hint on the
+last line means waiting, and the working line just above the input box
+(`Working (… • esc to interrupt)` and its other wordings) means working. When
+the screen shows neither (an overlay, a scrolled view), the hooks' last record
+for that pane decides, for up to 30 minutes after its last event. `w` and
+`@ccm-sidekick-attention off` hide both states.
 
 Permission requests use the existing attention marker, badge and desktop
 notification, controlled by `@ccm-sidekick-attention`. Desktop notices run on

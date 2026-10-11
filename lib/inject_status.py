@@ -27,7 +27,8 @@ from ccm_core import (
 import ccm_spool
 from ccm_notify import notify
 from ccm_render import (ambiguous_width_declared, display_width,
-                        external_agent_label, signal_age_suffix)
+                        external_agent_badge, external_agent_state,
+                        signal_age_suffix)
 from ccm_runtime import (
     auto_exit_idle,
     periodic_autosave,
@@ -248,7 +249,7 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
         # 1 is the minimal no-extras format). Dim; presence only, not
         # a state. The label is the shared one from ccm_render so the
         # badge text matches `ccm status` / the dashboard exactly.
-        ext_label = external_agent_label(p)
+        ext_badge = external_agent_badge(p)
         # A SHELL row with an external agent is marked once, by the
         # `▸name` badge. A `(name)` note in the post slot used to
         # repeat it on the same entry.
@@ -279,16 +280,17 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
             entry += _render_pane_marker(
                 "#ffffff,bold" if is_current else "#9E9E9E"
             )
-            # Presence badge next to [N], same dim treatment — except
-            # when a sidekick holds a live attention marker, where the
-            # badge takes PERMIT yellow (a human is needed) without
-            # entering the state model.
-            if ext_label:
-                badge_fg = ("yellow,bold"
-                            if getattr(p, "attention_agents", ())
+            # Sidekick badge next to [N]: dim while the sidekick only
+            # sits there, PERMIT yellow with ⚠ while it waits for a
+            # person, BUSY's colour with ◉ while it works — without
+            # entering the window's state model.
+            if ext_badge:
+                ext_state = external_agent_state(p)
+                badge_fg = ("yellow,bold" if ext_state == "PERMIT"
+                            else TMUX_COLORS["BUSY"] if ext_state == "BUSY"
                             else "#666666")
                 entry += (
-                    f" #[fg={badge_fg}]▸{ext_label}"
+                    f" #[fg={badge_fg}]{ext_badge}"
                     f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
                 )
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"

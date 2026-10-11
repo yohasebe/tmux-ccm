@@ -58,6 +58,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     CLAUDE_PROCESS_NAME,
     COMPLETED_AT_TIMEOUT,
     EXTERNAL_AGENT_COMMANDS,
+    codex_screen_state,
     external_agent_name,
     HOOK_FRESH_THRESHOLD,
     HOOK_SCRIPTS,
@@ -156,8 +157,9 @@ def _forget_written_option(args):
             return
 
 
-def tmux_cmd(*args, timeout=5):
-    """Run tmux command, return stdout.
+def tmux_cmd(*args, timeout=5, strip=True):
+    """Run tmux command, return stdout (stripped; with `strip=False` only
+    the trailing newlines go, so the first line keeps its indent).
 
     Decodes output with `errors="replace"` because `capture-pane`
     can emit byte sequences that are not valid UTF-8 — terminal
@@ -177,7 +179,8 @@ def tmux_cmd(*args, timeout=5):
         )
         if r.returncode != 0:
             return ""
-        return r.stdout.decode("utf-8", errors="replace").strip()
+        out = r.stdout.decode("utf-8", errors="replace")
+        return out.strip() if strip else out.rstrip("\n")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
 
@@ -680,13 +683,14 @@ class Project:
         "branch", "ports", "completed_at", "bg_active", "pane_count",
         "ignored_panes", "permission_mode", "sort_key",
         "cached_session_id", "external_agents", "attention_agents",
+        "busy_agents",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
                  branch="", ports="", completed_at=0, bg_active=False,
                  pane_count=1, permission_mode="", ignored_panes=0,
                  cached_session_id=None, external_agents=(),
-                 attention_agents=()):
+                 attention_agents=(), busy_agents=()):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -733,6 +737,10 @@ class Project:
         # nothing else: NOT part of the 4-state model, never consulted
         # by detection, () on the fast path.
         self.attention_agents = attention_agents
+        # Agent names whose pane is working on a turn — only Codex,
+        # whose screen and hooks say so. Display-only like
+        # attention_agents; an agent in both shows as attention.
+        self.busy_agents = busy_agents
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
@@ -1105,6 +1113,53 @@ def _resolve_external_agent_panes(panes_cache, win_target):
     )
 
 
+def _codex_pane_states(panes_cache, win_target, hooks_cache, ps_lines):
+    """States ("PERMIT" / "BUSY" / "IDLE") of this window's Codex panes:
+    from the screen when it shows one of Codex's marks, otherwise from
+    what the Codex hooks last recorded for that pane, if the record was
+    written for the Codex process running there now (a Codex restarted
+    in the same pane must not inherit its predecessor's wait).
+    `hooks_cache` is a per-build list holding the records once read, so
+    a build reads them at most once and only when a screen is
+    illegible."""
+    states = []
+    for pc in panes_cache:
+        if pc[0] != win_target or external_agent_name(pc[3]) != "codex":
+            continue
+        try:
+            state = codex_screen_state(
+                ccm_pane_state.capture_pane_screen(pc[2]))
+        except Exception:
+            log_caught_exception("codex_screen")
+            state = None
+        if state is None:
+            if not hooks_cache:
+                hooks_cache.append(_codex_hook_activity())
+            recorded, process = hooks_cache[0].get(pc[2], ("IDLE", None))
+            state = "IDLE"
+            if recorded != "IDLE" and process:
+                try:
+                    import ccm_sidekick_notify
+                    if ccm_sidekick_notify.process_identity(
+                            pc[1], ps_lines) == process:
+                        state = recorded
+                except Exception:
+                    log_caught_exception("codex_process_identity")
+        states.append(state)
+    return states
+
+
+def _codex_hook_activity():
+    try:
+        import ccm_sidekick_notify
+        server = tmux_cmd("display-message", "-p",
+                          "#{pid}:#{start_time}:#{socket_path}")
+        return ccm_sidekick_notify.pane_activity(server) if server else {}
+    except Exception:
+        log_caught_exception("codex_hook_activity")
+        return {}
+
+
 def build_project_list(fast=False):
     """Build the active project list from tmux state.
 
@@ -1141,9 +1196,11 @@ def build_project_list(fast=False):
         # it adds costs nothing but its text.
         ccm_pane_state.prefetch_visible([
             pc[2] for pc in panes_cache
-            if not _pane_is_ignored(pc)
-            and pc[3] not in SHELL_FOREGROUND_COMMANDS
-            and ccm_detection.find_claude_pid(pc[1], ps_lines)])
+            if (not _pane_is_ignored(pc)
+                and pc[3] not in SHELL_FOREGROUND_COMMANDS
+                and ccm_detection.find_claude_pid(pc[1], ps_lines))
+            or external_agent_name(pc[3]) == "codex"])
+    codex_hooks = []  # filled on first need: [ {pane: state} ]
     # Sidekick attention markers: read once per build (a single
     # readdir), lazily on the first row because the global
     # @ccm-sidekick-attention toggle rides the bulk window query
@@ -1199,12 +1256,27 @@ def build_project_list(fast=False):
         # `waiting` — join by pane id against the bulk cache, so a
         # window with two kimi panes colours only the waiting one's
         # name into the set.
-        attention_agents = tuple(sorted({
+        attention = {
             m.get("agent") or pc[3]
             for pc in panes_cache
             if pc[0] == row["win_target"]
             for m in (attention_markers.get(pc[2]),) if m
-        })) if attention_markers else ()
+        } if attention_markers else set()
+        busy_agents = ()
+        if "codex" in external_agents:
+            # A Codex sidekick is read from its screen, with its hook
+            # record as the fallback (`_codex_pane_states`), not from
+            # the attention marker: the marker cannot know when an
+            # approval was answered.
+            attention.discard("codex")
+            if row["attention_toggle"] != "off":
+                codex = _codex_pane_states(
+                    panes_cache, row["win_target"], codex_hooks, ps_lines)
+                if "PERMIT" in codex:
+                    attention.add("codex")
+                if "BUSY" in codex:
+                    busy_agents = ("codex",)
+        attention_agents = tuple(sorted(attention))
 
         # Permission-mode badge (slow path, live sessions only). The
         # events tail was just read by detection for this same cycle,
@@ -1235,6 +1307,7 @@ def build_project_list(fast=False):
             cached_session_id=row["cached_session_id"],
             external_agents=external_agents,
             attention_agents=attention_agents,
+            busy_agents=busy_agents,
         ))
 
     projects.sort(key=lambda p: p.sort_key)

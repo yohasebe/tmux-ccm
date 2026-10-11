@@ -422,7 +422,7 @@ ccm clear-notifications           Remove ccm notifications from macOS Notificati
 | `* <elapsed>` | IDLE (recently completed) | Transient marker (asterisk green, time dim) shown for 30 s after BUSY/PERMIT → IDLE |
 | `[N]` | (any state, multi-pane window) | Pane count marker (brackets dim, digit cyan) when a window has more than one pane |
 | `⊘` | (any state) | Hidden-pane marker (dim): the window has a pane excluded from ccm via `CCM_IGNORE` |
-| `▸<name>` | (any state) | Presence marker (dim): a pane in the window is running an external agent CLI. ccm shows that it is there but does not track its state |
+| `▸<name>` | (any state) | Sidekick marker: a pane in the window is running an external agent CLI. Dim while it sits there; yellow `▸<name>⚠` while it waits for you (with sidekick hooks installed); for Codex also `▸codex◉` in BUSY's colour while it works. The window's own state is unaffected |
 | ■ | SHELL | Shell active, Claude not running |
 | ○ | DOWN | Window not available |
 | ⊘ | IGNORED | Every Claude pane in the window is hidden via `CCM_IGNORE` — ccm deliberately cannot see the window's Claude, so it claims no state. `ccm send` is refused and points at `ccm unignore` |

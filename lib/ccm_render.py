@@ -340,6 +340,31 @@ def external_agent_label(project):
     return ",".join(parts)
 
 
+def external_agent_state(project):
+    """"PERMIT" when a sidekick in the window waits for a person,
+    "BUSY" when one is working on a turn, else "". Shared by every
+    surface, like `external_agent_label`, so the badge's icon and
+    colour agree everywhere. A waiting sidekick outranks a working one,
+    as PERMIT outranks BUSY for the window."""
+    shown = set(getattr(project, "external_agents", ()) or ())
+    # An ignored Claude sidekick waits under `⊘`, not under `▸`.
+    if shown & set(getattr(project, "attention_agents", ()) or ()):
+        return "PERMIT"
+    if shown & set(getattr(project, "busy_agents", ()) or ()):
+        return "BUSY"
+    return ""
+
+
+def external_agent_badge(project):
+    """The badge text, `▸<label>` plus the state's icon when the
+    sidekick waits or works ("" when there is no sidekick)."""
+    label = external_agent_label(project)
+    if not label:
+        return ""
+    state = external_agent_state(project)
+    return f"▸{label}{STATE_ICONS[state] if state else ''}"
+
+
 # ─── CLI commands ───
 
 def print_status():
@@ -453,11 +478,10 @@ def print_status():
         # takes PERMIT's bold yellow: same colour vocabulary, same
         # meaning — a human is needed — while staying out of the
         # 4-state model itself.
-        ext_label = external_agent_label(p)
-        if ext_label:
-            badge = f"▸{ext_label}"
-            colour = (C_STATE["PERMIT"]
-                      if getattr(p, "attention_agents", ()) else C_DIM)
+        badge = external_agent_badge(p)
+        if badge:
+            ext_state = external_agent_state(p)
+            colour = C_STATE[ext_state] if ext_state else C_DIM
             pane_marker += f" {colour}{badge}{C_RESET}"
             pane_marker_visible_w += 1 + display_width(badge)
         # Spool marker `✉N`: N messages are queued for this project

@@ -1062,6 +1062,50 @@ def external_agent_name(command):
             return prefix.rstrip("-")
     return ""
 
+# Codex sidekick screen (measured on Codex 0.162.1). Its hooks say when
+# a turn opens and closes and when it asks for approval, but nothing
+# fires when the approval is answered: the next event is PostToolUse,
+# when the approved command finishes, minutes later for a long one. The
+# screen says it at once, so it decides whenever it is legible.
+#
+# Each mark is read where Codex draws it and nowhere else, because the
+# transcript above can quote the same words (a Codex reviewing this
+# very code will):
+#   - a dialog's key hint ("Press enter to confirm or esc to cancel",
+#     "enter confirm · esc skip") is the LAST line of the screen;
+#   - the working line ("Working (5m 09s • esc to interrupt) · …")
+#     starts at column 0 just above the composer, where transcript
+#     lines start with a bullet or an indent instead;
+#   - the composer line starts with `›` at column 0.
+# Words are matched loosely, not as fixed strings.
+_CODEX_DIALOG_HINT = re.compile(r"\benter\b.*\besc\b", re.IGNORECASE)
+_CODEX_WORKING = re.compile(r"^[A-Za-z][A-Za-z ]* \([^()]*\besc to interrupt\)")
+_CODEX_COMPOSER = re.compile(r"^›")
+#: How many lines above the composer the working line may sit (a tip
+#: line can come between them).
+CODEX_WORKING_LOOKBACK = 6
+
+
+def codex_screen_state(lines):
+    """Classify a Codex pane from its visible lines (non-empty, oldest
+    first, not stripped): "PERMIT" while a dialog waits for a key,
+    "BUSY" while a turn runs, "IDLE" at the composer with no turn, or
+    None when the screen shows none of these (an overlay, a scrolled
+    view, a capture that failed) and something else has to decide."""
+    if not lines:
+        return None
+    if _CODEX_DIALOG_HINT.search(lines[-1]):
+        return "PERMIT"
+    composer = next((i for i in range(len(lines) - 1, -1, -1)
+                     if _CODEX_COMPOSER.match(lines[i])), None)
+    if composer is None:
+        return None
+    above = lines[max(0, composer - CODEX_WORKING_LOOKBACK):composer]
+    if any(_CODEX_WORKING.match(line) for line in above):
+        return "BUSY"
+    return "IDLE"
+
+
 #: The two launch commands. A launch into an existing shell always
 #: types the first; `ccm add` types the second only when ccm has
 #: seen that the directory holds no conversation to resume

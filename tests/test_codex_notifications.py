@@ -918,3 +918,87 @@ def test_redaction_still_precedes_normalization_and_line_selection(monkeypatch):
     monkeypatch.setenv('CCM_SYNTHETIC_CREDENTIAL', secret)
     assert notices._first_line('Result: ' + secret + '\nLater') == {
         'text': 'Result: [redacted]', 'truncated': False}
+
+
+def test_permission_request_description_does_not_break_the_match(world):
+    # Measured on Codex 0.162.1: PermissionRequest adds `description` to
+    # the tool_input PreToolUse sent without it.
+    world['emit']('PreToolUse', tool_name='Bash',
+                  tool_input={'command': 'curl -sI https://example.com'},
+                  tool_use_id='exec-one')
+    world['emit']('PermissionRequest', tool_name='Bash',
+                  tool_input={'command': 'curl -sI https://example.com',
+                              'description': 'May I reach example.com?'})
+    assert marker()['state'] == 'waiting'
+    world['emit']('PostToolUse', tool_name='Bash',
+                  tool_input={'command': 'curl -sI https://example.com'},
+                  tool_use_id='exec-one')
+    assert marker()['state'] == 'resolved'
+
+
+def _state_file():
+    files = list((Path(ccm_spool.SPOOL_ROOT) / '.sidekick').glob('*.json'))
+    assert len(files) == 1
+    return json.loads(files[0].read_text())
+
+
+@pytest.mark.parametrize('opener', ['UserPromptSubmit', 'PreToolUse', 'PermissionRequest'])
+def test_open_turn_recorded_until_stop(world, opener):
+    world['emit'](opener, tool_name='Bash', tool_use_id='x')
+    assert _state_file()['open_turn'] == 'turn-one'
+    world['emit']('Stop')
+    assert 'open_turn' not in _state_file()
+
+
+def test_interrupt_closes_the_open_turn(world):
+    world['emit']('UserPromptSubmit')
+    world['emit']('Interrupt')
+    assert 'open_turn' not in _state_file()
+
+
+def test_session_end_closes_the_open_turn(world):
+    world['emit']('UserPromptSubmit')
+    world['emit']('SessionEnd')
+    assert 'open_turn' not in _state_file()
+
+
+def test_late_event_of_a_closed_turn_does_not_reopen_it(world):
+    world['emit']('UserPromptSubmit')
+    world['emit']('Stop')
+    world['emit']('PreToolUse', tool_name='Bash', tool_use_id='late')
+    assert 'open_turn' not in _state_file()
+
+
+def test_pane_activity_reports_each_state(world):
+    server = 'server-example:1:socket-example'
+    world['emit']('UserPromptSubmit')
+    process = _state_file()['binding']['process']
+    assert process
+    assert notices.pane_activity(server) == {'%2': ('BUSY', process)}
+    world['emit']('PermissionRequest', tool_name='Bash')
+    assert notices.pane_activity(server) == {'%2': ('PERMIT', process)}
+    world['emit']('Stop')
+    assert notices.pane_activity(server) == {'%2': ('IDLE', process)}
+
+
+def test_pane_activity_ignores_another_server(world):
+    world['emit']('UserPromptSubmit')
+    assert notices.pane_activity('another-server') == {}
+
+
+def test_pane_activity_forgets_an_old_open_turn(world):
+    server = 'server-example:1:socket-example'
+    world['emit']('UserPromptSubmit')
+    later = world['now'] + notices.HOOK_ACTIVITY_MAX_AGE + 1
+    assert notices.pane_activity(server, now=later)['%2'][0] == 'IDLE'
+    just_inside = world['now'] + notices.HOOK_ACTIVITY_MAX_AGE
+    assert notices.pane_activity(server, now=just_inside)['%2'][0] == 'BUSY'
+
+
+def test_pane_activity_takes_the_newest_record_for_a_pane(world, tmp_path):
+    server = 'server-example:1:socket-example'
+    world['emit']('UserPromptSubmit')
+    older = {'binding': {'server': server, 'source': '%2'},
+             'received': world['now'] - 10, 'waits': {'k': {}}}
+    (Path(ccm_spool.SPOOL_ROOT) / '.sidekick' / 'older.json').write_text(json.dumps(older))
+    assert notices.pane_activity(server)['%2'][0] == 'BUSY'

@@ -199,6 +199,8 @@ def capture_composer_snapshot(pane_target):
 # goes to tmux. Entries expire, so a pass that ends early cannot leave
 # old screens for a later one.
 _PREFETCHED = {}
+# The same screens with their indentation, for `capture_pane_screen`.
+_PREFETCHED_RAW = {}
 _PREFETCH_TTL_SEC = 1.0
 _prefetched_until = 0.0
 
@@ -215,6 +217,7 @@ def prefetch_visible(pane_ids):
     global _prefetched_until
     import uuid
     _PREFETCHED.clear()
+    _PREFETCHED_RAW.clear()
     pane_ids = list(dict.fromkeys(pane_ids))
     if len(pane_ids) < 2:
         return
@@ -225,7 +228,8 @@ def prefetch_visible(pane_ids):
             args += [";", "display-message", "-p", sep, ";"]
         args += ["capture-pane", "-t", pane, "-p"]
     # A failure comes back empty: one segment, never one per pane.
-    out = ccm_core.tmux_cmd(*args)
+    # Unstripped, so the first screen keeps the indent of its first line.
+    out = ccm_core.tmux_cmd(*args, strip=False)
     segments, current = [], []
     for line in out.split("\n"):
         if line == sep:
@@ -238,11 +242,13 @@ def prefetch_visible(pane_ids):
         return
     for pane, text in zip(pane_ids, segments):
         _PREFETCHED[pane] = text.strip()
+        _PREFETCHED_RAW[pane] = text
     _prefetched_until = time.monotonic() + _PREFETCH_TTL_SEC
 
 
 def clear_prefetched():
     _PREFETCHED.clear()
+    _PREFETCHED_RAW.clear()
 
 
 def _take_prefetched(pane_target):
@@ -252,6 +258,20 @@ def _take_prefetched(pane_target):
         _PREFETCHED.clear()
         return None
     return _PREFETCHED.pop(pane_target, None)
+
+
+def capture_pane_screen(pane_target):
+    """Non-empty visible lines with their indentation intact, for a
+    reader that tells a line by its column (the Codex screen). Served
+    from the pass's batch capture when it holds this pane, else read on
+    its own; never the alternate-screen fallback."""
+    raw = None
+    if _PREFETCHED_RAW and time.monotonic() <= _prefetched_until:
+        raw = _PREFETCHED_RAW.pop(pane_target, None)
+    if raw is None:
+        raw = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p",
+                                strip=False)
+    return [line for line in (raw or "").split("\n") if line.strip()]
 
 
 def capture_pane_visible(pane_target):

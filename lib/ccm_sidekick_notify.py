@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import re
 import subprocess
 import tempfile
@@ -284,7 +285,14 @@ def _marker(state, now):
 
 
 def _signature(payload):
-    return _key([payload.get('tool_name'), payload.get('tool_input')])
+    # PermissionRequest adds a `description` (why approval is asked) to the
+    # tool_input that PreToolUse sent without one (measured, Codex 0.162.1);
+    # leaving it in would never match the two and keep the wait open until
+    # the turn ends.
+    tool_input = payload.get('tool_input')
+    if isinstance(tool_input, dict):
+        tool_input = {k: v for k, v in tool_input.items() if k != 'description'}
+    return _key([payload.get('tool_name'), tool_input])
 
 
 def _notices(pdir):
@@ -432,6 +440,9 @@ def receive(payload, *, expected=None, signature=None, replay=False, received=No
         if event == 'SessionStart':
             state.pop('ended', None)
         state['closed'] = {k: v for k, v in state['closed'].items() if now - v < 7 * 86400}
+        if event in ('UserPromptSubmit', 'PreToolUse', 'PermissionRequest') \
+                and turn not in state['closed'] and state.get('open_turn') != turn:
+            state['open_turn'] = turn
         if event == 'PreToolUse' and turn not in state['closed']:
             tool_id = payload.get('tool_use_id')
             if isinstance(tool_id, str) and tool_id:
@@ -468,8 +479,11 @@ def receive(payload, *, expected=None, signature=None, replay=False, received=No
                 if event == 'Stop' and turn not in state['closed']:
                     _enqueue(state, payload, now, prepared_excerpt)
                 state['closed'][turn] = now
+                if state.get('open_turn') == turn:
+                    state.pop('open_turn', None)
             else:
                 state['ended'] = True
+                state.pop('open_turn', None)
         _marker(state, now)
         _write(path, state)
         # Store binding on the window, not in a pane's inherited environment.
@@ -611,6 +625,50 @@ def reconcile(projects, regular_pending):
                 _write(path, record)
         finally:
             ccm_spool._release_lock(str(pdir))
+
+
+#: The hook record stands in for an illegible screen only while it is
+#: recent: a turn whose Stop never arrived must not read as working
+#: for ever.
+HOOK_ACTIVITY_MAX_AGE = 1800
+
+
+def pane_activity(server, now=None):
+    """What the hooks last said about each Codex pane of this tmux
+    server: {pane id: ("PERMIT" | "BUSY" | "IDLE", process identity)}.
+    Read-only. The screen decides when it is legible
+    (`ccm_constants.codex_screen_state`); this answers only for a pane
+    whose screen shows none of its marks, and only for the Codex process
+    the record was written for (`process_identity`)."""
+    now = time.time() if now is None else now
+    newest = {}
+    for path in (Path(ccm_spool.SPOOL_ROOT) / '.sidekick').glob('*.json'):
+        state = _read(path, {})
+        binding = state.get('binding') if isinstance(state, dict) else None
+        if not isinstance(binding, dict) or binding.get('server') != server:
+            continue
+        pane = binding.get('source')
+        received = state.get('received')
+        if not isinstance(pane, str) or not isinstance(received, (int, float)):
+            continue
+        if pane in newest and newest[pane][0] >= received:
+            continue  # an older window binding that once had this pane id
+        if state.get('ended') or now - received > HOOK_ACTIVITY_MAX_AGE:
+            value = 'IDLE'
+        elif state.get('waits'):
+            value = 'PERMIT'
+        elif state.get('open_turn'):
+            value = 'BUSY'
+        else:
+            value = 'IDLE'
+        newest[pane] = (received, value, binding.get('process'))
+    return {pane: (value, process) for pane, (_, value, process) in newest.items()}
+
+
+def process_identity(pane_pid, ps_lines):
+    """The identity a hook record stores for the Codex process running
+    in a pane (`binding.process`), read now; None when it cannot be."""
+    return _source_identity(SimpleNamespace(pane_pid=pane_pid), ps_lines)
 
 
 def attention_records():

@@ -208,6 +208,23 @@ class TestBuildDetailEntriesExternalAgent:
         entries = self._entries([p], True, monkeypatch)
         assert "▸" not in entries[0]
 
+    def test_mode2_working_codex_badge(self, monkeypatch):
+        p = _make_project("pair", "IDLE", external_agents=("codex",),
+                          busy_agents=("codex",))
+        entries = self._entries([p], True, monkeypatch)
+        assert f"#[fg={inject_status.TMUX_COLORS['BUSY']}]▸codex◉" in entries[0]
+
+    def test_mode2_waiting_codex_badge(self, monkeypatch):
+        p = _make_project("pair", "IDLE", external_agents=("codex",),
+                          attention_agents=("codex",), busy_agents=("codex",))
+        entries = self._entries([p], True, monkeypatch)
+        assert "#[fg=yellow,bold]▸codex⚠" in entries[0]
+
+    def test_mode2_idle_codex_badge_is_dim(self, monkeypatch):
+        p = _make_project("pair", "IDLE", external_agents=("codex",))
+        entries = self._entries([p], True, monkeypatch)
+        assert "#[fg=#666666]▸codex#[" in entries[0]
+
 
 class TestDashboardExternalAgent:
     """Dashboard row: badge in the annotation cluster, note in the
@@ -321,6 +338,59 @@ class TestDashboardExternalAgent:
             f"name column moved from x={without} to x={with_agent} "
             f"when an external agent appeared — the layout jumps in "
             f"front of the user as detection catches up")
+
+    def _draws(self, monkeypatch, **kw):
+        import curses as _curses
+        import dashboard
+        calls = []
+
+        def capture(self_, stdscr, y, x, text, attr=0, max_col=0):
+            calls.append((text, attr))
+        monkeypatch.setattr(_curses, "color_pair", lambda n: n)
+        from unittest.mock import MagicMock
+        for name, value in (
+                ("dashboard.Dashboard._lifecycle_banner", lambda *a: ""),
+                ("dashboard.tmux_cmd", lambda *a, **k: ""),
+                ("dashboard.hooks_configured", lambda: True),
+                ("dashboard.hooks_log_warning", lambda: ""),
+                ("dashboard.disable_all_hooks_warning", lambda *a, **kw: ""),
+                ("dashboard.managed_hooks_only_warning", lambda *a, **kw: ""),
+                ("dashboard.shell_cluster_warnings", lambda p: []),
+                ("dashboard.hook_silence_warnings", lambda p: []),
+                ("dashboard.errors_log_burst_warning", lambda: ""),
+                ("dashboard.get_session", lambda: "0"),
+                ("dashboard.touch_popup_session", lambda: None),
+                ("dashboard.read_cache_file", lambda *a, **k: ""),
+                ("dashboard.format_elapsed", lambda ts: ""),
+                ("dashboard.format_dir", lambda d, col, w: d)):
+            monkeypatch.setattr(name, value)
+        monkeypatch.setattr(ccm_signals, "read_hook_signal",
+                            lambda d, session_id=None: None)
+        monkeypatch.setattr(dashboard.Dashboard, "_addstr", capture)
+        d = dashboard.Dashboard(initial_mode="dashboard")
+        d.projects = [_make_project("pair", "IDLE",
+                                    external_agents=("codex",), **kw)]
+        stdscr = MagicMock()
+        stdscr.getmaxyx.return_value = (40, 200)
+        d.render(stdscr)
+        return calls
+
+    def test_working_codex_badge(self, monkeypatch):
+        import dashboard
+        draws = self._draws(monkeypatch, busy_agents=("codex",))
+        assert ("▸codex◉", dashboard.C_BUSY) in draws
+
+    def test_waiting_codex_badge(self, monkeypatch):
+        import curses as _curses
+        import dashboard
+        draws = self._draws(monkeypatch, attention_agents=("codex",),
+                            busy_agents=("codex",))
+        assert ("▸codex⚠", dashboard.C_PERMIT | _curses.A_BOLD) in draws
+
+    def test_idle_codex_badge_is_dim(self, monkeypatch):
+        import dashboard
+        draws = self._draws(monkeypatch)
+        assert ("▸codex", dashboard.C_DIM) in draws
 
     def test_no_badge_for_claude_only(self, monkeypatch):
         projects = [_make_project("plain", "IDLE")]
