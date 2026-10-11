@@ -355,14 +355,21 @@ def external_agent_state(project):
     return ""
 
 
+#: The badge's leading mark. Every surface draws it dim and colours only
+#: what follows (the name and the state's icon), so the mark reads as
+#: "a sidekick is here" and the colour as its state.
+EXTERNAL_AGENT_MARK = "▸ "
+
+
 def external_agent_badge(project):
-    """The badge text, `▸<label>` plus the state's icon when the
-    sidekick waits or works ("" when there is no sidekick)."""
+    """The badge text, `▸ <label>` plus ` <icon>` when the sidekick
+    waits or works ("" when there is no sidekick). The spaces keep the
+    name readable between the two marks."""
     label = external_agent_label(project)
     if not label:
         return ""
     state = external_agent_state(project)
-    return f"▸{label}{STATE_ICONS[state] if state else ''}"
+    return f"{EXTERNAL_AGENT_MARK}{label}{' ' + STATE_ICONS[state] if state else ''}"
 
 
 # ─── CLI commands ───
@@ -482,7 +489,9 @@ def print_status():
         if badge:
             ext_state = external_agent_state(p)
             colour = C_STATE[ext_state] if ext_state else C_DIM
-            pane_marker += f" {colour}{badge}{C_RESET}"
+            mark = EXTERNAL_AGENT_MARK
+            pane_marker += (f" {C_DIM}{mark}{C_RESET}"
+                            f"{colour}{badge[len(mark):]}{C_RESET}")
             pane_marker_visible_w += 1 + display_width(badge)
         # Spool marker `✉N`: N messages are queued for this project
         # (store-and-forward). Dim like `⊘` — a queue length, not a

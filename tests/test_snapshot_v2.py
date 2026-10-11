@@ -472,3 +472,38 @@ def test_dashboard_does_not_call_protected_checkpoint_newly_saved(env, monkeypat
     dashboard.Dashboard._do_save(ui, screen)
     ui._show_message.assert_called_once_with(screen, 'Snapshot unchanged, empty or protected: _autosave', 1.5)
     assert contents(env) == before
+
+
+@pytest.mark.parametrize('command, agent', [('agy', 'agy'), ('kimi-code', 'kimi-code'),
+                                            ('grok-macos-aarc', 'grok')])
+def test_every_recognised_sidekick_saves_and_validates(env, monkeypatch, command, agent):
+    # Recognising an agent must not make its own checkpoint invalid: the
+    # checkpoint accepts every name the recogniser can return.
+    split = layout('120x40,0,0{59x40,0,0,1,60x40,60,0,2}')
+    def query(cmd, *a, **k):
+        if cmd == 'list-windows':
+            return f'$1\t@1\t3\talpha\t/tmp/alpha\t{split}\t120\t40\t1\t2\tIDLE\t\tEND'
+        return ('@1\t%1\t0\t11\tzsh\t/tmp/alpha\t\t0\t40\t\t\t0\tEND\n'
+                f'@1\t%2\t1\t12\t{command}\t/tmp/sidekick\t\t1\t40\t\t\t0\tEND')
+    monkeypatch.setattr(ccm_core, 'tmux_query', query)
+    monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: '21 11 11 claude 00:10')
+    data = store.collect('_autosave')
+    pane = data['projects'][0]['restore']['panes'][1]
+    assert (pane['role'], pane['agent']) == ('sidekick', agent)
+    store.validate(copy.deepcopy(data))
+
+
+@pytest.mark.parametrize('agent', [['codex'], {'name': 'codex'}, 'someone-else'])
+def test_checkpoint_refuses_an_unknown_agent_value(env, monkeypatch, agent):
+    split = layout('120x40,0,0{59x40,0,0,1,60x40,60,0,2}')
+    def query(cmd, *a, **k):
+        if cmd == 'list-windows':
+            return f'$1\t@1\t3\talpha\t/tmp/alpha\t{split}\t120\t40\t1\t2\tIDLE\t\tEND'
+        return ('@1\t%1\t0\t11\tzsh\t/tmp/alpha\t\t0\t40\t\t\t0\tEND\n'
+                '@1\t%2\t1\t12\tcodex\t/tmp/sidekick\t\t1\t40\t\t\t0\tEND')
+    monkeypatch.setattr(ccm_core, 'tmux_query', query)
+    monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: '21 11 11 claude 00:10')
+    data = store.collect('_autosave')
+    data['projects'][0]['restore']['panes'][1]['agent'] = agent
+    with pytest.raises(store.SnapshotError):
+        store.validate(data)

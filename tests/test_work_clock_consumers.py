@@ -27,6 +27,8 @@ def test_consumers_use_saved_clock(monkeypatch, consumer, stored, stamp, expecte
 
     def tmux(*args):
         calls.append(args)
+        if args[:2] == ("show-option", "-gqv") or args[0] == "display-message":
+            return ""  # reads for the waiting-sidekick focus
         if args[0] == "show-option":
             assert args[-2] == "0:5"
             return {"@ccm_work_clock": stored, "@ccm_work_clock_ts": stamp,

@@ -27,7 +27,7 @@ def decode(raw):
         r = json.loads(raw)
         if (not isinstance(r, dict) or set(r) != {'role', 'agent', 'ignore'}
                 or r['role'] not in ('primary', 'sidekick', 'shell', 'unknown', 'manual')
-                or r['agent'] not in ('claude', 'codex', 'kimi', 'grok', 'gemini', 'unknown', None)
+                or not ccm_core.is_recorded_agent(r['agent'])
                 or type(r['ignore']) is not bool
                 or r['role'] == 'primary' and (r['agent'] != 'claude' or r['ignore'])):
             return None

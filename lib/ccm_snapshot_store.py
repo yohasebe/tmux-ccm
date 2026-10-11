@@ -207,7 +207,7 @@ def validate(data):
             if (not isinstance(p, dict) or type(p.get('slot')) is not int or p['slot'] < 0
                     or type(p.get('layout_id')) is not int or p['layout_id'] < 0
                     or p.get('role') not in ('primary', 'sidekick', 'shell', 'unknown', 'manual')
-                    or p.get('agent') not in ('claude', 'codex', 'kimi', 'grok', 'gemini', 'unknown', None)
+                    or not ccm_core.is_recorded_agent(p.get('agent'))
                     or type(p.get('ignore')) is not bool or not _text(p.get('cwd'))):
                 raise SnapshotError('Invalid pane metadata')
             slots.append(p['slot'])

@@ -128,13 +128,13 @@ class TestPrintStatusExternalAgent:
                                   external_agents=("kimi",))]
         out = self._run(projects, monkeypatch, capsys)
         row = next(l for l in out.splitlines() if "sidekick" in l)
-        assert "▸kimi" in _strip_ansi(row)
-        assert _strip_ansi(row).index("▸kimi") > row.index("sidekick")
+        assert "▸ kimi" in _strip_ansi(row)
+        assert _strip_ansi(row).index("▸ kimi") > row.index("sidekick")
 
     def test_shell_row_stays_shell_and_is_marked_once(
             self, monkeypatch, capsys):
         """A kimi-only window is SHELL (no claude) — the state is not
-        faked — and the `▸kimi` badge beside the name is the ONE place
+        faked — and the `▸ kimi` badge beside the name is the ONE place
         the agent is named. A `(kimi)` note in the STATUS cell used to
         say it a second time on the same row."""
         projects = [_make_project("kimionly", "SHELL",
@@ -144,7 +144,7 @@ class TestPrintStatusExternalAgent:
         row = next(l for l in out.splitlines() if "kimionly" in l)
         plain = _strip_ansi(row)
         assert "SHELL" in plain
-        assert "▸kimi" in plain
+        assert "▸ kimi" in plain
         assert "(kimi)" not in plain
 
     def test_note_widens_status_column_consistently(
@@ -188,13 +188,13 @@ class TestBuildDetailEntriesExternalAgent:
     def test_mode2_badge_present(self, monkeypatch):
         p = _make_project("sidekick", "IDLE", external_agents=("kimi",))
         entries = self._entries([p], True, monkeypatch)
-        assert "▸kimi" in entries[0]
+        assert "#[fg=#666666]▸ #[fg=#666666]kimi" in entries[0]
 
     def test_mode2_shell_row_is_marked_once(self, monkeypatch):
         p = _make_project("kimionly", "SHELL", external_agents=("kimi",))
         entries = self._entries([p], True, monkeypatch)
         assert "■" in entries[0]
-        assert "▸kimi" in entries[0]
+        assert "▸ #[fg=#666666]kimi" in entries[0]
         assert "(kimi)" not in entries[0]
 
     def test_mode1_unchanged(self, monkeypatch):
@@ -212,18 +212,19 @@ class TestBuildDetailEntriesExternalAgent:
         p = _make_project("pair", "IDLE", external_agents=("codex",),
                           busy_agents=("codex",))
         entries = self._entries([p], True, monkeypatch)
-        assert f"#[fg={inject_status.TMUX_COLORS['BUSY']}]▸codex◉" in entries[0]
+        assert (f"#[fg=#666666]▸ #[fg={inject_status.TMUX_COLORS['BUSY']}]codex ◉"
+                in entries[0])
 
     def test_mode2_waiting_codex_badge(self, monkeypatch):
         p = _make_project("pair", "IDLE", external_agents=("codex",),
                           attention_agents=("codex",), busy_agents=("codex",))
         entries = self._entries([p], True, monkeypatch)
-        assert "#[fg=yellow,bold]▸codex⚠" in entries[0]
+        assert "#[fg=#666666]▸ #[fg=yellow,bold]codex ⚠" in entries[0]
 
     def test_mode2_idle_codex_badge_is_dim(self, monkeypatch):
         p = _make_project("pair", "IDLE", external_agents=("codex",))
         entries = self._entries([p], True, monkeypatch)
-        assert "#[fg=#666666]▸codex#[" in entries[0]
+        assert "#[fg=#666666]▸ #[fg=#666666]codex#[" in entries[0]
 
 
 class TestDashboardExternalAgent:
@@ -271,7 +272,8 @@ class TestDashboardExternalAgent:
         projects = [_make_project("sidekick", "IDLE", pane_count=2,
                                   external_agents=("kimi",))]
         texts = self._render_texts(monkeypatch, projects)
-        assert "▸kimi" in texts
+        assert "▸ " in texts
+        assert "kimi" in texts
 
     def test_shell_row_is_marked_once(self, monkeypatch):
         projects = [_make_project("kimionly", "SHELL",
@@ -279,7 +281,8 @@ class TestDashboardExternalAgent:
         texts = self._render_texts(monkeypatch, projects)
         # The badge names the agent; the state cell stays plain SHELL
         # (not faked) and does not repeat the name.
-        assert any("▸kimi" in t for t in texts)
+        assert "▸ " in texts
+        assert "kimi" in texts
         assert " (kimi)" not in texts
         assert any("SHELL" in t for t in texts)
 
@@ -378,19 +381,22 @@ class TestDashboardExternalAgent:
     def test_working_codex_badge(self, monkeypatch):
         import dashboard
         draws = self._draws(monkeypatch, busy_agents=("codex",))
-        assert ("▸codex◉", dashboard.C_BUSY) in draws
+        assert ("▸ ", dashboard.C_DIM) in draws
+        assert ("codex ◉", dashboard.C_BUSY) in draws
 
     def test_waiting_codex_badge(self, monkeypatch):
         import curses as _curses
         import dashboard
         draws = self._draws(monkeypatch, attention_agents=("codex",),
                             busy_agents=("codex",))
-        assert ("▸codex⚠", dashboard.C_PERMIT | _curses.A_BOLD) in draws
+        assert ("▸ ", dashboard.C_DIM) in draws
+        assert ("codex ⚠", dashboard.C_PERMIT | _curses.A_BOLD) in draws
 
     def test_idle_codex_badge_is_dim(self, monkeypatch):
         import dashboard
         draws = self._draws(monkeypatch)
-        assert ("▸codex", dashboard.C_DIM) in draws
+        assert ("▸ ", dashboard.C_DIM) in draws
+        assert ("codex", dashboard.C_DIM) in draws
 
     def test_no_badge_for_claude_only(self, monkeypatch):
         projects = [_make_project("plain", "IDLE")]
@@ -449,6 +455,7 @@ class TestPlatformSuffixedBinaries:
         ("grok-linux-x86_64", "grok"),    # another platform
         ("grok", "grok"),                 # plain launcher, still fine
         ("kimi", "kimi"),                 # exact-match set unaffected
+        ("agy", "agy"),                   # measured, Antigravity CLI 1.3.3
     ])
     def test_known_agents_resolve_to_a_short_name(self, command, expected):
         assert ccm_constants.external_agent_name(command) == expected
@@ -466,7 +473,7 @@ class TestPlatformSuffixedBinaries:
         assert ccm_constants.external_agent_name("claude") == ""
 
     def test_badge_label_uses_the_short_name(self):
-        """`▸grok-macos-aarc` is neither readable nor stable across
+        """`▸ grok-macos-aarc` is neither readable nor stable across
         machines; the badge carries the canonical name."""
         panes = [("0:2", "1", "%1", "grok-macos-aarc", "0", "40", "")]
         assert ccm_core._resolve_external_agent_panes(panes, "0:2") == ("grok",)

@@ -622,3 +622,94 @@ class TestLaunchCommandChoice:
         assert result.outcome == ccm_window.LAUNCHED
         assert sent == [("send-keys", "-t", "%0", ccm_window.CLAUDE_CMD, "Enter")]
         assert "||" not in ccm_window.CLAUDE_CMD and "2>" not in ccm_window.CLAUDE_CMD
+
+
+class TestAutoFocusWaitingSidekick:
+    """When no Claude pane waits, attaching focuses a sidekick pane
+    that waits for a person — the pane the `▸ ⚠` badge points at."""
+
+    APPROVAL = ("• Running curl -sI https://example.com\n"
+                "  Would you like to run the following command?\n"
+                "› 1. Yes, proceed (y)\n"
+                "  3. No, and tell Codex what to do differently (esc)\n"
+                "  Press enter to confirm or esc to cancel\n")
+    IDLE_CODEX = ("› Ask Codex to do anything\n"
+                  "  ← for agents · ? for shortcuts\n")
+
+    def _world(self, monkeypatch, *, claude_screen="❯ ", codex_screen=None,
+               codex_active=False, claude_ps="claude", toggle=""):
+        """%0 runs Claude, %1 runs Codex. Returns the select-pane calls."""
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"), (101, 100, 100, claude_ps),
+            (200, 1, 200, "zsh"), (201, 200, 200, "codex"),
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "\n".join(ps))
+        codex_screen = self.APPROVAL if codex_screen is None else codex_screen
+        selected = []
+
+        def fake(*args, **kw):
+            if args[:2] == ("show-option", "-wqv") and args[-1] == "@ccm_dir":
+                return "/tmp/proj"
+            if args[:2] == ("show-option", "-gqv") and args[-1] == "@ccm-sidekick-attention":
+                return toggle
+            if args[0] == "list-panes" and "-a" in args:
+                return ("main:5\t100\t%0\tclaude\t{}\t40\t\t\n"
+                        "main:5\t200\t%1\tcodex\t{}\t40\t\t").format(
+                            "0" if codex_active else "1",
+                            "1" if codex_active else "0")
+            if args[0] == "list-panes":
+                return ("100\t%0\tclaude\t{}\t40\n200\t%1\tcodex\t{}\t40"
+                        .format("0" if codex_active else "1",
+                                "1" if codex_active else "0"))
+            if args[0] == "display-message":
+                return "main:5"
+            if args[0] == "capture-pane":
+                return codex_screen if args[args.index("-t") + 1] == "%1" else claude_screen
+            if args[0] == "select-pane":
+                selected.append(args[-1])
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        monkeypatch.setattr(ccm_core, "_read_attention_markers", lambda *a: {})
+        return selected
+
+    def test_waiting_codex_is_focused_when_claude_is_idle(self, monkeypatch):
+        selected = self._world(monkeypatch)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%1"]
+
+    def test_waiting_codex_is_focused_when_claude_is_busy(self, monkeypatch):
+        # No prompt and no footer on Claude's screen: it is working.
+        selected = self._world(monkeypatch, claude_screen="· Thinking…")
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%1"]
+
+    def test_waiting_claude_comes_first(self, monkeypatch):
+        selected = self._world(monkeypatch, codex_active=True,
+                               claude_screen="Esc to cancel · Tab to amend")
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%0"]
+
+    def test_focus_already_on_the_waiting_sidekick(self, monkeypatch):
+        selected = self._world(monkeypatch, codex_active=True)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == []
+
+    def test_idle_sidekick_is_not_focused(self, monkeypatch):
+        selected = self._world(monkeypatch, codex_screen=self.IDLE_CODEX)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == []
+
+    def test_attention_display_off_leaves_focus(self, monkeypatch):
+        selected = self._world(monkeypatch, toggle="off")
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == []
+
+    def test_marker_waiting_sidekick_is_focused(self, monkeypatch):
+        # A Kimi-style sidekick waits through its attention marker.
+        selected = self._world(monkeypatch, codex_screen=self.IDLE_CODEX)
+        monkeypatch.setattr(ccm_core, "external_agent_name",
+                            lambda cmd: "kimi" if cmd == "codex" else "")
+        monkeypatch.setattr(ccm_core, "_read_attention_markers",
+                            lambda *a: {"%1": {"agent": "kimi", "state": "waiting"}})
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%1"]

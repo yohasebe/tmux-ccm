@@ -794,7 +794,7 @@ This means ccm's dashboard and status bar give you visibility into Agent Teams a
 
 **Sliver protection.** Panes shorter than `SLIVER_HEIGHT_THRESHOLD` (4 rows by default — see Environment Variables below) are excluded from state aggregation. Tiny pseudo-panes — typically a leftover 1-row strip from an earlier split — cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a busy pane and they false-read BUSY. Excluding them prevents an invisible sliver from infecting the whole window's reported state. If you have a legitimate small Agent Teams pane and want it to count, raise the threshold via `CCM_SLIVER_HEIGHT_THRESHOLD`.
 
-**Auto-focus on attach.** When you attach to a window via ccm (dashboard or `ccm attach`), if any teammate pane is waiting on a permission modal (`⚠ PERMIT`) and the active pane is not, ccm automatically switches focus to the PERMIT pane. Saves a manual `prefix + arrow` after every attach to a project that needs your input. PERMIT only — BUSY teammates are interesting to monitor but do not require user input, so focus is not stolen.
+**Auto-focus on attach.** When you attach to a window via ccm (dashboard or `ccm attach`), if any teammate pane is waiting on a permission modal (`⚠ PERMIT`) and the active pane is not, ccm automatically switches focus to the PERMIT pane. Saves a manual `prefix + arrow` after every attach to a project that needs your input. PERMIT only — BUSY teammates are interesting to monitor but do not require user input, so focus is not stolen. When no Claude pane waits but a sidekick does (the `▸ <name> ⚠` badge), the sidekick pane gets the focus instead, whether Claude is idle or busy; a waiting Claude pane still comes first, and `w` / `@ccm-sidekick-attention off` leaves the focus alone.
 
 ### No conflicts
 
@@ -848,7 +848,7 @@ or press `i` on a project in the dashboard.
 
 ![How ccm sees a window with a sidekick: the Claude Code pane is tracked and its state becomes the window's, while a second agent CLI in a split pane gets only a presence badge. The two exchange messages directly — the sidekick reports back with ccm send, and Claude messages it with ccm sidekick-send after checking it with ccm capture.](../assets/sidekick-model.svg)
 
-You can run an agent CLI other than Claude Code in a split pane of a project window and let the two agents exchange messages without a human relaying text. ccm stays Claude-centric: it only shows a dim `▸<name>` presence badge when a known external agent CLI runs in a pane (display only — it does not track that agent's state), and `ccm capture` shows every pane so either side can read the other.
+You can run an agent CLI other than Claude Code in a split pane of a project window and let the two agents exchange messages without a human relaying text. ccm stays Claude-centric: it only shows a dim `▸ <name>` presence badge when a known external agent CLI runs in a pane (display only — it does not track that agent's state), and `ccm capture` shows every pane so either side can read the other.
 
 The conventions that make the relay work:
 
@@ -878,7 +878,7 @@ The conventions that make the relay work:
 
 ## Sidekick attention: knowing when it needs you
 
-A sidekick's approval dialog is easy to miss: without its hooks, a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships. Codex is the one exception, described below: its hooks cannot say when an approval is answered, so ccm also reads its screen.
+A sidekick's approval dialog is easy to miss: without its hooks, a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸ kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships. Codex is the one exception, described below: its hooks cannot say when an approval is answered, so ccm also reads its screen.
 
 ```bash
 ccm setup-sidekick-hooks kimi     # writes [[hooks]] entries into ~/.kimi-code/config.toml
@@ -887,7 +887,7 @@ ccm remove-sidekick-hooks kimi    # removes them (backup kept either way)
 
 Takes effect in **new** Kimi sessions only — Kimi loads its config at session start, so restart the sidekick pane's `kimi` once after installing.
 
-From then on, when the sidekick hits a permission prompt its hook drops an attention marker keyed to its tmux pane, and ccm reacts on every surface at once: the `▸kimi` badge turns PERMIT-yellow on the dashboard, `ccm status` and the status bar, and a desktop notification fires with the tool it is asking about. Answer approval dialogs yourself in the original sidekick pane; do not ask Claude to approve on your behalf. When you answer the dialog, the resolution hook clears the wait and the badge dims again. The window's own state never changes — PERMIT still means *Claude* needs you; a yellow `▸` means the *sidekick* does.
+From then on, when the sidekick hits a permission prompt its hook drops an attention marker keyed to its tmux pane, and ccm reacts on every surface at once: the `▸ kimi` badge turns PERMIT-yellow on the dashboard, `ccm status` and the status bar, and a desktop notification fires with the tool it is asking about. Answer approval dialogs yourself in the original sidekick pane; do not ask Claude to approve on your behalf. When you answer the dialog, the resolution hook clears the wait and the badge dims again. The window's own state never changes — PERMIT still means *Claude* needs you; a yellow `▸` means the *sidekick* does.
 
 Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-sidekick-attention off` (markers are still written when off — only ccm's display and notification go quiet, so other local consumers of the marker directory keep working).
 
@@ -898,7 +898,7 @@ Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-side
 
 Installable for **Kimi Code** and **Grok Build**, both verified against a running pane, and for **Codex** (described below). Kimi is the precise one — its hook set has `PermissionRequest` *and* `PermissionResult`, so waits open and close exactly. Grok has neither: its permission wait arrives as `Notification` with `notificationType: "permission_prompt"`, carries no tool details (the summary falls back to Grok's own "Tool permission requested"), and closes on the next activity event.
 
-**Antigravity CLI** (Gemini CLI's successor) loads hooks without ever firing them — measured against 1.1.10, where a real approval dialog produced nothing from any of its six events. `ccm setup-sidekick-hooks` refuses an unsupported agent by name and says which case applies.
+**Antigravity CLI** (Gemini CLI's successor) loads hooks without ever firing them — measured against 1.1.10, where a real approval dialog produced nothing from any of its six events. `ccm setup-sidekick-hooks` refuses an unsupported agent by name and says which case applies. An `agy` pane is still recognised as a sidekick (the `▸ agy` badge, kept out of launch and exit, saved as a sidekick); only its waits are not shown.
 
 **Codex attention and completion notifications.** Install the adapter separately
 from enabling Claude notifications:
@@ -948,10 +948,10 @@ when it sends events. This is a heuristic, so read the named pane before acting.
 SessionStart may not arrive until the first turn. The hook's own pane variable
 and process ancestry are not used for routing.
 
-**Codex working and waiting.** The `▸codex` badge shows three states:
-`▸codex⚠` in PERMIT's yellow while a Codex dialog waits for a key (an approval,
-or the hook review at start-up), `▸codex◉` in BUSY's colour while Codex works on
-a turn, and a dim `▸codex` otherwise. The window's own state is unaffected.
+**Codex working and waiting.** The `▸ codex` badge shows three states:
+`▸ codex ⚠` in PERMIT's yellow while a Codex dialog waits for a key (an approval,
+or the hook review at start-up), `▸ codex ◉` in BUSY's colour while Codex works on
+a turn, and a dim `▸ codex` otherwise. The window's own state is unaffected.
 Codex's hooks report when a turn starts and ends and when it asks for approval,
 but nothing fires when the approval is answered: the next event comes when the
 approved command finishes, minutes later for a long one. So ccm reads the Codex

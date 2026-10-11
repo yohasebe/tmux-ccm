@@ -60,6 +60,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     EXTERNAL_AGENT_COMMANDS,
     codex_screen_state,
     external_agent_name,
+    is_recorded_agent,
     HOOK_FRESH_THRESHOLD,
     HOOK_SCRIPTS,
     IDLE_EXIT_TIMEOUT,
@@ -1016,12 +1017,21 @@ def _read_attention_markers(panes_cache, ps_lines):
 
         The process walk runs only for panes that actually have a
         marker (usually none), so it costs nothing on the common
-        build."""
+        build.
+
+        None when it cannot be told: an empty pane listing (a failed
+        `list-panes` comes back empty, and a marker means some pane
+        existed) or an empty process list for a pane that is not an
+        external agent. An unknown pane is neither reaped nor shown."""
+        if not panes_cache:
+            return None
         pc = by_pane.get(pane_id)
         if pc is None:
             return False
         if external_agent_name(pc[3]):
             return True
+        if not ps_lines or ps_lines == [""]:
+            return None
         return bool(ccm_detection.find_claude_pid(pc[1], ps_lines))
 
     def _epoch(iso):
@@ -1075,7 +1085,10 @@ def _read_attention_markers(panes_cache, ps_lines):
         elif marker.get("state") == "waiting":
             ts = _epoch(marker.get("ts"))
             exp = _epoch(marker.get("expires"))
-            if not _pane_hosts_agent(pane_id):
+            hosts = _pane_hosts_agent(pane_id)
+            if hosts is None:
+                pass  # unknown: keep the marker, show nothing
+            elif not hosts:
                 reap = True
             elif exp is not None and now > exp:
                 reap = True
@@ -1113,40 +1126,63 @@ def _resolve_external_agent_panes(panes_cache, win_target):
     )
 
 
-def _codex_pane_states(panes_cache, win_target, hooks_cache, ps_lines):
-    """States ("PERMIT" / "BUSY" / "IDLE") of this window's Codex panes:
-    from the screen when it shows one of Codex's marks, otherwise from
-    what the Codex hooks last recorded for that pane, if the record was
-    written for the Codex process running there now (a Codex restarted
-    in the same pane must not inherit its predecessor's wait).
-    `hooks_cache` is a per-build list holding the records once read, so
-    a build reads them at most once and only when a screen is
-    illegible."""
-    states = []
+def sidekick_pane_states(panes_cache, win_target, markers, hooks_cache,
+                         ps_lines, codex=True):
+    """{pane id: (agent name, "PERMIT" | "BUSY")} for this window's
+    sidekick panes that wait for a person or work on a turn. The one
+    answer to "does a sidekick here need me?", shared by the badge
+    (`build_project_list`) and the focus on attach
+    (`ccm_window.auto_focus_attention_pane`).
+
+    A Codex pane is read from its screen, with its hook record as the
+    fallback (`_codex_pane_state`), never from its attention marker:
+    the marker cannot know when an approval was answered. Any other
+    sidekick (Kimi, Grok, an ignored Claude) waits while its marker
+    says so (`markers`, from `_read_attention_markers`). `codex=False`
+    leaves Codex panes out, as the attention toggle does for markers.
+    `hooks_cache` is a per-build list that holds the Codex hook
+    records once read."""
+    states = {}
     for pc in panes_cache:
-        if pc[0] != win_target or external_agent_name(pc[3]) != "codex":
+        if pc[0] != win_target:
             continue
-        try:
-            state = codex_screen_state(
-                ccm_pane_state.capture_pane_screen(pc[2]))
-        except Exception:
-            log_caught_exception("codex_screen")
-            state = None
-        if state is None:
-            if not hooks_cache:
-                hooks_cache.append(_codex_hook_activity())
-            recorded, process = hooks_cache[0].get(pc[2], ("IDLE", None))
-            state = "IDLE"
-            if recorded != "IDLE" and process:
-                try:
-                    import ccm_sidekick_notify
-                    if ccm_sidekick_notify.process_identity(
-                            pc[1], ps_lines) == process:
-                        state = recorded
-                except Exception:
-                    log_caught_exception("codex_process_identity")
-        states.append(state)
+        if external_agent_name(pc[3]) == "codex":
+            if codex:
+                state = _codex_pane_state(pc, hooks_cache, ps_lines)
+                if state != "IDLE":
+                    states[pc[2]] = ("codex", state)
+            continue
+        marker = markers.get(pc[2])
+        if marker:
+            states[pc[2]] = (marker.get("agent") or pc[3], "PERMIT")
     return states
+
+
+def _codex_pane_state(pc, hooks_cache, ps_lines):
+    """"PERMIT" / "BUSY" / "IDLE" for one Codex pane: from the screen
+    when it shows one of Codex's marks, otherwise from what the Codex
+    hooks last recorded for that pane, if the record was written for
+    the Codex process running there now (a Codex restarted in the same
+    pane must not inherit its predecessor's wait)."""
+    try:
+        state = codex_screen_state(ccm_pane_state.capture_pane_screen(pc[2]))
+    except Exception:
+        log_caught_exception("codex_screen")
+        state = None
+    if state is not None:
+        return state
+    if not hooks_cache:
+        hooks_cache.append(_codex_hook_activity())
+    recorded, process = hooks_cache[0].get(pc[2], ("IDLE", None))
+    if recorded == "IDLE" or not process:
+        return "IDLE"
+    try:
+        import ccm_sidekick_notify
+        if ccm_sidekick_notify.process_identity(pc[1], ps_lines) == process:
+            return recorded
+    except Exception:
+        log_caught_exception("codex_process_identity")
+    return "IDLE"
 
 
 def _codex_hook_activity():
@@ -1256,27 +1292,14 @@ def build_project_list(fast=False):
         # `waiting` — join by pane id against the bulk cache, so a
         # window with two kimi panes colours only the waiting one's
         # name into the set.
-        attention = {
-            m.get("agent") or pc[3]
-            for pc in panes_cache
-            if pc[0] == row["win_target"]
-            for m in (attention_markers.get(pc[2]),) if m
-        } if attention_markers else set()
-        busy_agents = ()
-        if "codex" in external_agents:
-            # A Codex sidekick is read from its screen, with its hook
-            # record as the fallback (`_codex_pane_states`), not from
-            # the attention marker: the marker cannot know when an
-            # approval was answered.
-            attention.discard("codex")
-            if row["attention_toggle"] != "off":
-                codex = _codex_pane_states(
-                    panes_cache, row["win_target"], codex_hooks, ps_lines)
-                if "PERMIT" in codex:
-                    attention.add("codex")
-                if "BUSY" in codex:
-                    busy_agents = ("codex",)
-        attention_agents = tuple(sorted(attention))
+        pane_states = (sidekick_pane_states(
+            panes_cache, row["win_target"], attention_markers, codex_hooks,
+            ps_lines, codex=row["attention_toggle"] != "off")
+            if not fast else {})
+        attention_agents = tuple(sorted(
+            {name for name, st in pane_states.values() if st == "PERMIT"}))
+        busy_agents = tuple(sorted(
+            {name for name, st in pane_states.values() if st == "BUSY"}))
 
         # Permission-mode badge (slow path, live sessions only). The
         # events tail was just read by detection for this same cycle,

@@ -100,6 +100,7 @@ from ccm_commands import (
 from ccm_snapshot import cmd_snapshot_load, cmd_snapshot_save
 from ccm_render import (
     display_width,
+    EXTERNAL_AGENT_MARK,
     external_agent_badge,
     external_agent_state,
     format_dir,
@@ -1383,8 +1384,11 @@ class Dashboard(LifecycleActions):
                             else curses.color_pair(C_BUSY)
                             if ext_state == "BUSY"
                             else curses.color_pair(C_DIM))
-                        self._addstr(stdscr, y, col, ann["ext_badge"],
-                                     badge_attr)
+                        mark = EXTERNAL_AGENT_MARK
+                        self._addstr(stdscr, y, col, mark,
+                                     curses.color_pair(C_DIM))
+                        self._addstr(stdscr, y, col + display_width(mark),
+                                     ann["ext_badge"][len(mark):], badge_attr)
                         col += display_width(ann["ext_badge"]) + 1
 
                     # Spool marker ✉N: messages queued for this project

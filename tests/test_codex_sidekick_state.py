@@ -1,6 +1,6 @@
 """A Codex sidekick's state (PERMIT / BUSY / IDLE): read from its
 screen, with its hook record as the fallback, and shown on the
-`▸codex` badge. Screens are shaped after captures of Codex 0.162.1."""
+`▸ codex` badge. Screens are shaped after captures of Codex 0.162.1."""
 from types import SimpleNamespace
 
 import pytest
@@ -255,22 +255,22 @@ def project(agents=("codex",), attention=(), busy=()):
 
 class TestBadge:
     def test_idle_badge_is_the_name(self):
-        assert ccm_render.external_agent_badge(project()) == "▸codex"
+        assert ccm_render.external_agent_badge(project()) == "▸ codex"
         assert ccm_render.external_agent_state(project()) == ""
 
     def test_busy_badge(self):
         p = project(busy=("codex",))
-        assert ccm_render.external_agent_badge(p) == "▸codex◉"
+        assert ccm_render.external_agent_badge(p) == "▸ codex ◉"
         assert ccm_render.external_agent_state(p) == "BUSY"
 
     def test_waiting_outranks_working(self):
         p = project(attention=("codex",), busy=("codex",))
-        assert ccm_render.external_agent_badge(p) == "▸codex⚠"
+        assert ccm_render.external_agent_badge(p) == "▸ codex ⚠"
         assert ccm_render.external_agent_state(p) == "PERMIT"
 
     def test_ignored_claude_waiting_does_not_mark_the_badge(self):
         p = project(attention=("claude",))
-        assert ccm_render.external_agent_badge(p) == "▸codex"
+        assert ccm_render.external_agent_badge(p) == "▸ codex"
 
     def test_no_sidekick_no_badge(self):
         assert ccm_render.external_agent_badge(project(agents=())) == ""

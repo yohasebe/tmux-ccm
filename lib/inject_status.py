@@ -27,7 +27,8 @@ from ccm_core import (
 import ccm_spool
 from ccm_notify import notify
 from ccm_render import (ambiguous_width_declared, display_width,
-                        external_agent_badge, external_agent_state,
+                        EXTERNAL_AGENT_MARK, external_agent_badge,
+                        external_agent_state,
                         signal_age_suffix)
 from ccm_runtime import (
     auto_exit_idle,
@@ -289,8 +290,10 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
                 badge_fg = ("yellow,bold" if ext_state == "PERMIT"
                             else TMUX_COLORS["BUSY"] if ext_state == "BUSY"
                             else "#666666")
+                mark = EXTERNAL_AGENT_MARK
                 entry += (
-                    f" #[fg={badge_fg}]{ext_badge}"
+                    f" #[fg=#666666]{mark}"
+                    f"#[fg={badge_fg}]{ext_badge[len(mark):]}"
                     f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
                 )
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"

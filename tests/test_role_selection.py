@@ -406,3 +406,17 @@ def test_roles_distinguishes_reservations_without_claiming_origin(world, capsys)
     assert 'no reservation:' in lines[1]
     assert 'invalid role;' in lines[2]
     assert 'added after restore' not in '\n'.join(lines)
+
+
+@pytest.mark.parametrize('agent', ['agy', 'kimi-code', 'grok'])
+def test_reconciled_role_of_a_recognised_agent_decodes(agent):
+    import ccm_roles
+    raw = json.dumps({'role': 'sidekick', 'agent': agent, 'ignore': False})
+    assert ccm_roles.decode(raw) == {'role': 'sidekick', 'agent': agent, 'ignore': False}
+
+
+@pytest.mark.parametrize('agent', [['codex'], 'someone-else'])
+def test_role_with_an_unknown_agent_value_is_unreadable(agent):
+    import ccm_roles
+    assert ccm_roles.decode(json.dumps({'role': 'sidekick', 'agent': agent,
+                                        'ignore': False})) is None

@@ -345,6 +345,10 @@ def auto_focus_attention_pane(win_target):
     `prefix + arrow` step and prevents the user from typing into
     the wrong pane.
 
+    When no Claude pane waits, a sidekick pane that waits for a person
+    (the `▸ ⚠` badge) is focused instead, whether Claude is idle or
+    busy: it is the pane that needs the person.
+
     Scope is intentionally narrow: PERMIT only. BUSY panes are
     interesting to monitor but do not require user input, so
     auto-stealing focus from where the user wanted to be would be
@@ -411,5 +415,42 @@ def auto_focus_attention_pane(win_target):
     if active_is_permit:
         return
     if permit_pane is None:
+        # No Claude pane waits: a sidekick that does is the pane that
+        # needs the person, whatever Claude is doing.
+        permit_pane = _waiting_sidekick_pane(win_target, rows, ps_lines)
+    if permit_pane is None:
         return
     ccm_core.tmux_cmd("select-pane", "-t", permit_pane)
+
+
+def _waiting_sidekick_pane(win_target, rows, ps_lines):
+    """A sidekick pane of `rows` waiting for a person, or None — also
+    None when the focused pane is itself one, so focus stays. Waiting
+    is what the `▸ ⚠` badge shows, from `ccm_core.sidekick_pane_states`;
+    nothing when the sidekick attention display is off (`w`)."""
+    if ccm_core.tmux_cmd("show-option", "-gqv",
+                         "@ccm-sidekick-attention") == "off":
+        return None
+    target = ccm_core.tmux_cmd("display-message", "-p", "-t", win_target,
+                               "#{session_name}:#{window_index}")
+    if not target:
+        return None
+    try:
+        cache = ccm_core._build_panes_cache()
+        # A failed listing comes back empty or partial; judging waits
+        # from it would focus nothing, or worse, let the marker reader
+        # reap the waits of panes it did not see.
+        listed = {pc[2] for pc in cache if pc[0] == target}
+        if not all(pane_id in listed for _, pane_id, _, _, _ in rows):
+            return None
+        markers = ccm_core._read_attention_markers(cache, ps_lines)
+        states = ccm_core.sidekick_pane_states(cache, target, markers, [],
+                                               ps_lines)
+    except Exception:
+        ccm_core.log_caught_exception("sidekick_focus")
+        return None
+    waiting = [(pane_id, is_active) for _, pane_id, _, is_active, _ in rows
+               if states.get(pane_id, ("", ""))[1] == "PERMIT"]
+    if not waiting or any(is_active for _, is_active in waiting):
+        return None
+    return waiting[0][0]

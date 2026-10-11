@@ -350,3 +350,64 @@ class TestGrokInstaller:
         with pytest.raises(SystemExit):
             ccm_commands.cmd_setup_sidekick_hooks("antigravity")
         assert "without firing" in capsys.readouterr().err
+
+
+class TestAttentionReaderUnknownListing:
+    """A failed `list-panes` or `ps` comes back empty. Empty is not
+    "no such pane": the reader keeps the marker (and shows nothing)
+    rather than reap a wait that is still on screen."""
+
+    def test_empty_pane_listing_keeps_the_marker(self, attention_dir):
+        path = _write_marker(attention_dir)
+        assert ccm_core._read_attention_markers([], PS_LINES) == {}
+        assert os.path.exists(path)
+
+    def test_a_pane_really_gone_is_still_reaped(self, attention_dir):
+        path = _write_marker(attention_dir, pane="%99")
+        ccm_core._read_attention_markers(PANES, PS_LINES)
+        assert not os.path.exists(path)
+
+    @pytest.mark.parametrize("ps_lines", [[], [""]])
+    def test_empty_process_list_keeps_a_claude_sidekick_marker(
+            self, attention_dir, ps_lines):
+        path = _write_marker(attention_dir, pane="%1", agent="claude")
+        assert ccm_core._read_attention_markers(PANES, ps_lines) == {}
+        assert os.path.exists(path)
+
+    def test_attach_with_a_failed_listing_keeps_the_marker(
+            self, attention_dir, monkeypatch):
+        import ccm_window
+        path = _write_marker(attention_dir)
+        monkeypatch.setattr(ccm_core, "_build_panes_cache", lambda: [])
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **k: (
+            "0:2" if a[0] == "display-message" else ""))
+        rows = [("100", "%1", "2.1.221", True, 46),
+                ("200", PANE, "kimi", False, 46)]
+        assert ccm_window._waiting_sidekick_pane("2", rows, PS_LINES) is None
+        assert os.path.exists(path)
+
+    def test_attach_with_a_good_listing_focuses_the_wait(
+            self, attention_dir, monkeypatch):
+        import ccm_window
+        _write_marker(attention_dir)
+        monkeypatch.setattr(ccm_core, "_build_panes_cache", lambda: PANES)
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **k: (
+            "0:2" if a[0] == "display-message" else ""))
+        rows = [("100", "%1", "2.1.221", True, 46),
+                ("200", PANE, "kimi", False, 46)]
+        assert ccm_window._waiting_sidekick_pane("2", rows, PS_LINES) == PANE
+
+
+def test_attach_with_a_partial_listing_keeps_the_marker(attention_dir, monkeypatch):
+    # The listing came back but without this window's panes: the
+    # reader would take the sidekick for gone and reap its wait.
+    import ccm_window
+    path = _write_marker(attention_dir)
+    monkeypatch.setattr(ccm_core, "_build_panes_cache",
+                        lambda: [("0:9", "900", "%90", "zsh", "1", "46", "")])
+    monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **k: (
+        "0:2" if a[0] == "display-message" else ""))
+    rows = [("100", "%1", "2.1.221", True, 46),
+            ("200", PANE, "kimi", False, 46)]
+    assert ccm_window._waiting_sidekick_pane("2", rows, PS_LINES) is None
+    assert os.path.exists(path)

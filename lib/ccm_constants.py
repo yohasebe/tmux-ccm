@@ -1015,8 +1015,12 @@ PARKED_FOREGROUND_COMMANDS = frozenset({
 # it would have a single pane claim both at once — the exact asymmetry
 # assets/sidekick-model.svg exists to draw.
 EXTERNAL_AGENT_COMMANDS = frozenset({
-    # Measured: this is what tmux reports for a running Kimi Code pane.
+    # Measured: this is what tmux reports for a running Kimi Code pane
+    # (0.31.1, and `kimi` again on 2.1.1).
     "kimi", "kimi-code",
+    # Measured: Antigravity CLI 1.3.3 (Gemini CLI's successor) is a
+    # native `agy` binary, and tmux reports `agy`.
+    "agy",
     # Assumed from each CLI's binary name — not verified against a running
     # pane, because none of them are installed here. The asymmetry makes
     # guessing safe: a name that never appears simply never matches, while
@@ -1042,6 +1046,23 @@ EXTERNAL_AGENT_COMMANDS = frozenset({
 # enough that no unrelated program collides: `grok-` qualifies,
 # a bare `grok` would also swallow `grokking-notes`.
 EXTERNAL_AGENT_PREFIXES = ("grok-",)
+
+
+#: Every name `external_agent_name` can return. Checkpoints and restore
+#: roles record a sidekick's agent by that name and accept exactly
+#: these (plus `claude` and `unknown`), so recognising a new agent
+#: cannot make its own checkpoint invalid.
+EXTERNAL_AGENT_NAMES = EXTERNAL_AGENT_COMMANDS | frozenset(
+    prefix.rstrip("-") for prefix in EXTERNAL_AGENT_PREFIXES)
+#: The agent values a checkpoint or restore role may hold.
+RECORDED_AGENT_NAMES = EXTERNAL_AGENT_NAMES | {"claude", "unknown", None}
+
+
+def is_recorded_agent(value):
+    """True for an agent value a checkpoint or restore role may hold.
+    The value comes from a file, so anything but a string or None is
+    refused before the set lookup (a list there would not hash)."""
+    return (value is None or isinstance(value, str)) and value in RECORDED_AGENT_NAMES
 
 
 def external_agent_name(command):
