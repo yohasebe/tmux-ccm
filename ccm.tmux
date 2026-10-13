@@ -26,6 +26,18 @@ _session_cmd="bash \"${CCM_ROOT}/lib/popup-session.sh\" #{q:session_name}"
 # colour terminals tmux falls back to the nearest palette entry.
 _logo='#[bg=#E89B9B,fg=#000000,bold] c #[bg=#E8C76A,fg=#000000,bold] c #[bg=#86C99B,fg=#000000,bold] m #[default]'
 
+# tmux 3.8 gives popups a grey background of their own (popup-style
+# bg=themedarkgrey). ccm's screens are drawn for the terminal's own
+# background, so draw ccm's popups on it. -s/-S need tmux 3.3; the
+# server's version decides, since the server parses the bindings.
+_popup_style=''
+read -r _tmux_major _tmux_minor < <(tmux display-message -p '#{version}' 2>/dev/null |
+    sed -E 's/^[^0-9]*([0-9]+)\.([0-9]+).*/\1 \2/')
+if [[ "$_tmux_major" =~ ^[0-9]+$ && "$_tmux_minor" =~ ^[0-9]+$ ]] &&
+   (( _tmux_major > 3 || (_tmux_major == 3 && _tmux_minor >= 3) )); then
+    _popup_style='-s bg=terminal -S bg=terminal '
+fi
+
 # Keybindings — only dashboard is bound by default (Tab rarely conflicts)
 # Menu and tree are opt-in via @ccm-key-menu / @ccm-key-tree to avoid
 # conflicts with other plugins (e.g., tmux-sessionist binds C).
@@ -35,25 +47,25 @@ _logo='#[bg=#E89B9B,fg=#000000,bold] c #[bg=#E8C76A,fg=#000000,bold] c #[bg=#86C
 # context, which is the window the dock belongs in.
 _dock_on='#{||:#{==:#{@ccm-dashboard-dock},top},#{==:#{@ccm-dashboard-dock},bottom}}'
 _dock_toggle="run-shell -b \"$CCM_BIN dock toggle '#{window_id}'\""
-_dashboard_popup="run-shell '$_session_cmd' ; display-popup -E -w 80% -h 60% -T ' ${_logo} Dashboard ' '$CCM_BIN dashboard'"
+_dashboard_popup="run-shell '$_session_cmd' ; display-popup ${_popup_style}-E -w 80% -h 60% -T ' ${_logo} Dashboard ' '$CCM_BIN dashboard'"
 tmux bind-key "$CCM_KEY_DASHBOARD" if-shell -F "$_dock_on" "$_dock_toggle" "$_dashboard_popup"
 
 if [[ -n "$CCM_KEY_MENU" ]]; then
     tmux bind-key "$CCM_KEY_MENU" \
         run-shell "$_session_cmd" \\\; \
-        display-popup -E -w 80% -h 60% -T " ${_logo} Menu " "$CCM_BIN menu"
+        display-popup ${_popup_style}-E -w 80% -h 60% -T " ${_logo} Menu " "$CCM_BIN menu"
 fi
 
 if [[ -n "$CCM_KEY_TREE" ]]; then
     tmux bind-key "$CCM_KEY_TREE" \
         run-shell "$_session_cmd" \\\; \
-        display-popup -E -w 80% -h 60% -T " ${_logo} Tree " "$CCM_BIN tree-interactive"
+        display-popup ${_popup_style}-E -w 80% -h 60% -T " ${_logo} Tree " "$CCM_BIN tree-interactive"
 fi
 
 if [[ -n "$CCM_KEY_SEARCH" ]]; then
     tmux bind-key "$CCM_KEY_SEARCH" \
         run-shell "$_session_cmd" \\\; \
-        display-popup -E -w 80% -h 60% -T " ${_logo} Filter " "$CCM_BIN search"
+        display-popup ${_popup_style}-E -w 80% -h 60% -T " ${_logo} Filter " "$CCM_BIN search"
 fi
 
 # Optional prefix-less dashboard hotkey. Set
@@ -71,7 +83,7 @@ fi
 # Falls back to default behavior (select-window) for non-ccm clicks
 tmux bind-key -n MouseDown1Status \
     if-shell -F '#{==:#{mouse_status_range},ccm}' \
-    "run-shell '$_session_cmd' ; display-popup -E -w 80% -h 60% -T ' ${_logo} Dashboard ' '$CCM_BIN dashboard'" \
+    "run-shell '$_session_cmd' ; display-popup ${_popup_style}-E -w 80% -h 60% -T ' ${_logo} Dashboard ' '$CCM_BIN dashboard'" \
     "switch-client -t ="
 
 # Reduce Claude Code UI flicker in tmux (alt-screen rendering)
