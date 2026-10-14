@@ -364,6 +364,69 @@ class TestFastPathSkipsMaintenanceSideEffects:
             "notifications")
 
 
+class TestSubagentRequestNotification:
+    """A footer-only PERMIT is notified only when a fresh hook backs
+    it. A subagent's request the main conversation has moved past
+    (a later Stop, which also removes the main signal) is no such
+    hook: the state ignores it, and so must the notification."""
+
+    SID = "test-session-agent"
+
+    def _run(self, monkeypatch, tmp_path, stop_after_request):
+        now = 9_999_999
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        monkeypatch.setattr(ccm_core, "CCM_NOTIFY_MARKER_DIR",
+                            str(tmp_path / "notified"))
+        monkeypatch.setattr(inject_status, "CCM_TMP_DIR", str(tmp_path))
+        monkeypatch.setattr("time.time", lambda: now)
+        (hook_dir / f"{self.SID}.agent-permit").write_text(
+            f"{now - 15} PERMIT Bash: old-request")
+        if stop_after_request:
+            (hook_dir / f"{self.SID}.events.jsonl").write_text(
+                '{"ts": %d, "type": "stop"}\n' % (now - 5))
+        (tmp_path / "notify-cache").write_text("0:1\tIDLE\n")
+        project = make_project("0:1", "1", "proj", "PERMIT")
+        project.cached_session_id = self.SID
+
+        def fake_tmux_cmd(*args, **kwargs):
+            if args[:2] == ("display-message", "-p"):
+                if "#{client_width}" in args:
+                    return "120"
+                return "0:1"
+            return ""
+
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake_tmux_cmd)
+        monkeypatch.setattr(inject_status, "tmux_batch", lambda *cmds: None)
+        monkeypatch.setattr(inject_status, "build_project_list",
+                            lambda fast=False: [project])
+        monkeypatch.setattr(inject_status, "detect_external_status_change",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "sanitize_orig_status",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "update_window_names", lambda p: None)
+        monkeypatch.setattr(inject_status, "periodic_autosave", lambda: None)
+        monkeypatch.setattr(inject_status, "auto_exit_idle", lambda p: None)
+        monkeypatch.setattr(inject_status.ccm_spool, "reconcile_spools",
+                            lambda p: None)
+        monkeypatch.setattr(inject_status, "signal_age_suffix",
+                            lambda d, s, session_id=None: "")
+        sent = []
+        monkeypatch.setattr(inject_status, "notify",
+                            lambda *a, **k: sent.append(a))
+        inject_status._inject_status_impl(force_fast=False)
+        return sent
+
+    def test_a_request_the_main_conversation_moved_past_is_not_notified(
+            self, monkeypatch, tmp_path):
+        assert self._run(monkeypatch, tmp_path, stop_after_request=True) == []
+
+    def test_an_open_request_is_notified(self, monkeypatch, tmp_path):
+        sent = self._run(monkeypatch, tmp_path, stop_after_request=False)
+        assert sent == [("PERMIT", "proj", "Bash: old-request")]
+
+
 # ─── Mode 2 helpers ───
 
 class TestClearMode2SlotsAbove:

@@ -102,7 +102,7 @@ ccm_hook_init() {
     # Every field the hooks read comes from one jq (each used to be a jq
     # process of its own, the larger part of a hook's cost): the
     # foreign-harness marker, session id, cwd, permission mode, event
-    # name, tool name, and the count of background work a Stop reports,
+    # name, tool name, the subagent id, and the count of background work a Stop reports,
     # NUL-separated. It gives what reading each field with `jq -r`
     # gives: a field that is an array or object (`jq -r` prints those
     # pretty, this would print them compact) fails the read, and trailing
@@ -120,21 +120,23 @@ ccm_hook_init() {
               ((.permission_mode // "") | scalar),
               ((.hook_event_name // "") | scalar),
               ((.tool_name // "") | scalar),
+              ((.agent_id // "") | scalar),
               (((.background_tasks // []) | length) + ((.session_crons // []) | length)) ]
             | map(tostring) | join("\u0000") + "\u0000"' 2>/dev/null)
     _CCM_FIELDS_READ=""
     local _i
-    for _i in 1 2 3 4 5; do
+    for _i in 1 2 3 4 5 6; do
         while [[ "${_fields[$_i]:-}" == *$'\n' ]]; do _fields[$_i]="${_fields[$_i]%$'\n'}"; done
     done
-    if (( ${#_fields[@]} == 7 )); then
+    if (( ${#_fields[@]} == 8 )); then
         [[ "${_fields[0]}" == true ]] && return 1
         SESSION_ID="${_fields[1]}"
         _CCM_CWD="${_fields[2]}"
         PERMISSION_MODE="${_fields[3]}"
         HOOK_EVENT_NAME="${_fields[4]}"
         HOOK_TOOL_NAME="${_fields[5]}"
-        HOOK_BG_REMAINING="${_fields[6]}"
+        HOOK_AGENT_ID="${_fields[6]}"
+        HOOK_BG_REMAINING="${_fields[7]}"
         _CCM_FIELDS_READ=1
     else
         if printf '%s' "$INPUT" | jq -e 'has("workspaceRoot")' >/dev/null 2>&1; then
@@ -203,6 +205,48 @@ ccm_hook_init() {
     PERMISSION_MODE="${PERMISSION_MODE//[^A-Za-z0-9_-]/}"
     PERMISSION_MODE="${PERMISSION_MODE:0:32}"
 
+    # agent_id: present only when the hook fires inside a subagent
+    # (Claude Code leaves it out for the main conversation). Only
+    # whether it is there is used.
+    if [[ -z "$_CCM_FIELDS_READ" ]]; then
+        HOOK_AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null) || HOOK_AGENT_ID=""
+    fi
+
+    return 0
+}
+
+# True when the hook fired inside a subagent rather than the main
+# conversation. A subagent's work is not the main conversation's
+# turn: background agents keep running after the main turn ends,
+# and their tool calls must not mark the window BUSY.
+ccm_hook_in_subagent() {
+    [[ -n "${HOOK_AGENT_ID:-}" ]]
+}
+
+# A subagent's hook events are kept out of the event log and the
+# signal file, which describe the main conversation: a background
+# agent can outlast the main turn by many events, and the main
+# conversation's own signal must not be overwritten or cleared by
+# them. Each kind has a file the subagent hooks alone write:
+#   <key>.agent-activity  the time of the newest tool or lifecycle
+#                         event (its modification time orders it)
+#   <key>.agent-permit    the newest permission request or denial,
+#                         as a signal line
+# A request is open while its file is newer than the activity file;
+# the next subagent event answers it. Both are read by ccm_signals.
+
+# A subagent asked for permission (or was denied).
+# Args: $1=HOOK_DIR, $2=KEY, $3=CWD, $4=DETAIL
+ccm_agent_permit() {
+    local hook_dir="$1" key="$2" cwd="$3" detail="${4:-}"
+    ccm_write_signal "$hook_dir" "$key" "PERMIT" "$cwd" "$detail" \
+        "${hook_dir}/${key}.agent-permit"
+}
+
+# A subagent's tool or lifecycle event. No BUSY signal is written.
+# Args: $1=HOOK_DIR, $2=KEY
+ccm_agent_event() {
+    printf '%s\n' "${EPOCHSECONDS:-$(date +%s)}" > "${1}/${2}.agent-activity" 2>/dev/null || true
     return 0
 }
 
@@ -233,9 +277,11 @@ ccm_hook_event_name() {
 # Path: $HOOK_DIR/<session_id>.events.jsonl
 # Schema: {"ts": <unix_seconds>, "type": "<normalized>"[, "mode": "<permission_mode>"]}
 #
-# `type` is restricted to the 9-type normalized vocabulary:
+# `type` is restricted to the normalized vocabulary:
 #   prompt, pretool, posttool, subagent, compact, stop,
-#   permit_req, notify_permit, notify_idle, session_end
+#   permit_req, notify_permit, notify_idle, session_end,
+#   agent, agent_permit (written by earlier versions for a subagent's
+#     events, which are now kept in files of their own; still read)
 # (call sites use hard-coded values, so no escaping needed.)
 #
 # `mode` rides along when the payload carried `permission_mode`
@@ -314,24 +360,36 @@ ccm_hook_format_tool_detail() {
 # share this so they can feed a meaningful name into the desktop
 # notification ("ccm ✔ my-project" rather than "ccm ✔ ").
 # Args: $1=CWD to match against `@ccm_dir`.
+# A failed listing (no server, no connection) prints nothing and
+# returns 0: the caller has already recorded the state, and an
+# unknown project only means no notification.
 ccm_hook_resolve_project() {
-    local cwd="$1"
-    tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
-        | awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}'
+    local cwd="$1" windows
+    windows=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null) \
+        || return 0
+    awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}' <<< "$windows"
 }
 
 # Write signal to hook file AND directly update tmux window option
 # for instant status bar reflection (no polling delay).
 # Args: $1=HOOK_DIR, $2=KEY (session_id), $3=STATE (BUSY/PERMIT/SHELL), $4=CWD, $5=DETAIL (optional)
+#       $6=FILE (optional): write the line to this file instead of the
+#       signal file, whole (through a temporary file and a rename).
 ccm_write_signal() {
-    local hook_dir="$1" key="$2" state="$3" cwd="$4" detail="${5:-}"
+    local hook_dir="$1" key="$2" state="$3" cwd="$4" detail="${5:-}" file="${6:-}"
+    local line
 
     # Write signal file (for dashboard/inject-status polling)
     # Format: "<timestamp> <state>" or "<timestamp> <state> <detail>"
     if [[ -n "$detail" ]]; then
-        printf '%s %s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state" "$detail" > "${hook_dir}/${key}"
+        printf -v line '%s %s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state" "$detail"
     else
-        printf '%s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state" > "${hook_dir}/${key}"
+        printf -v line '%s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state"
+    fi
+    if [[ -n "$file" ]]; then
+        { printf '%s' "$line" > "${file}.$$" && mv -f "${file}.$$" "$file"; } 2>/dev/null || true
+    else
+        printf '%s' "$line" > "${hook_dir}/${key}"
     fi
 
     # Direct tmux update for instant status bar reflection
@@ -339,9 +397,12 @@ ccm_write_signal() {
     # also carries @ccm_prev_state so the push below can fire only on
     # a real transition — same subprocess, no extra cost.
     local win_target project prev_state cached_sid
-    local win_info
-    win_info=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_session_id}' 2>/dev/null \
-        | awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3"\t"$4"\t"$5; exit}')
+    local windows win_info
+    # A failed listing leaves the window unknown: the signal is
+    # written, and only the instant tmux update is skipped.
+    windows=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_session_id}' 2>/dev/null) \
+        || return 0
+    win_info=$(awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3"\t"$4"\t"$5; exit}' <<< "$windows")
     if [[ -n "$win_info" ]]; then
         IFS=$'\t' read -r win_target project prev_state cached_sid <<< "$win_info"
         # cwd alone does not prove the event came from this window's
@@ -356,13 +417,17 @@ ccm_write_signal() {
         if [[ -n "$cached_sid" && -n "$key" && "$cached_sid" != "$key" ]]; then
             return 0
         fi
-        # Update state option
-        tmux set-option -wt "$win_target" @ccm_prev_state "$state" 2>/dev/null
+        # Update state option. These tmux calls are best-effort: the
+        # signal file is already written, and a failure must not end
+        # the hook under `set -e` (`refresh-client` exits 1 when no
+        # client is attached, and Claude Code then reports the hook as
+        # failed and skips the push below).
+        tmux set-option -wt "$win_target" @ccm_prev_state "$state" 2>/dev/null || true
         # Update window name icon for instant status bar change
         if [[ -n "$project" ]]; then
             local icon
             icon=$(ccm_state_icon "$state")
-            tmux rename-window -t "$win_target" "${icon} ${project}" 2>/dev/null
+            tmux rename-window -t "$win_target" "${icon} ${project}" 2>/dev/null || true
         fi
 
         # Instant desktop notification for PERMIT
@@ -378,7 +443,7 @@ ccm_write_signal() {
             # `_ccm_instant_permit_icon`, so this `else` covers BUSY
             # signal writes (PreToolUse / PostToolUse / etc.) without
             # double-refreshing.
-            tmux refresh-client -S 2>/dev/null
+            tmux refresh-client -S 2>/dev/null || true
         fi
 
         # Push the freshly written state into the rendered status bar
@@ -412,11 +477,11 @@ _ccm_instant_permit_icon() {
     # Set the flag with the full window target (`session:index`) so
     # the reader matches one window, not every window that shares an
     # index across tmux sessions.
-    tmux set -g @ccm-permit-pending "${win_target}" 2>/dev/null
+    tmux set -g @ccm-permit-pending "${win_target}" 2>/dev/null || true
 
     # Force tmux to redraw status bar — this triggers #(ccm inject-status)
     # if status-interval has elapsed, giving faster pickup
-    tmux refresh-client -S 2>/dev/null
+    tmux refresh-client -S 2>/dev/null || true
 }
 
 # Schedule a COMPLETED notification after a short grace period.
@@ -589,7 +654,7 @@ _ccm_instant_notify() {
 
     # Check notification setting
     local notify_setting
-    notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null)
+    notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null) || notify_setting=""
     notify_setting="${notify_setting:-permit,completed}"
     # Explicit `return 0` on every skip path. A bare `return` would
     # inherit the preceding command's exit status (e.g. a failed `[[ ]]`
@@ -613,7 +678,7 @@ _ccm_instant_notify() {
 
     # Sound setting
     local sound_setting
-    sound_setting=$(tmux show-option -gqv @ccm-notify-sound 2>/dev/null)
+    sound_setting=$(tmux show-option -gqv @ccm-notify-sound 2>/dev/null) || sound_setting=""
     sound_setting="${sound_setting:-off}"
 
     # Icon comes from the state-meta table; body text is notification-
@@ -661,7 +726,7 @@ _ccm_instant_notify() {
                        -group "ccm-${project}")
         if [[ "$sound_setting" == "on" ]]; then
             local sound_name
-            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null)
+            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null) || sound_name=""
             tn_args+=(-sound "${sound_name:-Glass}")
         fi
         terminal-notifier "${tn_args[@]}" >/dev/null 2>&1 &
@@ -669,7 +734,7 @@ _ccm_instant_notify() {
         local sound_opt=""
         if [[ "$sound_setting" == "on" ]]; then
             local sound_name
-            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null)
+            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null) || sound_name=""
             sound_name="${sound_name:-Glass}"
             sound_opt=" sound name \"${sound_name}\""
         fi

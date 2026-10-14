@@ -57,6 +57,7 @@ EVENT_CLASSES = {
     "compact": EVENT_CLASS_START,
     "stop": EVENT_CLASS_PAUSE,
     "permit_req": EVENT_CLASS_PERMIT,
+    "agent_permit": EVENT_CLASS_PERMIT,
     "notify_permit": EVENT_CLASS_PERMIT,
     "notify_idle": EVENT_CLASS_IDLE,
     "session_end": EVENT_CLASS_END,
@@ -177,6 +178,82 @@ def _strip_phantom_subagents(events_seq):
     return events_seq
 
 
+# ─── Subagent events ───
+# A subagent's hooks fire under the main conversation's session id.
+# A background agent keeps running after the main turn has ended, so
+# its tool calls say nothing about whether the conversation is the
+# user's to answer. The writer keeps them out of the event log, in
+# files of their own (`ccm_signals.read_agent_activity` /
+# `read_agent_permit`), so a busy agent cannot push the main
+# conversation's events out of the tail that is read. The caller
+# passes the newest subagent event's time (`agent_ts`) and an open
+# subagent permission request's time (`agent_permit_ts`).
+#
+# Logs written by earlier versions hold `agent` for a subagent's tool
+# events and `agent_permit` for its requests; they read the same way.
+
+def _main_conversation_events(events_seq):
+    """Return the events that describe the main conversation.
+
+    `agent` events are dropped. An `agent_permit` stays only while no
+    `agent` event follows it: a later subagent event means the request
+    was answered and the agent went on. The main conversation's own
+    permission requests are never cleared by a subagent's events.
+    Pure function; takes and returns a tuple."""
+    out = []
+    answered = False
+    for e in reversed(events_seq):
+        t = e.get("type") if isinstance(e, dict) else None
+        if t == "agent":
+            answered = True
+            continue
+        if t == "agent_permit" and answered:
+            continue
+        out.append(e)
+    return tuple(reversed(out))
+
+
+def subagents_active(events, agent_ts, now, window=BUSY_HOOK_JSONL_WINDOW):
+    """True when a subagent has acted since the main conversation's
+    last event, within `window` seconds. `agent_ts` is the time of the
+    newest subagent event (kept apart from the event log; see
+    `ccm_signals.read_agent_activity`). Shown beside an IDLE state as
+    `(bg)` and honoured by auto-exit; never used to decide the state."""
+    if not (isinstance(agent_ts, (int, float)) and agent_ts > 0 and now > 0
+            and 0 <= now - agent_ts <= window):
+        return False
+    for e in reversed(tuple(events)):
+        if not isinstance(e, dict):
+            continue
+        if e.get("type") in ("agent", "agent_permit"):
+            continue
+        ts = e.get("ts", 0)
+        return not isinstance(ts, (int, float)) or agent_ts > ts
+    return True
+
+
+def agent_permit_superseded(events_seq, agent_permit_ts):
+    """True when the event log's newest event is strictly newer than a
+    subagent's permission request: the main conversation has moved on
+    and the request no longer decides anything. Shared by the state
+    (`_with_agent_permit`) and the hook signal
+    (`ccm_signals.read_hook_signal`) so the two never disagree."""
+    latest = events_seq[-1] if events_seq else None
+    ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
+    return isinstance(ts, (int, float)) and ts > agent_permit_ts
+
+
+def _with_agent_permit(events_seq, agent_permit_ts):
+    """Append an open subagent permission request as an
+    `agent_permit` event, unless the main conversation has an event
+    after it. Pure function; takes and returns a tuple."""
+    if not (isinstance(agent_permit_ts, (int, float)) and agent_permit_ts > 0):
+        return events_seq
+    if agent_permit_superseded(events_seq, agent_permit_ts):
+        return events_seq
+    return events_seq + ({"ts": agent_permit_ts, "type": "agent_permit"},)
+
+
 # ─── Activity classification ───
 
 def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
@@ -187,6 +264,7 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
     decision was based on (or None for UNKNOWN cases without a
     contributing event)."""
     events_seq = tuple(events) if not isinstance(events, tuple) else events
+    events_seq = _main_conversation_events(events_seq)
     events_seq = _strip_phantom_subagents(events_seq)
     if not events_seq:
         return ACTIVITY_UNKNOWN, None
@@ -316,7 +394,7 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
 # ─── Activity → state mapping ───
 
 def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
-                          event_type=None, event_age=-1):
+                          event_type=None, event_age=-1, agent_age=-1):
     """Map (activity, raw observation, JSONL signals) to a definite
     state, or None to defer to legacy detection.
 
@@ -335,7 +413,12 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     run may legitimately take minutes) must NOT be cut by the short
     release window; it keeps the long-tool semantics of the permit
     promotion itself. None (direct callers) keeps the release
-    enabled, matching the pre-parameter behaviour."""
+    enabled, matching the pre-parameter behaviour.
+
+    agent_age: seconds since a subagent last acted, or -1. Used only
+    when the transcript is unreadable and the main conversation is in
+    the middle of a call: the subagent's work under that call keeps
+    it fresh, as the transcript age would."""
     candidate = None
 
     if activity == ACTIVITY_AT_REST:
@@ -436,8 +519,16 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     # back to it keeps the guard's shape while removing the
     # indefinite-BUSY corner (the non-ASCII-path failure class).
     aging_age = jsonl_age
+    # A subagent's request says nothing about the main transcript,
+    # which has usually been quiet since the main turn ended; its own
+    # age is the clock.
+    if event_type == "agent_permit":
+        aging_age = event_age
     if aging_age is None or aging_age < 0:
         aging_age = event_age if event_age is not None and event_age >= 0 else None
+        if (candidate == "BUSY" and agent_age is not None and agent_age >= 0
+                and (aging_age is None or agent_age < aging_age)):
+            aging_age = agent_age
     if ((candidate == "PERMIT" or busy_release_eligible)
             and raw == "IDLE"
             and aging_age is not None
@@ -458,7 +549,8 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
 
 def derive_state_from_events(events, jsonl_stop_reason,
                              pid_present, claude_pid_age, raw=None,
-                             jsonl_age=-1, now=0):
+                             jsonl_age=-1, now=0, agent_ts=0,
+                             agent_permit_ts=0):
     """Pure function: resolve state from event-log tail + JSONL + pid.
 
     Arguments:
@@ -479,6 +571,9 @@ def derive_state_from_events(events, jsonl_stop_reason,
             signal for modal-blocked panes.
         jsonl_age: optional. Seconds since the most recent JSONL
             real-activity record, or -1 if unavailable.
+        agent_ts: optional. Time of the newest subagent event, or 0.
+        agent_permit_ts: optional. Time of a subagent's open
+            permission request, or 0.
 
     Returns one of: "SHELL", "PERMIT", "BUSY", "IDLE", or None.
     None means "no authoritative answer" — the caller should commit
@@ -488,6 +583,7 @@ def derive_state_from_events(events, jsonl_stop_reason,
         return "SHELL"
 
     events_seq = tuple(events) if not isinstance(events, tuple) else events
+    events_seq = _with_agent_permit(events_seq, agent_permit_ts)
 
     activity, evidence = classify_activity(
         events_seq, jsonl_stop_reason, jsonl_age, raw, now,
@@ -498,7 +594,10 @@ def derive_state_from_events(events, jsonl_stop_reason,
     # when the transcript is unreadable (see map_activity_to_state).
     evidence_ts = evidence.get("ts", 0) if isinstance(evidence, dict) else 0
     event_age = (now - evidence_ts) if (now > 0 and evidence_ts > 0) else -1
+    agent_age = -1
+    if now > 0 and isinstance(agent_ts, (int, float)) and agent_ts > 0:
+        agent_age = now - agent_ts
     return map_activity_to_state(
         activity, raw, jsonl_stop_reason, jsonl_age,
-        event_type=event_type, event_age=event_age,
+        event_type=event_type, event_age=event_age, agent_age=agent_age,
     )

@@ -12,5 +12,9 @@ ccm_hook_init || exit 0
 
 DETAIL=$(ccm_hook_format_tool_detail)
 
+if ccm_hook_in_subagent; then
+    ccm_agent_permit "$HOOK_DIR" "$KEY" "$CWD" "$DETAIL"
+    exit 0
+fi
 ccm_append_event "$HOOK_DIR" "$KEY" "permit_req"
 ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "$CWD" "$DETAIL"

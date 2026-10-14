@@ -50,7 +50,7 @@ import ccm_agentview
 import ccm_core  # late-bound for tmux_cmd / find_process_age
 import ccm_jsonl
 import ccm_signals
-from ccm_activity import derive_state_from_events
+from ccm_activity import derive_state_from_events, subagents_active
 from ccm_constants import BUSY_STALE_RELEASE_SEC
 from ccm_pane_state import detect_window_raw, find_claude_pid, read_work_clock
 from ccm_rules import (
@@ -257,6 +257,22 @@ def build_detection_context(win_target, project_dir, prev_state,
     idle_since, idle_seconds, idle_record = _unresolved_idle_observation(
         previous_idle, identity, raw, work_clock, now, prev_state, idle_max_gap)
 
+    agent_ts = 0
+    agent_permit_ts = 0
+    subagents = False
+    if session_id and _event_log_enabled():
+        agent_ts = ccm_signals.read_agent_activity(
+            project_dir, session_id=session_id)
+        agent_permit = ccm_signals.read_agent_permit(
+            project_dir, session_id=session_id)
+        if agent_permit is not None:
+            agent_permit_ts = agent_permit[0]
+        if agent_ts:
+            subagents = subagents_active(
+                ccm_signals.read_events_tail(
+                    project_dir, session_id=session_id),
+                agent_ts, now)
+
     return DetectionContext(
         raw=raw,
         hook_state=hook_state,
@@ -277,6 +293,9 @@ def build_detection_context(win_target, project_dir, prev_state,
         prev_unresolved_idle_record=previous_idle,
         work_clock=work_clock,
         prev_work_clock=prev_work_clock,
+        agent_ts=agent_ts,
+        agent_permit_ts=agent_permit_ts,
+        subagents_active=subagents,
     )
 
 
@@ -377,9 +396,10 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     # Surface the discrepancy as a `(bg)` UI suffix so the user
     # knows "claude is at rest, but something it spawned is still
     # alive". Written when committed state is IDLE but raw says
-    # BUSY; cleared whenever they agree, so a stale flag cannot
-    # survive a state change.
-    if state == "IDLE" and ctx.raw == "BUSY":
+    # BUSY, or while a subagent works on after the main turn ended;
+    # cleared otherwise, so a stale flag cannot survive a state
+    # change.
+    if state == "IDLE" and (ctx.raw == "BUSY" or ctx.subagents_active):
         # Only write when transitioning into bg-active mode.
         if not ctx.prev_bg_active:
             ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_bg_active", "1")
@@ -464,6 +484,8 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
             raw=ctx.raw,
             jsonl_age=ctx.jsonl_age,
             now=ctx.now,
+            agent_ts=ctx.agent_ts,
+            agent_permit_ts=ctx.agent_permit_ts,
         )
 
     state = event_log_state if event_log_state is not None else legacy_state
@@ -601,6 +623,9 @@ def _trace_scan(win_target, ctx, rule, state, event_log_state=None):
             "unresolved_idle_since": ctx.unresolved_idle_since,
             "unresolved_idle_seconds": ctx.unresolved_idle_seconds,
             "unresolved_idle_max_gap": ctx.unresolved_idle_max_gap,
+            "agent_ts": ctx.agent_ts,
+            "agent_permit_ts": ctx.agent_permit_ts,
+            "subagents_active": ctx.subagents_active,
             "rule": rule.name,
             "phase": rule.phase,
             "state": state,

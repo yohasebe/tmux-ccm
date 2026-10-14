@@ -11,6 +11,13 @@ detection pipeline to consume:
     append-only JSONL `{"ts": int, "type": str}` per hook
     invocation. `read_events_tail` returns the most recent N
     records as the input to `derive_state_from_events`.
+  - **Subagent files** — `$HOOK_DIR/<sessionId>.agent-activity`
+    (the time of a subagent's newest hook event) and
+    `.agent-permit` (the signal line of its newest permission
+    request). A subagent's events stay out of the event log and the
+    signal file, which describe the main conversation.
+    `read_agent_activity` / `read_agent_permit` return them;
+    `read_hook_signal` reports an open subagent request as PERMIT.
   - **Pending sentinel** — `$HOOK_DIR/<sessionId>.pending` —
     write-only sentinel for the multi-turn Stop grace-period; ccm
     only deletes it as part of project cleanup.
@@ -45,6 +52,7 @@ import os
 from collections import OrderedDict
 from typing import Optional, Tuple
 
+import ccm_activity
 import ccm_core  # late-bound for tmux_cmd / md5_hash / CCM_HOOK_DIR / etc.
 
 
@@ -128,20 +136,36 @@ def read_hook_signal(project_dir, session_id: Optional[str] = None):
     tmux option set by the most recent slow path. Returns None when
     no session_id is yet known for this project — fresh sessions
     before the first hook fire fall through to legacy detection.
+
+    A subagent's open permission request (`read_agent_permit`) is
+    returned as PERMIT unless the main conversation's signal is newer.
     """
     hook_file = _hook_signal_path(project_dir, session_id=session_id)
     if not hook_file:
         return None
+    if session_id is None:
+        session_id = os.path.basename(hook_file)
+    signal = None
     try:
         with open(hook_file, encoding="utf-8") as f:
             content = f.read().strip()
         parts = content.split(None, 2)  # split into at most 3 parts
         if len(parts) >= 2 and parts[1] in VALID_HOOK_STATES:
             detail = parts[2] if len(parts) >= 3 else ""
-            return int(parts[0]), parts[1], detail
+            signal = (int(parts[0]), parts[1], detail)
     except (OSError, ValueError):
         pass
-    return None
+    # A subagent's open permission request, kept in a file of its own,
+    # stands unless the main conversation has moved on since: a newer
+    # main signal, or a newer main event (a Stop removes the signal,
+    # so its absence is no evidence). The event test is the one the
+    # state uses.
+    agent = read_agent_permit(project_dir, session_id=session_id)
+    if agent is not None and (signal is None or signal[0] <= agent[0]):
+        tail = read_events_tail(project_dir, limit=1, session_id=session_id)
+        if not ccm_activity.agent_permit_superseded(tail, agent[0]):
+            return agent[0], "PERMIT", agent[1]
+    return signal
 
 
 # ─── Notify marker ───
@@ -314,6 +338,69 @@ def read_events_tail(project_dir: str, limit: int = 20,
     return result[-limit:] if limit and len(result) > limit else result
 
 
+def _agent_file(project_dir: str, session_id: Optional[str],
+                suffix: str) -> Optional[str]:
+    path = _events_log_path(project_dir, session_id=session_id)
+    if not path:
+        return None
+    return path[:-len(".events.jsonl")] + suffix
+
+
+def read_agent_activity(project_dir: str,
+                        session_id: Optional[str] = None) -> int:
+    """Return the time of a subagent's newest hook event, or 0.
+
+    `session_id` semantics match `read_events_tail`. A missing,
+    empty or unparseable file reads as 0 ("no subagent activity
+    known"); the file is overwritten in place, so a read can land
+    between the truncate and the write."""
+    if not project_dir:
+        return 0
+    path = _agent_file(project_dir, session_id, ".agent-activity")
+    if not path:
+        return 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            return max(0, int(f.read().strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def read_agent_permit(project_dir: str,
+                      session_id: Optional[str] = None):
+    """Return `(timestamp, detail)` for a subagent's open permission
+    request, or None.
+
+    The request file holds the signal line of the newest request; a
+    request is open until a later subagent event, i.e. while the
+    request file is at least as new as the activity file. Compared
+    by modification time, which orders the writes within a second.
+    `session_id` semantics match `read_events_tail`."""
+    if not project_dir:
+        return None
+    path = _agent_file(project_dir, session_id, ".agent-permit")
+    if not path:
+        return None
+    try:
+        permit_mtime = os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+    activity = path[:-len(".agent-permit")] + ".agent-activity"
+    try:
+        if os.stat(activity).st_mtime_ns > permit_mtime:
+            return None
+    except OSError:
+        pass
+    try:
+        with open(path, encoding="utf-8") as f:
+            parts = f.read().strip().split(None, 2)
+        if len(parts) >= 2 and parts[1] == "PERMIT":
+            return int(parts[0]), (parts[2] if len(parts) >= 3 else "")
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def read_latest_permission_mode(project_dir: str,
                                 session_id: Optional[str] = None) -> str:
     """Return the most recent `permission_mode` recorded in a
@@ -344,7 +431,8 @@ def cleanup_project_runtime_files(project_dir):
     distinct keying schemes:
 
     1. Hook artefacts keyed on Claude Code session_id
-       (`$HOOK_DIR/<sessionId>`, `.events.jsonl`, `.busy`, `.pending`).
+       (`$HOOK_DIR/<sessionId>`, `.events.jsonl`, `.busy`, `.pending`,
+       `.agent-activity`, `.agent-permit`).
        Discovered via the cached `@ccm_session_id` tmux option for
        this project's window. Stale past-session files persist until
        macOS `$TMPDIR` auto-cleanup; this is acceptable since the
@@ -370,7 +458,8 @@ def cleanup_project_runtime_files(project_dir):
         session_ids.add(cached_sid)
 
     for sid in session_ids:
-        for suffix in ("", ".busy", ".pending", ".events.jsonl"):
+        for suffix in ("", ".busy", ".pending", ".events.jsonl",
+                       ".agent-activity", ".agent-permit"):
             path = os.path.join(ccm_core.CCM_HOOK_DIR, sid + suffix)
             try:
                 os.unlink(path)

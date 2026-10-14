@@ -341,7 +341,7 @@ def auto_exit_idle(projects):
     activity_raw = ccm_core.tmux_cmd(
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t#{@ccm_session_id}"
-        f"\t#{{{ccm_roles.PENDING_OPTION}}}"
+        f"\t#{{{ccm_roles.PENDING_OPTION}}}\t#{{@ccm_bg_active}}"
     )
     if not activity_raw:
         return
@@ -379,12 +379,17 @@ def auto_exit_idle(projects):
 
     for line in activity_raw.split("\n"):
         parts = line.split("\t")
-        while len(parts) < 7:
+        while len(parts) < 8:
             parts.append("")
         (win_target, project, prev_state, completed_at_str,
-         win_activity_str, session_id, restore_pending) = parts[:7]
+         win_activity_str, session_id, restore_pending, bg_active) = parts[:8]
 
         if not project or prev_state != "IDLE":
+            continue
+        # IDLE (bg): the conversation waits for the user, but work it
+        # started goes on (a background agent, a process it spawned).
+        # Exiting would end that work.
+        if bg_active and bg_active != "0":
             continue
         if win_target == current_target:
             continue

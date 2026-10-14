@@ -116,6 +116,16 @@ class DetectionContext:
     # previous detection pass, or None when nothing is stored.
     # Compared against `work_clock` by the tick check.
     prev_work_clock: Optional[Tuple[str, int]] = None
+    # Time of a subagent's newest hook event, or 0. Keeps an
+    # unfinished main call fresh when the transcript is unreadable.
+    agent_ts: int = 0
+    # Time of a subagent's open permission request, or 0.
+    agent_permit_ts: int = 0
+    # A subagent has acted since the main conversation's last hook
+    # event (a background agent still running after the turn ended).
+    # Never decides the state: it adds the `(bg)` suffix beside IDLE
+    # and keeps auto-exit away from the window.
+    subagents_active: bool = False
 
 
 class Action(Enum):

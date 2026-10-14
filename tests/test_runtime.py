@@ -333,12 +333,13 @@ class TestAutoExitIdle:
                 sends.append(args)
             if args[0] == "list-windows":
                 return "\n".join(
-                    f"main:{idx}\tdemo{idx}\tIDLE\t1\t1\t{self.SESSION_ID}\t{pending}"
-                    for idx, pending in windows)
+                    f"main:{w[0]}\tdemo{w[0]}\tIDLE\t1\t1\t{self.SESSION_ID}\t{w[1]}"
+                    + (f"\t{w[2]}" if len(w) > 2 else "")
+                    for w in windows)
             if args[0] == "list-panes" and "-a" in args:
                 pid = pane_pid if isinstance(pane_pid, dict) else {}
-                return "\n".join(f"main:{idx}\t0\t{pid.get(idx, pane_pid or 1000)}"
-                                  for idx, _ in windows)
+                return "\n".join(f"main:{w[0]}\t0\t{pid.get(w[0], pane_pid or 1000)}"
+                                  for w in windows)
             return base(*args)
 
         with patch("ccm_core.tmux_cmd", side_effect=tmux), \
@@ -355,6 +356,16 @@ class TestAutoExitIdle:
         sends, ps, calls = self._run_windows([("1", "1")])
         assert sends == []
         assert not any(c[:2] == ("show-option", "-wqv") for c in calls)
+
+    def test_a_window_with_background_work_is_left_alone(self):
+        # IDLE (bg): a background agent still works for the conversation.
+        sends, ps, calls = self._run_windows([("1", "", "1")], pane_pid="1000")
+        assert sends == []
+
+    def test_the_same_window_without_background_work_exits(self):
+        # Control for the test above.
+        sends, ps, calls = self._run_windows([("1", "", "")], pane_pid="1000")
+        assert any("/exit" in c for c in sends)
 
     def test_windows_only_looked_at_share_one_ps_and_one_pane_listing(self):
         # No Claude in any of them: each is looked at and left.

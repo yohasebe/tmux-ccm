@@ -272,6 +272,85 @@ _wait_for_stub_log() {
     grep -q -- "inject-status --fast" "$CCM_STUB_LOG"
 }
 
+@test "on-pre-tool-use.sh: tmux calls that fail do not fail the hook" {
+    # Real tmux: `refresh-client` exits 1 with no client attached.
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    printf 'refresh-client\nset-option\nrename-window\n' > "${MOCK_STATE_DIR}/fail"
+    run _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreCompact","cwd":"/x/test-project"}'
+    [[ "$status" -eq 0 ]]
+    _wait_for_stub_log
+    grep -q -- "inject-status --fast" "$CCM_STUB_LOG"
+}
+
+@test "write_signal: a PERMIT with failing tmux calls still returns 0" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    printf 'refresh-client\nset-option\nset\nrename-window\n' > "${MOCK_STATE_DIR}/fail"
+    run bash -c 'set -euo pipefail; source "$1/hooks/lib.sh"; _ccm_instant_notify() { :; }; ccm_write_signal "$2" "$3" PERMIT /x/test-project "Bash: ls"; wait; echo done' \
+        _ "$CCM_ROOT" "$HOOK_DIR" "$KEY"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *done* ]]
+}
+
+@test "on-pre-tool-use.sh: a failed window listing does not fail the hook" {
+    printf 'list-windows\n' > "${MOCK_STATE_DIR}/fail"
+    run _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreCompact","cwd":"/x/test-project"}'
+    [[ "$status" -eq 0 ]]
+    [[ -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-permission-request.sh: a failed window listing does not fail the hook" {
+    printf 'list-windows\n' > "${MOCK_STATE_DIR}/fail"
+    run _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","tool_name":"Bash"}'
+    [[ "$status" -eq 0 ]]
+    run cat "${HOOK_DIR}/${KEY}"
+    [[ "$output" == *PERMIT* ]]
+}
+
+@test "on-stop.sh: a failed window listing does not fail the hook" {
+    printf 'list-windows\n' > "${MOCK_STATE_DIR}/fail"
+    run _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    [[ "$status" -eq 0 ]]
+    run _latest_type
+    [[ "$output" == "stop" ]]
+}
+
+@test "write_signal: a listing that fails after printing updates no window" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    : > "${MOCK_STATE_DIR}/windows-then-fail"
+    ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    sleep 0.5
+    [[ ! -s "$CCM_STUB_LOG" ]]
+    run mock_get_option "sess:1" "@ccm_prev_state"
+    [[ -z "$output" ]]
+}
+
+@test "resolve_project: a listing that fails after printing gives no project" {
+    printf 'sess:1\t/x/test-project\ttest-project\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    : > "${MOCK_STATE_DIR}/windows-then-fail"
+    run ccm_hook_resolve_project "/x/test-project"
+    [[ "$status" -eq 0 ]]
+    [[ -z "$output" ]]
+}
+
+@test "instant_permit_icon: failing tmux calls still return 0" {
+    printf 'set\nrefresh-client\n' > "${MOCK_STATE_DIR}/fail"
+    run bash -c 'set -euo pipefail; source "$1/hooks/lib.sh"; _ccm_instant_permit_icon sess:1 test-project; echo done' \
+        _ "$CCM_ROOT"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *done* ]]
+}
+
 # ─── hook_event_name() helper ───
 
 @test "hook_event_name: extracts from JSON payload" {
@@ -337,6 +416,129 @@ _latest_type() {
         '{"hook_event_name":"SubagentStart","cwd":"/x/test-project"}'
     run _latest_type
     [[ "$output" == "subagent" ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent's tool event stays out of the log, no BUSY signal" {
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ ! -f "$EVENTS_FILE" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent's tool event records its time" {
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    run cat "${HOOK_DIR}/${KEY}.agent-activity"
+    [[ "$output" =~ ^[0-9]+$ ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent's tool event leaves a Stop's cleared signal cleared" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    run _latest_type
+    [[ "$output" == "stop" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "subagent requests and events keep the main conversation's last event in the log" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        _run_hook on-permission-request.sh \
+            '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+        _run_hook on-pre-tool-use.sh \
+            '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    done
+    run wc -l < "$EVENTS_FILE"
+    [[ "$output" -eq 1 ]]
+}
+
+@test "on-permission-request.sh: a subagent's request is written to its own file" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1","tool_name":"Bash"}'
+    run cut -d' ' -f2- "${HOOK_DIR}/${KEY}.agent-permit"
+    [[ "$output" == "PERMIT Bash" ]]
+}
+
+@test "on-permission-request.sh: a subagent's request stays out of the log and the signal" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ ! -f "$EVENTS_FILE" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-permission-request.sh: a subagent's request still updates the window at once" {
+    _setup_push_stub
+    mkdir -p "${MOCK_STATE_DIR}/options/global"
+    printf 'off' > "${MOCK_STATE_DIR}/options/global/@ccm-notify"
+    printf '0:1\t/x/test-project\ttest-project\tIDLE\t%s\n' "$KEY" > "${MOCK_STATE_DIR}/windows"
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    run cat "${MOCK_STATE_DIR}/options/0___1/@ccm_prev_state"
+    [[ "$output" == "PERMIT" ]]
+}
+
+@test "on-permission-denied.sh: a subagent's denial is written to its own file" {
+    _run_hook on-permission-denied.sh \
+        '{"hook_event_name":"PermissionDenied","cwd":"/x/test-project","agent_id":"a1"}'
+    run cut -d' ' -f2 "${HOOK_DIR}/${KEY}.agent-permit"
+    [[ "$output" == "PERMIT" ]]
+    [[ ! -f "$EVENTS_FILE" ]]
+}
+
+@test "on-permission-request.sh: the main conversation's request stays permit_req" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project"}'
+    run _latest_type
+    [[ "$output" == "permit_req" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit" ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent event keeps the main conversation's PERMIT signal" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project"}'
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    run cut -d' ' -f2 "${HOOK_DIR}/${KEY}"
+    [[ "$output" == "PERMIT" ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent's event leaves a scheduled completion alone" {
+    : > "${HOOK_DIR}/${KEY}.pending"
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ -f "${HOOK_DIR}/${KEY}.pending" ]]
+}
+
+@test "on-pre-tool-use.sh: a main event cancels a scheduled completion" {
+    : > "${HOOK_DIR}/${KEY}.pending"
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project"}'
+    [[ ! -f "${HOOK_DIR}/${KEY}.pending" ]]
+}
+
+@test "on-permission-request.sh: a subagent's request leaves no temporary file" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    run find "$HOOK_DIR" -name "${KEY}.agent-permit.*"
+    [[ -z "$output" ]]
+}
+
+@test "on-pre-tool-use.sh: subagent id is read without the one-jq field read too" {
+    jq() {
+        if [[ "$*" == *'join("\u0000")'* ]]; then return 1; fi
+        command jq "$@"
+    }
+    export -f jq
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    unset -f jq
+    [[ ! -f "$EVENTS_FILE" ]]
+    [[ -f "${HOOK_DIR}/${KEY}.agent-activity" ]]
 }
 
 @test "on-pre-tool-use.sh: PreCompact -> compact" {

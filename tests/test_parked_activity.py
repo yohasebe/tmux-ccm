@@ -295,3 +295,21 @@ def test_ambiguous_stop_without_event_timestamp_stays_busy():
     assert ccm_activity.derive_state_from_events(
         [{'type': 'stop'}], None, True, 1000,
         raw='IDLE', jsonl_age=10000, now=NOW) == 'BUSY'
+
+
+def test_subagent_activity_reaches_the_context(pane):
+    write_lines(pane.hooks / (TARGET + '.events.jsonl'),
+                [{'type': 'stop', 'ts': NOW - 100}])
+    assert not pane.context().subagents_active
+    (pane.hooks / (TARGET + '.agent-activity')).write_text(f'{NOW - 5}\n')
+    ctx = pane.context()
+    assert ctx.agent_ts == NOW - 5
+    assert ctx.subagents_active
+
+
+def test_an_open_subagent_request_reaches_the_context(pane):
+    write_lines(pane.hooks / (TARGET + '.events.jsonl'),
+                [{'type': 'stop', 'ts': NOW - 100}])
+    assert pane.context().agent_permit_ts == 0
+    (pane.hooks / (TARGET + '.agent-permit')).write_text(f'{NOW - 5} PERMIT Bash')
+    assert pane.context().agent_permit_ts == NOW - 5

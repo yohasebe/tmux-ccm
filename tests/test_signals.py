@@ -203,12 +203,149 @@ class TestCleanupProjectRuntimeFiles:
         (tmp_path / "hooks" / f"{sid}.events.jsonl").write_text(
             '{"ts":100,"type":"pretool"}\n')
         (tmp_path / "hooks" / f"{sid}.pending").write_text("0")
+        (tmp_path / "hooks" / f"{sid}.agent-activity").write_text("100\n")
+        (tmp_path / "hooks" / f"{sid}.agent-permit").write_text("100 PERMIT")
 
         ccm_signals.cleanup_project_runtime_files(project)
 
         assert not (tmp_path / "hooks" / sid).exists()
         assert not (tmp_path / "hooks" / f"{sid}.events.jsonl").exists()
         assert not (tmp_path / "hooks" / f"{sid}.pending").exists()
+        assert not (tmp_path / "hooks" / f"{sid}.agent-activity").exists()
+        assert not (tmp_path / "hooks" / f"{sid}.agent-permit").exists()
+
+
+class TestReadAgentPermit:
+    SID = "test-session-agent"
+
+    def _dir(self, tmp_path, monkeypatch):
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        return hook_dir
+
+    def _write(self, path, content, mtime_ns):
+        path.write_text(content)
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+
+    def test_a_request_newer_than_the_activity_is_open(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-activity", "100\n", 1_000)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        assert ccm_signals.read_agent_permit("/p", session_id=self.SID) == (100, "Bash: ls")
+
+    def test_a_request_without_activity_is_open(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT", 2_000)
+        assert ccm_signals.read_agent_permit("/p", session_id=self.SID) == (100, "")
+
+    def test_a_request_as_new_as_the_activity_is_open(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-activity", "100\n", 2_000)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT", 2_000)
+        assert ccm_signals.read_agent_permit("/p", session_id=self.SID) == (100, "")
+
+    def test_later_activity_answers_it(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT", 1_000)
+        self._write(d / f"{self.SID}.agent-activity", "100\n", 2_000)
+        assert ccm_signals.read_agent_permit("/p", session_id=self.SID) is None
+
+    def test_no_request(self, tmp_path, monkeypatch):
+        self._dir(tmp_path, monkeypatch)
+        assert ccm_signals.read_agent_permit("/p", session_id=self.SID) is None
+
+    def test_an_open_request_reads_as_the_hook_signal(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        assert ccm_signals.read_hook_signal("/p", session_id=self.SID) == (
+            100, "PERMIT", "Bash: ls")
+
+    def test_a_newer_main_signal_wins(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        (d / self.SID).write_text("101 BUSY")
+        assert ccm_signals.read_hook_signal("/p", session_id=self.SID) == (
+            101, "BUSY", "")
+
+    def test_a_main_signal_in_the_same_second_yields(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        (d / self.SID).write_text("100 BUSY")
+        assert ccm_signals.read_hook_signal("/p", session_id=self.SID)[1] == "PERMIT"
+
+    def test_an_older_main_signal_yields(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        (d / self.SID).write_text("99 BUSY")
+        assert ccm_signals.read_hook_signal("/p", session_id=self.SID)[1] == "PERMIT"
+
+    def _events(self, d, *lines):
+        (d / f"{self.SID}.events.jsonl").write_text(
+            "".join(line + "\n" for line in lines))
+
+    def test_a_newer_main_event_supersedes_it(self, tmp_path, monkeypatch):
+        # A Stop removes the main signal; the event still says the
+        # main conversation moved on after the request.
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        self._events(d, '{"ts": 101, "type": "stop"}')
+        assert ccm_signals.read_hook_signal("/p", session_id=self.SID) is None
+
+    def test_a_main_event_in_the_same_second_leaves_it_open(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        self._events(d, '{"ts": 100, "type": "stop"}')
+        assert ccm_signals.read_hook_signal("/p", session_id=self.SID)[1] == "PERMIT"
+
+    def test_an_older_main_event_leaves_it_open(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        self._events(d, '{"ts": 90, "type": "stop"}')
+        assert ccm_signals.read_hook_signal("/p", session_id=self.SID)[1] == "PERMIT"
+
+    def test_the_signal_and_the_state_agree(self, tmp_path, monkeypatch):
+        # The same superseded request is dropped by derive too.
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT Bash: ls", 2_000)
+        self._events(d, '{"ts": 101, "type": "stop"}')
+        events = ccm_signals.read_events_tail("/p", session_id=self.SID)
+        assert ccm_activity._with_agent_permit(events, 100) == events
+
+    def test_an_answered_request_leaves_the_main_signal(self, tmp_path, monkeypatch):
+        d = self._dir(tmp_path, monkeypatch)
+        self._write(d / f"{self.SID}.agent-permit", "100 PERMIT", 1_000)
+        self._write(d / f"{self.SID}.agent-activity", "100\n", 2_000)
+        (d / self.SID).write_text("99 BUSY")
+        assert ccm_signals.read_hook_signal("/p", session_id=self.SID) == (
+            99, "BUSY", "")
+
+
+class TestReadAgentActivity:
+    SID = "test-session-agent"
+
+    def _write(self, tmp_path, monkeypatch, content):
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        if content is not None:
+            (hook_dir / f"{self.SID}.agent-activity").write_text(content)
+
+    def test_reads_the_time(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, "1234\n")
+        assert ccm_signals.read_agent_activity("/p", session_id=self.SID) == 1234
+
+    def test_missing_file_is_zero(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, None)
+        assert ccm_signals.read_agent_activity("/p", session_id=self.SID) == 0
+
+    def test_empty_file_is_zero(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, "")
+        assert ccm_signals.read_agent_activity("/p", session_id=self.SID) == 0
+
+    def test_no_session_is_zero(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, "1234\n")
+        assert ccm_signals.read_agent_activity("/p", session_id="") == 0
 
 class TestReadEventsTail:
     # Synthetic session_id used by every test; the fixture registers

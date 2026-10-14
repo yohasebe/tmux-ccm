@@ -88,6 +88,17 @@ _mock_set_option() {
 
 cmd="$1"
 shift
+# A test lists subcommands in `fail` (one per line) to make them exit
+# 1, as real tmux does for `refresh-client` with no client attached.
+if [[ -f "${MOCK_STATE_DIR}/fail" ]] && grep -qx -- "$cmd" "${MOCK_STATE_DIR}/fail"; then
+    exit 1
+fi
+# `list-windows` prints its output and then exits 1 when the test
+# creates `windows-then-fail` (a listing cut short).
+if [[ "$cmd" == list-windows && -f "${MOCK_STATE_DIR}/windows-then-fail" ]]; then
+    cat "${MOCK_STATE_DIR}/windows"
+    exit 1
+fi
 case "$cmd" in
     capture-pane)   _mock_capture_pane "$@" ;;
     list-panes)     [[ -f "${MOCK_STATE_DIR}/panes" ]] && cat "${MOCK_STATE_DIR}/panes" ;;

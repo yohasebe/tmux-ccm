@@ -150,25 +150,26 @@ The legacy table is intentionally minimal: it exists only to produce a sensible 
 
 ### Event-log backbone — `derive_state_from_events`
 
-A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude_pid_age, raw, now)`. Decision tree:
+A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude_pid_age, raw, now, agent_ts, agent_permit_ts)`. Decision tree:
 
 1. `pid_present=False` → `SHELL` (process tree authoritative)
-2. `events` empty / latest record malformed / unknown event type → `None` (defer to legacy)
-3. Latest event is `session_end` with live pid → `None` (claude restarted, defer to legacy)
-4. Latest event is permit-class (`permit_req` / `notify_permit`):
+2. Subagent events are set aside first. A subagent's hooks fire under the main conversation's session id, and a background agent keeps working after the main turn has ended, so its events say nothing about whether the conversation is the user's to answer. The hooks keep a subagent's events out of the event log and the signal file, which describe the main conversation, in two files only subagent hooks write: `<session_id>.agent-activity` (the time of the newest tool or lifecycle event, `agent_ts`) and `<session_id>.agent-permit` (the signal line of the newest permission request or denial). A request is open while its file is at least as new as the activity file (modification times); the next subagent event answers it. An open request's time (`agent_permit_ts`) is appended to the events as an `agent_permit` unless the main conversation has a later event, and `read_hook_signal` reports it as PERMIT unless the main signal or the main conversation's latest event is newer (the same test as the events, `agent_permit_superseded`; a Stop removes the main signal, so a missing signal is not taken to mean the main conversation is still where it was). A long run of subagent events or requests therefore cannot push the main conversation's last event out of the tail, and cannot overwrite or clear its signal. Logs written by earlier versions hold `agent` (dropped) and `agent_permit` (kept only while no `agent` follows it) lines.
+3. `events` empty / latest record malformed / unknown event type → `None` (defer to legacy)
+4. Latest event is `session_end` with live pid → `None` (claude restarted, defer to legacy)
+5. Latest event is permit-class (`permit_req` / `agent_permit` / `notify_permit`):
    - if `raw=="PERMIT"` (modal physically on screen) → `PERMIT` (capture-pane authoritative)
    - else if JSONL terminal stop_reason is fresher than the event → `IDLE` (silent permission resolution / Esc dismiss)
    - else if JSONL `stop_reason=tool_use` is fresher than the event AND within `BUSY_HOOK_JSONL_WINDOW` → `BUSY` (auto-approved permit, tool actively running)
-   - else if `raw=="IDLE"` AND jsonl_age exceeds `PERMIT_MAX_TIMEOUT` (10 min) → `None` (stale-permit release — defer to legacy, which resolves to IDLE via `default`)
+   - else if `raw=="IDLE"` AND jsonl_age exceeds `PERMIT_MAX_TIMEOUT` (10 min) — for `agent_permit`, the request's own age, since the main transcript is usually quiet after the main turn ended — → `None` (stale-permit release — defer to legacy, which resolves to IDLE via `default`)
    - else → `PERMIT`
 
    **Stale-permit release (added).** A permit-class event can stay "latest" forever, because resolving a permission fires no hook at all (upstream gap, [#79651](https://github.com/anthropics/claude-code/issues/79651)) and an Esc-dismissed one fires no `Stop` either. Before this rule, a resolved permission left `⚠ PERMIT` on screen indefinitely (a project: 15+ minutes on a pane sitting at an empty `❯` prompt).
 
    The rule was previously rejected on the grounds that permit-latest + `raw="IDLE"` + stale JSONL was indistinguishable from an interactive choice menu still awaiting a selection, so aging it risked a false IDLE. **Measurement retired that premise**: a live `AskUserQuestion` menu renders the footer `Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel`, which `PATTERN_PERMIT_FOOTER` matches through its structural `Enter to \S… · …Esc to \w+` branch, so a displayed menu resolves to `raw="PERMIT"` and is caught by the first bullet regardless of age. The `raw=="IDLE"` gate therefore selects exactly the resolved-but-unreported case. Both halves are pinned by `test_ask_user_question_menu_footer_measured_2026_07_26` and `test_idle_composer_is_not_a_permit_footer`; if upstream rewords that footer past the pattern, those tests fail *before* a menu can read as IDLE.
-5. Latest event is start-class (`prompt` / `pretool` / `posttool` / `subagent` / `compact`):
+6. Latest event is start-class (`prompt` / `pretool` / `posttool` / `subagent` / `compact`):
    - **Phantom-subagent shortcut** (`latest.type == "subagent"` AND `raw≠"PERMIT"`): Claude Code's upstream fires occasional spurious `subagent` events in idle periods; legitimate subagent invocations always come mid-conversation. Walk back through stacked phantom subagents to find the underlying rest marker, then resolve as if the phantom did not exist:
      - immediately-preceding non-subagent event is `notify_idle` → `IDLE` (Claude self-reported idle; the phantom does not invalidate that, even when raw briefly disagrees because `❯` is off-screen)
-     - immediately-preceding non-subagent event is `stop` with terminal `jsonl_stop_reason` → `IDLE` (turn ended; same logic as case 7 below)
+     - immediately-preceding non-subagent event is `stop` with terminal `jsonl_stop_reason` → `IDLE` (turn ended; same logic as case 8 below)
      - immediately-preceding non-subagent event is `stop` with mid-tool `jsonl_stop_reason` → `None` (tool may still be running; raw is authoritative — defer to legacy)
      - immediately-preceding non-subagent event is `session_end` → `None` (claude restarted; brief transient where raw is authoritative)
      - else → fall through to the next rules
@@ -182,13 +183,13 @@ A pure function over `(events, jsonl_stop_reason, jsonl_age, pid_present, claude
 
    Three properties of the record make it dangerous read naively, all pinned by tests. The phrase must be matched against the **whole** record text, never as a substring — Claude's note is the entire content of its record, so a substring test also fires on any message discussing interrupts, releasing a working session to IDLE (a naive scan of the session that built this returned 41 hits for 7 real interrupts; a consumer hit the same contamination independently). The other two: it is *newer* than the assistant turn it cut short (so counting it as activity resets the aging clock to the moment of the interrupt — restarting the very wait the guard is trying to end), and its `type` is `user` (so it would promote to `user_pending`, "the user just submitted a prompt", pinning BUSY for the full 10-minute window). It is therefore excluded from the activity age and from the prompt-pending promotion, and only counts when nothing newer follows it.
 
-   **Stale-BUSY release (added, aging clock generalised).** An Esc interrupt mid-tool fires no `Stop` hook and freezes the JSONL at a non-terminal `tool_use`, so a start-class event stays "latest" and the session would hold `BUSY` for the whole 10-minute window. The release fires on the conjunction `raw="IDLE"` AND frozen JSONL — raw alone is not trusted, because spinner detection has broken silently on upstream text changes before (`❯❯`→`⏵⏵`, `/model` footer verb rename). The window is short by design: it only prevents flicker, while the real safety net for a genuinely working session (e.g. a long silent build whose JSONL also freezes) is `IDLE_EXIT_TIMEOUT` requiring 600 s of sustained IDLE before auto-exit. The guard reads the JSONL age, falling back to the age of the newest event when the transcript is unreadable — with `jsonl_age = -1` the comparison was unsatisfiable, so a session whose transcript ccm cannot find (missing file, drifted slug rule, brand-new session) stayed BUSY with no release path at all, the non-ASCII-path failure shape. The release applies to start-class origins and to ambiguous Stop evidence (see below); a BUSY promoted from a permit event (auto-approved tool, which may legitimately run for minutes) is exempt from the short window and keeps the promotion's own long-tool semantics.
-6. Latest event is `notify_idle` → `IDLE`
-7. Latest event is `stop`:
+   **Stale-BUSY release (added, aging clock generalised).** An Esc interrupt mid-tool fires no `Stop` hook and freezes the JSONL at a non-terminal `tool_use`, so a start-class event stays "latest" and the session would hold `BUSY` for the whole 10-minute window. The release fires on the conjunction `raw="IDLE"` AND frozen JSONL — raw alone is not trusted, because spinner detection has broken silently on upstream text changes before (`❯❯`→`⏵⏵`, `/model` footer verb rename). The window is short by design: it only prevents flicker, while the real safety net for a genuinely working session (e.g. a long silent build whose JSONL also freezes) is `IDLE_EXIT_TIMEOUT` requiring 600 s of sustained IDLE before auto-exit. The guard reads the JSONL age, falling back to the age of the newest event when the transcript is unreadable (or to the time since a subagent last acted, `agent_ts`, when that is more recent: a foreground agent working under the main conversation's unfinished call keeps it fresh) — with `jsonl_age = -1` the comparison was unsatisfiable, so a session whose transcript ccm cannot find (missing file, drifted slug rule, brand-new session) stayed BUSY with no release path at all, the non-ASCII-path failure shape. The release applies to start-class origins and to ambiguous Stop evidence (see below); a BUSY promoted from a permit event (auto-approved tool, which may legitimately run for minutes) is exempt from the short window and keeps the promotion's own long-tool semantics.
+7. Latest event is `notify_idle` → `IDLE`
+8. Latest event is `stop`:
    - JSONL stop_reason terminal → `IDLE`
    - JSONL stop_reason `tool_use` or `user_pending` → `BUSY`; known progress is exempt from short stale release.
    - Missing or other non-terminal stop reason → initially `BUSY`. If `raw="IDLE"`, the Stop has a valid timestamp older than `BUSY_STALE_RELEASE_SEC`, and the readable JSONL activity is also older than that window (or unavailable), return `None` and defer to legacy. The default window is 60 s, with strict `>` boundaries. A fresh Stop, fresh activity, unknown/future event timestamp, `raw="BUSY"`, or `raw="PERMIT"` prevents this release.
-8. Final A' override: if `raw=="PERMIT"` and candidate ≠ `"PERMIT"` → `"PERMIT"` (capture-pane footer match wins)
+9. Final A' override: if `raw=="PERMIT"` and candidate ≠ `"PERMIT"` → `"PERMIT"` (capture-pane footer match wins)
 
 ## Invariants
 
@@ -268,13 +269,13 @@ This is the principled response to the limitation — when ccm cannot prove the 
 
 ### `(bg)` — background activity in user's turn
 
-When the committed state is `IDLE` (the conversation turn has returned to the user) but `raw=BUSY` (claude has live child processes and the input prompt is not visible — e.g. tool output still on screen, leftover dev server still running), the renderers append `(bg)` to indicate "Claude is at rest, but something it spawned is still running":
+When the committed state is `IDLE` (the conversation turn has returned to the user) but `raw=BUSY` (claude has live child processes and the input prompt is not visible — e.g. tool output still on screen, leftover dev server still running), or a subagent has acted (`agent_ts`) after the main conversation's last hook event and within `BUSY_HOOK_JSONL_WINDOW` (a background agent still running after the turn ended, `subagents_active`), the renderers append `(bg)` to indicate "Claude is at rest, but something it started is still running":
 
 ```
 ● IDLE (bg)  myproject
 ```
 
-Conceptually distinct from `(Nm)`: the stale-signal suffix is a "this might be stuck" hint, while `(bg)` is a positive statement about leftover processes. They are mutually exclusive — `(Nm)` only fires for `BUSY` / `PERMIT`, `(bg)` only fires for `IDLE`. `apply_actions` writes the `@ccm_bg_active` tmux window option whenever `state == "IDLE"` and `ctx.raw == "BUSY"`; clears it otherwise. `Project.bg_active` carries the flag to the renderers. `ccm send` treats `IDLE (bg)` exactly like plain `IDLE` — the user has the conversation ball regardless of background processes.
+Conceptually distinct from `(Nm)`: the stale-signal suffix is a "this might be stuck" hint, while `(bg)` is a positive statement about leftover processes. They are mutually exclusive — `(Nm)` only fires for `BUSY` / `PERMIT`, `(bg)` only fires for `IDLE`. `apply_actions` writes the `@ccm_bg_active` tmux window option whenever `state == "IDLE"` and (`ctx.raw == "BUSY"` or `ctx.subagents_active`); clears it otherwise. Auto-exit leaves a window with `@ccm_bg_active` set alone: exiting would end the work. `Project.bg_active` carries the flag to the renderers. `ccm send` treats `IDLE (bg)` exactly like plain `IDLE` — the user has the conversation ball regardless of background processes.
 
 ### `[N]` — multi-pane window
 
