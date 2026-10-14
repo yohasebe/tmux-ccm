@@ -501,6 +501,27 @@ class TestReadEventsTail:
         assert all("mode" not in e for e in events)
 
 
+    def test_bg_field_preserved(self, tmp_path, monkeypatch):
+        """`bg` (background work a Stop reported) must survive the
+        reader — the `(bg)` note depends on it."""
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            f.write('{"ts":100,"type":"stop","mode":"auto","bg":2}\n')
+        events = ccm_signals.read_events_tail("/x/proj")
+        assert events[0] == {"ts": 100, "type": "stop", "mode": "auto", "bg": 2}
+
+    def test_bg_field_not_a_positive_integer_dropped(self, tmp_path, monkeypatch):
+        self._setup_hook_dir(tmp_path, monkeypatch)
+        path = self._events_path("/x/proj")
+        with open(path, "w") as f:
+            for bg in ('0', '-1', '"1"', 'true', '1.5', 'null'):
+                f.write('{"ts":100,"type":"stop","bg":%s}\n' % bg)
+        events = ccm_signals.read_events_tail("/x/proj")
+        assert len(events) == 6
+        assert all("bg" not in e for e in events)
+
+
 class TestReadLatestPermissionMode:
     TEST_SESSION_ID = "test-session-mode"
 

@@ -135,32 +135,58 @@ class TestUnreadableTranscript:
         assert derive(ENDED_TURN, jsonl_age=-1, agent_ts=NOW - 1) == "IDLE"
 
 
-class TestSubagentsActive:
-    def test_agent_activity_after_the_main_turn(self):
-        assert ccm_activity.subagents_active(ENDED_TURN, NOW - 5, NOW)
+class TestBackgroundWorkReported:
+    def _stop(self, ts, bg=None):
+        e = ev("stop", ts)
+        if bg is not None:
+            e["bg"] = bg
+        return e
 
-    def test_no_agent_activity(self):
-        assert not ccm_activity.subagents_active(ENDED_TURN, 0, NOW)
+    def test_a_stop_reporting_background_work(self):
+        events = [ev("prompt", 30), self._stop(20, bg=1)]
+        assert ccm_activity.background_work_reported(events)
 
-    def test_main_event_after_the_agents(self):
-        events = ENDED_TURN + [ev("stop", 2)]
-        assert not ccm_activity.subagents_active(events, NOW - 30, NOW)
+    def test_a_stop_without_the_field(self):
+        assert not ccm_activity.background_work_reported(ENDED_TURN)
 
-    def test_main_event_in_the_same_second(self):
-        events = ENDED_TURN + [ev("stop", 5)]
-        assert not ccm_activity.subagents_active(events, NOW - 5, NOW)
+    def test_a_later_stop_reporting_none_ends_it(self):
+        events = [self._stop(30, bg=1), ev("prompt", 20), self._stop(10)]
+        assert not ccm_activity.background_work_reported(events)
 
-    def test_old_agent_activity(self):
-        old = ccm_activity.BUSY_HOOK_JSONL_WINDOW + 1
-        assert not ccm_activity.subagents_active([], NOW - old, NOW)
+    def test_the_conversation_moving_on_ends_it(self):
+        events = [self._stop(30, bg=1), ev("prompt", 5)]
+        assert not ccm_activity.background_work_reported(events)
 
-    def test_answer_lines_are_not_main_events(self):
-        # The answering line is written by the same event as the time.
-        events = ENDED_TURN + [ev("agent_permit", 10), ev("agent", 5)]
-        assert ccm_activity.subagents_active(events, NOW - 5, NOW)
+    def test_session_end_ends_it(self):
+        events = [self._stop(30, bg=1), ev("session_end", 5)]
+        assert not ccm_activity.background_work_reported(events)
 
-    def test_no_main_event_yet(self):
-        assert ccm_activity.subagents_active([], NOW - 5, NOW)
+    def test_idle_notice_and_subagent_lines_are_not_main_events(self):
+        events = [self._stop(30, bg=2), ev("notify_idle", 20),
+                  ev("agent_permit", 10), ev("agent", 5)]
+        assert ccm_activity.background_work_reported(events)
+
+    def test_a_malformed_count_is_none(self):
+        for bg in (0, -1, "1", True, 1.5, None):
+            events = [self._stop(30, bg=bg)]
+            assert not ccm_activity.background_work_reported(events), bg
+
+    def test_no_events(self):
+        assert not ccm_activity.background_work_reported([])
+
+    def test_counts_reported_turn_by_turn(self):
+        """Each finishing piece of work runs a turn whose Stop reports
+        what is left: 2, then 1, then none."""
+        events = [self._stop(60, bg=2)]
+        assert ccm_activity.background_work_reported(events)
+        events += [ev("prompt", 50), self._stop(40, bg=1)]
+        assert ccm_activity.background_work_reported(events)
+        events += [ev("prompt", 30), self._stop(20)]
+        assert not ccm_activity.background_work_reported(events)
+
+    def test_an_old_report_has_no_time_limit(self):
+        events = [self._stop(ccm_activity.BUSY_HOOK_JSONL_WINDOW * 100, bg=1)]
+        assert ccm_activity.background_work_reported(events)
 
 
 class TestBackgroundSuffix:
@@ -175,7 +201,7 @@ class TestBackgroundSuffix:
 
     def test_idle_with_agents_sets_bg(self, monkeypatch):
         writes = self._apply(monkeypatch, "IDLE", raw="IDLE",
-                             subagents_active=True)
+                             background_work=True)
         assert writes == [("set-option", "-wt", "0:5", "@ccm_bg_active", "1")]
 
     def test_idle_without_agents_sets_nothing(self, monkeypatch):

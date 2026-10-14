@@ -300,11 +300,27 @@ def test_ambiguous_stop_without_event_timestamp_stays_busy():
 def test_subagent_activity_reaches_the_context(pane):
     write_lines(pane.hooks / (TARGET + '.events.jsonl'),
                 [{'type': 'stop', 'ts': NOW - 100}])
-    assert not pane.context().subagents_active
     (pane.hooks / (TARGET + '.agent-activity')).write_text(f'{NOW - 5}\n')
-    ctx = pane.context()
-    assert ctx.agent_ts == NOW - 5
-    assert ctx.subagents_active
+    assert pane.context().agent_ts == NOW - 5
+
+
+def test_reported_background_work_reaches_the_context(pane):
+    write_lines(pane.hooks / (TARGET + '.events.jsonl'),
+                [{'type': 'stop', 'ts': NOW - 100}])
+    assert not pane.context().background_work
+    write_lines(pane.hooks / (TARGET + '.events.jsonl'),
+                [{'type': 'stop', 'ts': NOW - 100, 'bg': 1}])
+    assert pane.context().background_work
+
+
+def test_subagent_activity_alone_is_not_background_work(pane):
+    """Claude Code 2.1.300 sends a SubagentStop after an ordinary
+    turn; a subagent's hook time after the Stop is not background
+    work."""
+    write_lines(pane.hooks / (TARGET + '.events.jsonl'),
+                [{'type': 'stop', 'ts': NOW - 100}])
+    (pane.hooks / (TARGET + '.agent-activity')).write_text(f'{NOW - 98}\n')
+    assert not pane.context().background_work
 
 
 def test_an_open_subagent_request_reaches_the_context(pane):

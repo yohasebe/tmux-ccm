@@ -330,6 +330,12 @@ def read_events_tail(project_dir: str, limit: int = 20,
         mode = rec.get("mode")
         if isinstance(mode, str) and mode:
             out_rec["mode"] = mode
+        # Background work a Stop reported outstanding, for the `(bg)`
+        # note (`ccm_activity.background_work_reported`); likewise
+        # ignored by the state decision.
+        bg = rec.get("bg")
+        if isinstance(bg, int) and not isinstance(bg, bool) and bg > 0:
+            out_rec["bg"] = bg
         events_newest_first.append(out_rec)
 
     events_newest_first.reverse()

@@ -275,7 +275,7 @@ ccm_hook_event_name() {
 #
 # Format: JSONL, append-only. One hook invocation = one line.
 # Path: $HOOK_DIR/<session_id>.events.jsonl
-# Schema: {"ts": <unix_seconds>, "type": "<normalized>"[, "mode": "<permission_mode>"]}
+# Schema: {"ts": <unix_seconds>, "type": "<normalized>"[, "mode": "<permission_mode>"][, "bg": <count>]}
 #
 # `type` is restricted to the normalized vocabulary:
 #   prompt, pretool, posttool, subagent, compact, stop,
@@ -286,6 +286,9 @@ ccm_hook_event_name() {
 #
 # `mode` rides along when the payload carried `permission_mode`
 # (extracted and sanitized by ccm_hook_init in the caller's scope).
+# `bg` rides along on a `stop` when Claude Code reported background
+# work still outstanding (background tasks and scheduled crons); it
+# is left out when there is none.
 # Fields other than "type" are opaque to the detection layer —
 # `derive_state_from_events` keys on "type" only; display readers use
 # `ccm_signals.read_latest_permission_mode` to surface the mode badge.
@@ -294,19 +297,18 @@ ccm_hook_event_name() {
 # without flock. Errors are suppressed: a write failure must not
 # prevent the legacy signal-file path from running.
 #
-# Args: $1=HOOK_DIR, $2=KEY (Claude Code session_id), $3=TYPE (normalized event type)
+# Args: $1=HOOK_DIR, $2=KEY (Claude Code session_id), $3=TYPE (normalized event type),
+#       $4=OPTIONAL count of outstanding background work (digits only)
 ccm_append_event() {
-    local hook_dir="$1" key="$2" type="$3"
-    local ts events_file mode
+    local hook_dir="$1" key="$2" type="$3" bg="${4:-}"
+    local ts events_file mode extra=""
     [[ -z "$hook_dir" || -z "$key" || -z "$type" ]] && return 0
     ts=${EPOCHSECONDS:-$(date +%s)}
     events_file="${hook_dir}/${key}.events.jsonl"
     mode="${PERMISSION_MODE:-}"
-    if [[ -n "$mode" ]]; then
-        printf '{"ts":%s,"type":"%s","mode":"%s"}\n' "$ts" "$type" "$mode" >> "$events_file" 2>/dev/null || true
-    else
-        printf '{"ts":%s,"type":"%s"}\n' "$ts" "$type" >> "$events_file" 2>/dev/null || true
-    fi
+    [[ -n "$mode" ]] && extra=",\"mode\":\"${mode}\""
+    [[ "$bg" =~ ^[1-9][0-9]{0,5}$ ]] && extra="${extra},\"bg\":${bg}"
+    printf '{"ts":%s,"type":"%s"%s}\n' "$ts" "$type" "$extra" >> "$events_file" 2>/dev/null || true
     return 0
 }
 

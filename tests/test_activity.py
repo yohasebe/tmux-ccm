@@ -80,7 +80,8 @@ class TestDeriveInvariants:
     ])
     def test_extra_mode_field_is_opaque_to_derive(self, event_type, mode):
         """Event records may carry a `mode` annotation (permission
-        mode badge, written by hooks/lib.sh). Fields other than
+        mode badge) and a `bg` count (the `(bg)` note), both written
+        by hooks/lib.sh. Fields other than
         ts/type must not change derive's judgment — the state model
         never reads the mode. Locks the contract that lets us extend
         the event schema without touching detection."""
@@ -92,7 +93,8 @@ class TestDeriveInvariants:
         bare = ccm_activity.derive_state_from_events(
             events=({"ts": 100, "type": event_type},), **common)
         annotated = ccm_activity.derive_state_from_events(
-            events=({"ts": 100, "type": event_type, "mode": mode},),
+            events=({"ts": 100, "type": event_type, "mode": mode,
+                     "bg": 1},),
             **common)
         assert bare == annotated, (
             f"mode annotation changed derive: {bare!r} → {annotated!r} "

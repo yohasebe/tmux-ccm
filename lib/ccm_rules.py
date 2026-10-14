@@ -121,11 +121,11 @@ class DetectionContext:
     agent_ts: int = 0
     # Time of a subagent's open permission request, or 0.
     agent_permit_ts: int = 0
-    # A subagent has acted since the main conversation's last hook
-    # event (a background agent still running after the turn ended).
-    # Never decides the state: it adds the `(bg)` suffix beside IDLE
-    # and keeps auto-exit away from the window.
-    subagents_active: bool = False
+    # The main conversation's latest Stop reported background work
+    # still outstanding (a background agent or command, or a
+    # scheduled cron). Never decides the state: it adds the `(bg)`
+    # suffix beside IDLE and keeps auto-exit away from the window.
+    background_work: bool = False
 
 
 class Action(Enum):

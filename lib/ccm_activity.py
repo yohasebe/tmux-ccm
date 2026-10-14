@@ -213,23 +213,30 @@ def _main_conversation_events(events_seq):
     return tuple(reversed(out))
 
 
-def subagents_active(events, agent_ts, now, window=BUSY_HOOK_JSONL_WINDOW):
-    """True when a subagent has acted since the main conversation's
-    last event, within `window` seconds. `agent_ts` is the time of the
-    newest subagent event (kept apart from the event log; see
-    `ccm_signals.read_agent_activity`). Shown beside an IDLE state as
-    `(bg)` and honoured by auto-exit; never used to decide the state."""
-    if not (isinstance(agent_ts, (int, float)) and agent_ts > 0 and now > 0
-            and 0 <= now - agent_ts <= window):
-        return False
+def background_work_reported(events):
+    """True when the main conversation's latest Stop reported
+    background work still outstanding (the stop event's `bg`: Claude
+    Code's count of background tasks, such as a background agent or
+    command, plus scheduled crons) and the conversation has not moved
+    on since. Claude Code runs a turn when such work finishes, and that
+    turn's Stop reports what is left, so the note ends with the work.
+    Shown beside an IDLE state as `(bg)` and honoured by auto-exit;
+    never used to decide the state.
+
+    Subagent hook times are not used: Claude Code also sends a
+    SubagentStop after an ordinary turn, and a background agent's
+    progress reaches the main conversation as turns of its own."""
     for e in reversed(tuple(events)):
         if not isinstance(e, dict):
             continue
-        if e.get("type") in ("agent", "agent_permit"):
+        t = e.get("type")
+        if t in ("agent", "agent_permit", "notify_idle"):
             continue
-        ts = e.get("ts", 0)
-        return not isinstance(ts, (int, float)) or agent_ts > ts
-    return True
+        if t != "stop":
+            return False
+        bg = e.get("bg")
+        return isinstance(bg, int) and not isinstance(bg, bool) and bg > 0
+    return False
 
 
 def agent_permit_superseded(events_seq, agent_permit_ts):

@@ -559,6 +559,41 @@ _latest_type() {
     [[ ! -f "${HOOK_DIR}/${KEY}" ]]
 }
 
+@test "on-stop.sh: a stop reporting background work carries its count" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","permission_mode":"auto","background_tasks":[{"id":"t1"}],"session_crons":[{"id":"c1"}]}'
+    run jq -c '.' "$EVENTS_FILE"
+    [[ "$output" =~ ^\{\"ts\":[0-9]+,\"type\":\"stop\",\"mode\":\"auto\",\"bg\":2\}$ ]]
+}
+
+@test "on-stop.sh: a scheduled cron alone counts as background work" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[],"session_crons":[{"id":"c1"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "1" ]]
+}
+
+@test "on-stop.sh: a stop with no background work has no count" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[]}'
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+}
+
+@test "on-stop.sh: a stop without the fields has no count" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+}
+
+@test "ccm_append_event: a count that is not plain digits is left out" {
+    ccm_append_event "$HOOK_DIR" "$KEY" "stop" '1,"x":1'
+    ccm_append_event "$HOOK_DIR" "$KEY" "stop" "01"
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == $'false\nfalse' ]]
+}
+
 @test "on-notification.sh: permission_prompt -> notify_permit" {
     _run_hook on-notification.sh \
         '{"hook_event_name":"Notification","notification_type":"permission_prompt","cwd":"/x/test-project"}'

@@ -10,7 +10,18 @@ source "${SCRIPT_DIR}/lib.sh"
 
 ccm_hook_init || exit 0
 
-ccm_append_event "$HOOK_DIR" "$KEY" "stop"
+# Background work Claude Code reports outstanding (see below), read
+# first so the stop event carries it for the `(bg)` note.
+if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then
+    bg_remaining="$HOOK_BG_REMAINING"
+else
+    bg_remaining=$(printf '%s' "$INPUT" | \
+        jq -r '((.background_tasks // []) | length) + ((.session_crons // []) | length)' \
+        2>/dev/null) || bg_remaining=0
+fi
+bg_remaining=${bg_remaining:-0}
+
+ccm_append_event "$HOOK_DIR" "$KEY" "stop" "$bg_remaining"
 
 # Delete the BUSY signal file (and .busy file) to clear the BUSY state.
 # The detection layer will transition to IDLE on the next scan.
@@ -33,15 +44,6 @@ rm -f "$HOOK_DIR/$KEY" "$HOOK_DIR/$KEY.busy"
 # these as JSON arrays in the Stop / SubagentStop payload; on
 # older Claude Code versions the fields are absent and `// []`
 # defaults the length to 0, preserving the legacy behaviour.
-if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then
-    bg_remaining="$HOOK_BG_REMAINING"
-else
-    bg_remaining=$(printf '%s' "$INPUT" | \
-        jq -r '((.background_tasks // []) | length) + ((.session_crons // []) | length)' \
-        2>/dev/null) || bg_remaining=0
-fi
-bg_remaining=${bg_remaining:-0}
-
 if [[ "$bg_remaining" == "0" ]]; then
     project=$(ccm_hook_resolve_project "$CWD")
     if [[ -n "$project" ]]; then
