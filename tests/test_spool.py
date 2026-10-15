@@ -1068,3 +1068,21 @@ class TestHandBack:
         pdir, _ = _aged_message(spool_root, 3700, sender="boss")
         ccm_spool.reconcile_spools([_project(state="BUSY"), _project(name="boss", state="BUSY")])
         assert len(_pending(spool_root, "boss")) == 1
+
+
+class TestEnvelopeDates:
+    """A message can wait up to a day; a time alone would not say which."""
+
+    def _ts(self, day, hour, minute):
+        return time.mktime((2026, 10, day, hour, minute, 0, 0, 0, -1))
+
+    def test_same_day_shows_times_only(self):
+        line = ccm_spool._envelope("boss", self._ts(15, 9, 5), self._ts(15, 10, 7))
+        assert "queued 09:05 · delivered 10:07" in line
+
+    def test_another_day_shows_dates(self):
+        line = ccm_spool._envelope("boss", self._ts(15, 23, 50), self._ts(16, 0, 10))
+        assert "queued 2026-10-15 23:50 · delivered 2026-10-16 00:10" in line
+
+    def test_an_unknown_queue_time_shows_a_mark(self):
+        assert "queued ? · delivered 00:10" in ccm_spool._envelope("boss", None, self._ts(16, 0, 10))

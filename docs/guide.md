@@ -353,7 +353,7 @@ Delivery is deliberately conservative:
 - **Hand-back.** When a message expires, its sender is told: ccm queues a notice for the sending project (from `ccm`, needing no reply) saying where to read the message and how to send it again, and the sender decides. Once that notice is delivered, the expired record no longer counts as undelivered in `ccm status`, `ccm doctor` or the dashboard. A sender ccm cannot reach (unknown, or not a project in this session) is not told, and the record stays listed.
 - **At-least-once.** A crash mid-delivery re-delivers on the next pass rather than losing the message; the envelope line lets the receiver tell a duplicate apart.
 
-Delivered messages arrive under an envelope header — `[from: <project> · queued 14:03 · delivered 15:02 — reply with `ccm send <project> "…"`]` — so the receiver knows who sent it, how long it waited, and how to answer.
+Delivered messages arrive under an envelope header — `[from: <project> · queued 14:03 · delivered 15:02 — reply with `ccm send <project> "…"`]` — so the receiver knows who sent it, how long it waited, and how to answer. A message queued on an earlier day shows the date with both times (`queued 2026-10-15 18:50 · delivered 2026-10-16 09:12`).
 
 Queued counts show on `ccm status`, `ccm doctor`, and the dashboard (`✉N` by the project name). To inspect or withdraw:
 

@@ -506,10 +506,16 @@ def _deliverable_pane(win_target, expected_pane=None):
 def _envelope(sender, queued_ts, now):
     """The header a queued message is delivered under: provenance, so
     the receiver can tell a stale or duplicated delivery from a fresh
-    one, and the reply route, so nobody relays by hand."""
-    q = (time.strftime("%H:%M", time.localtime(queued_ts))
+    one, and the reply route, so nobody relays by hand. A message can
+    wait up to a day (SPOOL_MAX_AGE_SEC), so both times carry the date
+    when it was queued on another day than it is delivered."""
+    fmt = "%H:%M"
+    if queued_ts and (time.localtime(queued_ts)[:3]
+                      != time.localtime(now)[:3]):
+        fmt = "%Y-%m-%d %H:%M"
+    q = (time.strftime(fmt, time.localtime(queued_ts))
          if queued_ts else "?")
-    d = time.strftime("%H:%M", time.localtime(now))
+    d = time.strftime(fmt, time.localtime(now))
     reply = ("sender unavailable; confirm the reply destination"
              if sender == "unknown"
              else "a notice from ccm itself; no reply needed" if sender == SYSTEM_SENDER
