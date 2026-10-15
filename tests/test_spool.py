@@ -853,3 +853,218 @@ class TestExpiredDetails:
         queued, sender = ccm_spool._parse_msg_name(names[0])
         envelope = ccm_spool._envelope(sender, queued, 4700)
         assert "current-sender" in envelope and "origin" not in envelope
+
+
+def _aged_message(root, age_sec, sender="tester", project="demo", body="instruction"):
+    """Queue `body` and backdate it by `age_sec` (the filename stamp is
+    the time of record)."""
+    msg_id, _ = ccm_spool.enqueue(project, sender, body)
+    pdir = os.path.join(root, project)
+    name = f"{int((time.time() - age_sec) * 1000)}-{sender}.msg"
+    os.rename(os.path.join(pdir, msg_id + ".msg"), os.path.join(pdir, name))
+    return pdir, name
+
+
+class TestPausedAging:
+    """Time the target waits on its user, and time no pass runs, do not
+    age a queued message; the overall bound still applies."""
+
+    @pytest.fixture(autouse=True)
+    def quiet(self, monkeypatch):
+        monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
+        monkeypatch.setattr(ccm_spool, "SPOOL_MAX_AGE_SEC", 86400)
+        monkeypatch.setattr(ccm_notify, "notify", lambda *a, **k: None)
+
+    def test_time_waiting_on_a_permission_prompt_does_not_count(self, spool_root):
+        now = time.time()
+        pdir, name = _aged_message(spool_root, 3700)
+        ccm_spool.note_pass(pdir, "PERMIT", now - 3000)
+        ccm_spool.note_pass(pdir, "PERMIT", now)
+        ccm_spool._expire_and_prune(pdir, now)
+        assert _pending(spool_root) == [name]
+
+    def test_a_busy_target_ages_the_message(self, spool_root):
+        now = time.time()
+        pdir, name = _aged_message(spool_root, 3700)
+        for t in range(3000, -1, -20):
+            ccm_spool.note_pass(pdir, "BUSY", now - t)
+        ccm_spool._expire_and_prune(pdir, now)
+        assert _pending(spool_root) == []
+
+    def test_a_gap_between_passes_does_not_count(self, spool_root):
+        now = time.time()
+        pdir, name = _aged_message(spool_root, 3700)
+        ccm_spool.note_pass(pdir, "BUSY", now - 3000)
+        ccm_spool.note_pass(pdir, "BUSY", now)
+        ccm_spool._expire_and_prune(pdir, now)
+        assert _pending(spool_root) == [name]
+
+    def test_passes_at_the_gap_limit_still_age_the_message(self, spool_root, monkeypatch):
+        monkeypatch.delenv("CCM_RECONCILE_INTERVAL", raising=False)
+        now = time.time()
+        pdir, _ = _aged_message(spool_root, 3700)
+        for t in range(3000, -1, -120):
+            ccm_spool.note_pass(pdir, "IDLE", now - t)
+        ccm_spool._expire_and_prune(pdir, now)
+        assert _pending(spool_root) == []
+
+    def test_the_overall_bound_expires_a_message_however_long_it_waited(self, spool_root):
+        now = time.time()
+        pdir, _ = _aged_message(spool_root, 86401)
+        ccm_spool.note_pass(pdir, "PERMIT", now - 86400)
+        ccm_spool.note_pass(pdir, "PERMIT", now)
+        ccm_spool._expire_and_prune(pdir, now)
+        assert _pending(spool_root) == []
+
+    def test_a_pause_before_the_message_was_queued_does_not_count(self, spool_root):
+        now = time.time()
+        pdir, _ = _aged_message(spool_root, 3700)
+        with open(os.path.join(pdir, "pauses.json"), "w") as f:
+            f.write('{"last_pass": %f, "spans": [[%f, %f]]}' % (now, now - 9000, now - 3700))
+        ccm_spool._expire_and_prune(pdir, now)
+        assert _pending(spool_root) == []
+
+    def test_an_idle_queue_leaves_the_record_alone(self, spool_root):
+        now = time.time()
+        pdir, name = _aged_message(spool_root, 10)
+        ccm_spool.note_pass(pdir, "PERMIT", now - 100)
+        before = ccm_spool._read_pauses(pdir)
+        os.unlink(os.path.join(pdir, name))
+        ccm_spool.note_pass(pdir, "PERMIT", now)
+        assert ccm_spool._read_pauses(pdir) == before
+
+    def test_an_old_record_does_not_excuse_a_later_message(self, spool_root):
+        """A queue idle for a day keeps its last pass time; a message
+        queued now is excused only the time since it was queued."""
+        now = time.time()
+        pdir = os.path.join(spool_root, "demo")
+        os.makedirs(pdir)
+        with open(os.path.join(pdir, "pauses.json"), "w") as f:
+            f.write('{"last_pass": %f, "spans": []}' % (now - 86000))
+        _, name = _aged_message(spool_root, 3700)
+        for t in range(3680, -1, -20):  # passes ran all along
+            ccm_spool.note_pass(pdir, "BUSY", now - t)
+        ccm_spool._expire_and_prune(pdir, now)
+        assert _pending(spool_root) == []
+
+    def test_an_unreadable_record_counts_no_pause(self, spool_root):
+        now = time.time()
+        pdir, _ = _aged_message(spool_root, 3700)
+        with open(os.path.join(pdir, "pauses.json"), "w") as f:
+            f.write("{")
+        ccm_spool._expire_and_prune(pdir, now)
+        assert _pending(spool_root) == []
+
+    def test_a_sleep_before_the_first_pass_does_not_count(self, spool_root, monkeypatch):
+        clock = [1_000_000.0]
+        monkeypatch.setattr(ccm_spool.time, "time", lambda: clock[0])
+        ccm_spool.enqueue("demo", "tester", "instruction")
+        clock[0] += 7200  # asleep before any delivery pass ran
+        ccm_spool.reconcile_spools([_project(state="BUSY")])
+        assert len(_pending(spool_root)) == 1
+
+    def test_a_queue_with_a_record_keeps_it_on_enqueue(self, spool_root):
+        pdir, _ = _aged_message(spool_root, 10)
+        with open(os.path.join(pdir, "pauses.json"), "w") as f:
+            f.write('{"last_pass": 5, "spans": [[1, 5]]}')
+        ccm_spool.enqueue("demo", "tester", "second")
+        assert ccm_spool._read_pauses(pdir) == (5.0, [(1.0, 5.0)])
+
+    def test_reconcile_records_the_permit_wait_and_delivers_after_it(self, spool_root, monkeypatch):
+        clock = [time.time()]
+        monkeypatch.setattr(ccm_spool.time, "time", lambda: clock[0])
+        pdir, name = _aged_message(spool_root, 10)
+        delivered = []
+        monkeypatch.setattr(ccm_spool, "_deliverable_pane", lambda w: ("%51", None))
+        monkeypatch.setattr(ccm_send, "_type_body", lambda t, lines: delivered.append(lines))
+        monkeypatch.setattr(ccm_send, "_send_keys", lambda *a, **k: None)
+        monkeypatch.setattr(ccm_send, "held_after_submit", lambda *a, **k: None)
+        for _ in range(200):  # 20-second passes for over an hour
+            ccm_spool.reconcile_spools([_project(state="PERMIT")])
+            clock[0] += 20
+        assert _pending(spool_root) == [name]
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert len(delivered) == 1
+        assert _pending(spool_root) == []
+
+
+class TestHandBack:
+    @pytest.fixture(autouse=True)
+    def quiet(self, monkeypatch):
+        monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
+        monkeypatch.setattr(ccm_notify, "notify", lambda *a, **k: None)
+
+    def test_the_sender_is_told_where_to_read_and_resend(self, spool_root):
+        pdir, name = _aged_message(spool_root, 3700, sender="boss")
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects({"boss", "demo"}))
+        notice, = _pending(spool_root, "boss")
+        assert notice.endswith("-" + ccm_spool.SYSTEM_SENDER + ".msg")
+        with open(os.path.join(spool_root, "boss", notice)) as f:
+            body = f.read()
+        record = os.path.abspath(os.path.join(pdir, "expired", name))
+        assert f"cat -- {record}" in body
+        assert f"ccm send --file {record} -- demo" in body
+        assert ccm_spool.expired_counts() == {"demo": 1}
+
+    def test_the_record_stops_counting_once_the_notice_is_delivered(self, spool_root, capsys):
+        pdir, name = _aged_message(spool_root, 3700, sender="boss")
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects({"boss"}))
+        notice, = _pending(spool_root, "boss")
+        os.makedirs(os.path.join(spool_root, "boss", "delivered"))
+        os.rename(os.path.join(spool_root, "boss", notice),
+                  os.path.join(spool_root, "boss", "delivered", notice))
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects({"boss"}))
+        assert ccm_spool.expired_counts() == {}
+        assert os.path.exists(os.path.join(pdir, "expired", name))
+        ccm_spool.cmd_spool(["list", "demo"])
+        assert name[:-4] not in capsys.readouterr().out
+
+    def test_an_undelivered_notice_leaves_the_record_counted(self, spool_root):
+        pdir, _ = _aged_message(spool_root, 3700, sender="boss")
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects({"boss"}))
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects({"boss"}))
+        assert ccm_spool.expired_counts() == {"demo": 1}
+
+    @pytest.mark.parametrize("sender, known", [
+        ("unknown", {"unknown"}),
+        ("boss", set()),
+        ("demo", {"demo"}),
+        (ccm_spool.SYSTEM_SENDER, {ccm_spool.SYSTEM_SENDER}),
+    ])
+    def test_no_notice_without_a_sender_to_tell(self, spool_root, sender, known):
+        pdir, name = _aged_message(spool_root, 3700, sender=sender)
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects(known))
+        assert os.listdir(os.path.join(pdir, "expired")) == [name]
+        for project in known:
+            if project != "demo":
+                assert _pending(spool_root, project) == []
+
+    def test_a_notice_goes_to_the_project_the_label_stands_for(self, spool_root):
+        pdir, _ = _aged_message(spool_root, 3700, sender="team-one")
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects({"team+one", "demo"}))
+        assert len(_pending(spool_root, "team+one")) == 1
+        assert not os.path.exists(os.path.join(spool_root, "team-one"))
+
+    def test_a_label_two_projects_share_is_not_handed_back(self, spool_root):
+        pdir, name = _aged_message(spool_root, 3700, sender="team-one")
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects({"team+one", "team-one", "demo"}))
+        assert os.listdir(os.path.join(pdir, "expired")) == [name]
+        assert _pending(spool_root, "team+one") == []
+        assert _pending(spool_root, "team-one") == []
+
+    def test_clearing_removes_the_notes_too(self, spool_root):
+        pdir, _ = _aged_message(spool_root, 3700, sender="boss")
+        ccm_spool._expire_and_prune(pdir, time.time(), ccm_spool._sender_projects({"boss"}))
+        ccm_spool.cmd_spool(["clear-expired", "demo"])
+        assert os.listdir(os.path.join(pdir, "expired")) == []
+
+    def test_a_notice_is_delivered_without_a_reply_route(self):
+        line = ccm_spool._envelope(ccm_spool.SYSTEM_SENDER, 0, 0)
+        assert line.startswith("[from: ccm ")
+        assert "no reply needed" in line
+        assert "ccm send" not in line
+
+    def test_reconcile_hands_back_to_a_registered_project(self, spool_root):
+        pdir, _ = _aged_message(spool_root, 3700, sender="boss")
+        ccm_spool.reconcile_spools([_project(state="BUSY"), _project(name="boss", state="BUSY")])
+        assert len(_pending(spool_root, "boss")) == 1

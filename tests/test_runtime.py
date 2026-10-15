@@ -662,6 +662,36 @@ class TestAutoExitBackgroundWorkGuard:
             f"claude: {send_calls}"
         )
 
+    @pytest.mark.parametrize("comm", ["/bin/zsh", "-/bin/zsh", "/bin/bash", "-zsh"])
+    def test_a_shell_child_named_by_its_path_skips_exit(self, comm):
+        """macOS `ps` names a process by its path."""
+        ps = self.PS_BASE + f"1002 1001 1002 {comm} 00:05:00\n"
+        assert self._run(self._panes("zsh"), ps) == []
+
+    @pytest.mark.parametrize("full, exits", [
+        (["/opt/homebrew/bin/zsh"], False),
+        (["/Users/example/mcp-server"], True),
+        ([], True),      # the cut child has exited since
+        (None, False),   # ps could not be asked: keep the window
+    ])
+    def test_a_cut_path_is_asked_in_full(self, monkeypatch, full, exits):
+        """A path `ps` cut at 16 bytes might be a shell."""
+        asked = []
+        monkeypatch.setattr(ccm_runtime, "_full_commands",
+                            lambda pids: asked.append(pids) or full)
+        ps = self.PS_BASE + "1002 1001 1002 /opt/homebrew/bi 00:05:00\n"
+        send_calls = self._run(self._panes("zsh"), ps)
+        sent = [c[3] for c in send_calls if len(c) >= 4]
+        assert asked == [["1002"]]
+        assert ("/exit" in sent) == exits
+
+    def test_short_paths_are_not_asked_again(self, monkeypatch):
+        monkeypatch.setattr(ccm_runtime, "_full_commands",
+                            lambda pids: pytest.fail("asked ps again"))
+        ps = self.PS_BASE + "1003 1001 1003 /usr/bin/node 02:00:00\n"
+        sent = [c[3] for c in self._run(self._panes("zsh"), ps) if len(c) >= 4]
+        assert "/exit" in sent
+
     def test_parked_editor_sibling_still_exits(self):
         """A parked nvim in the split pane is ambient tooling, not
         background work. Active editing refreshes window_activity
@@ -989,3 +1019,33 @@ def test_idle_exit_with_unreserved_sibling_respects_background_work(monkeypatch,
                   f'2000 999 2000 {command} 01:00:00\n')
     # A running sibling agent still triggers the independent live-work guard.
     assert any(a[3] == '/exit' and a[2].endswith('.0') for a in calls) is (command == 'zsh')
+
+
+class TestFullCommands:
+    """`ps -o comm= -p` as macOS answers it: a dead pid is left out
+    (exit 0 when another lives, exit 1 with no output when none does);
+    an error says so on stderr."""
+
+    def _ps(self, monkeypatch, rc, out, err=b""):
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, rc, out, err))
+
+    def test_names_of_live_pids(self, monkeypatch):
+        self._ps(monkeypatch, 0, b"/opt/homebrew/bin/zsh\n")
+        assert ccm_runtime._full_commands(["5", "6"]) == ["/opt/homebrew/bin/zsh"]
+
+    def test_none_alive(self, monkeypatch):
+        self._ps(monkeypatch, 1, b"")
+        assert ccm_runtime._full_commands(["5"]) == []
+
+    def test_an_error_is_unknown(self, monkeypatch):
+        self._ps(monkeypatch, 1, b"", b"ps: process id too large: 999999\n")
+        assert ccm_runtime._full_commands(["999999"]) is None
+
+    def test_ps_missing_is_unknown(self, monkeypatch):
+        import subprocess
+
+        def missing(*a, **k):
+            raise FileNotFoundError("ps")
+        monkeypatch.setattr(subprocess, "run", missing)
+        assert ccm_runtime._full_commands(["5"]) is None

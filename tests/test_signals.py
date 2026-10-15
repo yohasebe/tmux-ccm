@@ -114,6 +114,7 @@ class TestCleanupProjectRuntimeFiles:
         (tmp_path / "hooks" / session_id).write_text("0 BUSY")
         (tmp_path / "hooks" / f"{session_id}.busy").write_text("0")
         (tmp_path / "hooks" / f"{session_id}.pending").write_text("0")
+        (tmp_path / "hooks" / f"{session_id}.stop-bg").write_text("1")
         (tmp_path / "hooks" / f"{session_id}.events.jsonl").write_text(
             '{"ts":100,"type":"prompt"}\n{"ts":101,"type":"stop"}\n'
         )
@@ -139,6 +140,7 @@ class TestCleanupProjectRuntimeFiles:
             f"hooks/{sid}.busy",
             f"hooks/{sid}.pending",
             f"hooks/{sid}.events.jsonl",
+            f"hooks/{sid}.stop-bg",
             f"notified/{cwd_key}",
             f"git-cache/{cwd_key}",
             f"port-cache/{cwd_key}",
@@ -346,6 +348,46 @@ class TestReadAgentActivity:
     def test_no_session_is_zero(self, tmp_path, monkeypatch):
         self._write(tmp_path, monkeypatch, "1234\n")
         assert ccm_signals.read_agent_activity("/p", session_id="") == 0
+
+class TestReadStopBackground:
+    SID = "test-session-stop-bg"
+
+    def _write(self, tmp_path, monkeypatch, content):
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        if content is not None:
+            (hook_dir / f"{self.SID}.stop-bg").write_text(content)
+        return hook_dir
+
+    @pytest.mark.parametrize("content, expected", [
+        ("2\n", 2), ("0\n", 0), (None, 0), ("", 0), ("-1", 0), ("x", 0), ("1234567", 0),
+    ])
+    def test_reads_the_count(self, tmp_path, monkeypatch, content, expected):
+        self._write(tmp_path, monkeypatch, content)
+        assert ccm_signals.read_stop_background("/p", session_id=self.SID) == expected
+
+    def test_no_session_is_zero(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, "2\n")
+        assert ccm_signals.read_stop_background("/p", session_id="") == 0
+
+    def test_a_stop_beyond_the_tail_still_counts(self, tmp_path, monkeypatch):
+        """An interrupted turn logs many events and no Stop; the
+        Stop that reported the work is then outside the tail."""
+        import json
+        import ccm_activity
+        hook_dir = self._write(tmp_path, monkeypatch, "1\n")
+        ccm_signals._events_cache.clear()
+        lines = [{"ts": 100, "type": "stop", "bg": 1}] + [
+            {"ts": 101 + i, "type": "pretool"} for i in range(25)]
+        (hook_dir / f"{self.SID}.events.jsonl").write_text(
+            "".join(json.dumps(e) + "\n" for e in lines))
+        tail = ccm_signals.read_events_tail("/p", session_id=self.SID)
+        assert all(e["type"] == "pretool" for e in tail)
+        assert not ccm_activity.background_work_reported(tail)
+        assert ccm_activity.background_work_reported(
+            tail, ccm_signals.read_stop_background("/p", session_id=self.SID))
+
 
 class TestReadEventsTail:
     # Synthetic session_id used by every test; the fixture registers

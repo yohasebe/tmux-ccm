@@ -22,6 +22,10 @@ fi
 bg_remaining=${bg_remaining:-0}
 
 ccm_append_event "$HOOK_DIR" "$KEY" "stop" "$bg_remaining"
+# The same count kept apart from the event log, whose tail the reader
+# may no longer reach once a turn interrupted with Esc has logged many
+# events and no Stop (`read_stop_background`).
+printf '%s\n' "$bg_remaining" > "$HOOK_DIR/$KEY.stop-bg" 2>/dev/null || true
 
 # Delete the BUSY signal file (and .busy file) to clear the BUSY state.
 # The detection layer will transition to IDLE on the next scan.

@@ -313,6 +313,17 @@ def test_reported_background_work_reaches_the_context(pane):
     assert pane.context().background_work
 
 
+def test_the_kept_stop_count_reaches_the_context(pane):
+    """A turn interrupted with Esc can push the reporting Stop out of
+    the tail the context reads."""
+    write_lines(pane.hooks / (TARGET + '.events.jsonl'),
+                [{'type': 'stop', 'ts': NOW - 100, 'bg': 1}]
+                + [{'type': 'pretool', 'ts': NOW - 99 + i} for i in range(25)])
+    assert not pane.context().background_work
+    (pane.hooks / (TARGET + '.stop-bg')).write_text('1\n')
+    assert pane.context().background_work
+
+
 def test_subagent_activity_alone_is_not_background_work(pane):
     """Claude Code 2.1.300 sends a SubagentStop after an ordinary
     turn; a subagent's hook time after the Stop is not background

@@ -93,6 +93,56 @@ def update_window_names(projects):
 
 # ─── Auto-exit idle sessions ───
 
+# macOS `ps` cuts a `comm` column that is not the last one to this many
+# bytes, so `/opt/homebrew/bin/zsh` reads `/opt/homebrew/bi`.
+_PS_COMM_WIDTH = 16
+
+
+def _process_name(comm):
+    """`zsh` from `zsh`, `-zsh`, `/bin/zsh` or `-/bin/zsh`: macOS `ps`
+    reports a full path where Linux reports the name."""
+    return os.path.basename(comm.lstrip("-")).lstrip("-")
+
+
+def _full_commands(pids):
+    """The untruncated `comm` of each live pid, or None when `ps` could
+    not be asked. A pid that has exited is simply absent."""
+    import subprocess
+    try:
+        r = subprocess.run(["ps", "-o", "comm=", "-p", ",".join(pids)],
+                           capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = r.stdout.decode("utf-8", errors="replace")
+    # ps exits 1 with no output when none of the pids is alive; any
+    # other failure says something on stderr.
+    if r.returncode != 0 and (out.strip() or r.stderr.strip()):
+        return None
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _has_shell_child(claude_pid, ps_lines):
+    """True when the Claude process has a live shell child (a Bash tool
+    job). A cut path that might name a shell is asked of `ps` again in
+    full; when that fails the answer is True (keep the window)."""
+    unsure = []
+    for line in ps_lines:
+        p = line.split()
+        if len(p) < 4 or p[1] != str(claude_pid):
+            continue
+        if _process_name(p[3]) in ccm_constants.SHELL_FOREGROUND_COMMANDS:
+            return True
+        if "/" in p[3] and len(p[3].encode()) >= _PS_COMM_WIDTH:
+            unsure.append(p[0])
+    if not unsure:
+        return False
+    names = _full_commands(unsure)
+    if names is None:
+        return True
+    return any(_process_name(n) in ccm_constants.SHELL_FOREGROUND_COMMANDS
+               for n in names)
+
+
 def _window_has_background_work(panes_raw, ps_lines):
     """True when any pane in the window shows live background work,
     meaning auto-exit must leave the window alone.
@@ -139,7 +189,8 @@ def _window_has_background_work(panes_raw, ps_lines):
     `find_claude_pid` process-tree walk detection uses, and the
     foreground-command check applies only to the remaining panes.
     Login-shell names carry a leading dash ("-zsh"); strip it before
-    the shell-set membership test.
+    the shell-set membership test. macOS `ps` reports a process by its
+    path (`/bin/zsh`), cut at 16 bytes (`_has_shell_child`).
     """
     for line in (panes_raw or "").split("\n"):
         parts = line.split("\t")
@@ -154,12 +205,8 @@ def _window_has_background_work(panes_raw, ps_lines):
         pane_cmd = parts[2] if len(parts) >= 3 else ""
         claude_pid = ccm_pane_state.find_claude_pid(pane_pid, ps_lines)
         if claude_pid:
-            for pl in ps_lines:
-                p = pl.split()
-                if (len(p) >= 4 and p[1] == str(claude_pid)
-                        and p[3].lstrip("-")
-                        in ccm_constants.SHELL_FOREGROUND_COMMANDS):
-                    return True
+            if _has_shell_child(claude_pid, ps_lines):
+                return True
         else:
             cmd = pane_cmd.lstrip("-") if pane_cmd else ""
             if (cmd

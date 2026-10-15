@@ -213,15 +213,22 @@ def _main_conversation_events(events_seq):
     return tuple(reversed(out))
 
 
-def background_work_reported(events):
+def background_work_reported(events, last_stop_bg=0):
     """True when the main conversation's latest Stop reported
     background work still outstanding (the stop event's `bg`: Claude
     Code's count of background tasks, such as a background agent or
-    command, plus scheduled crons) and the conversation has not moved
-    on since. Claude Code runs a turn when such work finishes, and that
+    command, plus scheduled crons), and the session has not ended
+    since. Claude Code runs a turn when such work finishes, and that
     turn's Stop reports what is left, so the note ends with the work.
     Shown beside an IDLE state as `(bg)` and honoured by auto-exit;
     never used to decide the state.
+
+    Events after that Stop which are not a Stop do not end it: a turn
+    the user interrupts (Esc) ends without one, and the work it started
+    in the background runs on. While a turn runs the window is not
+    IDLE, so the note does not show. When `events` (a tail of the log)
+    holds neither a stop nor the session's end, `last_stop_bg`, the
+    count the newest Stop reported (`read_stop_background`), decides.
 
     Subagent hook times are not used: Claude Code also sends a
     SubagentStop after an ordinary turn, and a background agent's
@@ -230,13 +237,14 @@ def background_work_reported(events):
         if not isinstance(e, dict):
             continue
         t = e.get("type")
-        if t in ("agent", "agent_permit", "notify_idle"):
-            continue
-        if t != "stop":
+        if t == "session_end":
             return False
+        if t != "stop":
+            continue
         bg = e.get("bg")
         return isinstance(bg, int) and not isinstance(bg, bool) and bg > 0
-    return False
+    return (isinstance(last_stop_bg, int) and not isinstance(last_stop_bg, bool)
+            and last_stop_bg > 0)
 
 
 def agent_permit_superseded(events_seq, agent_permit_ts):

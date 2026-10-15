@@ -268,7 +268,8 @@ def build_detection_context(win_target, project_dir, prev_state,
         if agent_permit is not None:
             agent_permit_ts = agent_permit[0]
         background = background_work_reported(
-            ccm_signals.read_events_tail(project_dir, session_id=session_id))
+            ccm_signals.read_events_tail(project_dir, session_id=session_id),
+            ccm_signals.read_stop_background(project_dir, session_id=session_id))
 
     return DetectionContext(
         raw=raw,

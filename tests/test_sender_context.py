@@ -180,7 +180,7 @@ def test_stale_hint_cannot_ignore_another_pane(context):
 def test_queue_stores_correct_sender(context):
     ccm_send._queue_message('destination', 'test body', 'busy')
     folder = os.path.join(ccm_spool.SPOOL_ROOT, 'destination')
-    names = os.listdir(folder)
+    names = [n for n in os.listdir(folder) if n.endswith('.msg')]
     assert len(names) == 1
     assert names[0].endswith('-current.msg')
 

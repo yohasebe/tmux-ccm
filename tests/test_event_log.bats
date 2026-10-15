@@ -566,6 +566,24 @@ _latest_type() {
     [[ "$output" =~ ^\{\"ts\":[0-9]+,\"type\":\"stop\",\"mode\":\"auto\",\"bg\":2\}$ ]]
 }
 
+@test "on-stop.sh: keeps the newest count beside the log" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"t1"}]}'
+    run cat "${HOOK_DIR}/${KEY}.stop-bg"
+    [[ "$output" == "1" ]]
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[]}'
+    run cat "${HOOK_DIR}/${KEY}.stop-bg"
+    [[ "$output" == "0" ]]
+}
+
+@test "on-session-end.sh: removes the kept count" {
+    printf '1\n' > "${HOOK_DIR}/${KEY}.stop-bg"
+    _run_hook on-session-end.sh \
+        '{"hook_event_name":"SessionEnd","cwd":"/x/test-project"}'
+    [[ ! -e "${HOOK_DIR}/${KEY}.stop-bg" ]]
+}
+
 @test "on-stop.sh: a scheduled cron alone counts as background work" {
     _run_hook on-stop.sh \
         '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[],"session_crons":[{"id":"c1"}]}'

@@ -153,9 +153,10 @@ class TestBackgroundWorkReported:
         events = [self._stop(30, bg=1), ev("prompt", 20), self._stop(10)]
         assert not ccm_activity.background_work_reported(events)
 
-    def test_the_conversation_moving_on_ends_it(self):
-        events = [self._stop(30, bg=1), ev("prompt", 5)]
-        assert not ccm_activity.background_work_reported(events)
+    def test_a_turn_that_ends_without_a_stop_keeps_it(self):
+        """Esc ends a turn without a Stop; the work runs on."""
+        events = [self._stop(30, bg=1), ev("prompt", 20), ev("pretool", 5)]
+        assert ccm_activity.background_work_reported(events)
 
     def test_session_end_ends_it(self):
         events = [self._stop(30, bg=1), ev("session_end", 5)]
@@ -173,6 +174,20 @@ class TestBackgroundWorkReported:
 
     def test_no_events(self):
         assert not ccm_activity.background_work_reported([])
+
+    def test_the_kept_count_decides_when_the_tail_holds_no_stop(self):
+        events = [ev("prompt", 20), ev("pretool", 5)]
+        assert ccm_activity.background_work_reported(events, 1)
+        assert not ccm_activity.background_work_reported(events, 0)
+
+    def test_a_stop_in_the_tail_outranks_the_kept_count(self):
+        assert not ccm_activity.background_work_reported([self._stop(5)], 1)
+        events = [self._stop(30, bg=1), ev("session_end", 5)]
+        assert not ccm_activity.background_work_reported(events, 1)
+
+    def test_a_malformed_kept_count_is_none(self):
+        for bg in (-1, "1", True, 1.5, None):
+            assert not ccm_activity.background_work_reported([], bg), bg
 
     def test_counts_reported_turn_by_turn(self):
         """Each finishing piece of work runs a turn whose Stop reports

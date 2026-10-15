@@ -372,6 +372,25 @@ def read_agent_activity(project_dir: str,
         return 0
 
 
+def read_stop_background(project_dir: str,
+                         session_id: Optional[str] = None) -> int:
+    """Return the background work count the session's newest Stop
+    reported, or 0. Kept by `on-stop.sh` beside the event log and
+    removed at the end of the session. A missing, empty or unparseable
+    file reads as 0."""
+    if not project_dir:
+        return 0
+    path = _agent_file(project_dir, session_id, ".stop-bg")
+    if not path:
+        return 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read().strip()
+    except OSError:
+        return 0
+    return int(text) if text.isdigit() and len(text) <= 6 else 0
+
+
 def read_agent_permit(project_dir: str,
                       session_id: Optional[str] = None):
     """Return `(timestamp, detail)` for a subagent's open permission
@@ -465,7 +484,7 @@ def cleanup_project_runtime_files(project_dir):
 
     for sid in session_ids:
         for suffix in ("", ".busy", ".pending", ".events.jsonl",
-                       ".agent-activity", ".agent-permit"):
+                       ".agent-activity", ".agent-permit", ".stop-bg"):
             path = os.path.join(ccm_core.CCM_HOOK_DIR, sid + suffix)
             try:
                 os.unlink(path)

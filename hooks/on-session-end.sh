@@ -11,4 +11,5 @@ source "${SCRIPT_DIR}/lib.sh"
 ccm_hook_init || exit 0
 
 ccm_append_event "$HOOK_DIR" "$KEY" "session_end"
+rm -f "$HOOK_DIR/$KEY.stop-bg"
 ccm_write_signal "$HOOK_DIR" "$KEY" "SHELL" "$CWD"

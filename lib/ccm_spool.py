@@ -34,6 +34,17 @@ Delivery semantics, deliberately chosen and pinned by tests:
     it executes out of context. Messages older than
     `CCM_SPOOL_TTL_SEC` (default 60 min) move to `expired/` and are
     surfaced in `ccm status` / `ccm doctor` instead of delivering.
+    Time the target spent waiting on its user (PERMIT) and time no
+    delivery pass ran (the machine asleep, no client attached) do not
+    count: the message waited on the reader, not on the world. Any
+    message older than `CCM_SPOOL_MAX_AGE_SEC` (default 24 h) expires
+    regardless (`pauses.json` per project).
+  - **Hand-back.** An expired message is reported to its sender as a
+    queued notice from ccm (label `ccm--notice`), so the sender
+    decides whether to send it again. Once that notice is delivered
+    the record stops counting as undelivered (`<record>.handed-back`
+    beside it). A notice from ccm that expires is not reported in
+    turn.
   - **Fail-closed readiness.** Unlike the interactive `ccm send`
     (whose capture hiccups fail open so as not to break working
     sends), the unattended pass defers whenever readiness is in
@@ -45,6 +56,7 @@ Delivery semantics, deliberately chosen and pinned by tests:
     started by other means; the spool never starts sessions.
 """
 
+import json
 import os
 import re
 import shlex
@@ -66,6 +78,26 @@ SPOOL_ROOT = os.path.join(ccm_constants.CCM_DATA_DIR, "spool")
 # the module docstring. Env-overridable for deployments whose messages
 # legitimately wait longer.
 SPOOL_TTL_SEC = int(os.environ.get("CCM_SPOOL_TTL_SEC", "3600"))
+
+# The bound on a message's age however long its target waited on its
+# user or the machine slept.
+SPOOL_MAX_AGE_SEC = int(os.environ.get("CCM_SPOOL_MAX_AGE_SEC", "86400"))
+
+# The sender label of ccm's own notices. It cannot be a project name:
+# `validate_name` collapses a run of hyphens, so no project is named
+# with `--`. A notice is never handed back.
+SYSTEM_SENDER = "ccm--notice"
+
+
+def _pass_gap_sec():
+    """Two delivery passes further apart than this mean no pass could
+    run in between (sleep, no attached client): that time does not
+    age a message. Passes run about every CCM_RECONCILE_INTERVAL."""
+    try:
+        interval = max(1, int(os.environ.get("CCM_RECONCILE_INTERVAL", "20")))
+    except ValueError:
+        interval = 20
+    return max(120, 3 * interval)
 
 # A delivery pass holding a lock for longer than this died mid-pass
 # (the reconciler crashed between claim and release). Reclaim rather
@@ -148,6 +180,7 @@ def enqueue(project, sender, body):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(body)
     os.replace(tmp, path)
+    _start_pauses(pdir, ms / 1000.0)
     return os.path.basename(path)[:-4], len(_pending(pdir))
 
 
@@ -183,12 +216,14 @@ def expired_counts():
 
 
 def _in_subdir(pdir, sub):
-    """The message files a project keeps in `sub`, oldest first."""
+    """The message files a project keeps in `sub`, oldest first. An
+    expired record its sender has been told about is not listed."""
     try:
-        return sorted(n for n in os.listdir(os.path.join(pdir, sub))
-                      if n.endswith(".msg"))
+        names = set(os.listdir(os.path.join(pdir, sub)))
     except OSError:
         return []
+    return sorted(n for n in names if n.endswith(".msg")
+                  and n + HANDED_BACK not in names)
 
 
 def _subdir_counts(sub):
@@ -201,11 +236,7 @@ def _subdir_counts(sub):
     for entry in entries:
         if entry.endswith(".lock"):
             continue
-        d = os.path.join(SPOOL_ROOT, entry, sub)
-        try:
-            n = sum(1 for n_ in os.listdir(d) if n_.endswith(".msg"))
-        except OSError:
-            continue
+        n = len(_in_subdir(os.path.join(SPOOL_ROOT, entry), sub))
         if n:
             counts[entry] = n
     return counts
@@ -227,15 +258,146 @@ def spool_summary():
             "held": sum(held_counts().values())}
 
 
-def _expire_and_prune(pdir, now):
-    """Move stale pending messages to expired/, and trim evidence."""
+HANDBACK = ".handback"
+HANDED_BACK = ".handed-back"
+_PAUSES = "pauses.json"
+
+
+def _read_pauses(pdir):
+    try:
+        with open(os.path.join(pdir, _PAUSES), encoding="utf-8") as f:
+            data = json.load(f)
+        last = data.get("last_pass")
+        spans = [(float(a), float(b)) for a, b in data.get("spans", [])
+                 if float(a) < float(b)]
+        return (float(last) if isinstance(last, (int, float)) else None), spans
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None, []
+
+
+def _start_pauses(pdir, now):
+    """Give a queue that never had a record its first pass time, so
+    the time until the first delivery pass can count as a pause like
+    any other gap between passes. A record already there is left
+    alone: its `last_pass` is then older still, which is no worse."""
+    path = os.path.join(pdir, _PAUSES)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except OSError:
+        return
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"last_pass": now, "spans": []}, f)
+
+
+def note_pass(pdir, state, now):
+    """Record one delivery pass over a project with pending messages.
+    The time since the previous pass is a pause when the target waits
+    on its user (PERMIT) or when the passes were too far apart for any
+    delivery to have been tried. With nothing pending the record is
+    left as it is, never removed (a removal could race `enqueue`
+    creating it): a pause counts only from a message's queue time
+    (`_aged`), so an old `last_pass` costs nothing."""
+    path = os.path.join(pdir, _PAUSES)
+    if not _pending(pdir):
+        return
+    last, spans = _read_pauses(pdir)
+    if last is not None and last < now and (
+            state == "PERMIT" or now - last > _pass_gap_sec()):
+        if spans and spans[-1][1] >= last:
+            spans[-1] = (spans[-1][0], now)
+        else:
+            spans.append((last, now))
+    spans = [(a, b) for a, b in spans if b > now - SPOOL_MAX_AGE_SEC]
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"last_pass": now, "spans": spans}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _aged(queued, now, spans):
+    """Seconds a message queued at `queued` has aged by `now`."""
+    paused = sum(max(0.0, min(b, now) - max(a, queued)) for a, b in spans)
+    return now - queued - paused
+
+
+def _sender_projects(names):
+    """`{sender label: project}` for the projects whose name a message
+    file's sender label stands for alone. The label is the name made
+    filename-safe (`_safe_component`), so `team+one` and `team-one`
+    share one; such a label names no project and is never handed back."""
+    seen = {}
+    for name in names:
+        seen.setdefault(_safe_component(name), set()).add(name)
+    return {label: next(iter(found)) for label, found in seen.items()
+            if len(found) == 1}
+
+
+def _hand_back(pdir, name, sender, queued, known):
+    """Queue a notice to the sender of an expired message, and leave a
+    `.handback` note beside the record naming that notice. `known` maps
+    a sender label to its project (`_sender_projects`)."""
+    target = os.path.basename(pdir)
+    project = known.get(sender) if sender not in (SYSTEM_SENDER, "unknown") else None
+    if project is None or project == target:
+        return
+    path = os.path.abspath(os.path.join(pdir, "expired", name))
+    q = time.strftime("%H:%M", time.localtime(queued))
+    body = (f"Your message to {target}, queued at {q}, was never delivered: "
+            f"{target} could not take it before it expired. Nothing was typed "
+            f"into {target}.\n\n"
+            f"Read it: {shlex.join(['cat', '--', path])}\n"
+            f"If it is still needed, send it again: "
+            f"{shlex.join(['ccm', 'send', '--file', path, '--', target])}")
+    notice, _ = enqueue(project, SYSTEM_SENDER, body)
+    with open(path + HANDBACK, "w", encoding="utf-8") as f:
+        json.dump({"project": project, "notice": notice + ".msg"}, f)
+
+
+def _settle_handbacks(pdir):
+    """Mark an expired record handed back once its notice is delivered."""
     edir = os.path.join(pdir, "expired")
+    try:
+        names = os.listdir(edir)
+    except OSError:
+        return
+    for n in names:
+        if not n.endswith(".msg" + HANDBACK):
+            continue
+        note = os.path.join(edir, n)
+        record = note[:-len(HANDBACK)]
+        try:
+            with open(note, encoding="utf-8") as f:
+                data = json.load(f)
+            project, notice = data["project"], data["notice"]
+            if (not os.path.exists(record) or not isinstance(project, str)
+                    or not isinstance(notice, str)
+                    or os.path.basename(project) != project
+                    or os.path.basename(notice) != notice):
+                os.unlink(note)
+                continue
+            if os.path.exists(os.path.join(SPOOL_ROOT, project, "delivered", notice)):
+                os.rename(note, record + HANDED_BACK)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+
+
+def _expire_and_prune(pdir, now, known=None):
+    """Move stale pending messages to expired/, hand them back to a
+    sender `known` maps to its project (`_sender_projects`), and trim
+    evidence."""
+    known = known or {}
+    edir = os.path.join(pdir, "expired")
+    _last, spans = _read_pauses(pdir)
     for name in _pending(pdir):
         parsed = _parse_msg_name(name)
         if parsed is None:
             continue
         queued, _sender = parsed
-        if now - queued > SPOOL_TTL_SEC:
+        if (_aged(queued, now, spans) > SPOOL_TTL_SEC
+                or now - queued > SPOOL_MAX_AGE_SEC):
             os.makedirs(edir, exist_ok=True)
             try:
                 os.rename(os.path.join(pdir, name),
@@ -251,6 +413,11 @@ def _expire_and_prune(pdir, now):
                                   _sender)
             except Exception:
                 ccm_core.log_caught_exception("spool-expire-notify")
+            try:
+                _hand_back(pdir, name, _sender, queued, known)
+            except Exception:
+                ccm_core.log_caught_exception("spool-hand-back")
+    _settle_handbacks(pdir)
     for sub in ("delivered", "expired"):
         d = os.path.join(pdir, sub)
         try:
@@ -344,8 +511,11 @@ def _envelope(sender, queued_ts, now):
          if queued_ts else "?")
     d = time.strftime("%H:%M", time.localtime(now))
     reply = ("sender unavailable; confirm the reply destination"
-             if sender == "unknown" else f'reply with `ccm send {sender} "…"`')
-    return f"[from: {sender} · queued {q} · delivered {d} — {reply}]"
+             if sender == "unknown"
+             else "a notice from ccm itself; no reply needed" if sender == SYSTEM_SENDER
+             else f'reply with `ccm send {sender} "…"`')
+    label = "ccm" if sender == SYSTEM_SENDER else sender
+    return f"[from: {label} · queued {q} · delivered {d} — {reply}]"
 
 
 def _deliver_one(project, pdir, msg_name):
@@ -420,20 +590,22 @@ def reconcile_spools(projects):
     except OSError:
         return
     now = time.time()
+    senders = _sender_projects(by_name)
     for entry in entries:
         if entry.endswith(".lock"):
             continue
         pdir = os.path.join(root, entry)
         if not os.path.isdir(pdir):
             continue
+        project = by_name.get(entry)
         try:
-            _expire_and_prune(pdir, now)
+            note_pass(pdir, project.state if project else None, now)
+            _expire_and_prune(pdir, now, senders)
         except Exception:
             ccm_core.log_caught_exception("spool-expire")
         pending = _pending(pdir)
         if not pending:
             continue
-        project = by_name.get(entry)
         if project is None or project.state != "IDLE":
             continue
         if not _acquire_lock(pdir):
@@ -609,9 +781,15 @@ def _cmd_clear_expired(rest):
                 continue
             try:
                 os.unlink(os.path.join(edir, n))
-                removed += 1
             except OSError:
-                pass
+                continue
+            if n + HANDED_BACK not in names:
+                removed += 1
+            for suffix in (HANDBACK, HANDED_BACK):
+                try:
+                    os.unlink(os.path.join(edir, n + suffix))
+                except OSError:
+                    pass
     if removed:
         ccm_core.ccm_info(
             f"Cleared {removed} expired message record(s)."
