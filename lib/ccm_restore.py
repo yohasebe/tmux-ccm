@@ -34,7 +34,7 @@ PF = ('window_id', 'pane_id', 'pane_current_path', 'pane_left', 'pane_top',
 def run(*args):
     result = ccm_core.tmux_query(*args)
     if result is None:
-        raise store.SnapshotError(f'tmux {args[0]} failed; retry this snapshot load')
+        raise store.TmuxFailure(f'tmux {args[0]} failed; retry this snapshot load')
     return result
 
 
@@ -781,7 +781,7 @@ def _release_marks(job, data):
                 run('set-option', '-wu', '-t', target, '@ccm_dir')
             for option in (roles.PENDING_OPTION, roles.MANAGED_OPTION, '@ccm_restore_job'):
                 run('set-option', '-wu', '-t', target, option)
-        except store.SnapshotError:
+        except store.TmuxFailure:
             if any(x['window_id'] == target for x in windows()):
                 raise
             continue  # closed meanwhile: nothing of it is left to release
@@ -961,10 +961,11 @@ def _load(name, record):
                 except WindowProblem as exc:
                     fail(key, exc)
                     continue
-                except store.SnapshotError:
+                except store.TmuxFailure:
                     # A failed tmux command is a problem of this window only
-                    # when a fresh listing shows its window gone; anything
-                    # unexplained stops the whole restore.
+                    # when a fresh listing shows its window gone. Any other
+                    # error (a job file that cannot be written) stops the
+                    # whole restore, gone window or not.
                     if any(x['@ccm_restore_job'] == job['id'] + ':' + key for x in windows()):
                         raise
                     fail(key, WindowProblem('Restore window closed'))

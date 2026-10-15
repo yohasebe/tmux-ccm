@@ -531,11 +531,52 @@ def _desktop(state, path):
             ccm_notify.sidekick_attention('codex', state['binding']['source'])
 
 
+STATE_RETENTION = 7 * 86400
+
+
+def _expire_states(states, now):
+    """Remove the window records no hook has written for STATE_RETENTION.
+    Such a record already reads as IDLE (HOOK_ACTIVITY_MAX_AGE), and the
+    turns it remembers as closed are dropped after the same week, so no
+    reader or late event loses anything. Each removal re-reads the record
+    under its project's lock, the lock the hook writes it under. Returns
+    the records kept."""
+    kept = []
+    for path, state in states:
+        received = state.get('received')
+        binding = state.get('binding')
+        project = binding.get('project') if isinstance(binding, dict) else None
+        if (not isinstance(received, (int, float)) or now - received <= STATE_RETENTION
+                or not isinstance(project, str)):
+            kept.append((path, state))
+            continue
+        try:
+            pdir = str(_pdir(project))
+        except ValueError:
+            kept.append((path, state))
+            continue
+        if not ccm_spool._acquire_lock(pdir):
+            kept.append((path, state))
+            continue
+        try:
+            fresh = _read(path, {})
+            if fresh.get('received') != received:
+                kept.append((path, fresh))
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                kept.append((path, fresh))
+        finally:
+            ccm_spool._release_lock(pdir)
+    return kept
+
+
 def reconcile(projects, regular_pending):
     """Same driver and locks as ordinary spool; ordinary messages win each pass."""
     _drain_inbox()
     now = time.time()
-    states = [(p, _read(p, {})) for p in (Path(ccm_spool.SPOOL_ROOT) / '.sidekick').glob('*.json')]
+    states = _expire_states([(p, _read(p, {})) for p in (Path(ccm_spool.SPOOL_ROOT) / '.sidekick').glob('*.json')], now)
     for project, directory in ccm_spool._iter_project_dirs():
         if project.startswith('.'):
             continue
@@ -860,7 +901,7 @@ def doctor_rows(projects):
         window_id = ccm_core.tmux_query('display-message', '-p', '-t', project.win_target, '#{window_id}')
         if not any(s.get('received') and s.get('binding', {}).get('window') in (window_id, project.win_target)
                    for s in states):
-            result.append((True, f'{project.name}: no Codex hook reception observed — check hook installation and trust in Codex, then complete a turn'))
+            result.append((True, f'{project.name}: no Codex hook reception observed in the last {STATE_RETENTION // 86400} days — complete a turn in Codex; if this stays, check hook installation and trust in Codex'))
     counts = {}
     for _, pdir in ccm_spool._iter_project_dirs():
         for _, record in _notices(pdir):

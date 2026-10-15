@@ -1002,3 +1002,59 @@ def test_pane_activity_takes_the_newest_record_for_a_pane(world, tmp_path):
              'received': world['now'] - 10, 'waits': {'k': {}}}
     (Path(ccm_spool.SPOOL_ROOT) / '.sidekick' / 'older.json').write_text(json.dumps(older))
     assert notices.pane_activity(server)['%2'][0] == 'BUSY'
+
+
+def _records():
+    return sorted((Path(ccm_spool.SPOOL_ROOT) / '.sidekick').glob('*.json'))
+
+
+def test_reconcile_removes_a_record_unwritten_for_the_retention_period(world):
+    world['emit']('UserPromptSubmit')
+    assert len(_records()) == 1
+    world['now'] += notices.STATE_RETENTION
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert len(_records()) == 1
+    world['now'] += 1
+    notices.reconcile([SimpleNamespace(name='demo', state='IDLE')], set())
+    assert _records() == []
+
+
+def test_expiry_waits_for_the_project_lock(world):
+    world['emit']('UserPromptSubmit')
+    path, = _records()
+    pdir = str(notices._pdir('demo'))
+    assert ccm_spool._acquire_lock(pdir)
+    try:
+        later = world['now'] + notices.STATE_RETENTION + 1
+        kept = notices._expire_states([(path, notices._read(path, {}))], later)
+    finally:
+        ccm_spool._release_lock(pdir)
+    assert [p for p, _ in kept] == [path]
+    assert path.exists()
+
+
+def test_expiry_keeps_a_record_rewritten_since_it_was_read(world):
+    world['emit']('UserPromptSubmit')
+    path, = _records()
+    stale = dict(notices._read(path, {}), received=world['now'] - 1)
+    later = world['now'] + notices.STATE_RETENTION
+    kept = notices._expire_states([(path, stale)], later)
+    assert [p for p, _ in kept] == [path]
+    assert path.exists()
+
+
+def test_expiry_leaves_records_it_cannot_attribute(world):
+    directory = Path(ccm_spool.SPOOL_ROOT) / '.sidekick'
+    directory.mkdir(parents=True, exist_ok=True)
+    unbound = directory / 'unbound.json'
+    unbound.write_text(json.dumps({'received': 1}))
+    unreadable = directory / 'unreadable.json'
+    unreadable.write_text('{')
+    odd = directory / 'odd.json'
+    odd.write_text(json.dumps({'received': 1, 'binding': {'project': 7}}))
+    states = [(p, notices._read(p, {})) for p in (unbound, unreadable, odd)]
+    kept = notices._expire_states(states, world['now'] + notices.STATE_RETENTION + 1)
+    assert [p for p, _ in kept] == [unbound, unreadable, odd]
+    assert unbound.exists()
+    assert unreadable.exists()
+    assert odd.exists()

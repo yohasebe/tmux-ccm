@@ -14,7 +14,7 @@ import re
 import tempfile
 import time
 
-from ccm_snapshot_errors import EmptySnapshot, SnapshotError, WindowProblem  # noqa: F401
+from ccm_snapshot_errors import EmptySnapshot, SnapshotError, TmuxFailure, WindowProblem  # noqa: F401
 import ccm_core
 import ccm_detection
 import ccm_pane_state
@@ -36,12 +36,12 @@ def _query(command, fields, target=None):
     scope = ('-t', target) if target else ('-a',)
     raw = ccm_core.tmux_query(command, *scope, '-F', fmt)
     if raw is None:
-        raise SnapshotError(f'Cannot collect {command}; snapshot unchanged')
+        raise TmuxFailure(f'Cannot collect {command}; snapshot unchanged')
     rows = []
     for line in raw.splitlines():
         parts = line.split('\t')
         if len(parts) != len(fields) + 1 or parts[-1] != 'END':
-            raise SnapshotError('Incomplete or ambiguous tmux listing; snapshot unchanged')
+            raise TmuxFailure('Incomplete or ambiguous tmux listing; snapshot unchanged')
         rows.append(dict(zip(fields, parts[:-1])))
     return rows
 

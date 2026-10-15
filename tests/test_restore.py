@@ -366,6 +366,36 @@ def _retained_window(data, monkeypatch):
     monkeypatch.setattr(restore, 'run', Mock(return_value='$1'))
 
 
+def _vanishing_window(data, monkeypatch, error):
+    """A missing window is created, then closes while it is restored, and
+    restoring it raised `error`."""
+    _retained_window(data, monkeypatch)
+    monkeypatch.setattr(restore, 'windows', lambda: [])
+    monkeypatch.setattr(restore, 'preflight', Mock(return_value=({}, {})))
+    monkeypatch.setattr(restore, 'shell_command', Mock(return_value='/bin/sh'))
+    monkeypatch.setattr(restore, '_create', Mock())
+    monkeypatch.setattr(restore, '_restore_and_publish', Mock(side_effect=error))
+
+
+def test_a_tmux_failure_on_a_closed_window_is_that_windows_problem(checkpoint, monkeypatch):
+    _vanishing_window(checkpoint, monkeypatch, store.TmuxFailure('tmux split-window failed; retry this snapshot load'))
+    with pytest.raises(SystemExit):
+        restore.load('_autosave')
+    record = restore.read_progress()
+    assert record['failed'] == {'0': 'Restore window closed'}
+    assert 'error' not in record
+
+
+def test_a_job_write_failure_stops_the_restore_even_when_the_window_closed(checkpoint, monkeypatch):
+    _vanishing_window(checkpoint, monkeypatch, store.SnapshotError('Snapshot write verification failed'))
+    with pytest.raises(SystemExit):
+        restore.load('_autosave')
+    record = restore.read_progress()
+    assert record['state'] == 'stopped'
+    assert 'write verification failed' in record['error']
+    assert not record.get('failed')
+
+
 def _hold(run_id=None):
     """Take the run lock as another run would, optionally with a known id."""
     fd, run = restore._acquire_running()
@@ -834,7 +864,7 @@ def test_release_keeps_the_job_marker_when_unregistering_fails(checkpoint, monke
 
     def run(*args):
         if args[-1] == failing:
-            raise store.SnapshotError('synthetic tmux failure')
+            raise store.TmuxFailure('synthetic tmux failure')
         unset.append(args[-1])
         w[args[-1]] = ''
         return ''
