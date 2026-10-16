@@ -122,6 +122,19 @@ class TestPrintStatusExternalAgent:
         ccm_render.print_status()
         return capsys.readouterr().out
 
+    def test_bg_in_status_column_in_busy_colour(self, monkeypatch, capsys):
+        projects = [_make_project("pair", "IDLE", pane_count=2,
+                                  external_agents=("codex",),
+                                  bg_active=True)]
+        out = self._run(projects, monkeypatch, capsys)
+        row = next(l for l in out.splitlines() if "pair" in l)
+        assert "\033[38;5;209m (bg)" in row
+        plain = _strip_ansi(row)
+        assert plain.index("(bg)") < plain.index("▸")
+        # The column stays 12 wide: the name starts where it would
+        # without the note.
+        assert plain.index("pair") == 13
+
     def test_badge_after_project_name(self, monkeypatch, capsys):
         projects = [_make_project("sidekick", "IDLE",
                                   pane_count=2,
@@ -220,6 +233,24 @@ class TestBuildDetailEntriesExternalAgent:
                           attention_agents=("codex",), busy_agents=("codex",))
         entries = self._entries([p], True, monkeypatch)
         assert "#[fg=#666666]▸ #[fg=yellow,bold]codex ⚠" in entries[0]
+
+    def test_mode2_bg_follows_claudes_icon_before_the_badge(
+            self, monkeypatch):
+        """Claude's icon and `(bg)` come before the sidekick badge, so
+        neither reads as the sidekick's; `(bg)` in BUSY's colour."""
+        p = _make_project("pair", "IDLE", external_agents=("codex",),
+                          bg_active=True)
+        entry = self._entries([p], True, monkeypatch)[0]
+        busy = inject_status.TMUX_COLORS["BUSY"]
+        assert f"#[fg={busy}](bg)" in entry
+        assert entry.index("(bg)") < entry.index("▸")
+        assert entry.index("●") < entry.index("▸")
+
+    def test_mode1_bg_in_busy_colour(self, monkeypatch):
+        p = _make_project("solo", "IDLE", bg_active=True)
+        entry = self._entries([p], False, monkeypatch)[0]
+        busy = inject_status.TMUX_COLORS["BUSY"]
+        assert f"#[fg={busy}](bg)" in entry
 
     def test_mode2_idle_codex_badge_is_dim(self, monkeypatch):
         p = _make_project("pair", "IDLE", external_agents=("codex",))
@@ -397,6 +428,16 @@ class TestDashboardExternalAgent:
         draws = self._draws(monkeypatch)
         assert ("▸ ", dashboard.C_DIM) in draws
         assert ("codex", dashboard.C_DIM) in draws
+
+    def test_bg_is_claudes_and_drawn_before_the_badge(self, monkeypatch):
+        """`(bg)` describes the row's Claude. Drawn after the sidekick
+        badge it read as the sidekick's; it sits by the name, in
+        BUSY's colour (something Claude started is still running)."""
+        import dashboard
+        draws = self._draws(monkeypatch, bg_active=True)
+        texts = [t for t, _ in draws]
+        assert ("(bg)", dashboard.C_BUSY) in draws
+        assert texts.index("(bg)") < texts.index("▸ ")
 
     def test_no_badge_for_claude_only(self, monkeypatch):
         projects = [_make_project("plain", "IDLE")]

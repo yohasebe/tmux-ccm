@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.300-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.302-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -52,7 +52,7 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107 以上**
-  （v2.1.300 で動作確認済み — ページ冒頭のバッジを参照）
+  （v2.1.302 で動作確認済み — ページ冒頭のバッジを参照）
 
 ## インストール
 
@@ -426,6 +426,7 @@ ccm clear-notifications           macOS 通知センターから ccm 通知を�
 | ◉ | BUSY | Claude処理中 |
 | ● | IDLE | 入力待ち |
 | `* <elapsed>` | IDLE（最近完了） | BUSY/PERMIT → IDLE 遷移後 30 秒間表示される一時マーカー（アスタリスク緑、時間 dim） |
+| `(bg)` | IDLE | Claude は入力待ちだが、Claude が始めた作業がまだ動いている（バックグラウンドのエージェントやコマンド、定期実行のループ、残っているプロセス）。BUSY と同じ色で Claude の状態の隣、サイドキックのバッジより前に表示。自動終了はこのウィンドウに手を出さない |
 | `[N]` | （任意の状態、マルチペインウィンドウ） | ペイン数マーカー（角括弧 dim、数字 cyan）。ウィンドウに 2 ペイン以上ある場合に表示 |
 | `⊘` | （全状態） | 非表示ペインのマーカー（dim）: `CCM_IGNORE` で ccm から除外されたペインがウィンドウ内にある |
 | `▸ <name>` | （全状態） | サイドキックの印: ウィンドウ内のペインで外部エージェント CLI が動作中。居るだけなら dim、あなたを待っている間は黄色の `▸ <name> ⚠`（サイドキック hook を入れた場合）、Codex は作業中も BUSY の色の `▸ codex ◉`。ウィンドウ自体の状態には影響しない |

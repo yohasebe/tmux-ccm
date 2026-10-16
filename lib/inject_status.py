@@ -236,8 +236,7 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
         # Stale-age and bg fire on different states (BUSY/PERMIT vs
         # IDLE) so they're mutually exclusive. Both render AFTER
         # the state icon as state-modifiers ("BUSY but stale", "IDLE
-        # but with leftover bg processes").
-        post = stale or bg
+        # but with leftover bg processes"); see `_render_post`.
         # Multi-pane marker `[N]` is structural (about the window's
         # pane layout, not the project's state). Render it BEFORE
         # the icon so the visual unit `:icon` stays clean and the
@@ -265,8 +264,18 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
                 f"#[fg={name_color}]"
             )
 
+        def _render_post():
+            """The stale age dim; `(bg)` in BUSY's colour — the
+            window is IDLE, but something Claude started is still
+            running."""
+            if stale:
+                return f"#[fg=#666666]{stale}#[fg=#9E9E9E]"
+            if bg:
+                return f"#[fg={TMUX_COLORS['BUSY']}]{bg}#[fg=#9E9E9E]"
+            return ""
+
         if with_extras:
-            # Mode 2: idx:name (branch) [:port][ [N]]:icon[(stale|bg)]
+            # Mode 2: idx:name (branch) [:port][ [N]]:icon[(stale|bg)][ ▸agent]
             if is_current:
                 entry = f"#[fg=#ffffff,bold]{p.win_idx}:#[fg=#ffffff,bold]{p.name}"
             else:
@@ -281,10 +290,13 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
             entry += _render_pane_marker(
                 "#ffffff,bold" if is_current else "#9E9E9E"
             )
-            # Sidekick badge next to [N]: dim while the sidekick only
-            # sits there, PERMIT yellow with ⚠ while it waits for a
-            # person, BUSY's colour with ◉ while it works — without
-            # entering the window's state model.
+            entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
+            entry += _render_post()
+            # Sidekick badge after Claude's own icon, so the icon and
+            # `(bg)` read as Claude's, not the sidekick's: dim while
+            # the sidekick only sits there, PERMIT yellow with ⚠ while
+            # it waits for a person, BUSY's colour with ◉ while it
+            # works — without entering the window's state model.
             if ext_badge:
                 ext_state = external_agent_state(p)
                 badge_fg = ("yellow,bold" if ext_state == "PERMIT"
@@ -296,9 +308,6 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
                     f"#[fg={badge_fg}]{ext_badge[len(mark):]}"
                     f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
                 )
-            entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
-            if post:
-                entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"
             if is_current:
                 entry += "#[nobold]"
         else:
@@ -311,8 +320,7 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
                 entry = f"{p.name}"
                 entry += _render_pane_marker("#9E9E9E")
                 entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
-            if post:
-                entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"
+            entry += _render_post()
 
         if is_current:
             entry = _as_current_pill(entry, pill_bg)

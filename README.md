@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.300-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.302-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -52,7 +52,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107+**
-  (tested against v2.1.300 — see the badge at the top of this page)
+  (tested against v2.1.302 — see the badge at the top of this page)
 
 ## Installation
 
@@ -420,6 +420,7 @@ ccm clear-notifications           Remove ccm notifications from macOS Notificati
 | ◉ | BUSY | Claude is processing |
 | ● | IDLE | Waiting for input |
 | `* <elapsed>` | IDLE (recently completed) | Transient marker (asterisk green, time dim) shown for 30 s after BUSY/PERMIT → IDLE |
+| `(bg)` | IDLE | Claude waits for your input, but work it started is still running (a background agent or command, a scheduled loop, a leftover process). Drawn in BUSY's colour beside Claude's state, ahead of any sidekick badge; auto-exit leaves the window alone |
 | `[N]` | (any state, multi-pane window) | Pane count marker (brackets dim, digit cyan) when a window has more than one pane |
 | `⊘` | (any state) | Hidden-pane marker (dim): the window has a pane excluded from ccm via `CCM_IGNORE` |
 | `▸ <name>` | (any state) | Sidekick marker: a pane in the window is running an external agent CLI. Dim while it sits there; yellow `▸ <name> ⚠` while it waits for you (with sidekick hooks installed); for Codex also `▸ codex ◉` in BUSY's colour while it works. The window's own state is unaffected |

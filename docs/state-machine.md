@@ -275,6 +275,8 @@ When the committed state is `IDLE` (the conversation turn has returned to the us
 ● IDLE (bg)  myproject
 ```
 
+`(bg)` is drawn in BUSY's colour (the work is real, the window is still IDLE) and always beside Claude's own state — on the dashboard right after the name and `[N]`, on the status bar right after the state icon — ahead of the `▸ <name>` sidekick badge, so it never reads as the sidekick's. The dim `(Nm)` shares that slot.
+
 Conceptually distinct from `(Nm)`: the stale-signal suffix is a "this might be stuck" hint, while `(bg)` is a positive statement about leftover processes. They are mutually exclusive — `(Nm)` only fires for `BUSY` / `PERMIT`, `(bg)` only fires for `IDLE`. `apply_actions` writes the `@ccm_bg_active` tmux window option whenever `state == "IDLE"` and (`ctx.raw == "BUSY"` or `ctx.background_work`); clears it otherwise. Auto-exit leaves a window with `@ccm_bg_active` set alone: exiting would end the work. `Project.bg_active` carries the flag to the renderers. `ccm send` treats `IDLE (bg)` exactly like plain `IDLE` — the user has the conversation ball regardless of background processes.
 
 ### `[N]` — multi-pane window

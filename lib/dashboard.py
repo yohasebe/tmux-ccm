@@ -1356,6 +1356,22 @@ class Dashboard(LifecycleActions):
                         self._addstr(stdscr, y, col + 1 + display_width(n), "]", curses.color_pair(C_DIM))
                         col += display_width(ann["pane_marker"]) + 1
 
+                    # Stale-signal age (BUSY/PERMIT) or
+                    # background-activity (IDLE) — disjoint, shared
+                    # slot. Both describe this row's Claude, so they
+                    # sit by its name, ahead of the sidekick markers
+                    # (which read as the sidekick's otherwise).
+                    # `(bg)` takes BUSY's colour: the window is IDLE,
+                    # but something Claude started is still running.
+                    if ann["suffix"]:
+                        self._addstr(stdscr, y, col, ann["suffix"],
+                                     curses.color_pair(C_DIM))
+                        col += display_width(ann["suffix"]) + 1
+                    elif p.bg_active:
+                        self._addstr(stdscr, y, col, "(bg)",
+                                     curses.color_pair(C_BUSY))
+                        col += 5
+
                     # Ignore marker ⊘: a hidden sidekick pane exists.
                     # Dim — present-but-untracked, not a state — until
                     # that hidden Claude is blocked on a permission
@@ -1417,18 +1433,6 @@ class Dashboard(LifecycleActions):
                     # end of the row (rendered after the path below)
                     # so the path column stays put when the timer
                     # ticks or the marker appears/disappears.
-
-                    # Stale-signal age (BUSY/PERMIT) or
-                    # background-activity (IDLE) — disjoint, shared
-                    # slot.
-                    if ann["suffix"]:
-                        self._addstr(stdscr, y, col, ann["suffix"],
-                                     curses.color_pair(C_DIM))
-                        col += display_width(ann["suffix"]) + 1
-                    elif p.bg_active:
-                        self._addstr(stdscr, y, col, "(bg)",
-                                     curses.color_pair(C_DIM))
-                        col += 5
 
                     # Branch
                     if p.branch:

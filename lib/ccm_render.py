@@ -172,6 +172,7 @@ C_BOLD = "\033[1m"
 C_DIM = "\033[2m"
 C_CYAN = "\033[36m"        # for [N] pane-count digit
 C_GREEN_BOLD = "\033[1;32m"  # for "*" completed marker
+C_BG_WORK = "\033[38;5;209m"  # `(bg)`: BUSY's salmon on an IDLE row
 C_STATE = {
     "PERMIT": "\033[1;33m",      # bold yellow
     "BUSY": "\033[38;5;209m",    # salmon
@@ -429,14 +430,13 @@ def print_status():
         # for IDLE.
         suffix = signal_age_suffix(
             p.dir, p.state, session_id=p.cached_session_id or "")
-        if p.bg_active:
-            suffix += " (bg)"
+        bg = " (bg)" if p.bg_active else ""
         # Pad the STATUS column by VISIBLE width (pad_to_width), not by
         # len(): the per-state colour codes differ in length (256-colour
         # `\033[38;5;209m` is 11 chars vs `\033[1;33m` at 7), so the old
         # `22 + len(suffix)` format spec put the PROJECT column at a
         # different offset for BUSY/SHELL vs PERMIT/IDLE/DOWN rows.
-        status_text = f"{icon} {p.state}{suffix}"
+        status_text = f"{icon} {p.state}{suffix}{bg}"
         if display_width(status_text) > status_w:
             # pad_to_width passes overlong content through unchanged,
             # so a stale-signal row (`⚠ PERMIT (12m)` = 14 cols) would
@@ -445,9 +445,13 @@ def print_status():
             # wrong age); the icon/colour still flags the state, and
             # only PERMIT can overflow (BUSY + suffix fits exactly).
             status_text = f"{icon} {p.state}"
+            suffix = bg = ""
+        # `(bg)` takes the working colour: the window is IDLE, but
+        # something Claude started is still running.
         status_field = (
-            f"{color}{pad_to_width(status_text, status_w)}"
-            f"{C_RESET}"
+            f"{color}{icon} {p.state}{suffix}{C_RESET}"
+            f"{f'{C_BG_WORK}{bg}{C_RESET}' if bg else ''}"
+            f"{' ' * max(0, status_w - display_width(status_text))}"
         )
         # Pane-count marker `[N]` belongs to the PROJECT column.
         # Brackets dim, digit cyan to draw the eye to the count.
