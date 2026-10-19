@@ -32,11 +32,12 @@ read_fields() {
         source "$2/hooks/lib.sh"
         ccm_hook_init <<< "$3"; rc=$?
         bg=""
-        if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then bg="$HOOK_BG_REMAINING"
-        else bg=$(printf "%s" "$3" | command jq -r "((.background_tasks // []) | length) + ((.session_crons // []) | length)" 2>/dev/null) || bg=0
+        if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then bg="$HOOK_BG_REMAINING"; kinds="$HOOK_BG_KINDS"
+        else bg=$(printf "%s" "$3" | command jq -r "$_CCM_BG_JQ_DEFS ccm_bg_counted" 2>/dev/null) || bg=0
+            kinds=$(printf "%s" "$3" | command jq -r "$_CCM_BG_JQ_DEFS ccm_bg_kinds" 2>/dev/null) || kinds=""
         fi
-        printf "rc=%s sid=[%s] cwd=[%s] mode=[%s] event=[%s] bg=[%s]\n" \
-            "$rc" "$SESSION_ID" "$CWD" "$PERMISSION_MODE" "$(ccm_hook_event_name)" "$bg"
+        printf "rc=%s sid=[%s] cwd=[%s] mode=[%s] event=[%s] bg=[%s] kinds=[%s]\n" \
+            "$rc" "$SESSION_ID" "$CWD" "$PERMISSION_MODE" "$(ccm_hook_event_name)" "$bg" "$kinds"
         [[ "$1" == old ]] || printf "read-once=%s\n" "${_CCM_FIELDS_READ:-}"
     ' _ "$path" "$CCM_ROOT" "$payload"
 }
@@ -48,6 +49,7 @@ read_fields() {
         '{"session_id":"s3"}'
         '{"session_id":"s4","cwd":"/x/日本語","permission_mode":"acceptEdits","hook_event_name":"Notification"}'
         '{"session_id":"s5","hook_event_name":"Stop","background_tasks":[1,2],"session_crons":["c"]}'
+        '{"session_id":"s7","hook_event_name":"Stop","background_tasks":[{"type":"dream"},{"type":"shell"}]}'
         '{"session_id":"s6","permission_mode":"we ird$;mode"}'
     )
     local p new old

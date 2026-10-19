@@ -14,14 +14,16 @@ ccm_hook_init || exit 0
 # first so the stop event carries it for the `(bg)` note.
 if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then
     bg_remaining="$HOOK_BG_REMAINING"
+    bg_kinds="$HOOK_BG_KINDS"
 else
     bg_remaining=$(printf '%s' "$INPUT" | \
-        jq -r '((.background_tasks // []) | length) + ((.session_crons // []) | length)' \
-        2>/dev/null) || bg_remaining=0
+        jq -r "$_CCM_BG_JQ_DEFS"' ccm_bg_counted' 2>/dev/null) || bg_remaining=0
+    bg_kinds=$(printf '%s' "$INPUT" | \
+        jq -r "$_CCM_BG_JQ_DEFS"' ccm_bg_kinds' 2>/dev/null) || bg_kinds=""
 fi
 bg_remaining=${bg_remaining:-0}
 
-ccm_append_event "$HOOK_DIR" "$KEY" "stop" "$bg_remaining"
+ccm_append_event "$HOOK_DIR" "$KEY" "stop" "$bg_remaining" "$bg_kinds"
 # The same count kept apart from the event log, whose tail the reader
 # may no longer reach once a turn interrupted with Esc has logged many
 # events and no Stop (`read_stop_background`).

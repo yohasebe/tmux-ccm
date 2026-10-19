@@ -561,9 +561,61 @@ _latest_type() {
 
 @test "on-stop.sh: a stop reporting background work carries its count" {
     _run_hook on-stop.sh \
-        '{"hook_event_name":"Stop","cwd":"/x/test-project","permission_mode":"auto","background_tasks":[{"id":"t1"}],"session_crons":[{"id":"c1"}]}'
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","permission_mode":"auto","background_tasks":[{"id":"t1","type":"shell"}],"session_crons":[{"id":"c1"}]}'
     run jq -c '.' "$EVENTS_FILE"
-    [[ "$output" =~ ^\{\"ts\":[0-9]+,\"type\":\"stop\",\"mode\":\"auto\",\"bg\":2\}$ ]]
+    [[ "$output" =~ ^\{\"ts\":[0-9]+,\"type\":\"stop\",\"mode\":\"auto\",\"bg\":2,\"bgk\":\"shell,cron\"\}$ ]]
+}
+
+@test "on-stop.sh: Claude Code's own upkeep is recorded but not counted" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"d1","type":"dream"},{"id":"a1","type":"auto-mode scan"},{"id":"m1","type":"memory import"}]}'
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "dream,auto-mode scan,memory import" ]]
+    run cat "${HOOK_DIR}/${KEY}.stop-bg"
+    [[ "$output" == "0" ]]
+}
+
+@test "on-stop.sh: upkeep beside real work counts only the real work" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"d1","type":"dream"},{"id":"s1","type":"subagent"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "1" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "dream,subagent" ]]
+}
+
+@test "on-stop.sh: a kind outside the recorded characters is cut to them" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"x","type":"we\"ird}"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "1" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "weird" ]]
+}
+
+@test "on-stop.sh: work without a kind is recorded as unknown, in ASCII only" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"x"},"y",{"id":"z","type":"é shell"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "3" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "unknown,unknown, shell" ]]
+}
+
+@test "ccm_append_event: kinds keep ASCII only under a UTF-8 locale, in any bash" {
+    # bash 3.2 (macOS /bin/bash) lets a UTF-8 locale widen [^A-Za-z];
+    # check every bash at hand, not only the one running the tests.
+    local sh out
+    for sh in /bin/bash "$(command -v bash)"; do
+        [[ -x "$sh" ]] || continue
+        rm -f "$EVENTS_FILE"
+        LC_ALL=en_US.UTF-8 "$sh" -c 'source "$1/hooks/lib.sh"; ccm_append_event "$2" "$3" stop 1 "é shell"' \
+            _ "$CCM_ROOT" "$HOOK_DIR" "$KEY"
+        out=$(jq -r '.bgk' "$EVENTS_FILE")
+        [[ "$out" == " shell" ]] || { echo "$sh: $out"; return 1; }
+    done
 }
 
 @test "on-stop.sh: keeps the newest count beside the log" {

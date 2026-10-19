@@ -857,6 +857,21 @@ EOF
     }
 }
 
+@test "on-stop.sh: writes .pending when only Claude Code's own upkeep is reported" {
+    # A memory "dream" or the auto-mode scan is not work the user waits
+    # on, so the turn is done and the completion notice is due.
+    local tmp_home="${MOCK_DIR}/stop-bg-upkeep"
+    local sid="99999999-9999-9999-9999-999999999999"
+    _run_stop_with_payload_extras \
+        '"background_tasks":[{"id":"d1","type":"dream"}],"session_crons":[]' \
+        "$tmp_home" "/tmp/stop-bg-upkeep" "$sid"
+
+    local pending="${tmp_home}/ccm-${UID}/hooks/${sid}.pending"
+    [[ -f "$pending" ]] || {
+        echo "pending sentinel should have been written for upkeep-only background work: $pending"; return 1;
+    }
+}
+
 @test "on-pre-tool-use.sh: cancels pending sentinel from prior Stop" {
     local tmp_home="${MOCK_DIR}/pretool-home"
     local cwd="/tmp/pretool-proj"

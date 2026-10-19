@@ -69,6 +69,24 @@ _ccm_route_sidekick_attention() {
     return 0
 }
 
+# Background work a Stop reports (`background_tasks`, `session_crons`).
+# Claude Code also lists its own upkeep there (memory consolidation
+# "dream", the auto-mode scan, a memory import): nothing a user started,
+# waits on or stops, so it is not counted toward the `(bg)` note or
+# against the completion notice. The kinds of everything reported are
+# kept on the stop event, so a count can be traced to what made it.
+# `type` is Claude Code's display label for the task kind.
+_CCM_BG_JQ_DEFS='
+    def ccm_bg_kind: if type == "object" then ((.type // "unknown") | tostring) else "unknown" end;
+    def ccm_bg_counted:
+        ([(.background_tasks // [])[] | ccm_bg_kind
+          | select(. as $k | ["dream", "auto-mode scan", "memory import"] | any(. == $k) | not)]
+         | length) + ((.session_crons // []) | length);
+    def ccm_bg_kinds:
+        [((.background_tasks // [])[] | ccm_bg_kind), ((.session_crons // [])[] | "cron")]
+        | join(",");
+'
+
 ccm_hook_init() {
     HOOK_DIR="${TMPDIR:-/tmp}/ccm-${UID}/hooks"
     # An untrusted temp root (another user's, a symlink) gets nothing
@@ -102,7 +120,8 @@ ccm_hook_init() {
     # Every field the hooks read comes from one jq (each used to be a jq
     # process of its own, the larger part of a hook's cost): the
     # foreign-harness marker, session id, cwd, permission mode, event
-    # name, tool name, the subagent id, and the count of background work a Stop reports,
+    # name, tool name, the subagent id, and the background work a Stop reports
+    # (its count and kinds, see `_CCM_BG_JQ_DEFS`),
     # NUL-separated. It gives what reading each field with `jq -r`
     # gives: a field that is an array or object (`jq -r` prints those
     # pretty, this would print them compact) fails the read, and trailing
@@ -111,7 +130,7 @@ ccm_hook_init() {
     # read the old way.
     local _fields=() _field
     while IFS= read -r -d '' _field; do _fields+=("$_field"); done < <(
-        printf '%s' "$INPUT" | jq -j '
+        printf '%s' "$INPUT" | jq -j "$_CCM_BG_JQ_DEFS"'
             def scalar: if type == "array" or type == "object"
                         then error("not a scalar") else tostring end;
             [ (has("workspaceRoot") | tostring),
@@ -121,14 +140,14 @@ ccm_hook_init() {
               ((.hook_event_name // "") | scalar),
               ((.tool_name // "") | scalar),
               ((.agent_id // "") | scalar),
-              (((.background_tasks // []) | length) + ((.session_crons // []) | length)) ]
+              ccm_bg_counted, ccm_bg_kinds ]
             | map(tostring) | join("\u0000") + "\u0000"' 2>/dev/null)
     _CCM_FIELDS_READ=""
     local _i
     for _i in 1 2 3 4 5 6; do
         while [[ "${_fields[$_i]:-}" == *$'\n' ]]; do _fields[$_i]="${_fields[$_i]%$'\n'}"; done
     done
-    if (( ${#_fields[@]} == 8 )); then
+    if (( ${#_fields[@]} == 9 )); then
         [[ "${_fields[0]}" == true ]] && return 1
         SESSION_ID="${_fields[1]}"
         _CCM_CWD="${_fields[2]}"
@@ -137,6 +156,7 @@ ccm_hook_init() {
         HOOK_TOOL_NAME="${_fields[5]}"
         HOOK_AGENT_ID="${_fields[6]}"
         HOOK_BG_REMAINING="${_fields[7]}"
+        HOOK_BG_KINDS="${_fields[8]}"
         _CCM_FIELDS_READ=1
     else
         if printf '%s' "$INPUT" | jq -e 'has("workspaceRoot")' >/dev/null 2>&1; then
@@ -275,7 +295,7 @@ ccm_hook_event_name() {
 #
 # Format: JSONL, append-only. One hook invocation = one line.
 # Path: $HOOK_DIR/<session_id>.events.jsonl
-# Schema: {"ts": <unix_seconds>, "type": "<normalized>"[, "mode": "<permission_mode>"][, "bg": <count>]}
+# Schema: {"ts": <unix_seconds>, "type": "<normalized>"[, "mode": "<permission_mode>"][, "bg": <count>][, "bgk": "<kinds>"]}
 #
 # `type` is restricted to the normalized vocabulary:
 #   prompt, pretool, posttool, subagent, compact, stop,
@@ -300,7 +320,7 @@ ccm_hook_event_name() {
 # Args: $1=HOOK_DIR, $2=KEY (Claude Code session_id), $3=TYPE (normalized event type),
 #       $4=OPTIONAL count of outstanding background work (digits only)
 ccm_append_event() {
-    local hook_dir="$1" key="$2" type="$3" bg="${4:-}"
+    local hook_dir="$1" key="$2" type="$3" bg="${4:-}" bg_kinds="${5:-}"
     local ts events_file mode extra=""
     [[ -z "$hook_dir" || -z "$key" || -z "$type" ]] && return 0
     ts=${EPOCHSECONDS:-$(date +%s)}
@@ -308,6 +328,10 @@ ccm_append_event() {
     mode="${PERMISSION_MODE:-}"
     [[ -n "$mode" ]] && extra=",\"mode\":\"${mode}\""
     [[ "$bg" =~ ^[1-9][0-9]{0,5}$ ]] && extra="${extra},\"bg\":${bg}"
+    # C locale, so the character class means ASCII whatever the caller's.
+    local LC_ALL=C
+    bg_kinds="${bg_kinds//[^A-Za-z0-9 ,_-]/}"
+    [[ -n "$bg_kinds" ]] && extra="${extra},\"bgk\":\"${bg_kinds:0:200}\""
     printf '{"ts":%s,"type":"%s"%s}\n' "$ts" "$type" "$extra" >> "$events_file" 2>/dev/null || true
     return 0
 }
