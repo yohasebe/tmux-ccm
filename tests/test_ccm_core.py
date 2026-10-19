@@ -579,6 +579,36 @@ class TestListWindowsRaw:
 # ─── snapshot save/list (with mocked tmux) ───
 
 
+class TestDieHeadline:
+    """A caller that keeps only the tail of the output must still see the
+    verdict: a long message ends with its first line again."""
+
+    @staticmethod
+    def _stderr_lines(capsys, msg):
+        with pytest.raises(SystemExit):
+            ccm_core.ccm_die(msg)
+        err = capsys.readouterr().err
+        return [l for l in re.sub(r"\x1b\[[0-9;]*m", "", err).split("\n") if l]
+
+    def test_long_message_ends_with_its_headline(self, capsys):
+        msg = "demo did not start; nothing was typed.\n  hint\n  Pane tail:\n    ❯ \n    status"
+        lines = self._stderr_lines(capsys, msg)
+        assert lines[0] == "Error: demo did not start; nothing was typed."
+        assert lines[-1] == "Error: demo did not start; nothing was typed."
+        assert len(lines) == 6
+
+    def test_short_message_is_not_repeated(self, capsys):
+        lines = self._stderr_lines(capsys, "boom\n  hint\n  more")
+        assert lines == ["Error: boom", "  hint", "  more"]
+
+    def test_raised_error_carries_the_message_unchanged(self):
+        msg = "a\nb\nc\nd\ne"
+        with ccm_core.raise_on_die():
+            with pytest.raises(ccm_core.CCMError) as caught:
+                ccm_core.ccm_die(msg)
+        assert str(caught.value) == msg
+
+
 class TestRaiseOnDie:
     def test_ccm_die_exits_by_default(self):
         with pytest.raises(SystemExit):

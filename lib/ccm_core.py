@@ -1497,6 +1497,10 @@ _C_RED = "\033[0;31m"
 _C_GREEN = "\033[0;32m"
 _C_YELLOW = "\033[1;33m"
 
+# An error message longer than this many lines ends with its first line
+# again (see ccm_die).
+_DIE_HEADLINE_REPEAT_LINES = 3
+
 
 class CCMError(Exception):
     """Raised by ccm_die when raise_on_die() context is active.
@@ -1532,7 +1536,14 @@ def ccm_die(msg):
     """
     if getattr(_die_mode, "raise_errors", False):
         raise CCMError(msg)
-    print(f"{_C_RED}Error: {msg}{_C_RESET}", file=sys.stderr)
+    text = f"Error: {msg}"
+    # Callers often keep only the end of the output (`| tail -5`), which
+    # for a long message is a hint or a pane excerpt that reads like a
+    # success. Repeat the headline last so the verdict survives.
+    lines = msg.split("\n")
+    if len(lines) > _DIE_HEADLINE_REPEAT_LINES:
+        text += f"\nError: {lines[0].strip()}"
+    print(f"{_C_RED}{text}{_C_RESET}", file=sys.stderr)
     sys.exit(1)
 
 

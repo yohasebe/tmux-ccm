@@ -1,4 +1,5 @@
 """Delivery acceptance and explicit decisions about undelivered records."""
+import re
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -366,3 +367,8 @@ def test_start_returns_to_shell_without_typing_body_or_submit(monkeypatch, clock
     output = capsys.readouterr()
     assert "Sent to" not in output.out
     assert "did not reach IDLE" in output.err
+    # The pane excerpt shows an empty input box; read through `| tail`,
+    # it must not end on that alone.
+    last = [l for l in re.sub(r"\x1b\[[0-9;]*m", "", output.err).split("\n") if l][-1]
+    assert last.startswith("Error: demo did not reach IDLE")
+    assert "nothing was typed" in last

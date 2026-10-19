@@ -945,7 +945,8 @@ def cmd_send(args):
             tail_lines = [l for l in tail.split("\n") if l.strip()]
             lines = [
                 f"{project_name} did not reach IDLE within "
-                f"{START_WAIT_SEC}s after the launch command.",
+                f"{START_WAIT_SEC}s after the launch command; "
+                "nothing was typed.",
                 f"  Last observed state: {ready_state}",
                 "  Possible causes: Claude resumed into an auto-action",
                 "    (e.g. `/compact` on a long session, or a",
