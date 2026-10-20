@@ -123,7 +123,9 @@ def hint(r):
     if r['role'] == 'primary':
         return 'Claude: opens here when you attach'
     if r['agent'] == 'codex':
-        return 'codex: choose a conversation in this directory with `codex resume`'
+        # --last picks the newest conversation in this directory; when that
+        # is not the one wanted, the picker chooses another.
+        return 'codex: `codex resume --last` resumes the latest conversation here; `codex resume` lets you choose'
     if r['agent'] == 'claude' and r['ignore']:
         return 'Claude sidekick: start manually with CCM_IGNORE=1 from the first hook'
     if r['role'] == 'sidekick':

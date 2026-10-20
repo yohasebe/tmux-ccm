@@ -562,7 +562,7 @@ To carry windows, splits, working directories and pane roles across logout:
 1. Before logout, run `ccm prepare-logout`. If projects are PERMIT or BUSY, review their names and confirm with `y` and Enter to save.
 2. After login, open tmux and run `ccm start _autosave`. Windows and panes return as inactive shells.
 3. Open the windows you need with `ccm attach <name>` or the dashboard. When `@ccm-auto-start` is on, Claude resumes in the reserved primary pane, or an eligible shell if readable reservations contain no primary. Unreadable or conflicting roles prevent automatic launch.
-4. Resume sidekicks manually using the restore output or `ccm roles`. For Codex, choose a conversation with `codex resume` in that cwd. ccm does not automatically select a particular conversation.
+4. Resume sidekicks manually using the restore output or `ccm roles`. For Codex, run `codex resume --last` in that cwd to resume the latest conversation there, or `codex resume` to choose one; `codex continue` would start a new conversation with "continue" as its prompt. ccm does not start or select a conversation itself.
 
 Running conversation state, approval waits and agent processes are not restored. Interrupted projects appear after restoring a sealed checkpoint; cached BUSY entries in ordinary autosaves do not. Do not layer tmux-resurrect restoration onto the same environment.
 

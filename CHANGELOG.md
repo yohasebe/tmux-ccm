@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- After a restore, the hint for a Codex sidekick suggests `codex resume --last`, which resumes the latest conversation in that directory, alongside `codex resume` to choose one.
 - Claude Code waits less on ccm's hooks, which run on every tool call and turn: each reads the payload with one `jq` instead of up to six, and no longer starts `cat`, `dirname`, `date`, or an unneeded `mkdir`/`rm`. A hook now starts about 6 processes instead of about 15, and takes about 25 ms instead of 45 ms. If that one read fails, each field is read as before.
 - The status line's periodic update does about a third less work: each pane is read once per pass instead of twice, the panes a pass reads are captured in one tmux call, the global options it needs are read in one tmux call, and the idle check reads the process list and panes once for all windows rather than once per window. With 44 projects a full pass went from about 0.36 s to 0.24 s of CPU. On the seconds it skips, the status poll now stops before loading the rest of ccm (about 10 ms down to 7 ms).
 - A long-running dashboard no longer keeps a record of every transcript it has ever looked at; it remembers the most recent 1024.

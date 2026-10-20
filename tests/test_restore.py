@@ -211,7 +211,12 @@ def test_guidance_neutralizes_control_characters_and_tmux_formats():
     assert '\x1b' not in roles.clean('alpha\x1b[31m')
     assert '#(' not in roles.clean('#(touch example)')
     assert '#{' not in roles.clean('#{pane_id}')
-    assert '--last' not in roles.hint({'role': 'sidekick', 'agent': 'codex', 'ignore': True})
+
+
+def test_codex_hint_offers_the_latest_conversation_and_the_picker():
+    text = roles.hint({'role': 'sidekick', 'agent': 'codex', 'ignore': True})
+    assert '`codex resume --last`' in text
+    assert '`codex resume` lets you choose' in text
 
 
 def test_v1_load_cannot_bypass_incomplete_v2_restore(checkpoint, monkeypatch):
