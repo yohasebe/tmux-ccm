@@ -708,6 +708,17 @@ ccm detects TCP ports that processes in your project directory are listening on.
 
 Port detection results are cached for 30 seconds to minimize overhead.
 
+### Turn off `←` opening the agent list
+
+In Claude Code, pressing `←` on an empty prompt opens the agent view and hands the current conversation to a background session; the pane then shows the agent view. In a regular interactive session with the default settings of Claude Code 2.1.304, a single press does it, unless you emptied the prompt within the last two seconds, when it asks you to press `←` again. So it is easy to do by accident, and the background session it leaves can stop `claude --continue` from resuming that project later (see [Using with agent view](#using-with-agent-view-background-sessions)). With ccm you move between projects with tmux, so you may prefer to turn it off: in Claude Code, open `/config` and switch **`← opens agents`** off. It is a user-wide setting, so one change covers every project; `/background` and `claude agents` still work. (Checked with Claude Code 2.1.304.)
+
+The Codex CLI has a similar shortcut: `←` on an empty composer opens its agent list (the conversation stays where it is, and Esc returns to it), where Enter switches to another task and `n` starts a new one. To turn the shortcut off, add this to `~/.codex/config.toml`; Codex shows no `← for agents` hint then, `←` does nothing, and the list stays available as `codex agents`. It applies to Codex sessions started afterwards. (Checked with Codex 0.163.0.)
+
+```toml
+[tui.keymap.global]
+open_agents = []
+```
+
 ## Troubleshooting
 
 Start with `ccm doctor` for issues and next steps. Use the [diagnostics reference](diagnostics.md) for a detailed investigation.
@@ -1210,7 +1221,7 @@ In most cases, you don't need to manually stop Claude Code at all — idle auto-
 
 **Auto-exit leaves a record.** Claude Code reports it as `SessionEnd` with reason `prompt_input_exit` — the same value a person typing `/exit` produces — so afterwards nothing distinguishes the two. ccm therefore writes one line per auto-exit to `$CCM_DATA_DIR/state/auto-exit.log` (timestamp, project, session id, idle seconds), and `ccm doctor --verbose` shows the count. If you ever wonder whether something has been closing your sessions, that file answers it; the session id makes the record joinable with whatever else observed the same session end.
 
-**Auto-exit looks before it types.** IDLE says the conversation is at rest; it does not say the screen takes a slash command. A session sent to the background (`/background`, `←` twice, or `/exit` inside an attached background session, which detaches rather than exits) leaves the pane on the agent view, where text typed into the input box can start a new session and Escape moves between views rather than cancelling input. So auto-exit captures the target pane first and types nothing when it shows the agent view or cannot be read; and when the pane shows the agent view after `/exit` — what an attached background session does when told to exit: it detaches, and the worker keeps running — it does not treat that as an exit: no SHELL state, no autosave, no completion notice, no further keys. Only the screen is observed, so the record says what was seen, not why. Both are recorded in `$CCM_DATA_DIR/state/auto-exit-declined.log` (outcome and identifiers only, rate-limited per project and outcome), kept apart from `auto-exit.log` so that file keeps counting only real exits. `ccm doctor --verbose` shows both counts. Attached background sessions are, in short, not something auto-exit ends: the worker keeps running either way, and stopping it is `claude stop <short>`'s job.
+**Auto-exit looks before it types.** IDLE says the conversation is at rest; it does not say the screen takes a slash command. A session sent to the background (`/background`, `←` on an empty prompt, or `/exit` inside an attached background session, which detaches rather than exits) leaves the pane on the agent view, where text typed into the input box can start a new session and Escape moves between views rather than cancelling input. So auto-exit captures the target pane first and types nothing when it shows the agent view or cannot be read; and when the pane shows the agent view after `/exit` — what an attached background session does when told to exit: it detaches, and the worker keeps running — it does not treat that as an exit: no SHELL state, no autosave, no completion notice, no further keys. Only the screen is observed, so the record says what was seen, not why. Both are recorded in `$CCM_DATA_DIR/state/auto-exit-declined.log` (outcome and identifiers only, rate-limited per project and outcome), kept apart from `auto-exit.log` so that file keeps counting only real exits. `ccm doctor --verbose` shows both counts. Attached background sessions are, in short, not something auto-exit ends: the worker keeps running either way, and stopping it is `claude stop <short>`'s job.
 
 ### What is the difference between `_autosave` and named snapshots?
 
