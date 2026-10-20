@@ -2,7 +2,7 @@
 import copy
 from pathlib import Path
 import json
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -761,7 +761,25 @@ def test_a_window_released_before_a_stop_is_confirmed_never_rewritten(checkpoint
     monkeypatch.setattr(restore, '_verify', Mock(side_effect=AssertionError('verified a usable window')))
     restore._restore_and_publish(job, '0', project, '$1', False)
     assert job['windows']['0']['publish'] == 'done'
-    writes.assert_not_called()
+    assert not [c for c in writes.call_args_list if c.args[0] not in ('display-message', 'show-option')]
+
+
+@pytest.mark.parametrize('size,value,unpinned', [
+    ('100x30', 'manual', True),     # still the size fix this restore set
+    ('100x30', '', False),          # already following the terminal
+    ('90x28', 'manual', False),     # the user fixed another size
+    ('100x30', 'largest', False),   # the user's own setting
+])
+def test_a_released_window_loses_only_the_size_fix_this_restore_set(checkpoint, monkeypatch, size, value, unpinned):
+    project = checkpoint['projects'][0]
+    state = {'window': '@1', 'publish': 'started', 'tree': {'w': 100, 'h': 30}}
+    job, writes = _publishing(monkeypatch, project, '0', state,
+                              **{'@ccm_project': project['name'], '@ccm_dir': project['dir']})
+    writes.side_effect = lambda *a: {'display-message': size, 'show-option': value}.get(a[0], '')
+    restore._restore_and_publish(job, '0', project, '$1', False)
+    unset = call('set-option', '-wu', '-t', '@1', 'window-size')
+    assert (unset in writes.call_args_list) == unpinned
+    assert not [c for c in writes.call_args_list if c.args[0] not in ('display-message', 'show-option') and c != unset]
 
 
 @pytest.mark.parametrize('mark,state,window', [
@@ -842,6 +860,16 @@ def test_finish_without_confirmation_is_refused_when_not_interactive(checkpoint,
     assert 'use -y' in out.err
 
 
+def test_finish_names_windows_whose_size_stays_fixed(checkpoint, monkeypatch, capsys):
+    line = 'beta: window size may still be fixed; to fit it to the terminal again: tmux set-option -wu -t @4 window-size'
+    monkeypatch.setattr(restore, 'finish', lambda confirm: {
+        'source': '_autosave', 'dropped': [], 'archive': '_autosave-held-back-1234abcd',
+        'autosave': 'present', 'fixed': [line]})
+    snapshot.cmd_finish_restore(['-y'])
+    out = capsys.readouterr()
+    assert line in out.out + out.err
+
+
 def test_finish_with_nothing_incomplete_changes_nothing(checkpoint, capsys):
     before = (store.directory() / '_autosave.json').read_bytes()
     with pytest.raises(SystemExit):
@@ -895,3 +923,34 @@ def test_dashboard_tells_a_running_finish_from_a_stopped_one(checkpoint):
         assert life.restore_status(lambda *a: '')[0] == 'Finishing the restore …'
     finally:
         restore.os.close(held)
+
+
+@pytest.mark.parametrize('failing', ['set-option', 'show-option', 'list-windows'])
+def test_a_size_fix_left_by_a_failed_command_is_tried_again(monkeypatch, failing):
+    # Publication stays successful; the size fix is recorded as undone only
+    # once it is, so a later try while the restore record remains (the next
+    # load, finish, or the last try before the record is removed) retries.
+    job = {'id': 'j', 'windows': {}}
+    state = {'window': '@1', 'publish': 'done', 'tree': {'w': 100, 'h': 30}}
+    job['windows']['0'] = state
+    w = {field: '' for field in restore.WF}
+    w.update(window_id='@1', **{'@ccm_restore_job': 'j:0'})
+    broken = [True]
+    def windows():
+        if failing == 'list-windows' and broken[0]:
+            raise store.TmuxFailure('synthetic')
+        return [w]
+    def run(*args):
+        if args[0] == failing and broken[0]:
+            raise store.TmuxFailure('synthetic')
+        return {'display-message': '100x30', 'show-option': 'manual'}.get(args[0], '')
+    writes = Mock(side_effect=run)
+    monkeypatch.setattr(restore, 'windows', windows)
+    monkeypatch.setattr(restore, 'run', writes)
+    monkeypatch.setattr(restore, 'save_job', Mock())
+    restore._release_size(job, '0', state)
+    assert not state.get('size_released')
+    broken[0] = False
+    restore._release_size(job, '0', state)
+    assert state['size_released']
+    assert call('set-option', '-wu', '-t', '@1', 'window-size') in writes.call_args_list

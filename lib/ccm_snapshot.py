@@ -186,6 +186,8 @@ def cmd_finish_restore(args):
         result = ccm_restore.finish(confirm)
     except (store.SnapshotError, OSError, ValueError) as exc:
         ccm_core.ccm_die(str(exc))
+    for line in result.get('fixed', ()):
+        ccm_core.ccm_warn(line)
     done = f"Restore finished without {len(result['dropped'])} project(s)"
     if result['autosave'] == 'sealed':
         ccm_core.ccm_info(f"{done}. Autosave stays paused: _autosave is protected for logout; "

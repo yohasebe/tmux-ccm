@@ -132,12 +132,37 @@ try:
                 assert not ccm_restore.running()
             print(json.dumps({'mode': mode, 'preserved_on_retries': 2, 'shell_starts': 1}))
             sys.exit(0)
+    if mode in ('resized', 'retry-resized'):
+        # An attached terminal that can change size, as one going full
+        # screen while the restore runs at login does.
+        client = subprocess.Popen(['tmux', '-C', 'attach-session', '-t', 'test'], stdin=subprocess.PIPE,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 5
+        while not tmux('list-clients', '-F', '#{client_name}') and time.monotonic() < deadline:
+            time.sleep(.05)
+        client_name = tmux('list-clients', '-F', '#{client_name}').splitlines()[0]
+        tmux('refresh-client', '-t', client_name, '-C', '100x30')
+    if mode == 'resized':
+        # The terminal changes size between splits.
+        sizes = iter(['90x28', '120x36', '96x29'])
+        resizes = []
+        original_run = ccm_restore.run
+        def resizing(*args):
+            result = original_run(*args)
+            if args[0] == 'split-window':
+                size = next(sizes, None)
+                if size:
+                    tmux('refresh-client', '-t', client_name, '-C', size)
+                    resizes.append(size)
+            return result
+        ccm_restore.run = resizing
     if mode.startswith('retry'):
         original_run = ccm_restore.run
         fired = [False]
         def lost(*args):
             result = original_run(*args)
-            if args[0] == {'retry': 'split-window', 'retry-new': 'new-window', 'retry-zoom': 'resize-pane'}[mode] and not fired[0]:
+            if args[0] == {'retry': 'split-window', 'retry-resized': 'split-window', 'retry-new': 'new-window',
+                           'retry-zoom': 'resize-pane'}[mode] and not fired[0]:
                 fired[0] = True
                 raise store.SnapshotError('synthetic lost split reply')
             return result
@@ -151,6 +176,15 @@ try:
         assert ccm_restore.paused()
         assert ccm_snapshot.cmd_snapshot_save('_autosave', quiet=True) is False
         ccm_restore.run = original_run
+        if mode == 'retry-resized':
+            # A window left part way by a run that did not fix its size
+            # (an earlier version) has since followed the terminal; the
+            # retry returns it to the plan's size before splitting on.
+            owned = [w for w in ccm_restore.windows() if w['@ccm_restore_job']]
+            assert len(owned) == 1, owned
+            tmux('set-option', '-wu', '-t', owned[0]['window_id'], 'window-size')
+            tmux('refresh-client', '-t', client_name, '-C', '90x28')
+            assert tmux('display-message', '-p', '-t', owned[0]['window_id'], '#{window_width}x#{window_height}') == '90x28'
     if mode == 'stop-after-create':
         # Every window is created before any is initialized; a stop after
         # the first window was published leaves the rest created but
@@ -175,6 +209,51 @@ try:
         assert all(w['@ccm_restore_pending'] == '1' for w in owned if not w['@ccm_project']), owned
         assert (store.directory() / '_autosave.json').read_bytes() == original
         assert ccm_restore.paused()
+    if mode == 'unpin-lost':
+        # A stop after publication is recorded but before the size fix is
+        # undone: the next load finds the window published and still undoes
+        # the fix, which only this restore set.
+        original_unpin = ccm_restore._unpin
+        def stop_unpin(window, published=False):
+            raise store.SnapshotError('synthetic stop before releasing the size')
+        ccm_restore._unpin = stop_unpin
+        try:
+            ccm_restore.load('_autosave')
+            raise AssertionError('Expected the stop to end the load')
+        except SystemExit as exc:
+            assert exc.code != 0
+        ccm_restore._unpin = original_unpin
+        state = json.loads(ccm_restore.job_path().read_text())['windows']['0']
+        assert state['publish'] == 'done' and not state.get('size_released'), state
+        assert tmux('show-option', '-wqv', '-t', state['window'], 'window-size') == 'manual'
+    if mode in ('unpin-once', 'unpin-never'):
+        # Releasing the size fails once (the last try before the record is
+        # removed succeeds) or every time (the load completes and names the
+        # window with the command that releases it by hand).
+        import contextlib, io
+        original_run = ccm_restore.run
+        attempts = []
+        def failing_unpin(*args):
+            if args[:2] == ('set-option', '-wu') and args[-1] == 'window-size':
+                attempts.append(args[3])
+                if mode == 'unpin-never' or len(attempts) == 1:
+                    raise store.TmuxFailure('synthetic failure releasing the size')
+            return original_run(*args)
+        ccm_restore.run = failing_unpin
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            ccm_restore.load('_autosave')
+        ccm_restore.run = original_run
+        assert len(attempts) == 2, attempts
+        assert not ccm_restore.job_path().exists()
+        left = tmux('show-option', '-wqv', '-t', attempts[0], 'window-size')
+        if mode == 'unpin-once':
+            assert left == '' and 'may still be fixed' not in output.getvalue(), output.getvalue()
+        else:
+            assert left == 'manual', left
+            assert f'alpha: window size may still be fixed; to fit it to the terminal again: tmux set-option -wu -t {attempts[0]} window-size' in output.getvalue(), output.getvalue()
+        print(json.dumps({'mode': mode, 'attempts': len(attempts)}))
+        sys.exit(0)
     skip_checks = set()
     if mode in ('moved', 'linked', 'token-lost', 'missing-dir'):
         # One window's problem keeps only that window back: the others are
@@ -245,6 +324,8 @@ try:
         original_initialize = ccm_restore._initialize
         def hold(w, project, job, key):
             if key in held_keys:
+                # Held back after its size was fixed for the splits.
+                ccm_restore._pin(w['window_id'], w['window_width'], w['window_height'])
                 raise ccm_restore.WindowProblem('synthetic problem in this window')
             return original_initialize(w, project, job, key)
         ccm_restore._initialize = hold
@@ -256,6 +337,29 @@ try:
         ccm_restore._initialize = original_initialize
         job_id = json.loads(ccm_restore.job_path().read_text())['id']
         archive = '_autosave-held-back-' + job_id[:8] if source == '_autosave' else None
+        if mode == 'finish':
+            # A published window whose size fix a stop left in place:
+            # finishing undoes it too.
+            job = json.loads(ccm_restore.job_path().read_text())
+            stuck = job['windows']['0']
+            assert stuck['publish'] == 'done' and stuck['size_released'], stuck
+            stuck['size_released'] = False
+            ccm_restore._pin(stuck['window'], stuck['tree']['w'], stuck['tree']['h'])
+            # Another stopped after its pending mark was cleared, before
+            # publication was recorded.
+            midway = job['windows']['2']
+            midway['publish'] = 'started'
+            midway['size_released'] = False
+            ccm_restore._pin(midway['window'], midway['tree']['w'], midway['tree']['h'])
+            ccm_restore.save_job(job)
+            # Its size cannot be released: finish, stopped and run again,
+            # completes and names it.
+            original_run = ccm_restore.run
+            def keep_midway(*args):
+                if args[:2] == ('set-option', '-wu') and args[-1] == 'window-size' and args[3] == midway['window']:
+                    raise store.TmuxFailure('synthetic failure releasing the size')
+                return original_run(*args)
+            ccm_restore.run = keep_midway
         held = [w for w in ccm_restore.windows() if w['@ccm_restore_job'].split(':')[-1] in held_keys]
         assert len(held) == len(held_keys), held
         asked = []
@@ -299,6 +403,12 @@ try:
             result = ccm_restore.finish(lambda plan: (_ for _ in ()).throw(AssertionError('asked twice')))
         else:
             result = ccm_restore.finish(confirm)
+        if mode == 'finish':
+            ccm_restore.run = original_run
+            assert [line.split(':')[0] for line in result['fixed']] == [data['projects'][2]['name']], result
+            assert midway['window'] in result['fixed'][0]
+        else:
+            assert result['fixed'] == [], result
         names = [p['name'] for p in data['projects']]
         dropped = [names[int(k)] for k in sorted(held_keys)]
         assert asked == [(source, dropped, archive)], asked
@@ -307,7 +417,11 @@ try:
         for w in held:
             after = rows[w['window_id']]
             assert after['@ccm_restore_job'] == '' and after['@ccm_restore_pending'] == '' and after['@ccm_project'] == '', after
+            assert tmux('show-option', '-wqv', '-t', w['window_id'], 'window-size') == '', after
             assert all(r['command'] in ccm_core.SHELL_FOREGROUND_COMMANDS for r in ccm_restore.panes(w['window_id']).values())
+        if mode == 'finish':
+            assert tmux('show-option', '-wqv', '-t', stuck['window'], 'window-size') == ''
+            assert tmux('show-option', '-wqv', '-t', midway['window'], 'window-size') == 'manual'
         if mode == 'finish-named':
             assert result['autosave'] == 'sealed', result
             assert (store.directory() / 'daily.json').read_bytes() == named
@@ -496,6 +610,15 @@ try:
         assert len(rows) == len(p['restore']['panes'])
         assert all(r['command'] in ccm_core.SHELL_FOREGROUND_COMMANDS for r in rows.values()), rows
         assert tmux('display-message', '-p', '-t', w['window_id'], '#{window_zoomed_flag}') == ('1' if p['restore']['zoomed'] else '0')
+    if mode == 'unpin-lost':
+        assert all(tmux('show-option', '-wqv', '-t', w['window_id'], 'window-size') == '' for w in managed)
+    if mode == 'resized':
+        assert resizes == ['90x28', '120x36'], resizes
+        # Published windows follow the terminal again.
+        for w in managed:
+            assert tmux('show-option', '-wqv', '-t', w['window_id'], 'window-size') == '', w
+        tmux('refresh-client', '-t', client_name, '-C', '97x31')
+        assert tmux('display-message', '-p', '-t', managed[0]['window_id'], '#{window_width}x#{window_height}') == '97x31'
     if mode == 'login-shell':
         assert stamp.exists(), 'Configured user shell was not started'
         assert stamp.read_text().splitlines() == ['-l'] * 3

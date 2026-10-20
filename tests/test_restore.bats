@@ -43,6 +43,31 @@ SHIM
     restore_probe added-pane
 }
 
+@test "restore v2: a terminal resized between splits does not hold a window back" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe resized
+}
+
+@test "restore v2: a retry returns a part-split window to its plan's size first" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe retry-resized
+}
+
+@test "restore v2: a stop before a published window's size fix is undone is caught up by the next load" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe unpin-lost
+}
+
+@test "restore v2: a size fix that fails to release once is released before the load completes" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe unpin-once
+}
+
+@test "restore v2: a size fix that cannot be released is named with the command that releases it" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    restore_probe unpin-never
+}
+
 @test "restore v2: retry after a lost split reply creates no duplicates" {
     [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
     restore_probe retry

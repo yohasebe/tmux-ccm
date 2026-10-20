@@ -449,7 +449,96 @@ def _create(session, project, index, job):
     return match
 
 
+def _pin(window, width, height):
+    # A client resize (a terminal going full screen while the restore runs)
+    # would move every pane the split checks compare. Hold the window at the
+    # size its plan is for until it is published.
+    run('resize-window', '-t', window, '-x', str(width), '-y', str(height))
+
+
+def _unpin(window, published=False):
+    """Back to the session's window-size, so the next client resize or
+    visit fits the window to the terminal. Restore windows set no other
+    value. True when undone."""
+    try:
+        run('set-option', '-wu', '-t', window, 'window-size')
+        return True
+    except store.TmuxFailure:
+        # A published window is the user's and already counted as restored;
+        # a size left fixed must not turn it back into a failure.
+        if not published:
+            raise
+        return False
+
+
+def _still_pinned(state):
+    """The size fix is still the one this restore set: the window keeps
+    the plan's size and a manual window-size. None when unreadable."""
+    tree = state.get('tree')
+    if not tree:
+        return False
+    try:
+        size = run('display-message', '-p', '-t', state['window'], '#{window_width}x#{window_height}')
+        value = run('show-option', '-wqv', '-t', state['window'], 'window-size')
+    except store.TmuxFailure:
+        return None
+    return value == 'manual' and size == f"{tree['w']}x{tree['h']}"
+
+
+def _release_size(job, key, state, checked=True):
+    """Undo this restore's size fix on a published window, once; recorded
+    apart from publication, so a stop or a failed tmux command between the
+    two is caught up by the next load or by finish. `checked`: touch the
+    window only while it still carries this restore's marker and the fix
+    this restore set."""
+    if state.get('publish') != 'done' or state.get('size_released'):
+        return
+    if checked:
+        try:
+            live = next((w for w in windows() if w['window_id'] == state['window']), None)
+        except store.TmuxFailure:
+            return
+        if live and live['@ccm_restore_job'] == job['id'] + ':' + key:
+            pinned = _still_pinned(state)
+            if pinned is None or pinned and not _unpin(state['window'], published=True):
+                return
+    elif not _unpin(state['window'], published=True):
+        return
+    state['size_released'] = True
+    save_job(job)
+
+
+def _settle_published_sizes(job, data):
+    """For finish: windows published but not yet recorded as such (a stop
+    after their pending mark was cleared) are completed first, when they
+    still carry this restore's marker and the project's registration."""
+    live = {w['window_id']: w for w in windows()}
+    for key, state in job.get('windows', {}).items():
+        if state.get('publish') == 'started' and key.isdigit() and int(key) < len(data['projects']):
+            w = live.get(state['window'])
+            if w and w['@ccm_restore_job'] == job['id'] + ':' + key and released(w, data['projects'][int(key)]):
+                state['publish'] = 'done'
+                save_job(job)
+        _release_size(job, key, state)
+
+
+def _sizes_left_fixed(job, data):
+    """A last try before the restore record is removed, which ends any
+    retry: the windows that still keep a fixed size, each with the tmux
+    command that releases it by hand."""
+    left = []
+    for key, state in job.get('windows', {}).items():
+        _release_size(job, key, state)
+        if state.get('publish') == 'done' and not state.get('size_released'):
+            project = data['projects'][int(key)] if key.isdigit() and int(key) < len(data['projects']) else None
+            name = project['name'] if project else key
+            left.append(roles.clean(f"{name}: window size may still be fixed; to fit it to the terminal again: "
+                                    f"tmux set-option -wu -t {state['window']} window-size"))
+    return left
+
+
 def _initialize(w, project, job, key):
+    _pin(w['window_id'], w['window_width'], w['window_height'])
     current = stable_panes(w['window_id'])
     if len(current) != 1:
         raise WindowProblem('Incomplete window has no valid progress record; inspect it before retrying')
@@ -491,7 +580,7 @@ def _split(state, op, job):
     expected[target]['rect'] = op['old_rect']
     expected[new_id] = {'cwd': op['cwd'], 'rect': op['new_rect']}
     if current != expected:
-        raise WindowProblem('Split position or cwd differs from the restore plan')
+        raise WindowProblem(_split_mismatch(window, state, current, expected))
     state['keys'][op['new_key']] = new_id
     state['expected'] = expected
     state['next'] += 1
@@ -520,6 +609,22 @@ def _verify_roles(window, project, state):
         raise WindowProblem('Restored active pane or zoom differs from the checkpoint')
 
 
+def _split_mismatch(window, state, current, expected):
+    """Name what differs, so the reason says whether to look at the
+    directories or at something resizing the window."""
+    what = [f for f in ('rect', 'cwd') if any(current.get(k, {}).get(f) != v[f] for k, v in expected.items())]
+    head = {('rect',): 'Split position', ('cwd',): 'Split cwd'}.get(tuple(what), 'Split position or cwd')
+    reason = head + ' differs from the restore plan'
+    try:
+        size = run('display-message', '-p', '-t', window, '#{window_width}x#{window_height}')
+    except store.TmuxFailure:
+        return reason
+    planned = f"{state['tree']['w']}x{state['tree']['h']}"
+    if size != planned:
+        reason += f' (window resized to {size} from {planned})'
+    return reason
+
+
 def restore_window(w, project, state, job, settled=False):
     """`settled`: the caller has just waited for this window's shells with
     nothing changed since, so a window without splits need not wait again."""
@@ -528,6 +633,9 @@ def restore_window(w, project, state, job, settled=False):
         _verify(window, state)
         _verify_roles(window, project, state)
         return
+    if not settled:
+        # A window resumed from an earlier run: back to its plan's size.
+        _pin(window, state['tree']['w'], state['tree']['h'])
     if state['ops'] or not settled:
         while state['next'] < len(state['ops']):
             _split(state, state['ops'][state['next']], job)
@@ -582,6 +690,9 @@ def _restore_and_publish(job, key, project, session_id, created):
                 raise WindowProblem('Restore window changed while being published; inspect it before retrying')
             state['publish'] = 'done'
             save_job(job)
+            # Its size may still be fixed if the stop came before that was
+            # undone; any other window-size is the user's and stays.
+            _release_size(job, key, state)
             return
         if mark != '1':
             raise WindowProblem('Restore window pending mark changed; inspect it before retrying')
@@ -591,7 +702,7 @@ def _restore_and_publish(job, key, project, session_id, created):
         # Not yet released: the structure may have changed meanwhile.
         _verify(state['window'], state)
         _verify_roles(state['window'], project, state)
-        _publish_window(state, project, job)
+        _publish_window(state, project, job, key)
         return
     if mark != '1':
         raise WindowProblem('Restore window was released outside this restore; inspect it before retrying')
@@ -606,10 +717,10 @@ def _restore_and_publish(job, key, project, session_id, created):
         raise WindowProblem('Restore window ownership changed; inspect it before retrying')
     state['publish'] = 'started'
     save_job(job)
-    _publish_window(state, project, job)
+    _publish_window(state, project, job, key)
 
 
-def _publish_window(state, project, job):
+def _publish_window(state, project, job, key):
     window = state['window']
     run('set-option', '-w', '-t', window, '@ccm_project', project['name'])
     run('set-option', '-w', '-t', window, '@ccm_dir', canonical(project['dir']))
@@ -618,6 +729,9 @@ def _publish_window(state, project, job):
     run('set-option', '-w', '-t', window, roles.PENDING_OPTION, '0')
     state['publish'] = 'done'
     save_job(job)
+    # Only after publication is recorded: a resumed publication compares the
+    # planned geometry, which an unpinned window may no longer have.
+    _release_size(job, key, state, checked=False)
 
 
 def _guidance(data, job, say):
@@ -726,6 +840,7 @@ def finish(confirm):
                 stage = _advance(job, 'clean')
             if stage == 'clean':
                 _release_marks(job, data)
+                _settle_published_sizes(job, data)
                 stage = _advance(job, 'save')
             if stage == 'save':
                 if source == '_autosave':
@@ -738,6 +853,7 @@ def finish(confirm):
                         (store.directory() / (source + '.json')).unlink(missing_ok=True)
                         store._sync_dir()
                 stage = _advance(job, 'release')
+            fixed = _sizes_left_fixed(job, data)
             job_path().unlink()
             store._sync_dir()
             dropped = job['finishing']['dropped']
@@ -745,7 +861,7 @@ def finish(confirm):
                       'summary': [f'Finished without {len(dropped)} held-back project(s)'],
                       'total': len(data['projects']), 'done': len(data['projects']) - len(dropped)})
             autosave = store.read(store.directory() / '_autosave.json')
-            return {'source': source, 'dropped': dropped, 'archive': archive,
+            return {'source': source, 'dropped': dropped, 'archive': archive, 'fixed': fixed,
                     'autosave': 'sealed' if autosave and store.sealed(autosave)
                     else 'present' if autosave else 'absent'}
     finally:
@@ -779,6 +895,9 @@ def _release_marks(job, data):
                 run('set-option', '-wu', '-t', target, '@ccm_project')
             if w['@ccm_dir'] and canonical(w['@ccm_dir']) == canonical(project['dir']):
                 run('set-option', '-wu', '-t', target, '@ccm_dir')
+            # resize-window sets manual; another value is the user's.
+            if run('show-option', '-wqv', '-t', target, 'window-size') == 'manual':
+                _unpin(target)
             for option in (roles.PENDING_OPTION, roles.MANAGED_OPTION, '@ccm_restore_job'):
                 run('set-option', '-wu', '-t', target, option)
         except store.TmuxFailure:
@@ -919,6 +1038,7 @@ def _load(name, record):
                 if state.get('publish') == 'done':
                     # Published earlier: the window belongs to the user now,
                     # whatever became of it, and is never recreated.
+                    _release_size(job, key, state)
                     done += 1
                     failed.pop(key, None)
                     print(roles.clean(f"Restored {done}/{total}: {project['name']} (already published)"), flush=True)
@@ -988,6 +1108,7 @@ def _load(name, record):
                 store.write(name, unsealed, backup=False)
             # No post-load recapture: it could replace the checkpoint with a
             # subset or drop reservations before the normal collector sees them.
+            fixed = _sizes_left_fixed(job, data)
             try:
                 job_path().unlink()
                 store._sync_dir()
@@ -995,6 +1116,8 @@ def _load(name, record):
                 ccm_core.ccm_warn('Restore completed; progress cleanup failed. Retry this snapshot load to release autosave.')
             say(f'Restored {total}/{total}; snapshot protection released. ccm did not launch agents; '
                 'Opening a project starts Claude only in an eligible pane; inspect ccm roles.')
+            for line in fixed:
+                say(line)
             _guidance(data, job, say)
             if was_sealed and data['checkpoint']['interrupted']:
                 say('Interrupted at save: these states are not restored. Review these projects:')

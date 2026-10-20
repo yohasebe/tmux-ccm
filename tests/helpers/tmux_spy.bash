@@ -14,6 +14,9 @@ shift 2
 # Permit the test's empty configuration, but no second selector or
 # other server options that could override the isolation above.
 if [[ "$1" == -f && "$2" == /dev/null ]]; then shift 2; fi
+# Control mode (a client without a terminal) selects no other server.
+control=()
+if [[ "$1" == -C ]]; then control=(-C); shift; fi
 [[ -n "$1" && "$1" != -* ]] || reject "${original[@]}"
 [[ -n "$CCM_TEST_REAL_TMUX" ]] || exit 127
 unset TMUX TMUX_PANE
@@ -45,4 +48,4 @@ if [[ "$1" == new-session ]]; then
     fi
     exit "$result"
 fi
-exec "$CCM_TEST_REAL_TMUX" -L "$socket" -f /dev/null "$@"
+exec "$CCM_TEST_REAL_TMUX" -L "$socket" -f /dev/null "${control[@]}" "$@"
