@@ -1352,8 +1352,8 @@ class TestDoAttachAutoStart:
         monkeypatch.setattr("dashboard.reset_window_after_attach", lambda wt: None)
         monkeypatch.setattr("os.path.isdir", lambda p: True)
         captured = []
-        monkeypatch.setattr("dashboard.tmux_cmd",
-                            lambda *a, **k: captured.append(a) or "")
+        for where in ("dashboard.tmux_cmd", "dashboard_shared.tmux_cmd"):
+            monkeypatch.setattr(where, lambda *a, **k: captured.append(a) or "")
         d._do_attach(_make_mock_stdscr())
         msgs = [c for c in captured if c and c[0] == "display-message"]
         assert len(msgs) == 1 and "not auto-started" in msgs[0][-1]
@@ -1371,8 +1371,8 @@ class TestDoAttachAutoStart:
         monkeypatch.setattr("dashboard.reset_window_after_attach", lambda wt: None)
         monkeypatch.setattr("os.path.isdir", lambda p: True)
         captured = []
-        monkeypatch.setattr("dashboard.tmux_cmd",
-                            lambda *a, **k: captured.append(a) or "")
+        for where in ("dashboard.tmux_cmd", "dashboard_shared.tmux_cmd"):
+            monkeypatch.setattr(where, lambda *a, **k: captured.append(a) or "")
         d._do_attach(_make_mock_stdscr())
         assert not any(c and c[0] == "display-message" for c in captured)
 

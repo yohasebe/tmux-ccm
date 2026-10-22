@@ -312,12 +312,12 @@ def test_observed_agent_replaces_stale_intent_without_leaving_missing_role(world
 
 
 def test_dashboard_displays_role_failure_reason(world, monkeypatch):
-    import dashboard
+    import dashboard_shared
     sent = []
-    monkeypatch.setattr(dashboard, 'tmux_cmd', lambda *a: sent.append(a))
+    monkeypatch.setattr(dashboard_shared, 'tmux_cmd', lambda *a: sent.append(a))
     world.raw = {'%1': None}
     result = world.launch()
-    dashboard._announce_unlaunched(result)
+    dashboard_shared._announce_unlaunched(result)
     assert 'ccm roles' in sent[-1][-1] and 'Cannot read' in sent[-1][-1]
 
 
