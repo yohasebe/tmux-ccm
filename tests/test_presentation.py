@@ -11,7 +11,7 @@ import ccm_core
 import ccm_presentation as view
 import ccm_sidekick_notify as notices
 import ccm_spool
-import dashboard
+import dashboard_actions
 from test_commands import TestCmdDoctor as _DoctorWorld
 from test_undelivered import make_dashboard, record
 
@@ -113,7 +113,7 @@ def test_unknown_kind_preserves_record_and_offers_no_operations(monkeypatch):
     monkeypatch.setattr(d, '_run_cmd', action)
     monkeypatch.setattr(d, '_prompt', prompt)
     monkeypatch.setattr(ccm_spool, 'read_record', read)
-    monkeypatch.setattr(dashboard, 'build_project_list', opened)
+    monkeypatch.setattr(dashboard_actions, 'build_project_list', opened)
     d._do_spool(screen)
     out = ' '.join(str(c.args) for c in screen.addstr.call_args_list)
     assert view.record_spec('future').label in out

@@ -264,7 +264,8 @@ def test_a_mark_without_a_switch_is_cleared(monkeypatch):
 
 def test_a_new_background_attach_window_is_created_unselected(monkeypatch):
     import dashboard
-    from test_dashboard import _stub_dashboard_environment
+    import dashboard_actions
+    from test_dashboard import _patch_dashboard, _stub_dashboard_environment
     _stub_dashboard_environment(monkeypatch)
     d = dashboard.Dashboard(initial_mode='dashboard', docked=True)
     order = []
@@ -275,13 +276,13 @@ def test_a_new_background_attach_window_is_created_unselected(monkeypatch):
             assert '-d' in args
             return 'w:3'
         return 'on' if args[-1] == '@ccm-dashboard-dock-close-on-open' else ''
-    monkeypatch.setattr(dashboard, 'tmux_cmd', tmux_cmd)
+    _patch_dashboard(monkeypatch, 'tmux_cmd', tmux_cmd)
     monkeypatch.setattr(dock, 'mark_leaving', lambda *a, **k: order.append('mark'))
     monkeypatch.setattr(d, '_find_bg_attach_windows', lambda *a: ('none', []))
     from types import SimpleNamespace
     d.bg_sessions = [SimpleNamespace(short='a1b2c3d4', cwd='', state='working')]
     d.projects = []
-    monkeypatch.setattr(dashboard, 'get_session', lambda: 'w')
+    monkeypatch.setattr(dashboard_actions, 'get_session', lambda: 'w')
     assert d._do_attach_bg(None, 0) == 'attached'
     assert order.index('mark') < order.index('select-window')
     assert order.index('new-window') < order.index('mark')

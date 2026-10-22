@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import dashboard  # noqa: E402 — verify module imports cleanly
+import dashboard_actions  # noqa: E402
 from dashboard import Dashboard
 
 
@@ -541,7 +542,7 @@ class TestRenderSmoke:
         captured = []
         d, _ = self._bg_dashboard(monkeypatch, captured, listing="")
         assert d._handle_key(13, _make_mock_stdscr()) == "attached"
-        assert ("set-option", "-wt", "0:9", dashboard.BG_ATTACH_TAG, "abcd1234") in captured
+        assert ("set-option", "-wt", "0:9", dashboard_actions.BG_ATTACH_TAG, "abcd1234") in captured
 
     def test_bg_attach_switches_to_the_existing_window(self, monkeypatch):
         """Enter on a row whose attach window is open and still hosts
@@ -640,9 +641,9 @@ class TestRenderSmoke:
                 return "0:5"
             return ""
 
-        monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
-        monkeypatch.setattr("dashboard.tmux_query", lambda *a: "")
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        _patch_dashboard(monkeypatch, "tmux_cmd", fake_tmux)
+        _patch_dashboard(monkeypatch, "tmux_query", lambda *a: "")
+        _patch_dashboard(monkeypatch, "get_session", lambda: "0")
         monkeypatch.setattr("os.path.isdir", lambda p: True)
 
         import ccm_agentview
@@ -694,9 +695,9 @@ class TestRenderSmoke:
             if args and args[0] == "new-window":
                 return "0:5"
             return ""
-        monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
-        monkeypatch.setattr("dashboard.tmux_query", lambda *a: "")
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        _patch_dashboard(monkeypatch, "tmux_cmd", fake_tmux)
+        _patch_dashboard(monkeypatch, "tmux_query", lambda *a: "")
+        _patch_dashboard(monkeypatch, "get_session", lambda: "0")
         monkeypatch.setattr("os.path.isdir", lambda p: True)
 
         import ccm_agentview
@@ -729,12 +730,14 @@ class TestRenderSmoke:
         _stub_dashboard_environment(monkeypatch)
 
         captured = []
-        monkeypatch.setattr("dashboard.tmux_cmd",
-                            lambda *a, **k: captured.append(a) or "")
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        _patch_dashboard(monkeypatch, "tmux_cmd",
+                         lambda *a, **k: captured.append(a) or "")
+        _patch_dashboard(monkeypatch, "get_session", lambda: "0")
 
         import ccm_agentview
         d = Dashboard(initial_mode="dashboard")
+        # Past the check nothing else would stop the attach.
+        monkeypatch.setattr(d, "_find_bg_attach_windows", lambda *a: ("none", []))
         d.projects = []
         d.bg_visible = True
         d.bg_sessions = [
@@ -1335,13 +1338,13 @@ class TestDoAttachAutoStart:
         ]
         d.selected = 0
         started = []
-        monkeypatch.setattr("dashboard.auto_start_claude",
+        monkeypatch.setattr("dashboard_actions.auto_start_claude",
                             lambda wt: started.append(wt))
-        monkeypatch.setattr("dashboard.reset_window_after_attach",
+        monkeypatch.setattr("dashboard_actions.reset_window_after_attach",
                             lambda wt: None)
         monkeypatch.setattr("os.path.isdir", lambda p: True)
         captured = []
-        monkeypatch.setattr("dashboard.tmux_cmd",
+        monkeypatch.setattr("dashboard_actions.tmux_cmd",
                             lambda *a, **k: captured.append(a) or "")
 
         action = d._do_attach(_make_mock_stdscr())
@@ -1366,12 +1369,12 @@ class TestDoAttachAutoStart:
         d = Dashboard(initial_mode="dashboard")
         d.projects = [ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "SHELL")]
         d.selected = 0
-        monkeypatch.setattr("dashboard.auto_start_claude",
+        monkeypatch.setattr("dashboard_actions.auto_start_claude",
                             lambda wt: ccm_window.LaunchResult(ccm_window.UNAVAILABLE))
-        monkeypatch.setattr("dashboard.reset_window_after_attach", lambda wt: None)
+        monkeypatch.setattr("dashboard_actions.reset_window_after_attach", lambda wt: None)
         monkeypatch.setattr("os.path.isdir", lambda p: True)
         captured = []
-        for where in ("dashboard.tmux_cmd", "dashboard_shared.tmux_cmd"):
+        for where in ("dashboard_actions.tmux_cmd", "dashboard_shared.tmux_cmd"):
             monkeypatch.setattr(where, lambda *a, **k: captured.append(a) or "")
         d._do_attach(_make_mock_stdscr())
         msgs = [c for c in captured if c and c[0] == "display-message"]
@@ -1385,12 +1388,12 @@ class TestDoAttachAutoStart:
         d = Dashboard(initial_mode="dashboard")
         d.projects = [ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "SHELL")]
         d.selected = 0
-        monkeypatch.setattr("dashboard.auto_start_claude",
+        monkeypatch.setattr("dashboard_actions.auto_start_claude",
                             lambda wt: ccm_window.LaunchResult(outcome))
-        monkeypatch.setattr("dashboard.reset_window_after_attach", lambda wt: None)
+        monkeypatch.setattr("dashboard_actions.reset_window_after_attach", lambda wt: None)
         monkeypatch.setattr("os.path.isdir", lambda p: True)
         captured = []
-        for where in ("dashboard.tmux_cmd", "dashboard_shared.tmux_cmd"):
+        for where in ("dashboard_actions.tmux_cmd", "dashboard_shared.tmux_cmd"):
             monkeypatch.setattr(where, lambda *a, **k: captured.append(a) or "")
         d._do_attach(_make_mock_stdscr())
         assert not any(c and c[0] == "display-message" for c in captured)
@@ -1431,8 +1434,8 @@ def _interaction_dash(monkeypatch, projects, prompt_answers=()):
         Dashboard, "_trigger_rebuild",
         lambda self: rebuilds.append("rebuild"))
     tmux_calls = []
-    monkeypatch.setattr("dashboard.tmux_cmd",
-                        lambda *a, **k: tmux_calls.append(a) or "")
+    _patch_dashboard(monkeypatch, "tmux_cmd",
+                     lambda *a, **k: tmux_calls.append(a) or "")
     return d, messages, rebuilds, tmux_calls
 
 
@@ -1467,10 +1470,10 @@ class TestDoRemove:
     def _cmds(self, monkeypatch):
         calls = {"unregister": [], "remove": []}
         monkeypatch.setattr(
-            "dashboard.cmd_unregister",
+            "dashboard_actions.cmd_unregister",
             lambda name: calls["unregister"].append(name))
         monkeypatch.setattr(
-            "dashboard.cmd_remove",
+            "dashboard_actions.cmd_remove",
             lambda name: calls["remove"].append(name))
         return calls
 
@@ -1535,8 +1538,8 @@ class TestDoRemove:
 
         def _boom(name):
             raise ccm_core.CCMError("no such project")
-        monkeypatch.setattr("dashboard.cmd_unregister", _boom)
-        monkeypatch.setattr("dashboard.cmd_remove", lambda name: None)
+        monkeypatch.setattr("dashboard_actions.cmd_unregister", _boom)
+        monkeypatch.setattr("dashboard_actions.cmd_remove", lambda name: None)
 
         d, messages, rebuilds, _ = _interaction_dash(
             monkeypatch, [_one_project()], prompt_answers=["u"])
@@ -1556,9 +1559,9 @@ class TestDoIgnoreToggle:
 
     def _cmds(self, monkeypatch):
         calls = {"ignore": [], "unignore": []}
-        monkeypatch.setattr("dashboard.cmd_ignore",
+        monkeypatch.setattr("dashboard_actions.cmd_ignore",
                             lambda name: calls["ignore"].append(name))
-        monkeypatch.setattr("dashboard.cmd_unignore",
+        monkeypatch.setattr("dashboard_actions.cmd_unignore",
                             lambda name: calls["unignore"].append(name))
         return calls
 
@@ -1608,7 +1611,7 @@ class TestDoAdd:
     def _cmd_add(self, monkeypatch):
         calls = []
         monkeypatch.setattr(
-            "dashboard.cmd_add",
+            "dashboard_actions.cmd_add",
             lambda directory, name, create_dir=False:
                 calls.append((directory, name, create_dir)))
         return calls
@@ -1648,12 +1651,12 @@ class TestDoRegister:
     def test_register_untagged_window(self, monkeypatch):
         calls = []
         monkeypatch.setattr(
-            "dashboard.cmd_register",
+            "dashboard_actions.cmd_register",
             lambda win, name: calls.append((win, name)))
         d, _, rebuilds, _ = _interaction_dash(
             monkeypatch, [], prompt_answers=["free", ""])  # empty name → win
         monkeypatch.setattr(
-            "dashboard.tmux_cmd",
+            "dashboard_actions.tmux_cmd",
             lambda *a, **k: ("0:1\talpha\tproj\n0:2\tfree\t"
                              if a[0] == "list-windows" else ""))
         d._do_register(_make_mock_stdscr())
@@ -1663,11 +1666,11 @@ class TestDoRegister:
 
     def test_no_untagged_windows(self, monkeypatch):
         calls = []
-        monkeypatch.setattr("dashboard.cmd_register",
+        monkeypatch.setattr("dashboard_actions.cmd_register",
                             lambda win, name: calls.append((win, name)))
         d, messages, rebuilds, _ = _interaction_dash(monkeypatch, [])
         monkeypatch.setattr(
-            "dashboard.tmux_cmd",
+            "dashboard_actions.tmux_cmd",
             lambda *a, **k: ("0:1\talpha\tproj"
                              if a[0] == "list-windows" else ""))
         d._do_register(_make_mock_stdscr())
@@ -1814,7 +1817,7 @@ class TestDoMenuRemoval:
             "dashboard_menu.cmd_remove",
             lambda name: calls["remove"].append(name))
         monkeypatch.setattr(
-            "dashboard.cmd_ignore",
+            "dashboard_actions.cmd_ignore",
             lambda name: calls["ignore"].append(name))
         return calls
 

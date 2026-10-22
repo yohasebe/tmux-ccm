@@ -10,6 +10,7 @@ import ccm_core
 import ccm_send
 import ccm_spool
 import dashboard
+import dashboard_actions
 from test_send import TestCmdSend as SendHelpers, composer_screen
 from test_dashboard import _stub_dashboard_environment, _make_mock_stdscr
 
@@ -197,7 +198,7 @@ def test_dashboard_held_has_no_resend(monkeypatch):
 def test_dashboard_resend_start_and_failure_keeps_record(monkeypatch):
     path = record()
     d, screen = make_dashboard(monkeypatch, [ord("r"), ord("q")])
-    monkeypatch.setattr(dashboard, "build_project_list", lambda **k: [SendHelpers()._make_project(state="SHELL")])
+    monkeypatch.setattr(dashboard_actions, "build_project_list", lambda **k: [SendHelpers()._make_project(state="SHELL")])
     prompts = []
     monkeypatch.setattr(d, "_prompt", lambda s, text: prompts.append(text) or "y")
     def send(args):
@@ -213,9 +214,9 @@ def test_dashboard_resend_start_and_failure_keeps_record(monkeypatch):
 def test_dashboard_open_sends_no_keys(monkeypatch):
     record("held")
     d, screen = make_dashboard(monkeypatch, [ord("o")])
-    monkeypatch.setattr(dashboard, "build_project_list", lambda **k: [SendHelpers()._make_project()])
+    monkeypatch.setattr(dashboard_actions, "build_project_list", lambda **k: [SendHelpers()._make_project()])
     calls = Mock(return_value="")
-    monkeypatch.setattr(dashboard, "tmux_cmd", calls)
+    monkeypatch.setattr(dashboard_actions, "tmux_cmd", calls)
     assert d._do_spool(screen) == "attached"
     assert calls.call_args_list[0].args == ("select-window", "-t", "0:5")
     assert calls.call_count == 1
@@ -272,7 +273,7 @@ def test_dashboard_read_full_body(monkeypatch):
 def test_dashboard_resend_cancel_does_not_start(monkeypatch):
     path = record()
     d, screen = make_dashboard(monkeypatch, [ord("r"), ord("q")])
-    monkeypatch.setattr(dashboard, "build_project_list", lambda **k: [SendHelpers()._make_project(state="SHELL")])
+    monkeypatch.setattr(dashboard_actions, "build_project_list", lambda **k: [SendHelpers()._make_project(state="SHELL")])
     monkeypatch.setattr(d, "_prompt", lambda *a: "n")
     send = Mock()
     monkeypatch.setattr(ccm_send, "cmd_send", send)

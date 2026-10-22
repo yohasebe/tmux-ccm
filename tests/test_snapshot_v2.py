@@ -463,12 +463,13 @@ def test_terminal_confirmation_restores_terminal_and_escape_needs_no_enter(monke
 
 def test_dashboard_does_not_call_protected_checkpoint_newly_saved(env, monkeypatch):
     import dashboard
+    import dashboard_actions
     snapshot.cmd_prepare_logout([])
     before = contents(env)
     screen = object()
     ui = Mock()
     ui._prompt.return_value = '_autosave'
-    monkeypatch.setattr(dashboard, 'cmd_snapshot_save', snapshot.cmd_snapshot_save)
+    monkeypatch.setattr(dashboard_actions, 'cmd_snapshot_save', snapshot.cmd_snapshot_save)
     dashboard.Dashboard._do_save(ui, screen)
     ui._show_message.assert_called_once_with(screen, 'Snapshot unchanged, empty or protected: _autosave', 1.5)
     assert contents(env) == before
