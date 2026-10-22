@@ -967,7 +967,7 @@ class TestLiveNoninteractiveSessionIds:
             assert ccm_agentview.live_noninteractive_session_ids() is None, bad
 
     def test_odd_numeric_names_and_huge_pids_are_not_records(self, registry):
-        """The CLI enumerates ASCII `\d+.json` only; a superscript
+        r"""The CLI enumerates ASCII `\d+.json` only; a superscript
         digit is not a record, and a number no pid can hold is not a
         process. Neither may raise."""
         d, write, live, alive, tokens = registry

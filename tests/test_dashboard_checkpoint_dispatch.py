@@ -11,7 +11,9 @@ def test_checkpoint_menu_opens_picker_without_inline_cli(monkeypatch):
     d._prompt = Mock(return_value=None)
     d._do_snapshots = Mock()
     command = Mock(side_effect=AssertionError('CLI must run via the suspended terminal path'))
-    monkeypatch.setattr(dashboard, 'cmd_snapshot_load', command)
+    # The menu must not call the CLI directly. The dashboard does not
+    # import it today; the guard still catches a call brought back.
+    monkeypatch.setattr(dashboard, 'cmd_snapshot_load', command, raising=False)
     screen = Mock()
     d._handle_menu_key(10, screen)
     d._do_snapshots.assert_called_once_with(screen)

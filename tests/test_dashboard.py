@@ -56,7 +56,6 @@ def _stub_dashboard_environment(monkeypatch):
     monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
     monkeypatch.setattr("dashboard.get_session", lambda: "0")
     monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-    monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
     monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
     monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
     # signal_age_suffix (via ccm_render) reads the per-project hook

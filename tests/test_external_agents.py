@@ -279,7 +279,6 @@ class TestDashboardExternalAgent:
         monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
         monkeypatch.setattr("dashboard.get_session", lambda: "0")
         monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-        monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
         monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
         monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
@@ -336,7 +335,6 @@ class TestDashboardExternalAgent:
         monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
         monkeypatch.setattr("dashboard.get_session", lambda: "0")
         monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-        monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
         monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
         monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
@@ -394,7 +392,6 @@ class TestDashboardExternalAgent:
                 ("dashboard.errors_log_burst_warning", lambda: ""),
                 ("dashboard.get_session", lambda: "0"),
                 ("dashboard.touch_popup_session", lambda: None),
-                ("dashboard.read_cache_file", lambda *a, **k: ""),
                 ("dashboard.format_elapsed", lambda ts: ""),
                 ("dashboard.format_dir", lambda d, col, w: d)):
             monkeypatch.setattr(name, value)

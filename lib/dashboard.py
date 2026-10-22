@@ -29,16 +29,12 @@ except locale.Error:
 # Add lib dir to path for ccm_core import
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ccm_constants import (
-    CCM_GIT_CACHE_DIR,
-    CCM_PORT_CACHE_DIR,
-    CCM_ROOT,
     CCM_SNAPSHOT_DIR,
     CCM_TMP_DIR,
     COMPLETED_AT_TIMEOUT,
     IDLE_EXIT_TIMEOUT,
     PERMISSION_MODE_WARN,
     STATE_ICONS,
-    STATE_PRIORITY,
     permission_mode_label,
 )
 import ccm_core  # noqa: E402
@@ -48,10 +44,8 @@ from ccm_core import (
     get_session,
     hooks_configured,
     log_caught_exception,
-    md5_hash,
     ps_snapshot,
     raise_on_die,
-    read_cache_file,
     save_tmux_conf_setting,
     tmux_cmd,
     tmux_query,
@@ -97,7 +91,7 @@ from ccm_commands import (
     cmd_unignore,
     cmd_unregister,
 )
-from ccm_snapshot import cmd_snapshot_load, cmd_snapshot_save
+from ccm_snapshot import cmd_snapshot_save
 from ccm_render import (
     display_width,
     EXTERNAL_AGENT_MARK,
