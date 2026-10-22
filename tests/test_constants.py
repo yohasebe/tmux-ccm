@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+import ccm_composer
 import ccm_constants
 
 
@@ -683,21 +684,21 @@ class TestPromptHeldNotice:
         """How many characters were removed, and why, is upstream's
         wording: a count this side insisted on would be a second
         place to get it wrong."""
-        assert ccm_constants.prompt_held_notice(
+        assert ccm_composer.prompt_held_notice(
             self._screen("  " + notice)) == notice
 
     def test_a_rewording_of_the_instruction_is_still_read(self):
         notice = "Cleaned the prompt \u00b7 press Enter again to send"
-        assert ccm_constants.prompt_held_notice(self._screen("  " + notice)) \
+        assert ccm_composer.prompt_held_notice(self._screen("  " + notice)) \
             == notice
 
     def test_no_notice_is_no_hold(self):
         """What the composer holds says nothing: a draft typed after
         the send landed sits there exactly like a message held back.
         Only the notice separates them."""
-        assert ccm_constants.prompt_held_notice(
+        assert ccm_composer.prompt_held_notice(
             self._screen(composer="\u276f reply only")) is None
-        assert ccm_constants.prompt_held_notice(
+        assert ccm_composer.prompt_held_notice(
             self._screen(composer="\u276f ")) is None
 
     def test_a_notice_shaped_line_further_up_the_pane_is_not_the_notice(self):
@@ -706,7 +707,7 @@ class TestPromptHeldNotice:
         the composer are the CLI speaking now. The composer holds a
         draft here, so the row limit is the only thing refusing."""
         quoted = "  Removed 1 invisible character \u00b7 review and press Enter to send"
-        assert ccm_constants.prompt_held_notice(
+        assert ccm_composer.prompt_held_notice(
             self._screen(quoted, "", "", composer="\u276f a draft")) is None
 
     @pytest.mark.parametrize("composer", ["\u276f ", "\u276f something else"],
@@ -719,14 +720,14 @@ class TestPromptHeldNotice:
         instruction but not the status line's shape, and with an
         empty composer nothing is being held whatever it says."""
         above = ["  press Enter to send"] + ["  (hint line)"] * (rows_above - 1)
-        assert ccm_constants.prompt_held_notice(
+        assert ccm_composer.prompt_held_notice(
             self._screen(*above, composer=composer)) is None
 
     def test_the_notice_over_an_empty_composer_is_not_a_hold(self):
         """A held prompt is in the composer. The notice's last
         moments over a box already cleared are not a hold."""
         notice = "  Removed 1 invisible character \u00b7 review and press Enter to send"
-        assert ccm_constants.prompt_held_notice(
+        assert ccm_composer.prompt_held_notice(
             self._screen(notice, composer="\u276f ")) is None
 
     def test_a_notice_cut_short_by_a_narrow_pane_is_not_read(self):
@@ -734,13 +735,13 @@ class TestPromptHeldNotice:
         before the instruction, and the send reports as it did
         before this check existed."""
         cut = "  Removed 1 invisible character \u00b7 review and press Enter \u2026"
-        assert ccm_constants.prompt_held_notice(self._screen(cut)) is None
+        assert ccm_composer.prompt_held_notice(self._screen(cut)) is None
 
     def test_no_composer_is_no_answer(self):
         """A dialog covering the composer, or a capture that read
         nothing: the caller reports what it reported before."""
-        assert ccm_constants.prompt_held_notice("") is None
-        assert ccm_constants.prompt_held_notice(
+        assert ccm_composer.prompt_held_notice("") is None
+        assert ccm_composer.prompt_held_notice(
             "review and press Enter to send\nDo you want to proceed?\n"
             "\u276f 1. Yes") is None
 
@@ -758,7 +759,7 @@ class TestComposerRule:
         "\u2500\u2500 Check the new release " + "\u2500" * 40,
     ], ids=["ten", "padded", "cjk-name", "name", "nbsp", "name-left"])
     def test_rules(self, line):
-        assert ccm_constants.PATTERN_COMPOSER_RULE.match(line)
+        assert ccm_composer.PATTERN_COMPOSER_RULE.match(line)
 
     @pytest.mark.parametrize("line", [
         "\u2500" * 9,
@@ -769,7 +770,7 @@ class TestComposerRule:
         "\u276f " + "\u2500" * 20,
     ], ids=["nine", "no-close", "text-first", "short-runs", "table", "prompt"])
     def test_not_rules(self, line):
-        assert not ccm_constants.PATTERN_COMPOSER_RULE.match(line)
+        assert not ccm_composer.PATTERN_COMPOSER_RULE.match(line)
 
 
 class TestComposerExtendedColours:
@@ -782,14 +783,14 @@ class TestComposerExtendedColours:
         plain = "──────────\n❯ text\n──────────"
         prefix = "\x1b[2m" if dim else ""
         attributed = f"──────────\n❯ {prefix}\x1b[{colour}mtext\x1b[0m\n──────────"
-        result = ccm_constants.composer_draft_fragment(plain, attributed)
+        result = ccm_composer.composer_draft_fragment(plain, attributed)
         assert result == (None if dim else "❯ text")
 
     @pytest.mark.parametrize("reset", ["0", "22"])
     def test_attribute_after_colour_still_clears_dim(self, reset):
         line = f"❯ \x1b[2;38;2;100;100;100;{reset}mtext"
-        assert not ccm_constants._fragment_text_is_dim(line)
+        assert not ccm_composer._fragment_text_is_dim(line)
 
     @pytest.mark.parametrize("colour", ["38", "48;2;100", "38;5;"])
     def test_incomplete_colour_keeps_draft(self, colour):
-        assert not ccm_constants._fragment_text_is_dim(f"❯ \x1b[2;{colour}mtext")
+        assert not ccm_composer._fragment_text_is_dim(f"❯ \x1b[2;{colour}mtext")

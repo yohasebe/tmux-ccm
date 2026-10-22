@@ -3,6 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import ccm_composer
 import ccm_constants
 import ccm_core
 import ccm_send
@@ -124,9 +125,9 @@ def test_short_dropped_body_is_not_submitted(dropped_input):
 def test_complete_match_reuses_composer_region_and_whitespace_folding():
     message = 'A message with wrapped 日本語 text'
     screen = composer_screen('❯ A message with', 'wrapped 日本語 text')
-    assert ccm_constants.composer_has_message_prefix(screen, None, message, complete=True)
+    assert ccm_composer.composer_has_message_prefix(screen, None, message, complete=True)
     partial = composer_screen('❯ ' + message[:12])
-    assert not ccm_constants.composer_has_message_prefix(partial, None, message, complete=True)
+    assert not ccm_composer.composer_has_message_prefix(partial, None, message, complete=True)
 
 
 @pytest.mark.parametrize('render_after', [0.0, 0.1, 1.9, None])

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+import ccm_composer
 import ccm_constants
 import ccm_core
 import ccm_window
@@ -1872,16 +1873,16 @@ class TestComposerDraftGuard:
         `\\s` covers it — pinned so a future tightening to a literal
         space cannot silently stop seeing every draft."""
         import ccm_constants
-        assert ccm_constants.PATTERN_COMPOSER_DRAFT.match("\u276f\u00a0text")
+        assert ccm_composer.PATTERN_COMPOSER_DRAFT.match("\u276f\u00a0text")
 
     def test_doubled_glyph_mode_line_is_not_a_draft(self):
         """Older builds render the accept-edits mode as `❯❯ …` at line
         start. The prompt glyph doubled is a mode line, not a draft —
         the composer always puts a space after its single glyph."""
         import ccm_constants
-        assert not ccm_constants.PATTERN_COMPOSER_DRAFT.match(
+        assert not ccm_composer.PATTERN_COMPOSER_DRAFT.match(
             "❯❯ accept edits on")
-        assert ccm_constants.PATTERN_COMPOSER_DRAFT.match("❯ a draft")
+        assert ccm_composer.PATTERN_COMPOSER_DRAFT.match("❯ a draft")
 
     def test_draft_refuses_and_never_types(self, monkeypatch, capsys):
         calls = self._patch(monkeypatch,

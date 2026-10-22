@@ -2,6 +2,7 @@
 
 import pytest
 
+import ccm_composer
 import ccm_constants
 import ccm_core
 import ccm_pane_state
@@ -74,5 +75,5 @@ def test_coloured_rules_and_text_share_snapshot(monkeypatch, consumer, alternate
 def test_mismatched_attributed_line_cannot_clear_plain_draft():
     plain = screen("❯ a real half-typed draft")
     attributed = screen("\x1b[39m❯ \x1b[2mnow try it with -I\x1b[0m")
-    assert ccm_constants.composer_draft_fragment(plain, attributed) == (
+    assert ccm_composer.composer_draft_fragment(plain, attributed) == (
         "❯ a real half-typed draft")

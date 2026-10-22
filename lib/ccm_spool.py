@@ -67,6 +67,7 @@ import secrets
 import shlex
 import time
 
+import ccm_composer
 import ccm_constants
 import ccm_core
 import ccm_notify
@@ -509,7 +510,7 @@ def _deliverable_pane(win_target, expected_pane=None):
         return None, "capture unreadable"
     if ccm_core.is_agents_tui(cap):
         return None, "agents TUI"
-    if ccm_constants.composer_draft_fragment(
+    if ccm_composer.composer_draft_fragment(
             cap, pane_text_attributed=attributed) is not None:
         return None, "composer holds a draft"
     return pane.pane_id, None
