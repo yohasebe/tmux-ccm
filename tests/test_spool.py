@@ -334,7 +334,7 @@ class TestExpiry:
 
 class TestReconcileDelivery:
     def _stub_delivery(self, monkeypatch, deliverable=("%51", None),
-                       held=None):
+                       held=None, capacity=(200, 100)):
         """Stub the readiness check, the typing helpers and the
         session's answer to the submit; returns (typed_lines, keys).
 
@@ -350,6 +350,8 @@ class TestReconcileDelivery:
                             lambda *a, **k: keys.append(a))
         monkeypatch.setattr(ccm_send, "held_after_submit",
                             lambda pane, **kw: held)
+        monkeypatch.setattr(ccm_send, "composer_capacity",
+                            lambda pane: capacity)
         return typed, keys
 
     def test_a_message_the_session_does_not_take_leaves_the_queue_held(
@@ -449,18 +451,108 @@ class TestReconcileDelivery:
         assert not typed
         assert len(ccm_spool._pending(os.path.join(spool_root, "gone"))) == 1
 
-    def test_one_message_per_project_per_pass(self, spool_root,
-                                              monkeypatch):
-        """Two queued messages deliver one per pass: the second would
-        land in the input buffer of the turn the first just started
-        — the mixing the BUSY refusal exists to prevent."""
+    def test_waiting_messages_go_out_as_one_prompt(self, spool_root,
+                                                   monkeypatch):
+        """A second Enter would land in the turn the first prompt just
+        started. A target idle only for a moment between long turns
+        takes everything waiting in that one prompt, oldest first,
+        each under its own envelope."""
+        typed, keys = self._stub_delivery(monkeypatch)
+        pdir = os.path.join(spool_root, "demo")
+        os.makedirs(pdir)
+        base_ms = int(time.time() * 1000)
+        for ms, sender, body in ((base_ms, "other", "second message"),
+                                 (base_ms - 1000, "tester", "first message")):
+            with open(os.path.join(pdir, f"{ms}-{sender}.msg"), "w") as f:
+                f.write(body)
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert [k for k in keys if k[-1] == "Enter"] == [("%51", "Enter")]
+        headers = [i for i, ln in enumerate(typed) if ln.startswith("[from: ")]
+        assert len(headers) == 2
+        assert "ccm send tester" in typed[headers[0]]
+        assert "ccm send other" in typed[headers[1]]
+        first = typed.index("first message")
+        second = typed.index("second message")
+        assert headers[0] < first < headers[1] < second
+        assert _pending(spool_root) == []
+        delivered = os.listdir(os.path.join(spool_root, "demo", "delivered"))
+        assert len(delivered) == 2
+
+    def test_a_prompt_carries_at_most_the_batch_limit(self, spool_root,
+                                                      monkeypatch):
         typed, _ = self._stub_delivery(monkeypatch)
+        monkeypatch.setattr(ccm_spool, "SPOOL_BATCH_MAX", 2)
+        for i in range(3):
+            ccm_spool.enqueue("demo", "tester", f"message {i}")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert "message 0" in typed and "message 1" in typed
+        assert "message 2" not in typed
+        assert len(_pending(spool_root)) == 1
+
+    def test_the_size_bound_holds_back_the_rest_but_never_the_oldest(
+            self, spool_root, monkeypatch):
+        typed, _ = self._stub_delivery(monkeypatch)
+        monkeypatch.setattr(ccm_spool, "SPOOL_BATCH_MAX_BYTES", 10)
+        ccm_spool.enqueue("demo", "tester", "an oldest message over the bound")
+        ccm_spool.enqueue("demo", "tester", "small")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert "an oldest message over the bound" in typed
+        assert "small" not in typed
+        assert len(_pending(spool_root)) == 1
+
+    def test_only_what_the_input_box_shows_whole_goes_together(
+            self, spool_root, monkeypatch):
+        """The held check reads the start of the prompt, and the input
+        box shows only the last rows of a taller one. Each message
+        takes three rows here and the box shows seven: two fit."""
+        typed, _ = self._stub_delivery(monkeypatch, capacity=(200, 7))
+        for i in range(3):
+            ccm_spool.enqueue("demo", "tester", f"message {i}")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert "message 0" in typed
+        assert "message 1" in typed
+        assert "message 2" not in typed
+        assert len(_pending(spool_root)) == 1
+        delivered = os.listdir(os.path.join(spool_root, "demo", "delivered"))
+        assert len(delivered) == 2
+
+    def test_an_unknown_input_box_sends_the_oldest_alone(self, spool_root,
+                                                          monkeypatch):
+        typed, _ = self._stub_delivery(monkeypatch, capacity=None)
+        ccm_spool.enqueue("demo", "tester", "message 0")
+        ccm_spool.enqueue("demo", "tester", "message 1")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert "message 0" in typed
+        assert "message 1" not in typed
+        assert len(_pending(spool_root)) == 1
+
+    def test_a_tall_oldest_message_still_goes(self, spool_root, monkeypatch):
+        typed, _ = self._stub_delivery(monkeypatch, capacity=(200, 2))
+        ccm_spool.enqueue("demo", "tester", "message 0")
+        ccm_spool.enqueue("demo", "tester", "message 1")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert "message 0" in typed
+        assert "message 1" not in typed
+        assert len(_pending(spool_root)) == 1
+
+    def test_a_held_prompt_holds_every_message_in_it(self, spool_root,
+                                                     monkeypatch):
+        self._stub_delivery(monkeypatch, held="Removed 1 invisible character · review and press Enter to send")
+        ccm_spool.enqueue("demo", "tester", "first​ message")
+        ccm_spool.enqueue("demo", "tester", "second message")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert _pending(spool_root) == []
+        assert ccm_spool.spool_summary()["held"] == 2
+
+    def test_an_unready_target_keeps_every_message(self, spool_root,
+                                                   monkeypatch):
+        typed, _ = self._stub_delivery(monkeypatch,
+                                       deliverable=(None, "raw state BUSY"))
         ccm_spool.enqueue("demo", "tester", "first message")
         ccm_spool.enqueue("demo", "tester", "second message")
         ccm_spool.reconcile_spools([_project(state="IDLE")])
-        assert any("first message" in ln for ln in typed)
-        assert not any("second message" in ln for ln in typed)
-        assert len(_pending(spool_root)) == 1
+        assert not typed
+        assert len(_pending(spool_root)) == 2
 
     def test_oldest_message_delivers_first(self, spool_root, monkeypatch):
         typed, _ = self._stub_delivery(monkeypatch)
@@ -471,8 +563,7 @@ class TestReconcileDelivery:
             with open(os.path.join(pdir, f"{ms}-tester.msg"), "w") as f:
                 f.write(body)
         ccm_spool.reconcile_spools([_project(state="IDLE")])
-        assert any("older" in ln for ln in typed)
-        assert not any("newer" in ln for ln in typed)
+        assert typed.index("older") < typed.index("newer")
 
     def test_held_lock_skips_the_project(self, spool_root, monkeypatch):
         typed, _ = self._stub_delivery(monkeypatch)
@@ -523,6 +614,8 @@ class TestReconcileDelivery:
         monkeypatch.setattr(ccm_spool, "_deliverable_pane",
                             lambda w: ("%51", None))
         monkeypatch.setattr(ccm_send, "_send_keys", lambda *a, **k: None)
+        monkeypatch.setattr(ccm_send, "composer_capacity",
+                            lambda pane: (200, 100))
 
         def boom(_t, _lines):
             raise RuntimeError("simulated crash mid-typing")
@@ -530,8 +623,60 @@ class TestReconcileDelivery:
         monkeypatch.setattr(ccm_core, "log_caught_exception",
                             lambda scope: None)
         ccm_spool.enqueue("demo", "tester", "retry me")
+        ccm_spool.enqueue("demo", "tester", "and me")
         ccm_spool.reconcile_spools([_project(state="IDLE")])
-        assert len(_pending(spool_root)) == 1
+        assert len(_pending(spool_root)) == 2
+
+
+class TestBatchHeldOnScreen:
+    """The batch against the real held check: the prompt stays in the
+    input box after Enter with no notice above it. A 24-row pane shows
+    seven rows of a body, so of five short messages two go together,
+    and the start the check reads is on screen."""
+
+    def _world(self, monkeypatch, composer_after_enter):
+        clock = [time.time()]
+        monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
+        monkeypatch.setattr(ccm_send.time, "sleep",
+                            lambda sec: clock.__setitem__(0, clock[0] + sec))
+        monkeypatch.setattr(ccm_spool, "_deliverable_pane",
+                            lambda w: ("%51", None))
+        monkeypatch.setattr(ccm_send, "_send_keys", lambda *a, **k: None)
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *a, **k: "200 24"
+                            if a[0] == "display-message" else "")
+        typed = []
+        monkeypatch.setattr(ccm_send, "_type_body",
+                            lambda t, lines: typed.extend(lines))
+
+        def capture(pane):
+            rows = composer_after_enter(typed)
+            return composer_screen(*rows), None
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
+        for i in range(5):
+            ccm_spool.enqueue("demo", f"sender{i}", f"Please review item {i}.")
+        return typed
+
+    def test_a_prompt_left_in_the_box_holds_what_it_carried(
+            self, spool_root, monkeypatch):
+        def kept(typed):
+            return ["\u276f " + typed[0]] + ["  " + ln for ln in typed[1:]]
+        typed = self._world(monkeypatch, kept)
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert len([ln for ln in typed if ln.startswith("[from: ")]) == 2
+        assert ccm_spool.spool_summary()["held"] == 2
+        assert len(_pending(spool_root)) == 3
+        assert not os.path.isdir(os.path.join(spool_root, "demo", "delivered"))
+
+    def test_a_draft_typed_after_the_prompt_was_taken_is_not_a_hold(
+            self, spool_root, monkeypatch):
+        typed = self._world(monkeypatch,
+                            lambda typed: ["\u276f Please review item 1."])
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert len([ln for ln in typed if ln.startswith("[from: ")]) == 2
+        assert ccm_spool.spool_summary()["held"] == 0
+        delivered = os.listdir(os.path.join(spool_root, "demo", "delivered"))
+        assert len(delivered) == 2
 
 
 class TestDeliverablePane:

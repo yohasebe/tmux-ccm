@@ -20,10 +20,14 @@ Layout per project (`<project>` is the registered project name):
 
 Delivery semantics, deliberately chosen and pinned by tests:
 
-  - **One message per project per pass.** Two back-to-back sends
+  - **One prompt per project per pass.** Two back-to-back sends
     would land the second in the input buffer of the turn the first
     just started — the mixing the BUSY refusal existed to prevent.
-    The queue drains one per IDLE observation instead.
+    What is waiting goes out together instead, as one prompt with
+    each message under its own envelope (SPOOL_BATCH_MAX,
+    SPOOL_BATCH_MAX_BYTES, and no more than the input box shows
+    whole), so a target idle only briefly between long turns does
+    not let the rest age out one turn at a time.
   - **Claim-by-rename** (`msg` → `msg.delivering`) before typing, so
     a concurrent pass cannot pick the same message up.
   - **At-least-once.** A crash between the send-keys and the move to
@@ -82,6 +86,13 @@ SPOOL_TTL_SEC = int(os.environ.get("CCM_SPOOL_TTL_SEC", "3600"))
 # The bound on a message's age however long its target waited on its
 # user or the machine slept.
 SPOOL_MAX_AGE_SEC = int(os.environ.get("CCM_SPOOL_MAX_AGE_SEC", "86400"))
+
+# A target that works in long turns is idle only briefly between
+# them, and a typed prompt starts the next turn. Everything waiting
+# for it goes in that one prompt, oldest first, up to these bounds;
+# the rest waits for the next idle moment.
+SPOOL_BATCH_MAX = 5
+SPOOL_BATCH_MAX_BYTES = 16384
 
 # The sender label of ccm's own notices. It cannot be a project name:
 # `validate_name` collapses a run of hyphens, so no project is named
@@ -524,27 +535,81 @@ def _envelope(sender, queued_ts, now):
     return f"[from: {label} · queued {q} · delivered {d} — {reply}]"
 
 
-def _deliver_one(project, pdir, msg_name):
-    """Claim, deliver, and file one message. Returns True on delivery.
+def _batch(pdir, pending):
+    """The oldest pending messages that go out together: at most
+    SPOOL_BATCH_MAX of them and SPOOL_BATCH_MAX_BYTES of bodies, but
+    always the oldest one, however large."""
+    chosen, size = [], 0
+    for name in pending[:SPOOL_BATCH_MAX]:
+        try:
+            n = os.path.getsize(os.path.join(pdir, name))
+        except OSError:
+            continue
+        if chosen and size + n > SPOOL_BATCH_MAX_BYTES:
+            break
+        chosen.append(name)
+        size += n
+    return chosen
 
-    On any failure the message is renamed back to pending and retried
-    on a later pass — at-least-once (see the module docstring)."""
-    src = os.path.join(pdir, msg_name)
-    delivering = src + ".delivering"
-    try:
-        os.rename(src, delivering)
-    except OSError:
-        return False  # claimed by a concurrent pass
+
+def _deliver_one(project, pdir, msg_name):
+    return _deliver(project, pdir, [msg_name])
+
+
+def _deliver(project, pdir, msg_names):
+    """Claim, deliver as one prompt, and file the messages. Returns
+    True on delivery.
+
+    Each message keeps its own envelope, in queue order. On any
+    failure every claimed message is renamed back to pending and
+    retried on a later pass — at-least-once (see the module
+    docstring)."""
+    claimed = []
+    for msg_name in msg_names:
+        src = os.path.join(pdir, msg_name)
+        try:
+            os.rename(src, src + ".delivering")
+        except OSError:
+            continue  # claimed by a concurrent pass
+        claimed.append(msg_name)
+    if not claimed:
+        return False
+
+    def _file(sub):
+        if sub:
+            os.makedirs(os.path.join(pdir, sub), exist_ok=True)
+        for name in claimed:
+            src = os.path.join(pdir, name)
+            os.rename(src + ".delivering",
+                      os.path.join(pdir, sub, name) if sub else src)
+
     try:
         pane_id, _reason = _deliverable_pane(project.win_target)
         if pane_id is None:
-            os.rename(delivering, src)
+            _file(None)
             return False
-        parsed = _parse_msg_name(msg_name)
-        queued, sender = parsed if parsed else (None, "unknown")
-        with open(delivering, encoding="utf-8") as f:
-            body = f.read()
-        text = _envelope(sender, queued, time.time()) + "\n\n" + body
+        now = time.time()
+        parts = []
+        for name in claimed:
+            parsed = _parse_msg_name(name)
+            queued, sender = parsed if parsed else (None, "unknown")
+            with open(os.path.join(pdir, name + ".delivering"),
+                      encoding="utf-8") as f:
+                body = f.read()
+            parts.append(_envelope(sender, queued, now) + "\n\n" + body)
+        # The held check reads the start of the prompt, and the input
+        # box shows only the last rows of a tall one. So messages join
+        # the oldest only while the whole prompt still fits; the rest
+        # go back to pending for the next idle moment.
+        box = ccm_send.composer_capacity(pane_id) if len(parts) > 1 else None
+        while len(parts) > 1 and (
+                box is None
+                or ccm_send.body_rows("\n\n".join(parts), box[0]) > box[1]):
+            src = os.path.join(pdir, claimed[-1])
+            os.rename(src + ".delivering", src)
+            claimed.pop()
+            parts.pop()
+        text = "\n\n".join(parts)
         ccm_send._send_keys(pane_id, "-X", "cancel", label="spool-pre-cancel")
         ccm_send._type_body(pane_id, text.split("\n"))
         ccm_send._send_keys(pane_id, "Enter", label="spool-submit")
@@ -558,20 +623,18 @@ def _deliver_one(project, pdir, msg_name):
             # that from a message never delivered. So it leaves the
             # queue for `held/`, where `ccm spool list` and
             # `ccm doctor` name it and the reader decides.
-            hdir = os.path.join(pdir, "held")
-            os.makedirs(hdir, exist_ok=True)
-            os.rename(delivering, os.path.join(hdir, msg_name))
+            _file("held")
             return False
-        ddir = os.path.join(pdir, "delivered")
-        os.makedirs(ddir, exist_ok=True)
-        os.rename(delivering, os.path.join(ddir, msg_name))
+        _file("delivered")
         return True
     except Exception:
         ccm_core.log_caught_exception("spool-deliver")
-        try:
-            os.rename(delivering, src)
-        except OSError:
-            pass
+        for name in claimed:
+            src = os.path.join(pdir, name)
+            try:
+                os.rename(src + ".delivering", src)
+            except OSError:
+                pass
         return False
 
 
@@ -581,8 +644,9 @@ def reconcile_spools(projects):
     Called from the `inject-status` full pass (periodic, under its
     flock) — the single delivery driver in v1. Runs BEFORE
     auto_exit_idle so a session with a pending message is used, not
-    closed. Per project: expire first, then deliver at most one
-    message, and only to a project that currently reads IDLE.
+    closed. Per project: expire first, then deliver the oldest waiting
+    messages as one prompt (`_batch`, `_deliver`), and only to a
+    project that currently reads IDLE.
     """
     root = SPOOL_ROOT
     if not os.path.isdir(root):
@@ -621,7 +685,7 @@ def reconcile_spools(projects):
             # stale by the time the lock is taken.
             pending = _pending(pdir)
             if pending:
-                _deliver_one(project, pdir, pending[0])
+                _deliver(project, pdir, _batch(pdir, pending))
         finally:
             _release_lock(pdir)
 

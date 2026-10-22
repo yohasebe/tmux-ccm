@@ -222,15 +222,11 @@ _START_BODY_POLL_SEC = 0.1
 # How many rows of a body Claude Code's input box shows: half the pane
 # height less five (measured on 2.1.289 at heights 24, 25, 30, 40, 41,
 # 60 and 80). A taller body shows only its last rows, with the prompt
-# glyph on the first of them, so the check below can never see it whole.
-def _start_body_fits(pane_target, message):
-    """False when the body looks taller than the input box can show, so
-    typing it after a launch could not be confirmed. An estimate, not a
-    bound: emoji sequences count wider and tabs narrower than drawn, so
-    it can refuse a body that fits (nothing is typed) or pass one that
-    does not (the check after typing still stops it). None when the pane
-    size cannot be read."""
-    from ccm_render import display_width
+# glyph on the first of them, so the checks that read its start can
+# never see it.
+def composer_capacity(pane_target):
+    """`(width, rows)`: the pane's width and how many rows of a body its
+    input box shows. None when the pane size cannot be read."""
     size = ccm_core.tmux_cmd("display-message", "-p", "-t", pane_target,
                              "#{pane_width} #{pane_height}").split()
     if len(size) != 2 or not all(v.isdigit() for v in size):
@@ -238,12 +234,31 @@ def _start_body_fits(pane_target, message):
     width, height = int(size[0]), int(size[1])
     if width < 3:
         return None
-    shown = height // 2 - 5
+    return width, height // 2 - 5
+
+
+def body_rows(message, width):
+    """Rows `message` takes in an input box `width` columns wide. An
+    estimate, not a bound: emoji sequences count wider and tabs
+    narrower than drawn."""
+    from ccm_render import display_width
     # A row holds at most `width` columns, and each line follows a
     # 2-column prompt or indent.
-    needed = sum(-(-(display_width(line) + 2) // width)
-                 for line in message.split("\n"))
-    return needed <= shown
+    return sum(-(-(display_width(line) + 2) // width)
+               for line in message.split("\n"))
+
+
+def _start_body_fits(pane_target, message):
+    """False when the body looks taller than the input box can show, so
+    typing it after a launch could not be confirmed. An estimate (see
+    `body_rows`): it can refuse a body that fits (nothing is typed) or
+    pass one that does not (the check after typing still stops it).
+    None when the pane size cannot be read."""
+    box = composer_capacity(pane_target)
+    if box is None:
+        return None
+    width, shown = box
+    return body_rows(message, width) <= shown
 
 
 def _wait_for_start_body(pane_target, message):
