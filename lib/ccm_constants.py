@@ -233,13 +233,26 @@ PATTERN_COMPOSER_DRAFT = re.compile(rf"^[{_PROMPT_CHARS}]\s+\S")
 # top-down and taking the first hit reads the user's previous message
 # as a draft — and refuses every send for as long as one is on
 # screen. That shipped, and cost a queued message its whole TTL.
-PATTERN_COMPOSER_RULE = re.compile(r"^\s*\u2500{10,}\s*$")
+#
+# A named session draws its name into the upper rule
+# (`\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 <name> \u2500`, seen with 2.1.304). Missing that rule moves
+# the bracket up to an older rule in the transcript, where the
+# just-submitted prompt then reads as a draft that never left. The
+# name is accepted on either side of a run of at least ten.
+PATTERN_COMPOSER_RULE = re.compile(
+    r"^\s*(?:\u2500{10,}"
+    r"|\u2500{10,}[ \u00a0]+\S.*?[ \u00a0]+\u2500+"
+    r"|\u2500+[ \u00a0]+\S.*?[ \u00a0]+\u2500{10,})\s*$")
 
 # How far above the bottom the closing rule may sit. Below it Claude
 # Code draws only the status lines, so a rule further up than this
 # belongs to the transcript (or to a dialog covering the composer)
 # and brackets something that is not an input box.
 COMPOSER_TAIL_WINDOW = 6
+
+# The composer's first row: the prompt glyph at the left edge, then a
+# space or nothing.
+PATTERN_COMPOSER_FIRST_ROW = re.compile(rf"^[{_PROMPT_CHARS}](?:\s|$)")
 
 
 def composer_draft_fragment(pane_text, pane_text_attributed=None):
@@ -275,11 +288,10 @@ def composer_draft_fragment(pane_text, pane_text_attributed=None):
 def composer_visible(pane_text):
     """Positive evidence of an input prompt between the bottom rules."""
     lines = pane_text.rstrip().split("\n")
-    rules = [i for i, line in enumerate(lines) if PATTERN_COMPOSER_RULE.match(line)]
-    return (len(rules) >= 2
-            and len(lines) - rules[-1] <= COMPOSER_TAIL_WINDOW
+    edges = _composer_edges(lines)
+    return (edges is not None
             and any(PATTERN_INPUT_PROMPT.match(line)
-                    for line in lines[rules[-2] + 1:rules[-1]]))
+                    for line in lines[edges[0] + 1:edges[1]]))
 
 
 def composer_has_message_prefix(pane_text, attributed, message, *, complete=False):
@@ -304,6 +316,25 @@ def composer_has_message_prefix(pane_text, attributed, message, *, complete=Fals
     return draft.startswith(prefix)
 
 
+def _composer_edges(lines):
+    """`(upper, lower)` rows of the rules around the composer, or None.
+
+    The lower rule is the last one, near the bottom. The upper one is
+    the nearest rule above it whose next row starts with the prompt
+    glyph: the composer's first row always does, and a continuation
+    row of a draft is indented, so a rule-shaped line typed into a
+    draft is passed over. Without such a rule the second-last one is
+    used."""
+    rules = [i for i, ln in enumerate(lines) if PATTERN_COMPOSER_RULE.match(ln)]
+    if len(rules) < 2 or len(lines) - rules[-1] > COMPOSER_TAIL_WINDOW:
+        return None
+    bottom = rules[-1]
+    for top in reversed(rules[:-1]):
+        if PATTERN_COMPOSER_FIRST_ROW.match(lines[top + 1]):
+            return top, bottom
+    return rules[-2], bottom
+
+
 def _composer_lines(pane_text, pane_text_attributed=None):
     """The composer's own lines, from its draft line to the closing
     rule, or [] when the composer is bare, absent or showing the
@@ -313,10 +344,11 @@ def _composer_lines(pane_text, pane_text_attributed=None):
     lines = pane_text.split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
-    rules = [i for i, ln in enumerate(lines) if PATTERN_COMPOSER_RULE.match(ln)]
-    if len(rules) < 2 or len(lines) - rules[-1] > COMPOSER_TAIL_WINDOW:
+    edges = _composer_edges(lines)
+    if edges is None:
         return []
-    for idx in range(rules[-2] + 1, rules[-1]):
+    top, bottom = edges
+    for idx in range(top + 1, bottom):
         ln = lines[idx]
         if PATTERN_COMPOSER_DRAFT.match(ln):
             if pane_text_attributed is not None:
@@ -325,7 +357,7 @@ def _composer_lines(pane_text, pane_text_attributed=None):
                         and strip_sgr(att_lines[idx]) == ln
                         and _fragment_text_is_dim(att_lines[idx])):
                     return []
-            return lines[idx:rules[-1]]
+            return lines[idx:bottom]
     return []
 
 
@@ -388,12 +420,12 @@ def prompt_held_notice(pane_text, pane_text_attributed=None):
     lines = pane_text.split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
-    rules = [i for i, ln in enumerate(lines) if PATTERN_COMPOSER_RULE.match(ln)]
-    if len(rules) < 2 or len(lines) - rules[-1] > COMPOSER_TAIL_WINDOW:
+    edges = _composer_edges(lines)
+    if edges is None:
         return None
     if not _composer_lines(pane_text, pane_text_attributed):
         return None
-    top = rules[-2]
+    top = edges[0]
     for idx in range(max(0, top - HELD_NOTICE_LOOKBACK), top):
         if PATTERN_PROMPT_HELD.search(lines[idx]):
             return lines[idx].strip()

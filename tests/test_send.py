@@ -1420,6 +1420,17 @@ BARE = _screen(composer="❯ ")
 DRAFT_AFTER_THE_SEND = _screen(
     "❯ Please reply only OK.", "", "  OK", "", composer="❯ reply only")
 BODY_WITH_INVISIBLE = "Reply only REVIEW278_OK. A​B"
+# A named session draws its name into the upper rule (2.1.304). The
+# message was taken; an older rule further up the transcript must not
+# become the composer's upper edge.
+_NAMED_RULE = "─" * 30 + " Check the new release ─"
+NAMED_MESSAGE = "Please review the attached notes and reply when done."
+TAKEN_UNDER_A_NAMED_RULE = "\n".join([
+    "⏺ an earlier answer", "", _RULE, "  a table border", "",
+    "❯ " + NAMED_MESSAGE, "", "✶ Thinking… (2s)", "",
+    _NAMED_RULE, "❯ ", _RULE,
+    "  ⏵⏵ auto mode on (shift+tab to cycle)", "",
+])
 
 
 class TestHeldAfterSubmit:
@@ -1465,6 +1476,20 @@ class TestHeldAfterSubmit:
         it the message held back."""
         self._capture(monkeypatch, [DRAFT_AFTER_THE_SEND])
         assert ccm_send.held_after_submit("%51", timeout=0.2) is None
+
+    def test_a_taken_message_under_a_named_rule_is_not_a_hold(self, monkeypatch):
+        """The prompt just sent is in the transcript and the composer
+        is empty; the session's name sits in the upper rule."""
+        taken = self._capture(monkeypatch, [TAKEN_UNDER_A_NAMED_RULE])
+        assert ccm_send.held_after_submit(
+            "%51", timeout=0.2, message=NAMED_MESSAGE) is None
+        assert len(taken) == 1
+
+    def test_the_notice_above_a_named_rule_is_a_hold(self, monkeypatch):
+        held = "\n".join([_NOTICE, _NAMED_RULE, "❯ Reply only REVIEW278_OK. AB",
+                          _RULE, "  ⏵⏵ auto mode on (shift+tab to cycle)", ""])
+        self._capture(monkeypatch, [held])
+        assert ccm_send.held_after_submit("%51", timeout=0.2) == _NOTICE.strip()
 
     def test_a_clear_composer_answers_on_the_first_capture(self, monkeypatch):
         """The ordinary send: one capture, no waiting."""
@@ -1896,6 +1921,54 @@ class TestComposerDraftGuard:
         ccm_send.cmd_send(["demo", "--now", "hello"])
         assert self._literal_sent(calls), \
             "an old prompt on screen blocked a send into a bare composer"
+
+    @staticmethod
+    def _named_screen(composer_row):
+        rule = "─" * 80
+        return "\n".join([
+            "⏺ an earlier answer", "", rule, "  a table border", "",
+            "❯ a prompt sent earlier", "⏺ and its response", "",
+            "─" * 60 + " Check the new release ─", composer_row, rule,
+            "  /tmp/demo  main  Opus 5  ctx 42%", "",
+        ])
+
+    def test_named_session_bare_composer_proceeds(self, monkeypatch):
+        """The session's name in the upper rule leaves an older rule
+        as the nearest plain one; the prompt below it is history."""
+        calls = self._patch(monkeypatch, self._named_screen("❯ "))
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls)
+
+    @pytest.mark.parametrize("typed_rule", [
+        "  " + "─" * 30 + " Check the new release ─",
+        "  " + "─" * 60,
+    ], ids=["named", "plain"])
+    def test_rule_typed_into_a_draft_is_not_its_edge(self, monkeypatch,
+                                                     capsys, typed_rule):
+        """A rule-shaped line typed into a multi-line draft is an
+        indented continuation row, not the composer's upper rule."""
+        rule = "─" * 60
+        calls = self._patch(monkeypatch, "\n".join([
+            rule, "❯ Please review this section:", typed_rule,
+            "  unfinished notes", rule, "  status", ""]))
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)
+        assert "Please review this section" in capsys.readouterr().err
+
+    def test_named_session_is_ready_for_start(self, monkeypatch):
+        screen = self._named_screen("❯ ")
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot",
+                            lambda pane: (screen, None))
+        assert ccm_send._start_composer_ready("%1")
+
+    def test_named_session_draft_refuses(self, monkeypatch, capsys):
+        calls = self._patch(monkeypatch,
+                            self._named_screen("❯ half-typed thought"))
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)
+        assert "half-typed thought" in capsys.readouterr().err
 
     def test_dialog_over_the_composer_is_not_a_draft(self, monkeypatch):
         """A permission dialog replaces the input box entirely. With

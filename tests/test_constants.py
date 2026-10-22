@@ -745,6 +745,33 @@ class TestPromptHeldNotice:
             "\u276f 1. Yes") is None
 
 
+class TestComposerRule:
+    """The rules above and below the composer, including the upper
+    one carrying a named session's name (2.1.304)."""
+
+    @pytest.mark.parametrize("line", [
+        "\u2500" * 10,
+        "  " + "\u2500" * 80 + "  ",
+        "\u2500" * 60 + " Gemini\u306e\u65b0\u30e2\u30c7\u30eb\u3092\u78ba\u8a8d \u2500",
+        "\u2500" * 30 + " Check the new release " + "\u2500" * 3,
+        "\u2500" * 30 + "\u00a0Check\u00a0\u2500",
+        "\u2500\u2500 Check the new release " + "\u2500" * 40,
+    ], ids=["ten", "padded", "cjk-name", "name", "nbsp", "name-left"])
+    def test_rules(self, line):
+        assert ccm_constants.PATTERN_COMPOSER_RULE.match(line)
+
+    @pytest.mark.parametrize("line", [
+        "\u2500" * 9,
+        "\u2500" * 10 + " output without a closing rule",
+        "heading " + "\u2500" * 20,
+        "\u2500\u2500 short \u2500\u2500",
+        "\u2500" * 10 + "\u252c" + "\u2500" * 10,
+        "\u276f " + "\u2500" * 20,
+    ], ids=["nine", "no-close", "text-first", "short-runs", "table", "prompt"])
+    def test_not_rules(self, line):
+        assert not ccm_constants.PATTERN_COMPOSER_RULE.match(line)
+
+
 class TestComposerExtendedColours:
     @pytest.mark.parametrize("colour", [
         "38;5;2", "48;5;2", "38;2;100;100;100", "48;2;100;100;100",
