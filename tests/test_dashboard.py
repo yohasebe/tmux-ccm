@@ -1749,18 +1749,21 @@ class TestDoSearch:
 
 
 def _dashboard_source():
-    import inspect
-    return inspect.getsource(dashboard)
+    """dashboard.py and the modules its Dashboard is assembled from."""
+    import glob, inspect, os
+    lib = os.path.dirname(inspect.getsourcefile(dashboard))
+    paths = [os.path.join(lib, "dashboard.py")] + sorted(
+        glob.glob(os.path.join(lib, "dashboard_*.py")))
+    return "\n".join(open(p, encoding="utf-8").read() for p in paths)
 
 
 def _method_source(name):
-    import ast, inspect
-    src = inspect.getsource(dashboard)
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return ast.get_source_segment(src, node)
-    raise AssertionError(f"{name} not found")
+    """A Dashboard method's source, from whichever module defines it."""
+    import inspect
+    method = getattr(Dashboard, name, None)
+    if method is None:
+        raise AssertionError(f"{name} not found")
+    return inspect.getsource(method)
 
 
 def _list_literal(name, closing_indent):
