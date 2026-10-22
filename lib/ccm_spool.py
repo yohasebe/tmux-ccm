@@ -63,6 +63,7 @@ Delivery semantics, deliberately chosen and pinned by tests:
 import json
 import os
 import re
+import secrets
 import shlex
 import time
 
@@ -514,12 +515,19 @@ def _deliverable_pane(win_target, expected_pane=None):
     return pane.pane_id, None
 
 
-def _envelope(sender, queued_ts, now):
+def _envelope(sender, queued_ts, now, mark=None):
     """The header a queued message is delivered under: provenance, so
     the receiver can tell a stale or duplicated delivery from a fresh
     one, and the reply route, so nobody relays by hand. A message can
     wait up to a day (SPOOL_MAX_AGE_SEC), so both times carry the date
-    when it was queued on another day than it is delivered."""
+    when it was queued on another day than it is delivered.
+
+    `mark` names the delivery and the message's place in it
+    (`3fa29c 1/2`). A body can contain a line shaped like a header, and
+    in a prompt carrying several messages that line would pass for the
+    next one; checking it against this delivery's mark and count tells
+    them apart. The mark is random, not unique: a line written before
+    could match it by chance (1 in 2**24)."""
     fmt = "%H:%M"
     if queued_ts and (time.localtime(queued_ts)[:3]
                       != time.localtime(now)[:3]):
@@ -532,7 +540,8 @@ def _envelope(sender, queued_ts, now):
              else "a notice from ccm itself; no reply needed" if sender == SYSTEM_SENDER
              else f'reply with `ccm send {sender} "…"`')
     label = "ccm" if sender == SYSTEM_SENDER else sender
-    return f"[from: {label} · queued {q} · delivered {d} — {reply}]"
+    delivery = f" · delivery {mark}" if mark else ""
+    return f"[from: {label} · queued {q} · delivered {d}{delivery} — {reply}]"
 
 
 def _batch(pdir, pending):
@@ -589,27 +598,34 @@ def _deliver(project, pdir, msg_names):
             _file(None)
             return False
         now = time.time()
-        parts = []
+        mark = secrets.token_hex(3)
+        items = []
         for name in claimed:
             parsed = _parse_msg_name(name)
             queued, sender = parsed if parsed else (None, "unknown")
             with open(os.path.join(pdir, name + ".delivering"),
                       encoding="utf-8") as f:
-                body = f.read()
-            parts.append(_envelope(sender, queued, now) + "\n\n" + body)
+                items.append((sender, queued, f.read()))
+
+        def compose():
+            n = len(items)
+            return "\n\n".join(
+                _envelope(sender, queued, now, mark=f"{mark} {i}/{n}")
+                + "\n\n" + body
+                for i, (sender, queued, body) in enumerate(items, 1))
         # The held check reads the start of the prompt, and the input
         # box shows only the last rows of a tall one. So messages join
         # the oldest only while the whole prompt still fits; the rest
         # go back to pending for the next idle moment.
-        box = ccm_send.composer_capacity(pane_id) if len(parts) > 1 else None
-        while len(parts) > 1 and (
+        box = ccm_send.composer_capacity(pane_id) if len(items) > 1 else None
+        while len(items) > 1 and (
                 box is None
-                or ccm_send.body_rows("\n\n".join(parts), box[0]) > box[1]):
+                or ccm_send.body_rows(compose(), box[0]) > box[1]):
             src = os.path.join(pdir, claimed[-1])
             os.rename(src + ".delivering", src)
             claimed.pop()
-            parts.pop()
-        text = "\n\n".join(parts)
+            items.pop()
+        text = compose()
         ccm_send._send_keys(pane_id, "-X", "cancel", label="spool-pre-cancel")
         ccm_send._type_body(pane_id, text.split("\n"))
         ccm_send._send_keys(pane_id, "Enter", label="spool-submit")
