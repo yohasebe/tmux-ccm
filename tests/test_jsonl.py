@@ -54,11 +54,12 @@ class TestJsonlFreshness:
     def test_slug_simple(self):
         assert ccm_jsonl._project_slug("/Users/ann/code/foo") == "-Users-ann-code-foo"
 
-    def test_slug_with_tilde(self):
-        # ~ should expand; trailing slash and structure preserved
+    def test_slug_with_tilde(self, monkeypatch):
+        # ~ should expand; trailing slash and structure preserved. HOME
+        # is pinned: a real one may hold characters the slug also dashes.
+        monkeypatch.setenv("HOME", "/h/tester")
         slug = ccm_jsonl._project_slug("~/code/foo")
-        home = os.path.expanduser("~")
-        assert slug == (home + "/code/foo").replace("/", "-")
+        assert slug == "-h-tester-code-foo"
 
     def test_slug_non_ascii_chars_each_become_dash(self):
         """Claude Code dashes EVERY non-alphanumeric character, one
