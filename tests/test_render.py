@@ -46,7 +46,7 @@ class TestFormatElapsed:
     # contract — the dashboard's right-anchored elapsed slot relies on
     # this so the marker's right edge doesn't wobble at 1↔2 digit
     # boundaries as the counter ticks. Don't relax these without also
-    # widening `ELAPSED_RIGHT_SLOT` in `lib/dashboard.py`.
+    # widening `ELAPSED_RIGHT_SLOT` in `lib/dashboard_render.py`.
 
     def test_seconds_two_digit(self):
         ts = int(time.time()) - 30

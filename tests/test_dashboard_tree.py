@@ -60,7 +60,7 @@ def test_the_tree_lists_sessions_windows_and_split_panes(board, monkeypatch):
     targets = [board.tree_lines[i][3] for i in board.tree_selectable]
     assert targets == ["main:1", "main:2", "other:0"]
     project_attr = board.tree_lines[1][2]
-    assert project_attr == dashboard.STATE_COLOR_PAIR["IDLE"] * 256
+    assert project_attr == dashboard_tree.STATE_COLOR_PAIR["IDLE"] * 256
 
 
 def test_enter_on_a_window_switches_to_it(board, monkeypatch):

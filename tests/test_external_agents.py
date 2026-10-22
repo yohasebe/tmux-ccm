@@ -266,25 +266,8 @@ class TestDashboardExternalAgent:
         from unittest.mock import MagicMock
         from dashboard import Dashboard
 
-        monkeypatch.setattr("dashboard.Dashboard._lifecycle_banner", lambda *a: "")
-        monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
-        monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
-        monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
-        monkeypatch.setattr("dashboard.disable_all_hooks_warning",
-                            lambda *a, **kw: "")
-        monkeypatch.setattr("dashboard.managed_hooks_only_warning",
-                            lambda *a, **kw: "")
-        monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
-        monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
-        monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
-        monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-        monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
-        monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
-        monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d, session_id=None: None)
-        import curses as _curses
-        monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
+        from test_dashboard import _stub_dashboard_environment
+        _stub_dashboard_environment(monkeypatch)
 
         texts = []
         monkeypatch.setattr(
@@ -322,25 +305,8 @@ class TestDashboardExternalAgent:
         from unittest.mock import MagicMock
         from dashboard import Dashboard
         calls = []
-        monkeypatch.setattr("dashboard.Dashboard._lifecycle_banner", lambda *a: "")
-        monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
-        monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
-        monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
-        monkeypatch.setattr("dashboard.disable_all_hooks_warning",
-                            lambda *a, **kw: "")
-        monkeypatch.setattr("dashboard.managed_hooks_only_warning",
-                            lambda *a, **kw: "")
-        monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
-        monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
-        monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
-        monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-        monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
-        monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
-        monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d, session_id=None: None)
-        import curses as _curses
-        monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
+        from test_dashboard import _stub_dashboard_environment
+        _stub_dashboard_environment(monkeypatch)
         monkeypatch.setattr(
             Dashboard, "_addstr",
             lambda self, stdscr, y, x, text, attr=0, max_col=0:
@@ -378,25 +344,10 @@ class TestDashboardExternalAgent:
 
         def capture(self_, stdscr, y, x, text, attr=0, max_col=0):
             calls.append((text, attr))
-        monkeypatch.setattr(_curses, "color_pair", lambda n: n)
         from unittest.mock import MagicMock
-        for name, value in (
-                ("dashboard.Dashboard._lifecycle_banner", lambda *a: ""),
-                ("dashboard.tmux_cmd", lambda *a, **k: ""),
-                ("dashboard.hooks_configured", lambda: True),
-                ("dashboard.hooks_log_warning", lambda: ""),
-                ("dashboard.disable_all_hooks_warning", lambda *a, **kw: ""),
-                ("dashboard.managed_hooks_only_warning", lambda *a, **kw: ""),
-                ("dashboard.shell_cluster_warnings", lambda p: []),
-                ("dashboard.hook_silence_warnings", lambda p: []),
-                ("dashboard.errors_log_burst_warning", lambda: ""),
-                ("dashboard.get_session", lambda: "0"),
-                ("dashboard.touch_popup_session", lambda: None),
-                ("dashboard.format_elapsed", lambda ts: ""),
-                ("dashboard.format_dir", lambda d, col, w: d)):
-            monkeypatch.setattr(name, value)
-        monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d, session_id=None: None)
+        from test_dashboard import _stub_dashboard_environment
+        _stub_dashboard_environment(monkeypatch)
+        monkeypatch.setattr(_curses, "color_pair", lambda n: n)
         monkeypatch.setattr(dashboard.Dashboard, "_addstr", capture)
         d = dashboard.Dashboard(initial_mode="dashboard")
         d.projects = [_make_project("pair", "IDLE",

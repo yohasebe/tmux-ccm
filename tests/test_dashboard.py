@@ -13,15 +13,15 @@ from dashboard import Dashboard
 # ─── Module imports ───
 
 class TestDashboardImports:
-    """Smoke test: dashboard.py must import all the canary helpers
-    it surfaces in the footer. Catches typos in the `from ccm_core
-    import ...` block."""
+    """Smoke test: the dashboard must import all the canary helpers
+    it surfaces in the footer. Catches typos in the import blocks."""
 
     def test_canary_helpers_imported(self):
-        assert hasattr(dashboard, "hooks_log_warning")
-        assert hasattr(dashboard, "disable_all_hooks_warning")
-        assert hasattr(dashboard, "managed_hooks_only_warning")
-        assert hasattr(dashboard, "shell_cluster_warnings")
+        import dashboard_render
+        assert hasattr(dashboard_render, "hooks_log_warning")
+        assert hasattr(dashboard_render, "disable_all_hooks_warning")
+        assert hasattr(dashboard_render, "managed_hooks_only_warning")
+        assert hasattr(dashboard_render, "shell_cluster_warnings")
         assert hasattr(dashboard, "hooks_configured")
 
 
@@ -175,7 +175,7 @@ class TestRenderSmoke:
 
         calls = {"format_elapsed": []}
         monkeypatch.setattr(
-            "dashboard.format_elapsed",
+            "dashboard_render.format_elapsed",
             lambda ts: (calls["format_elapsed"].append(ts), "5s")[1],
         )
 
@@ -228,12 +228,12 @@ class TestRenderSmoke:
         def recording_format_dir(directory, prefix_len, cols):
             active_log.append((prefix_len, directory))
             return directory  # identity is fine for the assertion
-        monkeypatch.setattr("dashboard.format_dir", recording_format_dir)
+        monkeypatch.setattr("dashboard_render.format_dir", recording_format_dir)
 
         # format_elapsed must return a non-empty 3-char string for
         # the "with elapsed" render so the right-anchored slot is
         # actually exercised.
-        monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "10s" if ts else "")
+        monkeypatch.setattr("dashboard_render.format_elapsed", lambda ts: "10s" if ts else "")
 
         import ccm_core
         now = __import__("time").time()
@@ -303,9 +303,9 @@ class TestRenderSmoke:
         _stub_dashboard_environment(monkeypatch)
         import ccm_core
         import ccm_agentview
-        monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "hooks.log is large")
-        monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda: "hooks disabled")
-        monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda: "managed only")
+        monkeypatch.setattr("dashboard_render.hooks_log_warning", lambda: "hooks.log is large")
+        monkeypatch.setattr("dashboard_render.disable_all_hooks_warning", lambda: "hooks disabled")
+        monkeypatch.setattr("dashboard_render.managed_hooks_only_warning", lambda: "managed only")
 
         d = Dashboard(initial_mode="dashboard")
         d.preview_enabled = False
@@ -377,10 +377,10 @@ class TestRenderSmoke:
         _stub_dashboard_environment(monkeypatch)
         import ccm_core
         import ccm_agentview
-        monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "hooks.log is large")
-        monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda: "hooks disabled")
-        monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda: "managed only")
-        monkeypatch.setattr("dashboard.shell_cluster_warnings",
+        monkeypatch.setattr("dashboard_render.hooks_log_warning", lambda: "hooks.log is large")
+        monkeypatch.setattr("dashboard_render.disable_all_hooks_warning", lambda: "hooks disabled")
+        monkeypatch.setattr("dashboard_render.managed_hooks_only_warning", lambda: "managed only")
+        monkeypatch.setattr("dashboard_render.shell_cluster_warnings",
                             lambda p: [f"cluster {i}" for i in range(4)])
 
         d = Dashboard(initial_mode="dashboard")
@@ -415,7 +415,7 @@ class TestRenderSmoke:
         _stub_dashboard_environment(monkeypatch)
         import ccm_core
         import ccm_agentview
-        monkeypatch.setattr("dashboard.shell_cluster_warnings",
+        monkeypatch.setattr("dashboard_render.shell_cluster_warnings",
                             lambda p: [f"cluster {i}" for i in range(13)])
 
         d = Dashboard(initial_mode="dashboard")
@@ -501,12 +501,12 @@ class TestRenderSmoke:
             if args[0] == "list-windows" and "#{@ccm_bg_short}" not in args[-1]:
                 return ""
             return listing
-        monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
-        monkeypatch.setattr("dashboard.tmux_query", fake_query)
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
-        monkeypatch.setattr("dashboard.ps_snapshot", lambda: ps)
-        monkeypatch.setattr(
-            "dashboard.enumerate_window_panes",
+        _patch_dashboard(monkeypatch, "tmux_cmd", fake_tmux)
+        _patch_dashboard(monkeypatch, "tmux_query", fake_query)
+        _patch_dashboard(monkeypatch, "get_session", lambda: "0")
+        _patch_dashboard(monkeypatch, "ps_snapshot", lambda: ps)
+        _patch_dashboard(
+            monkeypatch, "enumerate_window_panes",
             lambda target, ps_lines: (panes_by_target or {}).get(target, []))
         monkeypatch.setattr("os.path.isdir", lambda p: True)
 
@@ -842,13 +842,13 @@ class TestRenderSmoke:
         """
         _stub_dashboard_environment(monkeypatch)
         # Re-stub three of the canaries to return non-empty messages
-        monkeypatch.setattr("dashboard.hooks_log_warning",
+        monkeypatch.setattr("dashboard_render.hooks_log_warning",
                             lambda: "hooks.log too big — clear it")
-        monkeypatch.setattr("dashboard.disable_all_hooks_warning",
+        monkeypatch.setattr("dashboard_render.disable_all_hooks_warning",
                             lambda *a, **kw: "disableAllHooks set")
-        monkeypatch.setattr("dashboard.managed_hooks_only_warning",
+        monkeypatch.setattr("dashboard_render.managed_hooks_only_warning",
                             lambda *a, **kw: "managed hooks only")
-        monkeypatch.setattr("dashboard.shell_cluster_warnings",
+        monkeypatch.setattr("dashboard_render.shell_cluster_warnings",
                             lambda p: ["alpha: silent exit cluster"])
 
         import ccm_core
@@ -1108,8 +1108,8 @@ class TestResolvePreviewPane:
     def _dash(self, monkeypatch, panes):
         _stub_dashboard_environment(monkeypatch)
         d = Dashboard(initial_mode="dashboard")
-        monkeypatch.setattr("dashboard.ps_snapshot", lambda: "")
-        monkeypatch.setattr("dashboard.enumerate_window_panes",
+        monkeypatch.setattr("dashboard_render.ps_snapshot", lambda: "")
+        monkeypatch.setattr("dashboard_render.enumerate_window_panes",
                             lambda win, ps: panes)
         return d
 
