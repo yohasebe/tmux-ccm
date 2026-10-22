@@ -3,6 +3,7 @@ import curses
 
 import pytest
 import dashboard
+import dashboard_menu
 from test_dashboard import _stub_dashboard_environment, _make_mock_stdscr, _screen_text
 
 
@@ -14,7 +15,7 @@ def menu(monkeypatch):
     d = dashboard.Dashboard(initial_mode='menu')
     d.preview_enabled = True
     d.preview_position = 'right'
-    monkeypatch.setattr(dashboard, '_IS_MACOS', True)
+    monkeypatch.setattr(dashboard_menu, '_IS_MACOS', True)
     d._build_menu()
     return d
 

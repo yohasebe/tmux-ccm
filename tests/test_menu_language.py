@@ -3,16 +3,17 @@ import curses
 from unittest.mock import Mock
 import pytest
 import dashboard
+import dashboard_menu
 import ccm_menu_help as help_text
 from ccm_render import display_width
-from test_dashboard import _stub_dashboard_environment, _make_mock_stdscr, _screen_text
+from test_dashboard import _patch_dashboard, _stub_dashboard_environment, _make_mock_stdscr, _screen_text
 
 
 def make_menu(monkeypatch, language='', dock=''):
     _stub_dashboard_environment(monkeypatch)
-    monkeypatch.setattr(dashboard, '_IS_MACOS', True)
+    monkeypatch.setattr(dashboard_menu, '_IS_MACOS', True)
     options = {'@ccm-lang': language, '@ccm-dashboard-dock': dock}
-    monkeypatch.setattr(dashboard, 'tmux_cmd', lambda *a: options.get(a[-1], ''))
+    _patch_dashboard(monkeypatch, 'tmux_cmd', lambda *a: options.get(a[-1], ''))
     d = dashboard.Dashboard(initial_mode='menu')
     d._build_menu()
     return d

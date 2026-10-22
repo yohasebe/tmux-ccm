@@ -90,3 +90,31 @@ def test_the_selection_is_scrolled_into_view(drawn):
     assert names == {2: "proj7", 3: "proj8", 4: "proj9", 5: "proj10",
                      6: "proj11", 7: "proj12"}
     assert _row(writes, 7)[0][0] == "  ▶ "
+
+
+def test_the_cursor_follows_the_drawn_width_of_a_wide_query(drawn):
+    board, writes = drawn
+    screen = _Screen(10, 60)
+    board._render_search(screen, "日本", _projects(1), 0, 1)
+    assert screen.cursor == (8, 10 + 4)           # two wide characters
+
+
+def test_a_long_query_drops_the_count_rather_than_overlap_it(drawn):
+    board, writes = drawn
+    screen = _Screen(10, 30)
+    query = "q" * 14                               # ends at column 24
+    board._render_search(screen, query, _projects(3), 0, 16)
+    assert "3/16" not in [text for _, _, text, _ in writes]
+    board._render_search(screen, "q" * 13, _projects(3), 0, 16)
+    assert "3/16" not in [text for _, _, text, _ in writes]
+    writes.clear()
+    board._render_search(screen, "q" * 11, _projects(3), 0, 16)
+    assert (8, 30 - 4 - 2, "3/16", dashboard_search.C_DIM * 256) in writes
+
+
+def test_a_tiny_screen_draws_no_list_rows(drawn):
+    board, writes = drawn
+    board._render_search(_Screen(4, 40), "", _projects(5), 0, 5)
+    assert not [w for w in writes if w[0] == 2 and w[1] == 17]
+    assert _row(writes, 2)[2][0] == "Filter: "
+    assert _row(writes, 3)[2][0].startswith("[↑↓] select")

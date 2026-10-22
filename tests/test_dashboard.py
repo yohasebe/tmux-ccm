@@ -36,6 +36,25 @@ class TestDashboardImports:
 # which the old test suite never exercised because dashboard.py was
 # untested at the function-body level.
 
+def _dashboard_modules():
+    """dashboard and the modules its Dashboard is assembled from."""
+    import glob, importlib, os
+    lib = os.path.dirname(dashboard.__file__)
+    names = ["dashboard"] + sorted(
+        os.path.basename(p)[:-3]
+        for p in glob.glob(os.path.join(lib, "dashboard_*.py")))
+    return [importlib.import_module(n) for n in names]
+
+
+def _patch_dashboard(monkeypatch, name, value):
+    """Patch `name` in every dashboard module that binds it: a method
+    moved to a mixin looks its names up in its own module."""
+    modules = [m for m in _dashboard_modules() if hasattr(m, name)]
+    assert modules, f"no dashboard module binds {name}"
+    for module in modules:
+        monkeypatch.setattr(module, name, value)
+
+
 def _stub_dashboard_environment(monkeypatch):
     """Mute every external call dashboard.render() reaches into so
     Dashboard() can be constructed and render() can run in a pytest
@@ -44,20 +63,20 @@ def _stub_dashboard_environment(monkeypatch):
     monkeypatch.setattr(Dashboard, '_lifecycle_banner', lambda *a: '')
     import curses as _curses
 
-    monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
-    monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
-    monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
-    monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda *a, **kw: "")
-    monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda *a, **kw: "")
-    monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
-    monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
+    _patch_dashboard(monkeypatch, "tmux_cmd", lambda *a, **k: "")
+    _patch_dashboard(monkeypatch, "hooks_configured", lambda: True)
+    _patch_dashboard(monkeypatch, "hooks_log_warning", lambda: "")
+    _patch_dashboard(monkeypatch, "disable_all_hooks_warning", lambda *a, **kw: "")
+    _patch_dashboard(monkeypatch, "managed_hooks_only_warning", lambda *a, **kw: "")
+    _patch_dashboard(monkeypatch, "shell_cluster_warnings", lambda p: [])
+    _patch_dashboard(monkeypatch, "hook_silence_warnings", lambda p: [])
     monkeypatch.setattr("dashboard.ccm_agentview.continue_blocker_warnings",
                         lambda p, bg_sessions=None: [])
-    monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
-    monkeypatch.setattr("dashboard.get_session", lambda: "0")
-    monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-    monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
-    monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
+    _patch_dashboard(monkeypatch, "errors_log_burst_warning", lambda: "")
+    _patch_dashboard(monkeypatch, "get_session", lambda: "0")
+    _patch_dashboard(monkeypatch, "touch_popup_session", lambda: None)
+    _patch_dashboard(monkeypatch, "format_elapsed", lambda ts: "")
+    _patch_dashboard(monkeypatch, "format_dir", lambda d, col, w: d)
     # signal_age_suffix (via ccm_render) reads the per-project hook
     # signal, which resolves @ccm_session_id through live tmux.
     import ccm_signals
@@ -1789,10 +1808,10 @@ class TestDoMenuRemoval:
     def _cmds(self, monkeypatch):
         calls = {"unregister": [], "remove": [], "ignore": []}
         monkeypatch.setattr(
-            "dashboard.cmd_unregister",
+            "dashboard_menu.cmd_unregister",
             lambda name: calls["unregister"].append(name))
         monkeypatch.setattr(
-            "dashboard.cmd_remove",
+            "dashboard_menu.cmd_remove",
             lambda name: calls["remove"].append(name))
         monkeypatch.setattr(
             "dashboard.cmd_ignore",

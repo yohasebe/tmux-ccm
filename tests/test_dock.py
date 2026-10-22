@@ -363,8 +363,10 @@ def _menu_with(monkeypatch, options):
             options[args[-2]] = args[-1]
             writes.append(args)
         return options.get(args[-1], '')
-    monkeypatch.setattr(dashboard, 'tmux_cmd', tmux_cmd)
-    monkeypatch.setattr(dashboard, 'save_tmux_conf_setting', saved.append)
+    import dashboard_menu
+    from test_dashboard import _patch_dashboard
+    _patch_dashboard(monkeypatch, 'tmux_cmd', tmux_cmd)
+    monkeypatch.setattr(dashboard_menu, 'save_tmux_conf_setting', saved.append)
     d = dashboard.Dashboard(initial_mode='menu')
     d._show_message = lambda *a, **k: None
     d._build_menu()
