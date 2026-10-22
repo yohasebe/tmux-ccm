@@ -537,8 +537,7 @@ class TestMode2StatusLineCeiling:
         monkeypatch.setattr(inject_status, "signal_age_suffix",
                             lambda d, s, session_id=None: "")
         monkeypatch.setattr(
-            inject_status, "read_project_notify_marker", lambda d: 0.0,
-            raising=False)
+            inject_status, "read_project_notify_marker", lambda d: 0.0)
         inject_status._inject_status_impl(force_fast=True)
         return batches
 
@@ -907,8 +906,7 @@ class TestMode1WidthBudget:
             lambda *a, **k: None if length_calls is None
             else length_calls.append(k))
         monkeypatch.setattr(
-            inject_status, "read_project_notify_marker", lambda d: 0.0,
-            raising=False)
+            inject_status, "read_project_notify_marker", lambda d: 0.0)
         inject_status._inject_status_impl(force_fast=True)
         return written[-1] if written else None
 

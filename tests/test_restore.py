@@ -586,6 +586,7 @@ def test_lock_is_released_when_reporting_the_waited_result_fails(checkpoint, mon
     def broken_print(*args, **kwargs):
         if args and str(args[0]).startswith('That restore'):
             raise error('output failed')
+    # `print` is the builtin; the module has no such attribute to replace.
     monkeypatch.setattr(restore, 'print', broken_print, raising=False)
     with pytest.raises(error):
         _load_within('_autosave')

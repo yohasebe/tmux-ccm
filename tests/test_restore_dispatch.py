@@ -21,6 +21,6 @@ def test_v2_uses_layout_loader(tmp_path, monkeypatch):
     monkeypatch.setattr(ccm_core, 'project_exists', lambda *a: True)
     monkeypatch.setattr(ccm_snapshot, 'cmd_snapshot_save', Mock(return_value=False))
     loader = Mock()
-    monkeypatch.setattr(ccm_snapshot, 'ccm_restore', loader, raising=False)
+    monkeypatch.setattr(ccm_snapshot, 'ccm_restore', loader)
     ccm_snapshot.cmd_snapshot_load('saved')
     loader.load.assert_called_once_with('saved')

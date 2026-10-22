@@ -8,7 +8,8 @@ This walks every test for patches of a lib module's own attribute and
 checks that the module defines the name, reads it as a module global
 (a builtin counts), or that some lib module reads it as `module.name`.
 A patch made with `raising=False` declares that the name may be absent
-and is left alone.
+and is left alone, so it must say why in a comment on the line above
+it or on any of its own lines.
 
 It is a lint for patches nothing reads, not proof that a test patches
 the path it exercises: a name read both in a module and in another one
@@ -21,7 +22,9 @@ guess.
 
 import ast
 import glob
+import io
 import os
+import tokenize
 
 import pytest
 
@@ -229,10 +232,18 @@ def module_facts(sources):
 class _Patches(_Scoped):
     """The patches of a lib module's own attribute in one test file."""
 
-    def __init__(self, tree, modules, rel):
+    def __init__(self, tree, modules, rel, comment_lines=None):
         super().__init__(tree, modules)
-        self.rel, self.sites = rel, []
+        self.rel, self.comment_lines = rel, comment_lines
+        self.sites, self.unexplained = [], []
         self.visit(tree)
+
+    def _explained(self, node):
+        """A comment on the line above the call or on one of its lines."""
+        if self.comment_lines is None:
+            return True             # sources given without their comments
+        return any(line in self.comment_lines
+                   for line in range(node.lineno - 1, node.end_lineno + 1))
 
     def _dotted(self, value):
         if not (isinstance(value, ast.Constant)
@@ -275,6 +286,8 @@ class _Patches(_Scoped):
                       or self._module_and_name(node.args))
         if target and not dormant:
             self.sites.append((*target, f"{self.rel}:{node.lineno}"))
+        elif target and not self._explained(node):
+            self.unexplained.append(f"{self.rel}:{node.lineno}")
         self.generic_visit(node)
 
     def visit_Tuple(self, node):
@@ -295,6 +308,17 @@ def patch_sites(sources, modules):
     return sites
 
 
+def unexplained_dormant_patches(sources, modules):
+    """`raising=False` patches of a lib module with no comment saying why."""
+    out = []
+    for rel, src in sources.items():
+        comments = {tok.start[0] for tok in
+                    tokenize.generate_tokens(io.StringIO(src).readline)
+                    if tok.type == tokenize.COMMENT}
+        out += _Patches(ast.parse(src), modules, rel, comments).unexplained
+    return out
+
+
 def ineffective(sites, facts):
     defined, read, attr_reads = facts
     return sorted(f"{where}: {mod}.{name}" for mod, name, where in sites
@@ -307,11 +331,14 @@ def _read(path):
         return f.read()
 
 
+def _repo_tests():
+    return {os.path.relpath(p, HERE): _read(p)
+            for p in sorted(glob.glob(os.path.join(HERE, "**", "*.py"),
+                                      recursive=True))}
+
+
 def _repo_sites():
-    tests = {os.path.relpath(p, HERE): _read(p)
-             for p in sorted(glob.glob(os.path.join(HERE, "**", "*.py"),
-                                       recursive=True))}
-    return patch_sites(tests, set(MODULES))
+    return patch_sites(_repo_tests(), set(MODULES))
 
 
 def test_the_scan_finds_the_patches():
@@ -323,6 +350,30 @@ def test_the_scan_finds_the_patches():
 def test_every_patched_name_is_looked_up_where_it_is_patched():
     facts = module_facts({m: _read(p) for m, p in MODULES.items()})
     assert ineffective(_repo_sites(), facts) == []
+
+
+def test_every_patch_exempt_from_the_check_says_why():
+    assert unexplained_dormant_patches(_repo_tests(), set(MODULES)) == []
+
+
+@pytest.mark.parametrize("source, expected", [
+    ('import dash\nmonkeypatch.setattr(dash, "x", 1, raising=False)',
+     ["t.py:2"]),
+    ('import dash\n# the menu must not call it\n'
+     'monkeypatch.setattr(dash, "x", 1, raising=False)', []),
+    ('import dash\nmonkeypatch.setattr(dash, "x", 1, raising=False)  # gone',
+     []),
+    ('import dash\nmonkeypatch.setattr(dash, "x", 1)', []),
+    ('monkeypatch.setattr(other, "x", 1, raising=False)', []),
+    ('import dash\nmonkeypatch.setattr(dash, "x", "# value", raising=False)',
+     ["t.py:2"]),
+    ('import dash\nmonkeypatch.setattr(\n    dash, "x", 1,\n'
+     '    raising=False)  # the builtin', []),
+    ('import dash\n# a note\n\nmonkeypatch.setattr(dash, "x", 1, raising=False)',
+     ["t.py:4"]),
+])
+def test_an_exempt_patch_needs_a_reason(source, expected):
+    assert unexplained_dormant_patches({"t.py": source}, {"dash"}) == expected
 
 
 # ─── what the scan counts ───

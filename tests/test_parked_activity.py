@@ -212,6 +212,7 @@ def test_reverse_read_budget_and_no_partial_record(tmp_path, monkeypatch):
         reader = Reader()
         opened.append(reader)
         return reader
+    # `open` is the builtin; the module has no such attribute to replace.
     monkeypatch.setattr(ccm_jsonl, 'open', tracked, raising=False)
     assert ccm_jsonl._parse_jsonl_tail(str(path), 1, path.stat().st_size) == (None, None)
     assert opened[0].total == 1024 * 1024
