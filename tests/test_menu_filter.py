@@ -153,7 +153,7 @@ def test_label_starts_after_the_marker_with_ambiguous_width_two(menu, monkeypatc
     screen = _make_mock_stdscr(120, 40)
     menu._render_menu(screen)
     label = next(c.args for c in screen.addstr.call_args_list if c.args[2] == 'Add project')
-    assert label[1] == dashboard.display_width('  ▶ ') == 5
+    assert label[1] == dashboard_menu.display_width('  ▶ ') == 5
 
 
 def test_scrolling_drops_whole_characters_not_their_marks(menu):

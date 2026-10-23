@@ -3,6 +3,7 @@ description pane and a live filter. A mixin of `dashboard.Dashboard`."""
 
 import curses
 import platform
+import subprocess
 
 import ccm_menu_help
 import ccm_roles
@@ -572,3 +573,23 @@ class MenuMixin:
             return "quit"
 
         return ""
+
+    @staticmethod
+    def _preview_sound(sound_name):
+        """Play a macOS system sound directly for instant preview."""
+        sound_file = f"/System/Library/Sounds/{sound_name}.aiff"
+        try:
+            subprocess.Popen(
+                ["afplay", sound_file],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            pass
+
+    # Items whose label ends in `: <current value>`.
+    _MENU_SETTINGS = frozenset({
+        "status_mode", "auto_restore", "idle_timeout", "preview_toggle",
+        "preview_position", "dock_mode", "dock_close", "bg_section", "auto_start", "notify",
+        "notify_sound", "sound_name"})
+    # Preview lines that name a command or a current value.
+    _HELP_COMMAND_PREFIXES = ("Same as: ", "CLI: ")
+    _HELP_VALUE_PREFIXES = ("Current: ", "現在値: ")

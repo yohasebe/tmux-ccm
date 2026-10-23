@@ -183,8 +183,8 @@ class TestDashboardRefreshLoopSmoke:
     def test_refresh_loop_one_iteration(self, monkeypatch):
         import dashboard
         # Speed up the loop's sleep waits.
-        monkeypatch.setattr("dashboard.REFRESH_INTERVAL", 0.0)
-        monkeypatch.setattr("dashboard.time.sleep", lambda *_: None)
+        monkeypatch.setattr("dashboard_refresh.REFRESH_INTERVAL", 0.0)
+        monkeypatch.setattr("dashboard_refresh.time.sleep", lambda *_: None)
 
         # The loop's own `except Exception: log_caught_exception(...)`
         # would swallow exactly the NameError/AttributeError class of
@@ -197,7 +197,7 @@ class TestDashboardRefreshLoopSmoke:
         # pytest run while the test kept passing..)
         caught = []
         monkeypatch.setattr(
-            "dashboard.log_caught_exception",
+            "dashboard_refresh.log_caught_exception",
             lambda scope: caught.append(scope),
         )
 
@@ -228,7 +228,7 @@ class TestDashboardRefreshLoopSmoke:
             d.running = False
             return []
 
-        monkeypatch.setattr("dashboard.build_project_list", stop_loop)
+        monkeypatch.setattr("dashboard_refresh.build_project_list", stop_loop)
 
         # The loop must complete without swallowing any exception.
         d._refresh_loop()

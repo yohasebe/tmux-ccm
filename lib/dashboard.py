@@ -11,7 +11,6 @@ import subprocess
 import sys
 import threading
 import time
-import unicodedata
 
 # curses + wide characters require an initialized locale. Without
 # this call, ncurses falls back to single-byte mode and `addstr`
@@ -31,41 +30,17 @@ import ccm_core  # noqa: E402
 from ccm_core import (
     CCMError,
     build_project_list,
-    get_session,
     hooks_configured,
-    log_caught_exception,
     raise_on_die,
     tmux_cmd,
     touch_popup_session,
 )
-import ccm_agentview
 import ccm_menu_help
-from ccm_render import (
-    display_width,
-    truncate_to_width,
-)
+from ccm_render import truncate_to_width
 
 # Max characters shown in the single-line message area
 MSG_MAX_LEN = 200
 
-REFRESH_INTERVAL = 2
-# Fast-tick cadence for the hybrid refresh loop. Between full
-# detection passes (REFRESH_INTERVAL), the refresh thread samples the
-# PUSHED state channel — `@ccm_prev_state`, written instantly by the
-# Claude Code hooks (and by the slow path's own commits) — with one
-# `list-windows` subprocess per tick (~10 ms). A hook-driven state
-# change therefore reaches the dashboard in ≤ ~0.3 s instead of
-# waiting out the 2 s poll (worst case ~2.3 s), closing most of the
-# latency gap vs purely event-driven consumers of the same hooks.
-FAST_TICK_INTERVAL = 0.25
-# A dashboard left open (a dock, typically) and not used for a while
-# refreshes at a slower pace: the pushed channel is still checked every
-# IDLE_FAST_TICK_INTERVAL, and full detection,
-# which catches what no hook reports, runs every IDLE_REFRESH_INTERVAL.
-# The first key press restores the normal pace.
-IDLE_AFTER_SEC = 30
-IDLE_FAST_TICK_INTERVAL = 0.5
-IDLE_REFRESH_INTERVAL = 6
 # How long the main loop waits for a key between redraw checks: 50 ms
 # normally, longer when idle (a key still arrives at once; only the
 # redraw of newly fetched data waits up to this long).
@@ -87,7 +62,9 @@ from dashboard_shared import (  # noqa: E402
     C_YELLOW,
 )
 from dashboard_actions import ActionsMixin  # noqa: E402
+from dashboard_input import InputMixin  # noqa: E402
 from dashboard_menu import MenuMixin  # noqa: E402
+from dashboard_refresh import RefreshMixin  # noqa: E402
 from dashboard_render import RenderMixin  # noqa: E402
 from dashboard_search import SearchMixin  # noqa: E402
 from dashboard_tree import TreeMixin  # noqa: E402
@@ -237,7 +214,8 @@ def _dock_at_top():
                     "#{pane_at_top}").strip() != "0"
 
 
-class Dashboard(ActionsMixin, RenderMixin, MenuMixin, SearchMixin, TreeMixin, LifecycleActions):
+class Dashboard(RefreshMixin, InputMixin, ActionsMixin, RenderMixin, MenuMixin,
+                SearchMixin, TreeMixin, LifecycleActions):
     # Keys that only adjust a selection index. The main loop coalesces
     # these across terminal auto-repeat so a held arrow key renders
     # once at the end of the burst instead of once per keystroke.
@@ -544,45 +522,6 @@ class Dashboard(ActionsMixin, RenderMixin, MenuMixin, SearchMixin, TreeMixin, Li
     MIN_HEIGHT = 10
     MIN_WIDTH = 40
 
-    @staticmethod
-    def _strip_last_grapheme(text):
-        """Remove the last user-perceived character (grapheme cluster).
-
-        Handles combining marks (category M) and zero-width joiners (U+200D)
-        so that e.g. accented characters and ZWJ emoji sequences are deleted
-        as a single unit on backspace.
-        """
-        if not text:
-            return text
-        i = len(text)
-        while i > 0:
-            i -= 1
-            cat = unicodedata.category(text[i])
-            if cat.startswith("M"):
-                # Combining mark — keep walking back
-                continue
-            # Base character found; check if preceded by ZWJ
-            if i > 0 and text[i - 1] == "\u200d":
-                i -= 1  # skip ZWJ, continue to next base char
-                continue
-            break
-        return text[:i]
-
-    @staticmethod
-    def _strip_first_grapheme(text):
-        """Remove the first user-perceived character, with the same
-        clustering as `_strip_last_grapheme` (combining marks and
-        ZWJ-joined characters go with their base)."""
-        i = 1 if text else 0
-        while i < len(text):
-            if unicodedata.category(text[i]).startswith("M"):
-                i += 1
-            elif text[i] == "\u200d":
-                i = min(i + 2, len(text))
-            else:
-                break
-        return text[i:]
-
     def _addstr(self, stdscr, y, x, text, attr=0, max_col=0):
         """Safe addstr that handles wide characters and boundary clipping.
         max_col: if >0, clip text to this column. Falls back to _render_max_col."""
@@ -712,220 +651,6 @@ class Dashboard(ActionsMixin, RenderMixin, MenuMixin, SearchMixin, TreeMixin, Li
 
         return ""
 
-    def _select_current_project(self):
-        """Select the opening window once, after the initial display order is set."""
-        self.selected = 0
-        try:
-            session = get_session()
-            index = tmux_cmd("display-message", "-p", "#{window_index}")
-            if not session or not index:
-                return
-            target = f"{session}:{index}"
-            self.selected = next(
-                (i for i, p in enumerate(self.projects) if p.win_target == target),
-                0,
-            )
-        except Exception:
-            log_caught_exception("dashboard._select_current_project")
-
-    def _set_projects_stable(self, projects):
-        """Assign `self.projects` while (a) holding the row order stable
-        for the dashboard's lifetime and (b) pinning the selection to
-        the same project across refreshes.
-
-        `build_project_list` re-sorts by state every refresh, so a
-        project changing state (e.g. BUSY→IDLE, or a new PERMIT) would
-        otherwise move rows under the cursor — and since `self.selected`
-        is a positional index, the highlight would jump to a *different*
-        project mid-interaction. Here the order is frozen at first build
-        (state-sorted, as `build_project_list` returns it): later
-        refreshes follow that frozen order, projects opened while the
-        dashboard is up append at the end, and vanished ones drop out.
-        Each popup open is a fresh process, so reopening re-decides the
-        order from current state — matching "decide order on show, keep
-        it while shown". A state change still updates a row's icon/color
-        in place; it just doesn't reshuffle.
-
-        Caller holds `self.lock` (except the single-threaded initial
-        build in `__init__`)."""
-        # Remember the cursor's project by identity (None if the
-        # selection is on a background-session row, past the projects).
-        prev_target = None
-        if 0 <= self.selected < len(self.projects):
-            prev_target = self.projects[self.selected].win_target
-
-        if not self._display_order:
-            # First build establishes the frozen order.
-            self._display_order = [p.win_target for p in projects]
-            ordered = list(projects)
-        else:
-            rank = {t: i for i, t in enumerate(self._display_order)}
-            known = sorted((p for p in projects if p.win_target in rank),
-                           key=lambda p: rank[p.win_target])
-            # Projects opened since the freeze: keep their (state-sorted)
-            # relative order and append to the frozen order so they stay
-            # put on subsequent refreshes. Stale entries in
-            # `_display_order` (a project that vanished) are harmless —
-            # they simply match nothing, and a project that flickers out
-            # and back returns to its original slot.
-            new = [p for p in projects if p.win_target not in rank]
-            self._display_order.extend(p.win_target for p in new)
-            ordered = known + new
-
-        self.projects = ordered
-
-        # Re-pin the cursor: the project's index may have shifted if a
-        # project above it appeared or vanished.
-        if prev_target is not None:
-            for i, p in enumerate(ordered):
-                if p.win_target == prev_target:
-                    self.selected = i
-                    break
-
-    def _trigger_rebuild(self):
-        """Force a rebuild in the background thread."""
-        projects = build_project_list(fast=True)
-        with self.lock:
-            self._set_projects_stable(projects)
-            self.data_dirty = True
-
-    def _prompt(self, stdscr, prompt_text, path_completion=False):
-        """Show prompt, return input string. Returns None on Escape.
-        If path_completion=True, Tab key completes file/directory paths.
-        """
-        curses.curs_set(1)
-        height, width = stdscr.getmaxyx()
-        row = height - 1
-        prompt_col = 2 + display_width(prompt_text)
-        stdscr.timeout(-1)  # Block for input
-
-        buf = ""
-
-        def _redraw():
-            stdscr.move(row, 0)
-            stdscr.clrtoeol()
-            self._addstr(stdscr, row, 0, f"  {prompt_text}", curses.color_pair(C_DIM))
-            self._addstr(stdscr, row, prompt_col, buf, 0)
-            cursor_col = prompt_col + display_width(buf)
-            try:
-                stdscr.move(row, cursor_col)
-            except curses.error:
-                pass
-
-        _redraw()
-        stdscr.refresh()
-
-        while True:
-            try:
-                wch = stdscr.get_wch()
-            except curses.error:
-                continue
-
-            # get_wch returns str for characters, int for special keys
-            if isinstance(wch, int):
-                if wch == 27:  # Escape
-                    curses.curs_set(0)
-                    stdscr.timeout(50)
-                    return None
-                elif wch in (curses.KEY_ENTER, 10, 13):
-                    curses.curs_set(0)
-                    stdscr.timeout(50)
-                    return buf
-                elif wch in (curses.KEY_BACKSPACE, 127, 8):
-                    if buf:
-                        buf = self._strip_last_grapheme(buf)
-                        _redraw()
-                        stdscr.refresh()
-                elif wch == 9 and path_completion:  # Tab
-                    buf = self._complete_path(buf, stdscr, row, prompt_col)
-                    _redraw()
-                    stdscr.refresh()
-            else:
-                # wch is a str (single character, may be wide/CJK)
-                if wch == "\x1b":  # Escape
-                    curses.curs_set(0)
-                    stdscr.timeout(50)
-                    return None
-                elif wch in ("\n", "\r"):
-                    curses.curs_set(0)
-                    stdscr.timeout(50)
-                    return buf
-                elif wch in ("\x7f", "\b"):  # Backspace
-                    if buf:
-                        buf = self._strip_last_grapheme(buf)
-                        _redraw()
-                        stdscr.refresh()
-                elif wch == "\t" and path_completion:
-                    buf = self._complete_path(buf, stdscr, row, prompt_col)
-                    _redraw()
-                    stdscr.refresh()
-                elif not wch.isspace() or wch == " ":
-                    # Accept any printable character (ASCII, CJK, etc.)
-                    if unicodedata.category(wch)[0] != "C":
-                        buf += wch
-                        _redraw()
-                        stdscr.refresh()
-
-        stdscr.timeout(50)
-        curses.curs_set(0)
-        return buf
-
-    def _complete_path(self, text, stdscr, row, prompt_col):
-        """Complete file/directory path from text. Returns completed text."""
-        expanded = os.path.expanduser(text)
-
-        if os.path.isdir(expanded) and not expanded.endswith("/"):
-            return text + "/"
-
-        parent = os.path.dirname(expanded) or "."
-        prefix = os.path.basename(expanded)
-
-        try:
-            entries = os.listdir(parent)
-        except OSError:
-            return text
-
-        # Filter matching entries
-        matches = sorted([e for e in entries if e.startswith(prefix)])
-        if not matches:
-            return text
-
-        if len(matches) == 1:
-            completed = os.path.join(os.path.dirname(text), matches[0])
-            # Re-add ~ prefix if original had it
-            if text.startswith("~"):
-                completed = "~/" + os.path.relpath(
-                    os.path.join(parent, matches[0]),
-                    os.path.expanduser("~")
-                )
-            if os.path.isdir(os.path.expanduser(completed)):
-                completed += "/"
-            return completed
-
-        # Multiple matches: find common prefix
-        common = os.path.commonprefix(matches)
-        if len(common) > len(prefix):
-            completed = os.path.join(os.path.dirname(text), common)
-            if text.startswith("~"):
-                completed = "~/" + os.path.relpath(
-                    os.path.join(parent, common),
-                    os.path.expanduser("~")
-                )
-            return completed
-
-        # Show candidates on the line above
-        height, width = stdscr.getmaxyx()
-        display_row = row - 1
-        if display_row >= 0:
-            candidates = "  ".join(matches[:10])
-            if len(matches) > 10:
-                candidates += f"  (+{len(matches) - 10} more)"
-            stdscr.move(display_row, 0)
-            stdscr.clrtoeol()
-            self._addstr(stdscr, display_row, 2, candidates, curses.color_pair(C_DIM))
-
-        return text
-
     def _show_message(self, stdscr, msg, duration=1):
         self._msg_text = msg
         self._msg_expires = time.monotonic() + duration
@@ -955,192 +680,6 @@ class Dashboard(ActionsMixin, RenderMixin, MenuMixin, SearchMixin, TreeMixin, Li
                 self._show_message(stdscr, msg, 3)
             return False
 
-    @staticmethod
-    def _preview_sound(sound_name):
-        """Play a macOS system sound directly for instant preview."""
-        sound_file = f"/System/Library/Sounds/{sound_name}.aiff"
-        try:
-            subprocess.Popen(
-                ["afplay", sound_file],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except FileNotFoundError:
-            pass
-
-    def _refresh_loop(self):
-        """Background thread: periodic state refresh."""
-        # First refresh: fast (no git/port)
-        time.sleep(0.3)
-        try:
-            projects = build_project_list(fast=False)
-            # Skip the bg-section roster read when the section is
-            # hidden — users who never use agent view should pay zero
-            # I/O for it. When the user toggles bg on with `b` (or via
-            # the menu), the toggle handler does an immediate
-            # synchronous fetch so the first render after toggle is
-            # already populated, no flicker.
-            #
-            # `bg_visible` is toggled by the main thread (under the
-            # lock); snapshot it under the lock here too so this
-            # thread never reads a torn / mid-toggle value.
-            with self.lock:
-                bg_visible = self.bg_visible
-            bg_sessions = self._fetch_bg_sessions() if bg_visible else []
-            handoff_warnings = self._fetch_handoff_warnings(
-                projects, bg_sessions if bg_visible else None)
-            with self.lock:
-                self._set_projects_stable(projects)
-                self.bg_sessions = bg_sessions
-                self.handoff_warnings = handoff_warnings
-                self.initial_load = False
-                self.data_dirty = True
-        except Exception:
-            log_caught_exception("dashboard._refresh_loop:initial")
-            self.initial_load = False
-
-        # Subsequent refreshes: hybrid loop. Fast ticks sample the
-        # pushed-state channel between full (slow-path) detection
-        # passes — see FAST_TICK_INTERVAL for the design rationale.
-        last_full = time.monotonic()
-        while self.running:
-            tick = self._refresh_pace()[0]
-            time.sleep(tick)
-            if not self.running:
-                return
-            self._fast_tick()
-            if time.monotonic() - last_full < self._refresh_pace()[1]:
-                continue
-            last_full = time.monotonic()
-            try:
-                # While a popup runs its own detection, a docked dashboard
-                # reads the states it writes rather than detecting twice.
-                projects = build_project_list(
-                    fast=self.docked and popup_dashboard_alive())
-                with self.lock:
-                    bg_visible = self.bg_visible
-                bg_sessions = (
-                    self._fetch_bg_sessions() if bg_visible else []
-                )
-                handoff_warnings = self._fetch_handoff_warnings(
-                    projects, bg_sessions if bg_visible else None)
-                with self.lock:
-                    self._set_projects_stable(projects)
-                    self.bg_sessions = bg_sessions
-                    self.handoff_warnings = handoff_warnings
-                    self.data_dirty = True
-                # Refresh preview content if enabled
-                if self.preview_enabled and self.mode == "dashboard":
-                    self._last_preview_target = ""  # Force refresh
-            except Exception:
-                log_caught_exception("dashboard._refresh_loop")
-
-    def _note_input(self):
-        self._last_input = time.monotonic()
-
-    def _idle(self):
-        return time.monotonic() - getattr(self, "_last_input", 0.0) > IDLE_AFTER_SEC
-
-    def _refresh_pace(self):
-        """(fast tick, full refresh) intervals: slower once nobody has
-        pressed a key for IDLE_AFTER_SEC."""
-        if self._idle():
-            return IDLE_FAST_TICK_INTERVAL, IDLE_REFRESH_INTERVAL
-        return FAST_TICK_INTERVAL, REFRESH_INTERVAL
-
-    def _scan_pushed_states(self):
-        """One `list-windows` subprocess reading the pushed-state
-        channel: `{win_target: @ccm_prev_state}` for every ccm
-        window. `@ccm_prev_state` is written instantly by the Claude
-        Code hooks (`ccm_write_signal`) and by the slow path's own
-        commits, so its TRANSITIONS are exactly the events worth
-        reacting to between full detection passes."""
-        raw = tmux_cmd(
-            "list-windows", "-a", "-F",
-            "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}",
-        )
-        out = {}
-        if not raw:
-            return out
-        for line in raw.splitlines():
-            parts = line.split("\t")
-            if len(parts) < 3 or not parts[1]:
-                continue
-            out[parts[0]] = parts[2]
-        return out
-
-    def _fast_tick(self):
-        """Overlay pushed-state TRANSITIONS onto the displayed list.
-
-        Transition-gated on purpose: the overlay applies only to
-        windows whose pushed value CHANGED since the previous tick —
-        a fresh hook write or a slow-path commit. Reacting to the
-        absolute pushed value instead would re-fight the slow path
-        wherever the two legitimately diverge (HOLD_NO_WRITE rules
-        like the startup transient deliberately display a state
-        WITHOUT committing it to @ccm_prev_state), producing a
-        2-second flicker cycle. Steady divergence is the slow path's
-        call to make; this tick only relays fresh events.
-
-        Runs on the refresh thread (never concurrent with the slow
-        refresh); mutates project states under the lock. Errors are
-        swallowed-but-logged like every other refresh-path failure —
-        a broken fast tick must degrade to plain 2 s polling, not
-        kill the dashboard.
-        """
-        try:
-            pushed = self._scan_pushed_states()
-        except Exception:
-            log_caught_exception("dashboard._fast_tick")
-            return
-        prev = self._pushed_states
-        self._pushed_states = pushed
-        if not prev:
-            return  # first sample is baseline only
-        changed = {t: s for t, s in pushed.items()
-                   if s and prev.get(t) != s}
-        if not changed:
-            return
-        with self.lock:
-            dirty = False
-            for p in self.projects:
-                s = changed.get(p.win_target)
-                if s and s != p.state:
-                    p.state = s
-                    dirty = True
-            if dirty:
-                self.data_dirty = True
-
-    def _fetch_handoff_warnings(self, projects, bg_sessions=None):
-        """Hand-off notices for the project list, read on the refresh
-        thread. Independent of the bg-section toggle: the reader is
-        about to attach, and the empty session that would follow has
-        no other explanation on this screen. When the bg section is
-        shown, its roster snapshot from this same cycle is reused
-        rather than read again. Never raises."""
-        try:
-            return ccm_agentview.continue_blocker_warnings(projects, bg_sessions)
-        except Exception:
-            log_caught_exception("dashboard._fetch_handoff_warnings")
-            return []
-
-    def _fetch_bg_sessions(self):
-        """Read the agent-view roster. Returns `[]` on any failure
-        (missing daemon, malformed file, etc.). Bounded I/O cost —
-        9 small JSON files at most in practice."""
-        try:
-            return ccm_agentview.list_bg_sessions()
-        except Exception:
-            log_caught_exception("dashboard._fetch_bg_sessions")
-            return []
-
-    # Items whose label ends in `: <current value>`.
-    _MENU_SETTINGS = frozenset({
-        "status_mode", "auto_restore", "idle_timeout", "preview_toggle",
-        "preview_position", "dock_mode", "dock_close", "bg_section", "auto_start", "notify",
-        "notify_sound", "sound_name"})
-    # Preview lines that name a command or a current value.
-    _HELP_COMMAND_PREFIXES = ("Same as: ", "CLI: ")
-    _HELP_VALUE_PREFIXES = ("Current: ", "現在値: ")
-
 # ─── PID file management ───
 
 def _pid_is_dashboard(pid):
@@ -1167,16 +706,6 @@ def _pid_is_dashboard(pid):
     except Exception:
         return False
     return "dashboard.py" in out
-
-
-def popup_dashboard_alive():
-    """True while a popup dashboard (or menu / tree / filter) runs."""
-    try:
-        pid = int(open(os.path.join(CCM_TMP_DIR, "dashboard.pid"), encoding="utf-8").read().strip())
-        os.kill(pid, 0)
-        return True
-    except (OSError, ValueError):
-        return False
 
 
 def acquire_pidfile(name="dashboard.pid"):

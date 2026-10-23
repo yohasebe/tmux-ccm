@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import dashboard  # noqa: E402 — verify module imports cleanly
 import dashboard_actions  # noqa: E402
+import dashboard_refresh  # noqa: E402
 from dashboard import Dashboard
 
 
@@ -71,7 +72,7 @@ def _stub_dashboard_environment(monkeypatch):
     _patch_dashboard(monkeypatch, "managed_hooks_only_warning", lambda *a, **kw: "")
     _patch_dashboard(monkeypatch, "shell_cluster_warnings", lambda p: [])
     _patch_dashboard(monkeypatch, "hook_silence_warnings", lambda p: [])
-    monkeypatch.setattr("dashboard.ccm_agentview.continue_blocker_warnings",
+    monkeypatch.setattr("ccm_agentview.continue_blocker_warnings",
                         lambda p, bg_sessions=None: [])
     _patch_dashboard(monkeypatch, "errors_log_burst_warning", lambda: "")
     _patch_dashboard(monkeypatch, "get_session", lambda: "0")
@@ -955,7 +956,7 @@ class TestFastTick:
             ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
             ccm_core.Project("0:2", "2", "beta", "/tmp/b", "BUSY"),
         ]
-        monkeypatch.setattr("dashboard.tmux_cmd",
+        monkeypatch.setattr("dashboard_refresh.tmux_cmd",
                             lambda *a, **k: listing[0])
         return d
 
@@ -1009,8 +1010,11 @@ class TestFastTick:
 
         def _boom(*a, **k):
             raise RuntimeError("tmux gone")
-        monkeypatch.setattr("dashboard.tmux_cmd", _boom)
+        logged = []
+        monkeypatch.setattr("dashboard_refresh.tmux_cmd", _boom)
+        monkeypatch.setattr("dashboard_refresh.log_caught_exception", logged.append)
         d._fast_tick()  # must not raise
+        assert logged == ["dashboard._fast_tick"]
         assert d.projects[0].state == "IDLE"
 
 
@@ -1727,7 +1731,7 @@ class TestDoSearch:
         stdscr = _make_mock_stdscr()
         stdscr.get_wch.side_effect = type_slowly
         d._do_search(dashboard._InputClock(stdscr, d._note_input))
-        assert clock["t"] - 100.0 > dashboard.IDLE_AFTER_SEC
+        assert clock["t"] - 100.0 > dashboard_refresh.IDLE_AFTER_SEC
         assert d._last_input == clock["t"]
         assert not d._idle()
 
@@ -1958,9 +1962,9 @@ class TestInitialProjectSelection:
         d.bg_visible = bg
         rows = [ccm_core.Project("other:2", "2", "alpha", "/tmp/a", "PERMIT"),
                 ccm_core.Project("popup:2", "2", "beta", "/tmp/b", "IDLE")]
-        monkeypatch.setattr(dashboard, "build_project_list",
-                            lambda fast=False: rows if projects else [])
-        monkeypatch.setattr(dashboard, "get_session", lambda: "popup")
+        _patch_dashboard(monkeypatch, "build_project_list",
+                         lambda fast=False: rows if projects else [])
+        _patch_dashboard(monkeypatch, "get_session", lambda: "popup")
 
         def tmux(*args):
             assert args == ("display-message", "-p", "#{window_index}")
@@ -1968,8 +1972,8 @@ class TestInitialProjectSelection:
                 raise RuntimeError("window query unavailable")
             return index
 
-        monkeypatch.setattr(dashboard, "tmux_cmd", tmux)
-        monkeypatch.setattr(dashboard, "log_caught_exception", lambda *a: None)
+        _patch_dashboard(monkeypatch, "tmux_cmd", tmux)
+        _patch_dashboard(monkeypatch, "log_caught_exception", lambda *a: None)
         for name in ("curs_set", "use_default_colors", "set_escdelay"):
             monkeypatch.setattr(dashboard.curses, name, lambda *a: None)
         monkeypatch.setattr(d, "_init_colors", lambda: None)
@@ -2012,28 +2016,27 @@ class TestIdlePace:
     first key restores the normal one."""
 
     def _board(self, monkeypatch, now):
-        import dashboard
         clock = {"t": now}
-        monkeypatch.setattr(dashboard.time, "monotonic", lambda: clock["t"])
-        board = object.__new__(dashboard.Dashboard)
+        monkeypatch.setattr(dashboard_refresh.time, "monotonic", lambda: clock["t"])
+        board = object.__new__(Dashboard)
         board._last_input = now
-        return dashboard, board, clock
+        return dashboard_refresh, board, clock
 
     def test_normal_pace_while_in_use(self, monkeypatch):
-        dashboard, board, clock = self._board(monkeypatch, 1000.0)
-        clock["t"] += dashboard.IDLE_AFTER_SEC - 1
-        assert board._refresh_pace() == (dashboard.FAST_TICK_INTERVAL, dashboard.REFRESH_INTERVAL)
+        refresh, board, clock = self._board(monkeypatch, 1000.0)
+        clock["t"] += refresh.IDLE_AFTER_SEC - 1
+        assert board._refresh_pace() == (refresh.FAST_TICK_INTERVAL, refresh.REFRESH_INTERVAL)
         assert not board._idle()
 
     def test_slower_pace_once_unused(self, monkeypatch):
-        dashboard, board, clock = self._board(monkeypatch, 1000.0)
-        clock["t"] += dashboard.IDLE_AFTER_SEC + 1
-        assert board._refresh_pace() == (dashboard.IDLE_FAST_TICK_INTERVAL,
-                                         dashboard.IDLE_REFRESH_INTERVAL)
+        refresh, board, clock = self._board(monkeypatch, 1000.0)
+        clock["t"] += refresh.IDLE_AFTER_SEC + 1
+        assert board._refresh_pace() == (refresh.IDLE_FAST_TICK_INTERVAL,
+                                         refresh.IDLE_REFRESH_INTERVAL)
         board._last_input = clock["t"]                   # a key
-        assert board._refresh_pace() == (dashboard.FAST_TICK_INTERVAL, dashboard.REFRESH_INTERVAL)
+        assert board._refresh_pace() == (refresh.FAST_TICK_INTERVAL, refresh.REFRESH_INTERVAL)
 
     def test_the_slow_pace_is_still_quick_to_show_a_pushed_state(self):
         import dashboard
-        assert dashboard.IDLE_FAST_TICK_INTERVAL <= 1.0
+        assert dashboard_refresh.IDLE_FAST_TICK_INTERVAL <= 1.0
         assert dashboard.IDLE_KEY_WAIT_MS <= 500
