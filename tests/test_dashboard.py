@@ -371,6 +371,64 @@ class TestRenderSmoke:
         assert d._bg_section_rows([object()] * 40, 3) == 0
         assert d._bg_section_rows([object()] * 40, 0) == 0
 
+    def _full_list(self, monkeypatch, width, height, bg=False):
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_agentview
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = [ccm_core.Project(f"0:{i}", str(i), f"p{i:02d}", f"/w/p{i}", "IDLE")
+                      for i in range(50)]
+        d.bg_visible = bg
+        d.bg_sessions = [ccm_agentview.BgSession(
+            short="abcd1234", pid=100, cwd="/w/proj", name="job", state="IDLE",
+            raw_state="idle", tempo="idle", cli_version="2.1.270",
+            session_id="00000000-0000-0000-0000-000000000000",
+            created_at=1.0, updated_at=2.0, source="slash")] if bg else []
+        stdscr = _make_mock_stdscr(width=width, height=height)
+        d.render(stdscr)
+        rows = {}
+        for call in stdscr.addstr.call_args_list:
+            y, x, text = call.args[:3]
+            rows.setdefault(y, []).append((x, str(text)))
+        return {y: "".join(t for _, t in sorted(parts)) for y, parts in rows.items()}
+
+    @pytest.mark.parametrize("bg", [False, True])
+    def test_a_full_list_leaves_the_help_lines_their_rows(self, monkeypatch, bg):
+        """More projects than rows: the list stops above a blank row,
+        the help lines and the footer."""
+        rows = self._full_list(monkeypatch, 120, 30, bg=bg)
+        help_rows = [y for y, line in rows.items() if "[Enter] attach" in line]
+        tail_rows = [y for y, line in rows.items() if "[?/m] actions & settings" in line]
+        assert help_rows
+        assert tail_rows == [28]
+        assert min(help_rows) - 1 not in rows
+        assert "Hooks:" in rows[29]
+        assert "p00" in "".join(rows.values())
+
+    def test_a_short_popup_keeps_the_line_naming_the_menu(
+            self, monkeypatch):
+        """The help gives way from the top so the list keeps its
+        minimum rows; the line naming `?` is the one that stays."""
+        rows = self._full_list(monkeypatch, 60, 10)
+        assert rows[8] == "[?/m] actions & settings  [q] quit"
+        assert not any("[w]atch sidekicks" in line for line in rows.values())
+        shown = [line for line in rows.values() if "/w/p" in line]
+        assert len(shown) == Dashboard._HELP_MIN_BODY_ROWS
+
+    def test_help_lines_give_way_from_the_top(self):
+        items = ["[a] aaaa", "[b] bbbb", "[c] cccc", "[d] dddd"]
+        tail = "[?/m] actions & settings"
+        assert Dashboard._help_lines(items, 200, 5) == [
+            f"[a] aaaa  [b] bbbb  [c] cccc  [d] dddd  {tail}  [q] quit"]
+        assert Dashboard._help_lines(items, 40, 1) == [f"{tail}  [q] quit"]
+        assert Dashboard._help_lines(items, 30, 4) == [
+            "[a] aaaa  [b] bbbb  [c] cccc", "[d] dddd", tail, "[q] quit"]
+        assert Dashboard._help_lines(items, 30, 3) == [
+            "[a] aaaa  [b] bbbb  [c] cccc", tail, "[q] quit"]
+        for room in (1, 0, -4):
+            assert Dashboard._help_lines(items, 30, room) == [tail]
+
     def test_many_banners_keep_the_selected_project_and_the_block(self, monkeypatch):
         """Banners take rows out of the same budget as the list and
         the block. With enough of them that a height-only reservation
@@ -1902,9 +1960,10 @@ class TestEveryKeyAndOperationIsFindable:
             f"_handle_key — the ord(...) pattern no longer matches how "
             f"keys are handled, so this test has stopped seeing them; "
             f"update the extraction to the new dispatch shape")
-        block = _list_literal("help_items", " " * 12)
+        block = (_list_literal("help_items", " " * 12)
+                 + "  ".join(Dashboard._HELP_TAIL))
         # A key counts as offered only when a bracket names it: `[r]`
-        # alone, a `/`-separated alternative (`[m/?]`), or a two-letter
+        # alone, a `/`-separated alternative (`[?/m]`), or a two-letter
         # vi pair (`jk` in `[↑↓/jk]`). Substring matching would let
         # `[Enter]` vouch for e, n, t and r; key names longer than a
         # pair stay excluded for the same reason.
@@ -1928,8 +1987,9 @@ class TestEveryKeyAndOperationIsFindable:
     def test_the_non_letter_keys_are_offered_too(self):
         """The letter scan above cannot see these; name them one by
         one so the help line cannot quietly drop them."""
-        block = _list_literal("help_items", " " * 12)
-        for token in ("[↑↓/jk]", "[Enter]", "[/]", "[m/?]"):
+        block = (_list_literal("help_items", " " * 12)
+                 + "  ".join(Dashboard._HELP_TAIL))
+        for token in ("[↑↓/jk]", "[Enter]", "[/]", "[?/m]"):
             assert token in block, (
                 f"help line no longer offers {token}")
 

@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.308-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.309-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -52,7 +52,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107+**
-  (tested against v2.1.308 — see the badge at the top of this page)
+  (tested against v2.1.309 — see the badge at the top of this page)
 
 ## Installation
 
@@ -357,7 +357,7 @@ Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named
 | `t` | Switch to tree view |
 | `w` | Toggle sidekick attention — highlight a sidekick that is waiting for you (see [Sidekick attention](docs/guide.md#sidekick-attention-knowing-when-it-needs-you)) |
 | `b` | Toggle [background-sessions section](#background-sessions-section-agent-view-coexistence) |
-| `m` / `?` | Menu: prepare for logout, continue restore, choose/delete checkpoints, reset and exit Claude |
+| `?` / `m` | Menu of actions and settings, including: prepare for logout, continue restore, choose/delete checkpoints, reset and exit Claude |
 | `q` / `Esc` / `F1` | Close |
 
 `ccm exit <name>` exits Claude while keeping its window; `ccm exit <name> [-y]             Exit Claude; keep window and sidekicks

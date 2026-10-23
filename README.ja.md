@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.308-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.309-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -52,7 +52,7 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107 以上**
-  （v2.1.308 で動作確認済み — ページ冒頭のバッジを参照）
+  （v2.1.309 で動作確認済み — ページ冒頭のバッジを参照）
 
 ## インストール
 
@@ -363,7 +363,7 @@ set -g @ccm-sidekick-notify-excerpt on
 | `t` | ツリービューに切替 |
 | `w` | サイドキックの注意喚起を切替 — あなたを待っているサイドキックを強調表示（[サイドキックの注意喚起](docs/guide.ja.md#サイドキックの注意喚起-いつあなたを必要としているかを知る)参照） |
 | `b` | [バックグラウンドセッションセクション](#バックグラウンドセッションセクションagent-view共存) を切替 |
-| `m` / `?` | メニュー：ログアウト準備・復元の続行・保存点の選択／削除・reset・Claude 終了 |
+| `?` / `m` | 操作と設定のメニュー。ログアウト準備・復元の続行・保存点の選択／削除・reset・Claude 終了 |
 | `q` / `Esc` / `F1` | 閉じる |
 
 `ccm exit <name>` は窓を残して Claude を終了し、`ccm exit <name> [-y]             Claude を終了（窓とサイドキックは保持）

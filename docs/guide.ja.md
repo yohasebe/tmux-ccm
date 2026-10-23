@@ -113,7 +113,7 @@ STATUS       PROJECT              MODE     BRANCH           PORTS        DIRECTO
 >   #7  ■ SHELL   docs-site                  ~/code/docs-site
 >
 > [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
-> e[x]it all [s]ave [t]ree [m]enu [q] quit
+> e[x]it all [s]ave [t]ree [?/m] actions & settings [q] quit
 > Hooks: ON
 > ```
 

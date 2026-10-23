@@ -347,7 +347,7 @@ class RenderMixin:
         return min(wanted, room)
 
     def _render_bg_section(self, stdscr, start_row, bg_sessions,
-                           list_height, effective_width):
+                           body_end, effective_width):
         """Render the background-sessions block starting at `start_row`.
 
         Returns the next available row after the block (so the help-
@@ -356,8 +356,8 @@ class RenderMixin:
         an empty list — the user pressed `b` (or set the always
         flag) intentionally and deserves feedback.
         """
-        # Reserve space for the help / footer rows below.
-        max_row = list_height - 3
+        # Below `body_end` are the help and footer rows.
+        max_row = body_end
         if start_row >= max_row:
             return start_row
 
@@ -591,7 +591,22 @@ class RenderMixin:
             # this too — a reservation made against the popup height
             # alone would let them push the block, or the selected
             # project, off the bottom.
-            available = max(0, (list_height - 3) - row - 1)
+            # The help lines are laid out first and the list stops
+            # above them: with more projects than rows, a list drawn
+            # first takes every row and the keys go unannounced.
+            help_items = [
+                "[↑↓/jk] select", "[Enter] attach", "[/] search",
+                "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
+                "[r]emove…", "[i]gnore", "e[x]it all", "[s]ave", "[t]ree",
+                "[b]g sessions", "[w]atch sidekicks",
+            ]
+            help_lines = self._help_lines(
+                help_items, (list_width if preview_width > 0 else width) - 4,
+                list_height - 3 - row - self._HELP_MIN_BODY_ROWS)
+            # The list and the background block end above a blank row,
+            # the help lines and the footer.
+            body_end = list_height - 2 - len(help_lines)
+            available = max(0, (body_end - 1) - row - 1)
             bg_reserved = (self._bg_section_rows(bg_sessions, available)
                            if self.bg_visible else 0)
 
@@ -753,7 +768,7 @@ class RenderMixin:
                 for i, (p, ann) in enumerate(zip(projects, annotations)):
                     if i < scroll_offset:
                         continue
-                    if row >= list_height - 3 - bg_reserved:
+                    if row >= body_end - 1 - bg_reserved:
                         break
 
                     is_selected = i == self.selected
@@ -937,37 +952,13 @@ class RenderMixin:
             # line layout.
             if self.bg_visible:
                 row = self._render_bg_section(
-                    stdscr, row, bg_sessions, list_height,
+                    stdscr, row, bg_sessions, body_end,
                     list_width if preview_width > 0 else width,
                 )
 
-            # Help line — keys highlighted, wraps to 2 lines if needed
-            avail_w = (list_width if preview_width > 0 else width) - 4  # padding
-            help_items = [
-                "[↑↓/jk] select", "[Enter] attach", "[/] search",
-                "[p]review", "[a]dd", "re[g]ister", "re[n]ame",
-                "[r]emove…", "[i]gnore", "e[x]it all", "[s]ave", "[t]ree",
-                "[b]g sessions", "[w]atch sidekicks", "[m/?] menu (logout/restore/reset/exit)",
-                "[q] quit",
-            ]
-            # Split into lines that fit within avail_w
-            help_lines = []
-            current_line = ""
-            for item in help_items:
-                test = f"{current_line}  {item}" if current_line else item
-                if len(test) > avail_w and current_line:
-                    help_lines.append(current_line)
-                    current_line = item
-                else:
-                    current_line = test
-            if current_line:
-                help_lines.append(current_line)
-
-            num_help_lines = len(help_lines)
-            help_start_row = list_height - 1 - num_help_lines  # before footer
             for hi, hline in enumerate(help_lines):
-                hr = help_start_row + hi
-                if hr > row + 1:
+                hr = body_end + 1 + hi
+                if hr > row:  # a popup too short for any list row
                     self._render_help_line(stdscr, hr, 2, hline)
 
             # Footer
@@ -1013,6 +1004,36 @@ class RenderMixin:
             stdscr.refresh()
         except curses.error:
             pass
+
+    # Kept last in the help: the one line left when rows run short.
+    _HELP_TAIL = ("[?/m] actions & settings", "[q] quit")
+    # Project rows the help lines leave before they give way.
+    _HELP_MIN_BODY_ROWS = 3
+
+    @classmethod
+    def _help_lines(cls, items, avail_w, room):
+        """Pack `items` and then `_HELP_TAIL` into lines `avail_w`
+        wide. With fewer than that many lines of `room`, the tail,
+        which names the menu, comes first and the leading lines of
+        `items` fill what is left."""
+        def pack(group):
+            lines, current = [], ""
+            for item in group:
+                test = f"{current}  {item}" if current else item
+                if len(test) > avail_w and current:
+                    lines.append(current)
+                    current = item
+                else:
+                    current = test
+            if current:
+                lines.append(current)
+            return lines
+        lines = pack(list(items) + list(cls._HELP_TAIL))
+        if len(lines) <= max(room, 1):
+            return lines
+        tail = pack(cls._HELP_TAIL)
+        keep = max(room - len(tail), 0)
+        return (pack(items)[:keep] if keep else []) + tail[:max(room, 1)]
 
     def _render_help_line(self, stdscr, y, x, text):
         """Render help text with [key] portions highlighted."""
