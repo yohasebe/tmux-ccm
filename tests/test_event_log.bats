@@ -586,6 +586,26 @@ _latest_type() {
     [[ "$output" == "dream,subagent" ]]
 }
 
+@test "on-stop.sh: a published Artifact's watch is recorded but not counted" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"w1","type":"monitor","status":"running","description":"live updates for artifact https://claude.ai/artifact/abc (auto-armed on publish)"},{"id":"w2","type":"monitor","status":"running","description":"presence on artifact https://claude.ai/artifact/abc"}]}'
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "artifact watch,artifact watch" ]]
+    run cat "${HOOK_DIR}/${KEY}.stop-bg"
+    [[ "$output" == "0" ]]
+}
+
+@test "on-stop.sh: a monitor that only resembles an Artifact's watch still counts" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"m1","type":"monitor","description":"live updates for artifact x","server":"srv","tool":"watch"},{"id":"m2","type":"monitor","description":"tail the build log"},{"id":"m3","type":"shell","description":"live updates for artifact y"},{"id":"m4","type":"monitor"},{"id":"m5","type":"monitor","description":"live updates for artifact z","server":"srv"},{"id":"m6","type":"monitor","description":"presence on artifact z","tool":"watch"},{"id":"m7","type":"monitor","description":["live updates for artifact z"]},{"id":"m8","type":"artifact watch"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "8" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "monitor,monitor,shell,monitor,monitor,monitor,monitor,artifact watch" ]]
+}
+
 @test "on-stop.sh: a kind outside the recorded characters is cut to them" {
     _run_hook on-stop.sh \
         '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"x","type":"we\"ird}"}]}'

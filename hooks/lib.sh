@@ -76,10 +76,23 @@ _ccm_route_sidekick_attention() {
 # against the completion notice. The kinds of everything reported are
 # kept on the stop event, so a count can be traced to what made it.
 # `type` is Claude Code's display label for the task kind.
+#
+# A published Artifact keeps a connection open for its comments and
+# viewers, for as long as the conversation lives and again after it is
+# resumed. Claude Code lists it as a "monitor" whose description names
+# the artifact, without the MCP server and tool a monitor of a tool
+# carries; it is recorded as "artifact watch" and not counted either.
 _CCM_BG_JQ_DEFS='
-    def ccm_bg_kind: if type == "object" then ((.type // "unknown") | tostring) else "unknown" end;
+    def ccm_bg_artifact_watch:
+        type == "object" and .type == "monitor" and .server == null and .tool == null
+        and ((.description // "") | type == "string"
+             and (startswith("live updates for artifact ") or startswith("presence on artifact ")));
+    def ccm_bg_kind:
+        if ccm_bg_artifact_watch then "artifact watch"
+        elif type == "object" then ((.type // "unknown") | tostring)
+        else "unknown" end;
     def ccm_bg_counted:
-        ([(.background_tasks // [])[] | ccm_bg_kind
+        ([(.background_tasks // [])[] | select(ccm_bg_artifact_watch | not) | ccm_bg_kind
           | select(. as $k | ["dream", "auto-mode scan", "memory import"] | any(. == $k) | not)]
          | length) + ((.session_crons // []) | length);
     def ccm_bg_kinds:

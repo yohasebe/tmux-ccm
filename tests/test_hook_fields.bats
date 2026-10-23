@@ -50,6 +50,7 @@ read_fields() {
         '{"session_id":"s4","cwd":"/x/日本語","permission_mode":"acceptEdits","hook_event_name":"Notification"}'
         '{"session_id":"s5","hook_event_name":"Stop","background_tasks":[1,2],"session_crons":["c"]}'
         '{"session_id":"s7","hook_event_name":"Stop","background_tasks":[{"type":"dream"},{"type":"shell"}]}'
+        '{"session_id":"s8","hook_event_name":"Stop","background_tasks":[{"type":"monitor","description":"live updates for artifact a (auto-armed on publish)"},{"type":"monitor","description":"x"}]}'
         '{"session_id":"s6","permission_mode":"we ird$;mode"}'
     )
     local p new old
