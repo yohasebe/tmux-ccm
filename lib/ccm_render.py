@@ -307,6 +307,20 @@ def format_elapsed(ts):
     return f"{elapsed // 86400:>2d}d"
 
 
+def format_age_short(seconds):
+    """A duration in its largest whole unit, unpadded: `45s`, `3m`,
+    `9h`, `2d`. A negative duration (a clock that stepped back) reads
+    as `0s`."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
 def format_dir(directory, prefix_len, cols):
     d = ccm_core.shorten_home(directory)
     avail = cols - prefix_len - 4

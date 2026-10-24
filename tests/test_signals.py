@@ -389,6 +389,64 @@ class TestReadStopBackground:
             tail, ccm_signals.read_stop_background("/p", session_id=self.SID))
 
 
+
+class TestReadStopBackgroundTasks:
+    SID = "test-session-stop-bg-tasks"
+
+    def _write(self, tmp_path, monkeypatch, content):
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        if content is not None:
+            (hook_dir / f"{self.SID}.stop-bg-tasks").write_text(content)
+
+    def _read(self, session_id=None):
+        return ccm_signals.read_stop_background_tasks(
+            "/p", session_id=self.SID if session_id is None else session_id)
+
+    def test_reads_kind_label_and_since_in_order(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, json.dumps({"v": 1, "tasks": [
+            {"id": "a", "kind": "shell", "label": "until done; do sleep 120; done",
+             "since": 100},
+            {"id": "c", "kind": "cron", "label": "check CI", "since": 200}]}))
+        assert self._read() == [
+            {"kind": "shell", "label": "until done; do sleep 120; done", "since": 100},
+            {"kind": "cron", "label": "check CI", "since": 200}]
+
+    @pytest.mark.parametrize("content", [
+        None, "", "not json", "[]", '{"tasks": {}}', '{"tasks": null}'])
+    def test_nothing_readable_is_no_tasks(self, tmp_path, monkeypatch, content):
+        self._write(tmp_path, monkeypatch, content)
+        assert self._read() == []
+
+    def test_no_session_is_no_tasks(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, json.dumps(
+            {"tasks": [{"kind": "shell", "label": "x", "since": 1}]}))
+        assert self._read(session_id="") == []
+
+    def test_entries_of_the_wrong_shape_are_skipped(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, json.dumps({"tasks": [
+            7, "x", {"kind": "shell", "label": "no time"},
+            {"kind": "shell", "since": "100"}, {"kind": "shell", "since": True},
+            {"kind": "shell", "since": 0},
+            {"kind": 5, "label": ["x"], "since": 300}]}))
+        assert self._read() == [{"kind": "unknown", "label": "", "since": 300}]
+
+    def test_text_is_one_printable_line(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, json.dumps({"tasks": [
+            {"kind": "sh\x1bell", "label": "a\n\tb\x1b[31m c\x07", "since": 1}]}))
+        assert self._read() == [{"kind": "sh ell", "label": "a b [31m c", "since": 1}]
+
+    def test_the_list_and_its_text_are_capped(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, json.dumps({"tasks": [
+            {"kind": "k" * 99, "label": "x" * 999, "since": i + 1}
+            for i in range(30)]}))
+        tasks = self._read()
+        assert len(tasks) == ccm_signals.STOP_BG_TASKS_MAX
+        assert len(tasks[0]["kind"]) == 40
+        assert len(tasks[0]["label"]) == 200
+
+
 class TestReadEventsTail:
     # Synthetic session_id used by every test; the fixture registers
     # it for any project_dir so `_events_log_path(project_dir)` and

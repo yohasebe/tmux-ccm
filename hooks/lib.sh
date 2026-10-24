@@ -91,13 +91,43 @@ _CCM_BG_JQ_DEFS='
         if ccm_bg_artifact_watch then "artifact watch"
         elif type == "object" then ((.type // "unknown") | tostring)
         else "unknown" end;
+    def ccm_bg_counted_tasks:
+        [(.background_tasks // [])[] | select(ccm_bg_artifact_watch | not)
+         | select(ccm_bg_kind as $k | ["dream", "auto-mode scan", "memory import"]
+                  | any(. == $k) | not)];
     def ccm_bg_counted:
-        ([(.background_tasks // [])[] | select(ccm_bg_artifact_watch | not) | ccm_bg_kind
-          | select(. as $k | ["dream", "auto-mode scan", "memory import"] | any(. == $k) | not)]
-         | length) + ((.session_crons // []) | length);
+        (ccm_bg_counted_tasks | length) + ((.session_crons // []) | length);
     def ccm_bg_kinds:
         [((.background_tasks // [])[] | ccm_bg_kind), ((.session_crons // [])[] | "cron")]
         | join(",");
+    def ccm_bg_text:
+        if type == "string" then gsub("[\u0000-\u001f\u007f]+"; " ") else "" end;
+    def ccm_bg_field($k): if type == "object" then (.[$k] | ccm_bg_text) else "" end;
+    def ccm_bg_secretish:
+        test("://[^/\\s@]+:[^/\\s@]*@")
+        or test("(?i)(?<![a-z0-9_-])([a-z0-9]+[_-])*(pass(word|wd)?|secrets?|tokens?|api[_-]?keys?|credentials?|authorization)[\"\u0027]?\\s*[=:]")
+        or test("(?i)(?<![a-z0-9_])--?([a-z0-9]+-)*(pass(word|wd)?|secret|token|api-?key|auth[a-z]*)(?![a-z0-9_])")
+        or test("(?i)(?<![a-z0-9_])bearer\\s+\\S{8,}")
+        or test("(?<![A-Za-z0-9_-])(ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|sk-|xox[abprs]-|AKIA|ASIA)[A-Za-z0-9_-]{8,}")
+        or test("(?<![A-Za-z0-9_+-])(?=[A-Za-z_+-]*[0-9])(?=[0-9_+-]*[A-Za-z])[A-Za-z0-9_+-]{24,}");
+    def ccm_bg_task_list($now; $prev; $starts):
+        ([$prev | try fromjson catch null
+          | if type == "object" and (.tasks | type) == "array" then .tasks[] else empty end
+          | select(type == "object" and (.id | type) == "string" and .id != ""
+                   and (.since | type) == "number")]) as $old
+        | [ (ccm_bg_counted_tasks[]
+             | {id: ccm_bg_field("id")[0:64], kind: ccm_bg_kind[0:40],
+                label: (ccm_bg_field("description")
+                        | if ccm_bg_secretish then "" else .[0:200] end)}),
+            ((.session_crons // [])[]
+             | {id: ccm_bg_field("id")[0:64], kind: "cron", label: ""}) ]
+        | .[0:20]
+        | map(. as $t
+              | . + {since: (first($old[] | select(.id == $t.id and .kind == $t.kind
+                                                    and $t.id != "") | .since)
+                              // ($starts[$t.id] | if type == "number" and . > 0 and . <= $now
+                                                   then floor else null end)
+                              // $now)});
 '
 
 ccm_hook_init() {

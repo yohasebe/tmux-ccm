@@ -41,6 +41,14 @@ from conftest import (
 # Backward-compat alias used by some tests.
 _iso_ts = iso_ts
 
+class TestFormatAgeShort:
+    @pytest.mark.parametrize("seconds, text", [
+        (0, "0s"), (59, "59s"), (60, "1m"), (3599, "59m"), (3600, "1h"),
+        (86399, "23h"), (86400, "1d"), (10 * 86400, "10d"), (-5, "0s")])
+    def test_largest_whole_unit(self, seconds, text):
+        assert ccm_render.format_age_short(seconds) == text
+
+
 class TestFormatElapsed:
     # Fixed-width (3 visible cols, right-aligned digits) is a hard
     # contract — the dashboard's right-anchored elapsed slot relies on

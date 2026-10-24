@@ -371,6 +371,80 @@ class TestRenderSmoke:
         assert d._bg_section_rows([object()] * 40, 3) == 0
         assert d._bg_section_rows([object()] * 40, 0) == 0
 
+    NOW = 1_000_000
+
+    def _bg_board(self, monkeypatch, tasks_by_dir, position="right",
+                  width=120, height=30):
+        """Render four IDLE rows: `/w/a` and `/w/b` with `(bg)` and the
+        tasks `tasks_by_dir` gives them, `/w/c` with `(bg)` and no task
+        list, `/w/d` without background work. Returns the drawn calls
+        as (y, x, text)."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_signals
+        import dashboard_render
+        monkeypatch.setattr(dashboard_render.time, "time", lambda: self.NOW)
+        monkeypatch.setattr(
+            ccm_signals, "read_stop_background_tasks",
+            lambda d, session_id=None: list(tasks_by_dir.get(d, [])))
+        monkeypatch.setattr(Dashboard, "_resolve_preview_pane", lambda self, w: w)
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = True
+        d.preview_position = position
+        d.projects = [
+            ccm_core.Project(f"0:{n}", str(i), n, f"/w/{n}", "IDLE",
+                             bg_active=n != "d")
+            for i, n in enumerate("abcd")]
+        stdscr = _make_mock_stdscr(width=width, height=height)
+        d.render(stdscr)
+        return [tuple(c.args[:3]) for c in stdscr.addstr.call_args_list]
+
+    def _task(self, kind, label, age):
+        return {"kind": kind, "label": label, "since": self.NOW - age}
+
+    def test_a_bg_row_shows_how_long_its_oldest_task_has_run(self, monkeypatch):
+        drawn = self._bg_board(monkeypatch, {
+            "/w/a": [self._task("shell", "x", 600), self._task("cron", "y", 9 * 3600 + 5)],
+            "/w/b": [self._task("subagent", "z", 30)]})
+        row_of = {}
+        for y, _, t in drawn:
+            if t in ("a", "b", "c", "d"):
+                row_of.setdefault(t, y)
+        assert sorted(row_of.values()) == list(range(row_of["a"], row_of["a"] + 4))
+        notes = {}
+        for y, _, t in drawn:
+            if str(t).startswith("(bg"):
+                notes.setdefault(y, []).append(t)
+        assert notes == {row_of["a"]: ["(bg 9h)"], row_of["b"]: ["(bg)"],
+                         row_of["c"]: ["(bg)"]}
+
+    @pytest.mark.parametrize("position", ["right", "bottom"])
+    def test_the_preview_names_the_selected_rows_tasks(self, monkeypatch, position):
+        drawn = self._bg_board(monkeypatch, {"/w/a": [
+            self._task("shell", "until done; do sleep 120; done", 9 * 3600),
+            self._task("subagent", "Review the diff", 20)]}, position=position)
+        heads = [(y, x, t) for y, x, t in drawn if str(t).startswith("bg: ")]
+        assert [t for _, _, t in heads] == ["bg: shell 9h", "bg: subagent <1m"]
+        (y0, x0, _), (y1, x1, _) = heads
+        assert (y1, x1) == (y0 + 1, x0)
+        assert (y0, x0 + len("bg: shell 9h") + 2,
+                "until done; do sleep 120; done") in drawn
+        assert (y1, x0 + len("bg: subagent <1m") + 2, "Review the diff") in drawn
+        if position == "right":
+            assert (y0, x0) == (0, 120 - 60 - 1 + 2)
+        else:
+            assert drawn.index((y0 - 1, 0, "─" * 119)) < drawn.index(heads[0])
+
+    def test_more_tasks_than_lines_end_in_a_count(self, monkeypatch):
+        drawn = self._bg_board(monkeypatch, {"/w/a": [
+            self._task("shell", f"job {i}", 600) for i in range(5)]})
+        heads = [t for _, _, t in drawn if str(t).startswith("bg: ")]
+        assert heads == ["bg: shell 10m", "bg: shell 10m", "bg: +3 more"]
+
+    def test_a_row_without_a_task_list_adds_no_preview_lines(self, monkeypatch):
+        drawn = self._bg_board(monkeypatch, {"/w/b": [self._task("shell", "x", 600)]})
+        assert not [t for _, _, t in drawn if str(t).startswith("bg: ")]
+
     def _full_list(self, monkeypatch, width, height, bg=False):
         _stub_dashboard_environment(monkeypatch)
         import ccm_agentview

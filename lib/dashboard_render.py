@@ -8,6 +8,7 @@ import time
 
 import ccm_agentview
 import ccm_menu_help
+import ccm_signals
 import ccm_spool
 from ccm_canaries import (
     disable_all_hooks_warning,
@@ -31,6 +32,7 @@ from ccm_render import (
     EXTERNAL_AGENT_MARK,
     external_agent_badge,
     external_agent_state,
+    format_age_short,
     format_dir,
     format_elapsed,
     signal_age_suffix,
@@ -223,6 +225,62 @@ class RenderMixin:
             attr |= cls._get_color_pair(fg)
         return attr
 
+    #: Lines the preview gives to a `(bg)` project's background tasks.
+    _BG_PREVIEW_MAX_LINES = 3
+
+    def _bg_note(self, proj, now_ts):
+        """The `(bg)` note of an IDLE row, with how long the oldest of
+        the background tasks the newest Stop reported has been running
+        once that is a minute or more: `(bg 9h)`. Plain `(bg)` when no
+        task list is known (live child processes, a Stop before ccm
+        kept the list). Keeps the tasks for the preview."""
+        tasks = ccm_signals.read_stop_background_tasks(
+            proj.dir, session_id=proj.cached_session_id or "")
+        self._bg_tasks[proj.win_target] = tasks
+        if not tasks:
+            return "(bg)"
+        age = now_ts - min(t["since"] for t in tasks)
+        return f"(bg {format_age_short(age)})" if age >= 60 else "(bg)"
+
+    def _preview_bg_lines(self, room):
+        """Lines naming the selected project's background tasks, at
+        most `room` of them: `bg: <kind> <age>  <description>`, the
+        last one `bg: +N more` when they do not all fit."""
+        by_window = getattr(self, "_bg_tasks", None)
+        if room <= 0 or not by_window:
+            return []
+        with self.lock:
+            projects = list(self.projects)
+        if self.selected >= len(projects):
+            return []
+        tasks = by_window.get(projects[self.selected].win_target)
+        if not tasks:
+            return []
+        now_ts = int(time.time())
+        fit = tasks if len(tasks) <= room else tasks[:room - 1]
+        lines = []
+        for t in fit:
+            age = now_ts - t["since"]
+            head = f"bg: {t['kind']} {format_age_short(age) if age >= 60 else '<1m'}"
+            lines.append((head, t["label"]))
+        if len(fit) < len(tasks):
+            lines.append((f"bg: +{len(tasks) - len(fit)} more", ""))
+        return lines
+
+    def _render_bg_lines(self, stdscr, row, col, max_w, lines):
+        """Draw `_preview_bg_lines` from `row`: the kind and age in
+        BUSY's colour, the description dim after them."""
+        edge = col + max_w + 1
+        for i, (head, label) in enumerate(lines):
+            text = truncate_to_width(head, max_w)
+            self._addstr(stdscr, row + i, col, text, curses.color_pair(C_BUSY),
+                         max_col=edge)
+            rest = max_w - display_width(text) - 2
+            if label and rest > 0:
+                self._addstr(stdscr, row + i, col + display_width(text) + 2,
+                             truncate_to_width(label, rest),
+                             curses.color_pair(C_DIM), max_col=edge)
+
     def _render_preview(self, stdscr, start_col, start_row, panel_width, panel_height):
         """Render preview panel with ANSI color support."""
         # Draw vertical separator
@@ -232,10 +290,16 @@ class RenderMixin:
             except curses.error:
                 pass
 
-        lines = getattr(self, '_preview_lines', [])
-        visible = lines[-(panel_height):]
         content_col = start_col + 2
         max_w = panel_width - 3
+        bg_lines = self._preview_bg_lines(
+            min(self._BG_PREVIEW_MAX_LINES, panel_height // 3))
+        self._render_bg_lines(stdscr, start_row, content_col, max_w, bg_lines)
+        start_row += len(bg_lines)
+        panel_height -= len(bg_lines)
+
+        lines = getattr(self, '_preview_lines', [])
+        visible = lines[-(panel_height):] if panel_height > 0 else []
 
         for i, line in enumerate(visible):
             r = start_row + i
@@ -278,9 +342,16 @@ class RenderMixin:
         except curses.error:
             pass
 
-        lines = getattr(self, '_preview_lines', [])
-        visible = lines[-(panel_height - 1):]  # -1 for separator
         max_w = panel_width - 2
+        bg_lines = self._preview_bg_lines(
+            min(self._BG_PREVIEW_MAX_LINES, (panel_height - 1) // 3))
+        self._render_bg_lines(stdscr, start_row + 1, 1, max_w, bg_lines)
+        start_row += len(bg_lines)
+        panel_height -= len(bg_lines)
+
+        lines = getattr(self, '_preview_lines', [])
+        # -1 for the separator
+        visible = lines[-(panel_height - 1):] if panel_height > 1 else []
 
         for i, line in enumerate(visible):
             r = start_row + 1 + i
@@ -673,6 +744,9 @@ class RenderMixin:
                 # left and right. The right-anchored placement keeps
                 # paths visually stable across refresh ticks.
                 annotations = []
+                # Background tasks of this pass's `(bg)` rows, by
+                # window, for the preview's lines about them.
+                self._bg_tasks = {}
                 spool_counts = ccm_spool.pending_counts()
                 for proj in projects:
                     pieces = []  # widths for COL_DIR calc
@@ -733,10 +807,13 @@ class RenderMixin:
                         pieces.append(display_width(spool_marker))
                     if mode_badge:
                         pieces.append(display_width(mode_badge))
+                    bg_label = ""
+                    if not suffix_str and proj.bg_active:
+                        bg_label = self._bg_note(proj, now_ts)
                     if suffix_str:
                         pieces.append(display_width(suffix_str))
-                    elif proj.bg_active:
-                        pieces.append(display_width("(bg)"))
+                    elif bg_label:
+                        pieces.append(display_width(bg_label))
                     if proj.branch:
                         pieces.append(display_width(proj.branch) + 2)
                     cluster_w = (
@@ -751,6 +828,7 @@ class RenderMixin:
                         "mode_badge": mode_badge,
                         "elapsed": elapsed_str,
                         "suffix": suffix_str,
+                        "bg_label": bg_label,
                         "cluster_w": cluster_w,
                     })
 
@@ -823,10 +901,10 @@ class RenderMixin:
                         self._addstr(stdscr, y, col, ann["suffix"],
                                      curses.color_pair(C_DIM))
                         col += display_width(ann["suffix"]) + 1
-                    elif p.bg_active:
-                        self._addstr(stdscr, y, col, "(bg)",
+                    elif ann.get("bg_label"):
+                        self._addstr(stdscr, y, col, ann["bg_label"],
                                      curses.color_pair(C_BUSY))
-                        col += 5
+                        col += display_width(ann["bg_label"]) + 1
 
                     # Ignore marker ⊘: a hidden sidekick pane exists.
                     # Dim — present-but-untracked, not a state — until

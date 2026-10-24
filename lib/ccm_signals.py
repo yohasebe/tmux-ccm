@@ -391,6 +391,60 @@ def read_stop_background(project_dir: str,
     return int(text) if text.isdigit() and len(text) <= 6 else 0
 
 
+#: Most background tasks `read_stop_background_tasks` returns; the
+#: hook keeps no more than this either.
+STOP_BG_TASKS_MAX = 20
+
+
+def _printable_text(value) -> str:
+    """`value` as one line of printable text: anything not printable
+    (control characters, escapes) becomes a space and runs of spaces
+    one. "" when it is not a string."""
+    if not isinstance(value, str):
+        return ""
+    return " ".join("".join(c if c.isprintable() else " " for c in value).split())
+
+
+def read_stop_background_tasks(project_dir: str,
+                               session_id: Optional[str] = None) -> list:
+    """Return what the newest Stop's background work count is made
+    of, as `[{"kind", "label", "since"}, ...]` in the order Claude
+    Code listed it, or [].
+
+    Written by `on-stop.sh` beside `.stop-bg` while that count is
+    positive, and removed when it is not. `since` is the time a Stop
+    first reported the task. Display-only: the `(bg)` note itself is
+    decided from the count (`background_work_reported`). A missing
+    or unreadable file, or an entry of the wrong shape, reads as
+    nothing."""
+    if not project_dir:
+        return []
+    path = _agent_file(project_dir, session_id, ".stop-bg-tasks")
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.loads(f.read(65536))
+    except (OSError, ValueError):
+        return []
+    tasks = data.get("tasks") if isinstance(data, dict) else None
+    if not isinstance(tasks, list):
+        return []
+    out = []
+    for t in tasks[:STOP_BG_TASKS_MAX]:
+        if not isinstance(t, dict):
+            continue
+        kind, label, since = t.get("kind"), t.get("label"), t.get("since")
+        if (not isinstance(since, int) or isinstance(since, bool)
+                or since <= 0):
+            continue
+        kind = _printable_text(kind)
+        label = _printable_text(label)
+        out.append({"kind": kind[:40] or "unknown", "label": label[:200],
+                    "since": since})
+    return out
+
+
 def read_agent_permit(project_dir: str,
                       session_id: Optional[str] = None):
     """Return `(timestamp, detail)` for a subagent's open permission
@@ -484,7 +538,8 @@ def cleanup_project_runtime_files(project_dir):
 
     for sid in session_ids:
         for suffix in ("", ".busy", ".pending", ".events.jsonl",
-                       ".agent-activity", ".agent-permit", ".stop-bg"):
+                       ".agent-activity", ".agent-permit", ".stop-bg",
+                       ".stop-bg-tasks"):
             path = os.path.join(ccm_core.CCM_HOOK_DIR, sid + suffix)
             try:
                 os.unlink(path)

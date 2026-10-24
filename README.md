@@ -420,7 +420,7 @@ ccm clear-notifications           Remove ccm notifications from macOS Notificati
 | ◉ | BUSY | Claude is processing |
 | ● | IDLE | Waiting for input |
 | `* <elapsed>` | IDLE (recently completed) | Transient marker (asterisk green, time dim) shown for 30 s after BUSY/PERMIT → IDLE |
-| `(bg)` | IDLE | Claude waits for your input, but work it started is still running (a background agent or command, a scheduled loop, a leftover process). Drawn in BUSY's colour beside Claude's state, ahead of any sidekick badge; auto-exit leaves the window alone |
+| `(bg)` | IDLE | Claude waits for your input, but work it started is still running (a background agent or command, a scheduled loop, a leftover process). Drawn in BUSY's colour beside Claude's state, ahead of any sidekick badge; auto-exit leaves the window alone. On the dashboard, `(bg 9h)` says how long the oldest such task has run, and the preview lists each one |
 | `[N]` | (any state, multi-pane window) | Pane count marker (brackets dim, digit cyan) when a window has more than one pane |
 | `⊘` | (any state) | Hidden-pane marker (dim): the window has a pane excluded from ccm via `CCM_IGNORE` |
 | `▸ <name>` | (any state) | Sidekick marker: a pane in the window is running an external agent CLI. Dim while it sits there; yellow `▸ <name> ⚠` while it waits for you (with sidekick hooks installed); for Codex also `▸ codex ◉` in BUSY's colour while it works. The window's own state is unaffected |

@@ -649,6 +649,210 @@ _latest_type() {
     [[ "$output" == "0" ]]
 }
 
+@test "on-stop.sh: lists the counted work for the dashboard" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"t1","type":"shell","description":"Wait for the review","command":"until x; do sleep 120; done"},{"id":"t2","type":"shell","description":"","command":"npm\nrun dev"},{"id":"d1","type":"dream","description":"dreaming"},{"id":"w1","type":"monitor","description":"live updates for artifact a (auto-armed on publish)"}],"session_crons":[{"id":"c1","prompt":"check CI"}]}'
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    run jq -c '[.tasks[] | [.id, .kind, .label]]' "$f"
+    [[ "$output" == '[["t1","shell","Wait for the review"],["t2","shell",""],["c1","cron",""]]' ]]
+    run jq -r '[.tasks[].since | type == "number" and . > 1700000000] | all' "$f"
+    [[ "$output" == "true" ]]
+}
+
+@test "on-stop.sh: a description that may carry a secret is not kept" {
+    local d colon=":" at="@"
+    # The URL is put together here so the file never holds the shape.
+    for d in "Fetch https://alice${colon}hunter2${at}example.test/status" \
+             'Run deploy --password shortsecret' \
+             'Use {"password":"jsonsecret"}' \
+             'Deploy password="correct horse battery staple" now' \
+             'curl -H Bearer eyJhbGciOiJIUzI1NiJ9xyz' \
+             'Use ghp_ABCdef1234567890 here' \
+             'sha 9f86d081884c7d659a2feaa0c55ad015' \
+             'Authorization: Basic xyz' \
+             'Deploy API_TOKEN=shortsecret' \
+             'Run --client-secret shortsecret' \
+             "Use {'password': 'hunter2'}" \
+             'Set access_token=shortsecret' \
+             'Run --access-token shortsecret'; do
+        _run_hook on-stop.sh "$(jq -nc --arg d "$d" \
+            '{hook_event_name: "Stop", cwd: "/x/test-project",
+              background_tasks: [{id: "t1", type: "shell", description: $d, command: "x"}]}')"
+        run jq -r '.tasks[0].label' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+        [[ "$output" == "" ]] || { echo "kept: $d"; return 1; }
+    done
+}
+
+@test "on-stop.sh: an ordinary description is kept as written" {
+    local d
+    for d in 'Run basic tests for login' 'Run task-runner tests' \
+             'Check bypass: enabled' 'Run the auth tests for token refresh' \
+             'Fix token handling: retry on 401' 'Run npm run dev at http://localhost:3000' \
+             'Set tokenizer=fast'; do
+        _run_hook on-stop.sh "$(jq -nc --arg d "$d" \
+            '{hook_event_name: "Stop", cwd: "/x/test-project",
+              background_tasks: [{id: "t1", type: "shell", description: $d}]}')"
+        run jq -r '.tasks[0].label' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+        [[ "$output" == "$d" ]] || { echo "changed: $d -> $output"; return 1; }
+    done
+}
+
+@test "on-stop.sh: a task reported again keeps the time it was first reported" {
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    printf '%s\n' '{"v":1,"tasks":[{"id":"t1","kind":"shell","label":"old","since":100},{"id":"t2","kind":"subagent","label":"x","since":200}]}' > "$f"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"t1","type":"shell","description":"new"},{"id":"t2","type":"shell","description":"same id, other kind"},{"id":"t3","type":"shell"}]}'
+    run jq -r '.tasks[0].since' "$f"
+    [[ "$output" == "100" ]]
+    run jq -r '.tasks[0].label' "$f"
+    [[ "$output" == "new" ]]
+    run jq -r '.tasks[1].since > 200 and .tasks[2].since > 200' "$f"
+    [[ "$output" == "true" ]]
+}
+
+@test "on-stop.sh: a new task's age starts at its launch in the transcript" {
+    local t="${SANDBOX}/transcript.jsonl"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.500Z","toolUseResult":{"backgroundTaskId":"t1"}}' > "$t"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T02:00:00.000Z","toolUseResult":{"agentId":"t2"}}' >> "$t"
+    printf '%s\n' '{"type":"user","timestamp":"2999-01-01T00:00:00.000Z","toolUseResult":{"backgroundTaskId":"t3"}}' >> "$t"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"},{"id":"t2","type":"subagent"},{"id":"t3","type":"shell"},{"id":"t4","type":"shell"}]}'
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    run jq -r '.tasks[0].since' "$f"
+    [[ "$output" == "1767229200" ]]
+    run jq -r '.tasks[1].since' "$f"
+    [[ "$output" == "1767232800" ]]
+    run jq -r '.tasks[2].since < 2000000000 and .tasks[2].since > 1700000000' "$f"
+    [[ "$output" == "true" ]]
+    run jq -r '.tasks[3].since > 1767232800' "$f"
+    [[ "$output" == "true" ]]
+}
+
+@test "on-stop.sh: a task already listed keeps its time over the transcript" {
+    local t="${SANDBOX}/transcript.jsonl"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t1"}}' > "$t"
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    printf '%s\n' '{"v":1,"tasks":[{"id":"t1","kind":"shell","label":"x","since":100}]}' > "$f"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+    run jq -r '.tasks[0].since' "$f"
+    [[ "$output" == "100" ]]
+}
+
+@test "on-stop.sh: a line naming the task without a readable timestamp is passed over" {
+    local t="${SANDBOX}/transcript.jsonl"
+    printf '%s\n' '{"type":"queue-operation","content":"t1"}' > "$t"
+    printf '%s\n' '{"type":"queue-operation","content":"\"t1\""}' >> "$t"
+    printf '%s\n' '{"type":"queue-operation","content":"t1","timestamp":null}' >> "$t"
+    printf '%s\n' '{"type":"queue-operation","content":"t1","timestamp":"yesterday"}' >> "$t"
+    printf '%s\n' '{"type":"progress","data":{"id":"t1","timestamp":"2025-01-01T00:00:00.000Z"}}' >> "$t"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t1"}}' >> "$t"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+    run jq -r '.tasks[0].since' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    [[ "$output" == "1767229200" ]]
+}
+
+@test "on-stop.sh: a line too long to be a launch result is skipped" {
+    local t="${SANDBOX}/transcript.jsonl"
+    jq -nc '{type: "user", timestamp: "2025-01-01T00:00:00.000Z", id: "t1", pad: ("x" * 200000)}' > "$t"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t1"}}' >> "$t"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+    run jq -r '.tasks[0].since' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    [[ "$output" == "1767229200" ]]
+}
+
+@test "on-stop.sh: a line just over the limit is skipped wherever it falls" {
+    local t="${SANDBOX}/transcript.jsonl" pre n
+    for pre in 0 1000 40000; do
+        for n in 65537 70000 131072; do
+            : > "$t"
+            if (( pre > 0 )); then
+                jq -nc --argjson n "$pre" '{type: "x", pad: ("y" * ($n - 23))}' >> "$t"
+            fi
+            jq -nc --argjson n "$n" \
+                '{type: "user", timestamp: "2025-01-01T00:00:00.000Z", id: "t1"} as $o
+                 | $o + {pad: ("x" * ($n - ($o | tojson | length) - 10))}' >> "$t"
+            printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t1"}}' >> "$t"
+            rm -f "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+            _run_hook on-stop.sh \
+                '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+            run jq -r '.tasks[0].since' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+            [[ "$output" == "1767229200" ]] || { echo "pre=$pre n=$n since=$output"; return 1; }
+        done
+    done
+}
+
+@test "on-stop.sh: tasks already listed are not looked up again" {
+    local t="${SANDBOX}/transcript.jsonl"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t2"}}' > "$t"
+    printf '%s\n' '{"v":1,"tasks":[{"id":"t1","kind":"shell","label":"x","since":100}]}' > "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    mkdir -p "${SANDBOX}/bin"
+    local real_perl
+    real_perl=$(command -v perl)
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "${SANDBOX}/perl.log" "$real_perl" > "${SANDBOX}/bin/perl"
+    chmod +x "${SANDBOX}/bin/perl"
+    PATH="${SANDBOX}/bin:${PATH}" _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+    [[ ! -e "${SANDBOX}/perl.log" ]]
+    PATH="${SANDBOX}/bin:${PATH}" _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"},{"id":"t2","type":"shell"}]}'
+    run cat "${SANDBOX}/perl.log"
+    [[ "$output" == *" t2" ]]
+    [[ "$output" != *" t1"* ]]
+    run jq -r '.tasks[1].since' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    [[ "$output" == "1767229200" ]]
+}
+
+@test "on-stop.sh: an unreadable earlier list starts the times afresh" {
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    printf 'not json' > "$f"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"t1","type":"shell"}]}'
+    run jq -r '.tasks | length' "$f"
+    [[ "$output" == "1" ]]
+    run jq -r '.tasks[0].since > 1700000000' "$f"
+    [[ "$output" == "true" ]]
+}
+
+@test "on-stop.sh: the list goes when no counted work is left" {
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    printf '%s\n' '{"v":1,"tasks":[{"id":"t1","kind":"shell","label":"x","since":100}]}' > "$f"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"d1","type":"dream"}]}'
+    [[ ! -e "$f" ]]
+    run bash -c "ls '${HOOK_DIR}' | grep -c 'stop-bg-tasks\.'"
+    [[ "$output" == "0" ]]
+}
+
+@test "on-stop.sh: a task list it cannot remove still lets the busy signal go" {
+    mkdir -p "${HOOK_DIR}/${KEY}.stop-bg-tasks/stuck"
+    printf '1 BUSY\n' > "${HOOK_DIR}/${KEY}"
+    : > "${HOOK_DIR}/${KEY}.busy"
+    run _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[]}'
+    [ "$status" -eq 0 ]
+    [[ ! -e "${HOOK_DIR}/${KEY}" ]]
+    [[ ! -e "${HOOK_DIR}/${KEY}.busy" ]]
+}
+
+@test "on-session-end.sh: a task list it cannot remove still writes SHELL" {
+    mkdir -p "${HOOK_DIR}/${KEY}.stop-bg-tasks/stuck"
+    run _run_hook on-session-end.sh \
+        '{"hook_event_name":"SessionEnd","cwd":"/x/test-project"}'
+    [ "$status" -eq 0 ]
+    run cat "${HOOK_DIR}/${KEY}"
+    [[ "$output" == *" SHELL"* ]]
+}
+
+@test "on-session-end.sh: removes the task list" {
+    printf '{}\n' > "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    _run_hook on-session-end.sh \
+        '{"hook_event_name":"SessionEnd","cwd":"/x/test-project"}'
+    [[ ! -e "${HOOK_DIR}/${KEY}.stop-bg-tasks" ]]
+}
+
 @test "on-session-end.sh: removes the kept count" {
     printf '1\n' > "${HOOK_DIR}/${KEY}.stop-bg"
     _run_hook on-session-end.sh \
