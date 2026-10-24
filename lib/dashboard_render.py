@@ -25,8 +25,8 @@ from ccm_constants import (
     STATE_ICONS,
     permission_mode_label,
 )
-from ccm_core import get_session, ps_snapshot, tmux_cmd, tmux_query
-from ccm_pane_state import enumerate_window_panes
+from ccm_core import get_session, log_caught_exception, ps_snapshot, tmux_cmd, tmux_query
+from ccm_pane_state import enumerate_all_window_panes, enumerate_window_panes
 from ccm_render import (
     display_width,
     EXTERNAL_AGENT_MARK,
@@ -92,13 +92,41 @@ class RenderMixin:
         CCM_IGNORE'd panes are always excluded — the window's tracked
         state is the primary session, so the preview shows that, never
         a hidden sidekick."""
+        cache = getattr(self, "_preview_pane_cache", None)
+        if cache is None:
+            cache = self._preview_pane_cache = {}
+        if win_target in cache:
+            return cache[win_target]
+        pane = self._find_preview_pane(win_target)
+        cache[win_target] = pane
+        return pane
+
+    def _find_preview_pane(self, win_target):
+        """`_resolve_preview_pane` for a window the refresh thread's
+        last `_collect_preview_panes` did not cover."""
         try:
             ps_lines = ps_snapshot().strip().split("\n")
         except Exception:
             return win_target
+        return self._pick_preview_pane(
+            win_target, enumerate_window_panes(win_target, ps_lines))
+
+    def _collect_preview_panes(self):
+        """`{win_target: pane}` for every window, from one `ps` and one
+        `list-panes -a`: the refresh thread resolves them once a
+        detection pass, so moving the selection does not. Never raises."""
+        try:
+            ps_lines = ps_snapshot().strip().split("\n")
+            panes = enumerate_all_window_panes(ps_lines)
+        except Exception:
+            log_caught_exception("dashboard._collect_preview_panes")
+            return {}
+        return {w: self._pick_preview_pane(w, ps) for w, ps in panes.items()}
+
+    @staticmethod
+    def _pick_preview_pane(win_target, panes):
         # Non-ignored panes that host claude.
-        live = [p for p in enumerate_window_panes(win_target, ps_lines)
-                if not p.ignored and p.claude_pid]
+        live = [p for p in panes if not p.ignored and p.claude_pid]
         active = next((p.pane_id for p in live if p.active), None)
         if active:
             return active
@@ -521,6 +549,45 @@ class RenderMixin:
 
         return row
 
+    def _collect_header_notices(self, projects):
+        """The session named in the header and the canary warnings shown
+        under it, in display order. Each asks tmux or reads a file, so
+        the refresh thread gathers them once per detection pass
+        (`_header_cache`) rather than every frame. Never raises."""
+        try:
+            session = get_session()
+        except Exception:
+            log_caught_exception("dashboard._collect_header_notices:session")
+            session = ""
+        notices = []
+        for read in (hooks_log_warning, disable_all_hooks_warning,
+                     managed_hooks_only_warning, spool_expired_warning):
+            try:
+                msg = read()
+            except Exception:
+                log_caught_exception("dashboard._collect_header_notices")
+                msg = None
+            if msg:
+                notices.append(msg)
+        # Per-project SHELL cluster canary (#48069 silent-exit regression),
+        # then the opt-in hook-silence canary (@ccm-hook-silence).
+        for read in (shell_cluster_warnings, hook_silence_warnings):
+            try:
+                notices.extend(read(projects))
+            except Exception:
+                log_caught_exception("dashboard._collect_header_notices")
+        return session, notices
+
+    def _header_notices(self):
+        """The refresh thread's last `_collect_header_notices`, or a
+        fresh one before its first pass."""
+        with self.lock:
+            cached = getattr(self, "_header_cache", None)
+            projects = list(self.projects)
+        if cached is None:
+            cached = self._collect_header_notices(projects)
+        return cached
+
     def render(self, stdscr):
         try:
             stdscr.erase()
@@ -563,10 +630,10 @@ class RenderMixin:
 
             # Header
             header_col = self._draw_logo(stdscr, row) if getattr(self, "docked", False) else 2
+            session, notices = self._header_notices()
             if self.initial_load:
                 self._addstr(stdscr, row, header_col, "Syncing...", curses.color_pair(C_SYNCING))
             else:
-                session = get_session()
                 if session and not session.isdigit():
                     header = f"{session} — {len(self.projects)} project(s)"
                 else:
@@ -590,43 +657,10 @@ class RenderMixin:
                 self._addstr(stdscr, row, 2, banner, curses.color_pair(C_YELLOW))
                 row += 1
 
-            # Hooks log canary — only shown if size crosses threshold
-            log_warning = hooks_log_warning()
-            if log_warning:
-                self._addstr(stdscr, row, 2, "⚠ " + log_warning, curses.color_pair(C_YELLOW))
-                row += 1
-
-            # disableAllHooks canary — silent failure mode if set
-            disable_warning = disable_all_hooks_warning()
-            if disable_warning:
-                self._addstr(stdscr, row, 2, "⚠ " + disable_warning, curses.color_pair(C_YELLOW))
-                row += 1
-
-            # allowManagedHooksOnly canary — blocks all user hooks
-            managed_warning = managed_hooks_only_warning()
-            if managed_warning:
-                self._addstr(stdscr, row, 2, "⚠ " + managed_warning, curses.color_pair(C_YELLOW))
-                row += 1
-
-            # A spooled message that expired without arriving. The
-            # sender was told "queued", so the loss has no other
-            # trace here — the queue length alone reads as empty.
-            expired_msg = spool_expired_warning()
-            if expired_msg:
-                self._addstr(stdscr, row, 2, "⚠ " + expired_msg,
-                             curses.color_pair(C_YELLOW))
-                row += 1
-
-            # Per-project SHELL cluster canary (#48069 silent-exit regression)
-            for cluster_msg in shell_cluster_warnings(projects):
-                self._addstr(stdscr, row, 2, "⚠ " + cluster_msg, curses.color_pair(C_YELLOW))
-                row += 1
-
-            # Hook-silence canary — opt-in (@ccm-hook-silence), so the
-            # loop is empty for default users and only lights up for an
-            # operator who asked to watch it during calibration.
-            for silence_msg in hook_silence_warnings(projects):
-                self._addstr(stdscr, row, 2, "⚠ " + silence_msg, curses.color_pair(C_YELLOW))
+            # The canaries below the hooks banner, gathered off this
+            # thread (`_collect_header_notices`).
+            for notice in notices:
+                self._addstr(stdscr, row, 2, "⚠ " + notice, curses.color_pair(C_YELLOW))
                 row += 1
 
             # A project whose `claude --continue` would start fresh:

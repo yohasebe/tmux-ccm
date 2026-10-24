@@ -305,6 +305,17 @@ def test_window_enumeration_drops_the_dock(monkeypatch):
     assert [p.pane_id for p in panes] == ['%1']
 
 
+def test_all_window_enumeration_groups_by_window_and_drops_the_dock(monkeypatch):
+    import ccm_pane_state
+    rows = ['w:0\t%1\t11\t1\tclaude\t\t',
+            'w:0\t%5\t15\t0\tpython3\t\t1',
+            'w:1\t%2\t12\t1\tzsh\t1\t']
+    monkeypatch.setattr(ccm_core, 'tmux_cmd', lambda *a, **k: '\n'.join(rows))
+    panes = ccm_pane_state.enumerate_all_window_panes([])
+    assert {w: [p.pane_id for p in ps] for w, ps in panes.items()} == {'w:0': ['%1'], 'w:1': ['%2']}
+    assert panes['w:1'][0].ignored
+
+
 def test_popup_and_dock_keep_separate_pid_files(monkeypatch, tmp_path):
     import dashboard
     monkeypatch.setattr(dashboard, 'CCM_TMP_DIR', str(tmp_path))

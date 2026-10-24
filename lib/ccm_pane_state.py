@@ -122,13 +122,34 @@ def enumerate_window_panes(win_target, ps_lines):
 
     Robust to short rows: fields past pane_pid degrade to
     active=False / current_command="" / ignored=False."""
+    raw = ccm_core.tmux_cmd("list-panes", "-t", win_target, "-F", _PANE_FORMAT)
+    return _pane_infos((raw or "").split("\n"), ps_lines)
+
+
+def enumerate_all_window_panes(ps_lines):
+    """`{win_target: [PaneInfo]}` for every window, from one
+    `list-panes -a` instead of one query per window."""
     raw = ccm_core.tmux_cmd(
-        "list-panes", "-t", win_target, "-F",
-        "#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
-        "#{pane_current_command}\t#{@ccm_ignore}\t#{@ccm_dock}",
+        "list-panes", "-a", "-F",
+        "#{session_name}:#{window_index}\t" + _PANE_FORMAT,
     )
-    out = []
+    rows = {}
     for line in (raw or "").split("\n"):
+        win_target, sep, rest = line.partition("\t")
+        if sep:
+            rows.setdefault(win_target, []).append(rest)
+    return {w: _pane_infos(r, ps_lines) for w, r in rows.items()}
+
+
+_PANE_FORMAT = (
+    "#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
+    "#{pane_current_command}\t#{@ccm_ignore}\t#{@ccm_dock}"
+)
+
+
+def _pane_infos(rows, ps_lines):
+    out = []
+    for line in rows:
         parts = line.split("\t")
         if len(parts) < 2 or ccm_core.is_dock_field(parts, 5):
             continue

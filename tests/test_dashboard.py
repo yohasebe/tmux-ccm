@@ -269,6 +269,38 @@ class TestRenderSmoke:
     def _drawn_strings(self, stdscr):
         return [str(c.args[2]) for c in stdscr.addstr.call_args_list if len(c.args) >= 3]
 
+    def test_header_notices_come_from_the_refresh_pass(self, monkeypatch):
+        """With the refresh thread's header gathered, a frame asks
+        neither tmux nor the canaries: moving the selection only
+        redraws."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        calls = []
+        _patch_dashboard(monkeypatch, "get_session", lambda: calls.append("session") or "live")
+        _patch_dashboard(monkeypatch, "shell_cluster_warnings",
+                         lambda p: calls.append("cluster") or [])
+        _patch_dashboard(monkeypatch, "hooks_log_warning", lambda: calls.append("log") or "")
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.initial_load = False
+        d.projects = [ccm_core.Project("0:1", "1", "p1", "/w/p1", "IDLE")]
+        d._header_cache = ("work", ["cached notice"])
+        stdscr = _make_mock_stdscr()
+        d.render(stdscr)
+        drawn = self._drawn_strings(stdscr)
+        assert calls == []
+        assert "work — 1 project(s)" in drawn
+        assert "⚠ cached notice" in drawn
+
+    def test_header_notices_are_gathered_before_the_first_pass(self, monkeypatch):
+        _stub_dashboard_environment(monkeypatch)
+        _patch_dashboard(monkeypatch, "shell_cluster_warnings", lambda p: ["cluster"])
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        stdscr = _make_mock_stdscr()
+        d.render(stdscr)
+        assert "⚠ cluster" in self._drawn_strings(stdscr)
+
     def test_bg_section_is_drawn_when_projects_outnumber_the_rows(self, monkeypatch):
         """More projects than the popup has rows: the project list
         must give up rows to the background block instead of taking
@@ -1285,6 +1317,34 @@ class TestResolvePreviewPane:
     def test_no_panes_falls_back_to_window(self, monkeypatch):
         d = self._dash(monkeypatch, [])
         assert d._resolve_preview_pane("0:5") == "0:5"
+
+    def test_pane_from_the_refresh_pass_is_used(self, monkeypatch):
+        d = self._dash(monkeypatch, [])
+        looked = []
+        monkeypatch.setattr("dashboard_render.enumerate_window_panes",
+                            lambda win, ps: looked.append(win) or [])
+        d._preview_pane_cache = {"0:5": "%9"}
+        assert d._resolve_preview_pane("0:5") == "%9"
+        assert looked == []
+
+    def test_window_the_pass_missed_is_looked_up_once(self, monkeypatch):
+        d = self._dash(monkeypatch, [])
+        looked = []
+        monkeypatch.setattr(
+            "dashboard_render.enumerate_window_panes",
+            lambda win, ps: looked.append(win) or [self._pane("%3", "300", claude=True)])
+        d._preview_pane_cache = {}
+        assert d._resolve_preview_pane("0:7") == "%3"
+        assert d._resolve_preview_pane("0:7") == "%3"
+        assert looked == ["0:7"]
+
+    def test_refresh_pass_resolves_every_window(self, monkeypatch):
+        d = self._dash(monkeypatch, [])
+        monkeypatch.setattr("dashboard_render.enumerate_all_window_panes", lambda ps: {
+            "0:1": [self._pane("%0", "100", active=True), self._pane("%1", "200", claude=True)],
+            "0:2": [self._pane("%2", "300", active=True, ignored=True, claude=True)],
+        })
+        assert d._collect_preview_panes() == {"0:1": "%1", "0:2": "0:2"}
 
 
 # ─── Project-key selection guard (bg rows) ───

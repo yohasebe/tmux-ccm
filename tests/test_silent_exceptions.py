@@ -200,6 +200,17 @@ class TestDashboardRefreshLoopSmoke:
             "dashboard_refresh.log_caught_exception",
             lambda scope: caught.append(scope),
         )
+        monkeypatch.setattr(
+            "dashboard_render.log_caught_exception",
+            lambda scope: caught.append(scope),
+        )
+        # The header notices the loop gathers ask tmux and read files.
+        monkeypatch.setattr("dashboard_render.get_session", lambda: "main")
+        for name in ("hooks_log_warning", "disable_all_hooks_warning",
+                     "managed_hooks_only_warning", "spool_expired_warning"):
+            monkeypatch.setattr(f"dashboard_render.{name}", lambda: None)
+        for name in ("shell_cluster_warnings", "hook_silence_warnings"):
+            monkeypatch.setattr(f"dashboard_render.{name}", lambda projects: [])
 
         # Construct without curses (avoid full render path). Every
         # attribute `_refresh_loop` touches must be initialised here;

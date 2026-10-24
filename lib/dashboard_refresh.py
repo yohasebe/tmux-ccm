@@ -138,10 +138,15 @@ class RefreshMixin:
             bg_sessions = self._fetch_bg_sessions() if bg_visible else []
             handoff_warnings = self._fetch_handoff_warnings(
                 projects, bg_sessions if bg_visible else None)
+            header = self._collect_header_notices(projects)
+            preview_panes = (self._collect_preview_panes()
+                             if self.preview_enabled else {})
             with self.lock:
                 self._set_projects_stable(projects)
                 self.bg_sessions = bg_sessions
                 self.handoff_warnings = handoff_warnings
+                self._header_cache = header
+                self._preview_pane_cache = preview_panes
                 self.initial_load = False
                 self.data_dirty = True
         except Exception:
@@ -173,10 +178,17 @@ class RefreshMixin:
                 )
                 handoff_warnings = self._fetch_handoff_warnings(
                     projects, bg_sessions if bg_visible else None)
+                # Header notices and preview panes are read here, once a
+                # pass, so moving the selection costs one capture-pane.
+                header = self._collect_header_notices(projects)
+                preview_panes = (self._collect_preview_panes()
+                                 if self.preview_enabled else {})
                 with self.lock:
                     self._set_projects_stable(projects)
                     self.bg_sessions = bg_sessions
                     self.handoff_warnings = handoff_warnings
+                    self._header_cache = header
+                    self._preview_pane_cache = preview_panes
                     self.data_dirty = True
                 # Refresh preview content if enabled
                 if self.preview_enabled and self.mode == "dashboard":
