@@ -447,6 +447,8 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
+A subagent's permission request also shows as PERMIT, including a background agent's. It stays until that agent goes on (its tool runs or fails, or the agent ends), even while you carry on in the main conversation, because the request is still waiting. A request older than 10 minutes stops counting once the screen is idle, in case its answer was never reported. When another tool's hook answers permission requests outside the terminal, the dialog may not be on screen at all; answer it where that tool asks.
+
 ccm has hook-independent fallbacks so detection keeps working when Claude Code stops firing hooks mid-session:
 
 - **JSONL session-log heartbeat**: a fresh user/assistant record in the project's `~/.claude/projects/.../jsonl` confirms the session is alive (housekeeping records are filtered out).

@@ -1698,6 +1698,113 @@ class TestSendPreTypeRecheck:
             for c in calls
         )
 
+    def _subagent_only(self, monkeypatch, value):
+        asked = []
+
+        def only(d, s):
+            asked.append((d, s))
+            return value
+        monkeypatch.setattr(ccm_send.ccm_signals, "permit_is_subagent_only", only)
+        return asked
+
+    def test_a_subagent_only_permit_sends_to_an_idle_screen(self, monkeypatch):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        asked = self._subagent_only(monkeypatch, True)
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert asked == [("/tmp/demo", "")]
+        assert self._literal_sent(calls)
+
+    def test_a_subagent_only_permit_with_a_dialog_on_screen_is_refused(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, "PERMIT", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert not self._literal_sent(calls)
+
+    def test_a_subagent_only_permit_on_a_busy_screen_reads_as_busy(
+            self, monkeypatch, capsys):
+        calls = self._patch(monkeypatch, "BUSY", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)
+        assert "BUSY" in capsys.readouterr().err
+
+    def test_a_subagent_only_permit_on_an_unreadable_screen_is_refused(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, None, project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert not self._literal_sent(calls)
+
+    def _screens(self, monkeypatch, *seen):
+        seq = list(seen)
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state",
+                            lambda w, p: seq.pop(0))
+        return seq
+
+    def _typed_anything(self, calls):
+        return any(c[:3] == ("send-keys", "-t", "%51") and "-X" not in c
+                   for c in calls)
+
+    @pytest.mark.parametrize("final", [None, "PERMIT"])
+    def test_a_subagent_only_bypass_needs_the_screen_again_before_typing(
+            self, monkeypatch, final):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        left = self._screens(monkeypatch, "IDLE", final)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert left == []
+        assert not self._typed_anything(calls)
+
+    def test_a_subagent_only_bypass_that_turns_busy_is_refused(self, monkeypatch):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        self._screens(monkeypatch, "IDLE", "BUSY")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._typed_anything(calls)
+
+    def test_a_subagent_only_bypass_on_a_busy_screen_forced_still_needs_the_screen(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, "BUSY", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        self._screens(monkeypatch, "BUSY", None)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert not self._typed_anything(calls)
+
+    def test_a_subagent_only_bypass_queues_by_default_when_unreadable(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        self._screens(monkeypatch, "IDLE", None)
+        queued = []
+        monkeypatch.setattr(ccm_send, "_queue_message",
+                            lambda *a: queued.append(a))
+        ccm_send.cmd_send(["demo", "hello"])
+        assert len(queued) == 1
+        assert not self._typed_anything(calls)
+
+    def test_an_ordinary_idle_send_still_fails_open_on_an_unreadable_screen(
+            self, monkeypatch):
+        # Control: the existing fail-open for IDLE is unchanged.
+        calls = self._patch(monkeypatch, "IDLE", project_state="IDLE")
+        self._screens(monkeypatch, None)
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls)
+
+    def test_the_main_conversations_permit_is_refused_on_an_idle_screen(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        self._subagent_only(monkeypatch, False)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert not self._literal_sent(calls)
+
     def test_recheck_permit_after_confirmation_refused(
         self, monkeypatch, capsys,
     ):

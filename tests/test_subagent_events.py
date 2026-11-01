@@ -3,8 +3,9 @@
 Background agents keep running after the main turn has ended. Their
 tool events must not make the conversation BUSY: the hooks keep only
 the newest one's time (`agent_ts`), outside the event log. A
-subagent's open permission request is kept in a file of its own and
-passed as `agent_permit_ts`; it shows as PERMIT. While agents run, an
+subagent's permission request waiting for an answer is kept in a file
+of its own and passed as `agent_permit_ts`; it shows as PERMIT until
+that agent's next event, whatever the main conversation does. While agents run, an
 IDLE window carries the `(bg)` suffix. Logs written by earlier
 versions hold `agent` / `agent_permit` lines; they read the same way.
 """
@@ -89,15 +90,69 @@ class TestOpenAgentRequest:
         events = [ev("prompt", 30), ev("pretool", 20), ev("stop", 5)]
         assert derive(events, jsonl_age=5, agent_permit_ts=NOW - 5) == "PERMIT"
 
-    def test_a_main_event_after_the_request_decides(self):
+    def test_a_main_turn_after_the_request_does_not_answer_it(self):
+        # A background agent waits on its own while the user goes on
+        # with the main conversation.
         events = ENDED_TURN + [ev("prompt", 5), ev("pretool", 1)]
         assert derive(events, stop="tool_use", jsonl_age=1,
-                      agent_permit_ts=NOW - 10) == "BUSY"
+                      agent_permit_ts=NOW - 10) == "PERMIT"
+
+    def test_a_main_turn_that_ended_after_the_request_does_not_answer_it(self):
+        events = ENDED_TURN + [ev("prompt", 8), ev("pretool", 7),
+                               ev("posttool", 6), ev("stop", 5)]
+        assert derive(events, jsonl_age=5,
+                      agent_permit_ts=NOW - 10) == "PERMIT"
+
+    def test_the_main_screen_working_does_not_answer_it(self):
+        events = ENDED_TURN + [ev("prompt", 5), ev("pretool", 1)]
+        assert derive(events, raw="BUSY", stop="tool_use", jsonl_age=1,
+                      agent_permit_ts=NOW - 10) == "PERMIT"
+
+    def test_a_main_request_is_still_released_by_the_main_transcript(self):
+        # Control: the main conversation's own request keeps its
+        # release on main evidence.
+        events = [ev("prompt", 30), ev("pretool", 20), ev("permit_req", 10)]
+        assert derive(events, raw="BUSY", stop="tool_use", jsonl_age=1) == "BUSY"
 
     def test_an_old_open_request_ages_by_its_own_clock(self):
+        # Past the limit on an idle screen the main conversation's own
+        # state stands.
         old = ccm_activity.PERMIT_MAX_TIMEOUT + 1
         assert derive(ENDED_TURN, jsonl_age=old + 900,
-                      agent_permit_ts=NOW - old) is None
+                      agent_permit_ts=NOW - old) == "IDLE"
+
+    def test_a_request_at_the_limit_still_waits(self):
+        at = ccm_activity.PERMIT_MAX_TIMEOUT
+        assert derive(ENDED_TURN, jsonl_age=at + 900,
+                      agent_permit_ts=NOW - at) == "PERMIT"
+
+    def test_an_old_request_on_a_busy_screen_still_waits(self):
+        old = ccm_activity.PERMIT_MAX_TIMEOUT + 1
+        events = ENDED_TURN + [ev("prompt", 5), ev("pretool", 1)]
+        assert derive(events, raw="BUSY", stop="tool_use", jsonl_age=1,
+                      agent_permit_ts=NOW - old) == "PERMIT"
+
+    def test_an_old_request_does_not_hide_a_newer_main_request(self):
+        old = ccm_activity.PERMIT_MAX_TIMEOUT + 1
+        events = [ev("prompt", 30), ev("pretool", 20), ev("permit_req", 2)]
+        assert derive(events, stop="tool_use", jsonl_age=10) == "PERMIT"
+        assert derive(events, stop="tool_use", jsonl_age=10,
+                      agent_permit_ts=NOW - old) == "PERMIT"
+
+    def test_a_main_request_and_a_waiting_request(self):
+        events = [ev("prompt", 30), ev("pretool", 20), ev("permit_req", 2)]
+        assert derive(events, stop="tool_use", jsonl_age=10,
+                      agent_permit_ts=NOW - 5) == "PERMIT"
+
+    def test_a_modal_on_screen_with_an_old_request(self):
+        old = ccm_activity.PERMIT_MAX_TIMEOUT + 1
+        assert derive(ENDED_TURN, raw="PERMIT",
+                      agent_permit_ts=NOW - old) == "PERMIT"
+
+    def test_the_session_end_ends_a_waiting_request(self):
+        events = ENDED_TURN + [ev("session_end", 1)]
+        assert derive(events, agent_permit_ts=NOW - 5) is None
+        assert derive(events) is None
 
     def test_old_answer_lines_do_not_hide_a_new_request(self):
         events = ENDED_TURN + [ev("agent_permit", 50), ev("agent", 40)]

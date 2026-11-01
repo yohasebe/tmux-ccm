@@ -290,26 +290,42 @@ ccm_hook_in_subagent() {
 # signal file, which describe the main conversation: a background
 # agent can outlast the main turn by many events, and the main
 # conversation's own signal must not be overwritten or cleared by
-# them. Each kind has a file the subagent hooks alone write:
-#   <key>.agent-activity  the time of the newest tool or lifecycle
-#                         event (its modification time orders it)
-#   <key>.agent-permit    the newest permission request or denial,
-#                         as a signal line
-# A request is open while its file is newer than the activity file;
-# the next subagent event answers it. Both are read by ccm_signals.
+# them. They have files of their own, written by subagent hooks alone:
+#   <key>.agent-activity            the time of the newest tool or
+#                                   lifecycle event of any subagent
+#   <key>.agent-permit.<agent id>   that subagent's permission request
+#                                   or denial, as a signal line, while
+#                                   it waits for an answer
+# A request is answered by its own agent's next event, which removes
+# the file: the tool ran or failed, the agent went on after a denial,
+# or it ended. Nothing the main conversation or another agent does
+# answers it, and SessionEnd removes what is left. Both kinds are read
+# by ccm_signals. The request carries no tool id, so an agent that
+# starts another tool while one waits closes the waiting one early.
+
+# The subagent's id as a file-name part: the id when it is a plain
+# token, so it cannot reach outside the hook directory, else "unknown".
+_ccm_agent_file_id() {
+    if [[ "${HOOK_AGENT_ID:-}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+        printf '%s' "$HOOK_AGENT_ID"
+    else
+        printf 'unknown'
+    fi
+}
 
 # A subagent asked for permission (or was denied).
 # Args: $1=HOOK_DIR, $2=KEY, $3=CWD, $4=DETAIL
 ccm_agent_permit() {
     local hook_dir="$1" key="$2" cwd="$3" detail="${4:-}"
-    ccm_write_signal "$hook_dir" "$key" "PERMIT" "$cwd" "$detail" \
-        "${hook_dir}/${key}.agent-permit"
+    ccm_write_signal "$hook_dir" "$key" "PERMIT" "$cwd" "Subagent · $detail" \
+        "${hook_dir}/${key}.agent-permit.$(_ccm_agent_file_id)"
 }
 
 # A subagent's tool or lifecycle event. No BUSY signal is written.
 # Args: $1=HOOK_DIR, $2=KEY
 ccm_agent_event() {
     printf '%s\n' "${EPOCHSECONDS:-$(date +%s)}" > "${1}/${2}.agent-activity" 2>/dev/null || true
+    rm -f "${1}/${2}.agent-permit.$(_ccm_agent_file_id)" 2>/dev/null || true
     return 0
 }
 

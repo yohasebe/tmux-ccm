@@ -66,6 +66,7 @@ import ccm_agentview
 import ccm_window
 import ccm_roles
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
+import ccm_signals
 import ccm_spool  # store-and-forward queue for undeliverable sends
 from ccm_composer import (
     composer_draft_fragment, composer_visible, composer_has_message_prefix,
@@ -797,6 +798,18 @@ def cmd_send(args):
     # pane where --start will launch). See _resolve_delivery_pane.
     pane_target, active_cmd = _resolve_delivery_pane(win_target)
 
+    # A PERMIT made only by a subagent's waiting request leaves the
+    # main conversation's input box as its screen shows it: the
+    # request is answered elsewhere. Gate on that screen, which also
+    # catches a dialog; when it cannot be read, PERMIT stands.
+    subagent_permit = False
+    if state == "PERMIT" and ccm_signals.permit_is_subagent_only(
+            matched.dir, matched.cached_session_id or ""):
+        screen = _recheck_delivery_state(win_target, pane_target)
+        if screen in ("IDLE", "BUSY"):
+            state = screen
+            subagent_permit = True
+
     # Self-delivery guard. `ccm send` resolves delivery to the pane
     # hosting Claude, so a Claude session addressing its OWN project
     # resolves to the pane it is running in. Typing the body there
@@ -1023,6 +1036,18 @@ def cmd_send(args):
     # longer enumerable) fails open, matching the delivery-pane
     # resolution fallback.
     rechecked = _recheck_delivery_state(win_target, pane_target)
+    if rechecked is None and subagent_permit:
+        # The screen let this past a PERMIT; with the screen unreadable
+        # now, nothing says a dialog has not appeared since.
+        if not now:
+            _queue_message(project_name, message,
+                           "target screen unreadable while in PERMIT")
+            return
+        ccm_core.ccm_die(
+            f"{project_name} is in PERMIT for a subagent's request, and "
+            "its screen could not be read again before typing — send "
+            "refused. Retry, or wait for the request to be answered."
+        )
     if rechecked == "PERMIT":
         if not now:
             _queue_message(project_name, message,

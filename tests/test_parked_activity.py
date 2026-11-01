@@ -339,5 +339,5 @@ def test_an_open_subagent_request_reaches_the_context(pane):
     write_lines(pane.hooks / (TARGET + '.events.jsonl'),
                 [{'type': 'stop', 'ts': NOW - 100}])
     assert pane.context().agent_permit_ts == 0
-    (pane.hooks / (TARGET + '.agent-permit')).write_text(f'{NOW - 5} PERMIT Bash')
+    (pane.hooks / (TARGET + '.agent-permit.a1')).write_text(f'{NOW - 5} PERMIT Bash')
     assert pane.context().agent_permit_ts == NOW - 5

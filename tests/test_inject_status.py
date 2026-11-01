@@ -366,9 +366,10 @@ class TestFastPathSkipsMaintenanceSideEffects:
 
 class TestSubagentRequestNotification:
     """A footer-only PERMIT is notified only when a fresh hook backs
-    it. A subagent's request the main conversation has moved past
-    (a later Stop, which also removes the main signal) is no such
-    hook: the state ignores it, and so must the notification."""
+    it. A subagent's request still waiting is such a hook, also after
+    the main conversation has gone on (a later Stop, which also
+    removes the main signal): the state keeps it, and so does the
+    notification."""
 
     SID = "test-session-agent"
 
@@ -381,7 +382,7 @@ class TestSubagentRequestNotification:
                             str(tmp_path / "notified"))
         monkeypatch.setattr(inject_status, "CCM_TMP_DIR", str(tmp_path))
         monkeypatch.setattr("time.time", lambda: now)
-        (hook_dir / f"{self.SID}.agent-permit").write_text(
+        (hook_dir / f"{self.SID}.agent-permit.a1").write_text(
             f"{now - 15} PERMIT Bash: old-request")
         if stop_after_request:
             (hook_dir / f"{self.SID}.events.jsonl").write_text(
@@ -418,9 +419,10 @@ class TestSubagentRequestNotification:
         inject_status._inject_status_impl(force_fast=False)
         return sent
 
-    def test_a_request_the_main_conversation_moved_past_is_not_notified(
+    def test_a_request_the_main_conversation_went_past_is_notified(
             self, monkeypatch, tmp_path):
-        assert self._run(monkeypatch, tmp_path, stop_after_request=True) == []
+        sent = self._run(monkeypatch, tmp_path, stop_after_request=True)
+        assert sent == [("PERMIT", "proj", "Bash: old-request")]
 
     def test_an_open_request_is_notified(self, monkeypatch, tmp_path):
         sent = self._run(monkeypatch, tmp_path, stop_after_request=False)

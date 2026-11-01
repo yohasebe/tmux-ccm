@@ -458,8 +458,8 @@ _latest_type() {
 @test "on-permission-request.sh: a subagent's request is written to its own file" {
     _run_hook on-permission-request.sh \
         '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1","tool_name":"Bash"}'
-    run cut -d' ' -f2- "${HOOK_DIR}/${KEY}.agent-permit"
-    [[ "$output" == "PERMIT Bash" ]]
+    run cut -d' ' -f2- "${HOOK_DIR}/${KEY}.agent-permit.a1"
+    [[ "$output" == "PERMIT Subagent · Bash" ]]
 }
 
 @test "on-permission-request.sh: a subagent's request stays out of the log and the signal" {
@@ -483,7 +483,7 @@ _latest_type() {
 @test "on-permission-denied.sh: a subagent's denial is written to its own file" {
     _run_hook on-permission-denied.sh \
         '{"hook_event_name":"PermissionDenied","cwd":"/x/test-project","agent_id":"a1"}'
-    run cut -d' ' -f2 "${HOOK_DIR}/${KEY}.agent-permit"
+    run cut -d' ' -f2 "${HOOK_DIR}/${KEY}.agent-permit.a1"
     [[ "$output" == "PERMIT" ]]
     [[ ! -f "$EVENTS_FILE" ]]
 }
@@ -493,7 +493,8 @@ _latest_type() {
         '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project"}'
     run _latest_type
     [[ "$output" == "permit_req" ]]
-    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit" ]]
+    run find "$HOOK_DIR" -name "${KEY}.agent-permit*"
+    [[ -z "$output" ]]
 }
 
 @test "on-pre-tool-use.sh: a subagent event keeps the main conversation's PERMIT signal" {
@@ -524,8 +525,91 @@ _latest_type() {
 @test "on-permission-request.sh: a subagent's request leaves no temporary file" {
     _run_hook on-permission-request.sh \
         '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
-    run find "$HOOK_DIR" -name "${KEY}.agent-permit.*"
+    run find "$HOOK_DIR" -name "${KEY}.agent-permit.a1.*"
     [[ -z "$output" ]]
+}
+
+@test "on-pre-tool-use.sh: the same subagent's next event answers its request" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "on-pre-tool-use.sh: the same subagent's end answers its request" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"SubagentStop","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "on-pre-tool-use.sh: another subagent's event leaves the request waiting" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"b2"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"SubagentStop","cwd":"/x/test-project","agent_id":"b2"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "two subagents' requests wait side by side" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"b2"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"b2"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit.b2" ]]
+}
+
+@test "the main conversation going on leaves a subagent's request waiting" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    _run_hook on-prompt-submit.sh \
+        '{"hook_event_name":"UserPromptSubmit","cwd":"/x/test-project"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project"}'
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "on-session-end.sh: removes the subagent requests left waiting" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    printf '1 PERMIT' > "${HOOK_DIR}/${KEY}.agent-permit"
+    printf '1 PERMIT' > "${HOOK_DIR}/other.agent-permit.a1"
+    _run_hook on-session-end.sh \
+        '{"hook_event_name":"SessionEnd","cwd":"/x/test-project"}'
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit" ]]
+    [[ -f "${HOOK_DIR}/other.agent-permit.a1" ]]
+}
+
+@test "on-permission-request.sh: an agent id that is not a plain token names no path" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"../x"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.unknown" ]]
+    run find "$HOOK_DIR/.." -maxdepth 1 -name "x"
+    [[ -z "$output" ]]
+}
+
+@test "on-permission-request.sh: a subagent's request is filed by agent without the one-jq field read too" {
+    jq() {
+        if [[ "$*" == *'join("\u0000")'* ]]; then return 1; fi
+        command jq "$@"
+    }
+    export -f jq
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    unset -f jq
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
 }
 
 @test "on-pre-tool-use.sh: subagent id is read without the one-jq field read too" {

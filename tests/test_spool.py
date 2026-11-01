@@ -34,8 +34,10 @@ def spool_root(tmp_path, monkeypatch):
     return root
 
 
-def _project(name="demo", state="IDLE", win_target="0:5"):
-    return SimpleNamespace(name=name, state=state, win_target=win_target)
+def _project(name="demo", state="IDLE", win_target="0:5", directory="",
+             session_id=""):
+    return SimpleNamespace(name=name, state=state, win_target=win_target,
+                           dir=directory, cached_session_id=session_id)
 
 
 def _pending(root, project="demo"):
@@ -1212,6 +1214,42 @@ class TestPausedAging:
         ccm_spool.reconcile_spools([_project(state="IDLE")])
         assert len(delivered) == 1
         assert _pending(spool_root) == []
+
+
+class TestSubagentOnlyPermit:
+    """A PERMIT made only by a subagent's waiting request does not hold
+    a queued message back: the main conversation's input box is
+    checked as for IDLE (`_deliverable_pane`)."""
+
+    def _run(self, spool_root, monkeypatch, subagent_only, pane=("%51", None)):
+        pdir, name = _aged_message(spool_root, 10)
+        delivered = []
+        monkeypatch.setattr(ccm_spool, "_deliverable_pane", lambda w: pane)
+        monkeypatch.setattr(ccm_send, "_type_body", lambda t, lines: delivered.append(lines))
+        monkeypatch.setattr(ccm_send, "_send_keys", lambda *a, **k: None)
+        monkeypatch.setattr(ccm_send, "held_after_submit", lambda *a, **k: None)
+        asked = []
+
+        def only(d, s):
+            asked.append((d, s))
+            return subagent_only
+        monkeypatch.setattr(ccm_spool.ccm_signals, "permit_is_subagent_only", only)
+        ccm_spool.reconcile_spools([_project(state="PERMIT", directory="/p",
+                                             session_id="sid")])
+        assert asked == [("/p", "sid")]
+        return delivered
+
+    def test_a_subagent_only_permit_delivers(self, spool_root, monkeypatch):
+        assert len(self._run(spool_root, monkeypatch, True)) == 1
+
+    def test_the_main_conversations_permit_holds_it(self, spool_root, monkeypatch):
+        assert self._run(spool_root, monkeypatch, False) == []
+
+    @pytest.mark.parametrize("reason", ["raw state PERMIT", "raw state BUSY",
+                                        "capture unreadable"])
+    def test_the_screen_still_decides(self, spool_root, monkeypatch, reason):
+        assert self._run(spool_root, monkeypatch, True,
+                         pane=(None, reason)) == []
 
 
 class TestHandBack:

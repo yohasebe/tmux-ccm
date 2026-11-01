@@ -72,6 +72,7 @@ import ccm_constants
 import ccm_core
 import ccm_notify
 import ccm_send  # shared typing helpers (_send_keys / _type_body)
+import ccm_signals
 from ccm_pane_state import (
     capture_composer_snapshot, detect_pane_state, enumerate_window_panes,
     read_work_clock,
@@ -478,6 +479,20 @@ def _release_lock(pdir):
 
 # ─── delivery ───
 
+def _delivery_state(project):
+    """The state a queued message waits on: the window's, except that
+    a PERMIT made only by a subagent's waiting request counts as IDLE.
+    That request is answered elsewhere and the main conversation's
+    input box may be free; `_deliverable_pane` still reads its screen
+    (and its input box) before typing. None without a project."""
+    if project is None:
+        return None
+    if project.state == "PERMIT" and ccm_signals.permit_is_subagent_only(
+            project.dir, project.cached_session_id or ""):
+        return "IDLE"
+    return project.state
+
+
 def _deliverable_pane(win_target, expected_pane=None):
     """`(pane_id, None)` when the window can take a message right now,
     else `(None, reason)`. Fail-closed: any doubt defers the message
@@ -685,15 +700,16 @@ def reconcile_spools(projects):
         if not os.path.isdir(pdir):
             continue
         project = by_name.get(entry)
+        state = _delivery_state(project)
         try:
-            note_pass(pdir, project.state if project else None, now)
+            note_pass(pdir, state, now)
             _expire_and_prune(pdir, now, senders)
         except Exception:
             ccm_core.log_caught_exception("spool-expire")
         pending = _pending(pdir)
         if not pending:
             continue
-        if project is None or project.state != "IDLE":
+        if state != "IDLE":
             continue
         if not _acquire_lock(pdir):
             continue

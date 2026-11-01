@@ -247,29 +247,34 @@ def background_work_reported(events, last_stop_bg=0):
             and last_stop_bg > 0)
 
 
-def agent_permit_superseded(events_seq, agent_permit_ts):
-    """True when the event log's newest event is strictly newer than a
-    subagent's permission request: the main conversation has moved on
-    and the request no longer decides anything. Shared by the state
-    (`_with_agent_permit`) and the hook signal
-    (`ccm_signals.read_hook_signal`) so the two never disagree."""
-    latest = events_seq[-1] if events_seq else None
-    ts = latest.get("ts", 0) if isinstance(latest, dict) else 0
-    return isinstance(ts, (int, float)) and ts > agent_permit_ts
+def _agent_request_waiting(events_seq, agent_permit_ts, raw, now):
+    """True when a subagent's permission request still waits for an
+    answer and is to show as PERMIT on top of whatever the main
+    conversation's own state is. The main conversation's events, its
+    transcript and its screen do not answer it: a background agent
+    waits on its own while the main conversation goes on
+    (`ccm_signals.read_agent_permit` says when it is answered). It
+    stops counting when the session has ended, and, as a last resort
+    for a request whose answer was never reported, once it is older
+    than `PERMIT_MAX_TIMEOUT` on an idle screen. Either way the main
+    conversation's own state stands as it is, so a stale request
+    cannot hide a newer request of the main conversation's.
+    Pure function."""
+    if not (isinstance(agent_permit_ts, (int, float))
+            and not isinstance(agent_permit_ts, bool)
+            and agent_permit_ts > 0):
+        return False
+    for e in reversed(events_seq):
+        t = e.get("type") if isinstance(e, dict) else None
+        if t in ("agent", "agent_permit"):
+            continue
+        if t == "session_end":
+            return False
+        break
+    if raw == "IDLE" and now > 0 and now - agent_permit_ts > PERMIT_MAX_TIMEOUT:
+        return False
+    return True
 
-
-def _with_agent_permit(events_seq, agent_permit_ts):
-    """Append an open subagent permission request as an
-    `agent_permit` event, unless the main conversation has an event
-    after it. Pure function; takes and returns a tuple."""
-    if not (isinstance(agent_permit_ts, (int, float)) and agent_permit_ts > 0):
-        return events_seq
-    if agent_permit_superseded(events_seq, agent_permit_ts):
-        return events_seq
-    return events_seq + ({"ts": agent_permit_ts, "type": "agent_permit"},)
-
-
-# ─── Activity classification ───
 
 def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
     """Inspect the event-log tail (after phantom-subagent stripping)
@@ -587,8 +592,9 @@ def derive_state_from_events(events, jsonl_stop_reason,
         jsonl_age: optional. Seconds since the most recent JSONL
             real-activity record, or -1 if unavailable.
         agent_ts: optional. Time of the newest subagent event, or 0.
-        agent_permit_ts: optional. Time of a subagent's open
-            permission request, or 0.
+        agent_permit_ts: optional. Time of the newest subagent
+            permission request still waiting, or 0. While it counts
+            (`_agent_request_waiting`) the result is PERMIT.
 
     Returns one of: "SHELL", "PERMIT", "BUSY", "IDLE", or None.
     None means "no authoritative answer" — the caller should commit
@@ -598,7 +604,6 @@ def derive_state_from_events(events, jsonl_stop_reason,
         return "SHELL"
 
     events_seq = tuple(events) if not isinstance(events, tuple) else events
-    events_seq = _with_agent_permit(events_seq, agent_permit_ts)
 
     activity, evidence = classify_activity(
         events_seq, jsonl_stop_reason, jsonl_age, raw, now,
@@ -612,7 +617,12 @@ def derive_state_from_events(events, jsonl_stop_reason,
     agent_age = -1
     if now > 0 and isinstance(agent_ts, (int, float)) and agent_ts > 0:
         agent_age = now - agent_ts
-    return map_activity_to_state(
+    state = map_activity_to_state(
         activity, raw, jsonl_stop_reason, jsonl_age,
         event_type=event_type, event_age=event_age, agent_age=agent_age,
     )
+    # A subagent's waiting request is shown on top of the main
+    # conversation's state, which is decided above without it.
+    if _agent_request_waiting(events_seq, agent_permit_ts, raw, now):
+        return "PERMIT"
+    return state
