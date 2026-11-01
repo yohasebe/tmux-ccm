@@ -826,11 +826,12 @@ def configure(remove=False):
     except (ValueError, UnicodeError) as exc:
         ccm_core.ccm_die(f'Codex hooks.json is invalid; kept unchanged: {exc}')
     owned, lookalikes = ccm_hook_owner.classify(data, str(Path(script).parent), (SCRIPT,))
-    data = ccm_hook_owner.strip(data, owned)
-    if not remove:
-        for event in EVENTS:
-            data.setdefault('hooks', {}).setdefault(event, []).append(
-                {'hooks': [{'type': 'command', 'command': script, 'timeout': 3}]})
+    if remove:
+        data = ccm_hook_owner.strip(data, owned)
+    else:
+        # In place: Codex records trust by each hook's position in the file.
+        data = ccm_hook_owner.place(data, owned, EVENTS,
+                                    {'type': 'command', 'command': script, 'timeout': 3})
     # Cooperative setup/removal lock, plus optimistic external-writer check.
     import fcntl
     with open(str(path) + '.ccm-lock', 'a') as lock:

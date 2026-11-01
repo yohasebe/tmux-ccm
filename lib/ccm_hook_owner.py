@@ -176,6 +176,50 @@ def strip(settings, owned):
     return settings
 
 
+def place(settings, owned, events, hook):
+    """`settings` with `hook` installed once for each of `events`, at the
+    spot ccm's first hook for that event already holds, else in a group
+    of its own at the end. Every other ccm hook is removed. With one ccm
+    hook per event already there, no other hook moves; removing a
+    duplicate or a hook for an event not in `events` shifts the hooks
+    after it."""
+    owned = set(owned)
+    hooks = settings.setdefault("hooks", {})
+
+    def is_owned(h):
+        return (isinstance(h, dict) and isinstance(h.get("command"), str)
+                and h["command"] in owned)
+
+    placed = set()
+    for event in list(hooks):
+        entries = hooks[event]
+        if not isinstance(entries, list):
+            continue
+        kept_entries = []
+        for entry in entries:
+            inner = entry.get("hooks") if isinstance(entry, dict) else None
+            if not isinstance(inner, list) or not any(is_owned(h) for h in inner):
+                kept_entries.append(entry)
+                continue
+            remaining = []
+            for h in inner:
+                if not is_owned(h):
+                    remaining.append(h)
+                elif event in events and event not in placed:
+                    remaining.append(dict(hook))
+                    placed.add(event)
+            if remaining:
+                kept_entries.append({**entry, "hooks": remaining})
+        if entries and not kept_entries:
+            del hooks[event]
+        else:
+            hooks[event] = kept_entries
+    for event in events:
+        if event not in placed:
+            hooks.setdefault(event, []).append({"hooks": [dict(hook)]})
+    return settings
+
+
 def sync_timeouts(settings, owned, timeout):
     """`settings` with ccm's hooks carrying `timeout`; nothing else changes."""
     owned = set(owned)

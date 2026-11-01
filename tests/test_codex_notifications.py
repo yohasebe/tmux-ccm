@@ -336,6 +336,68 @@ def test_config_merge_remove_lookalike(tmp_path, monkeypatch):
     assert json.loads(path.read_text()) == original
 
 
+def test_reinstall_keeps_every_hook_in_place(tmp_path, monkeypatch):
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = tmp_path / 'hooks.json'
+    other = {'hooks': [{'type': 'command', 'command': '/example/other-tool hook', 'timeout': 10}]}
+    path.write_text(json.dumps({'hooks': {'Stop': [other]}}))
+    notices.configure()
+    data = json.loads(path.read_text())
+    ours = data['hooks']['Stop'][1]
+    for event in notices.EVENTS:
+        data['hooks'].setdefault(event, [])
+        if ours in data['hooks'][event]:
+            data['hooks'][event].remove(ours)
+        data['hooks'][event][0:0] = [ours]
+        data['hooks'][event].append(other)
+    path.write_text(json.dumps(data))
+    notices.configure()
+    assert json.loads(path.read_text()) == data
+
+
+def test_reinstall_keeps_the_first_copy_only(tmp_path, monkeypatch):
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = tmp_path / 'hooks.json'
+    script = str(Path(ccm_core.CCM_ROOT) / 'hooks' / notices.SCRIPT)
+    ours = {'type': 'command', 'command': script, 'timeout': 9}
+    other = {'type': 'command', 'command': '/example/other-tool hook'}
+    path.write_text(json.dumps({'hooks': {
+        'Stop': [{'hooks': [other, ours]}, {'hooks': [ours]}, {'hooks': [other]}],
+        'Notification': [{'hooks': [ours]}]}}))
+    notices.configure()
+    data = json.loads(path.read_text())
+    assert data['hooks']['Stop'] == [
+        {'hooks': [other, {'type': 'command', 'command': script, 'timeout': 3}]},
+        {'hooks': [other]}]
+    assert 'Notification' not in data['hooks']
+
+
+def test_reinstall_updates_a_hook_inside_another_tools_group(tmp_path, monkeypatch):
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    path = tmp_path / 'hooks.json'
+    script = str(Path(ccm_core.CCM_ROOT) / 'hooks' / notices.SCRIPT)
+    before = {'type': 'command', 'command': '/example/before'}
+    after = {'type': 'command', 'command': '/example/after'}
+    group = {'matcher': 'x', 'custom': 1,
+             'hooks': [before, {'type': 'command', 'command': script, 'timeout': 9}, after]}
+    path.write_text(json.dumps({'hooks': {'Stop': [{'hooks': [after]}, group]}}))
+    notices.configure()
+    assert json.loads(path.read_text())['hooks']['Stop'] == [
+        {'hooks': [after]},
+        {**group, 'hooks': [before, {'type': 'command', 'command': script, 'timeout': 3}, after]}]
+
+
+def test_reinstall_leaves_an_unconfirmed_install_alone(tmp_path, monkeypatch):
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    monkeypatch.setattr(ccm_core, 'CCM_ROOT', str(tmp_path / 'missing'))
+    path = tmp_path / 'hooks.json'
+    script = str(tmp_path / 'missing' / 'hooks' / notices.SCRIPT)
+    theirs = {'hooks': [{'type': 'command', 'command': script, 'timeout': 9}]}
+    path.write_text(json.dumps({'hooks': {'Stop': [theirs]}}))
+    notices.configure()
+    assert json.loads(path.read_text())['hooks']['Stop'][0] == theirs
+
+
 @pytest.mark.parametrize('contents', ['{bad', '[]', '{"hooks": []}', '{"hooks":{"Stop":{}}}'])
 def test_broken_config_unchanged(tmp_path, monkeypatch, contents):
     monkeypatch.setenv('CODEX_HOME', str(tmp_path))

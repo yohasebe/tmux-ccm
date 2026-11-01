@@ -939,6 +939,9 @@ ccm remove-sidekick-hooks codex
 
 導入は Codex の `hooks.json`（`CODEX_HOME` 配下、既定は `~/.codex`）に、現在の
 ccm が所有する hook だけをマージし、`.ccm-bak` を残して他の hook を保ちます。
+再導入では ccm の hook をその位置のまま更新するので、他の hook の位置は変わらず、
+信頼確認もやり直しになりません。重複した ccm の hook や、ccm が使わなくなったイベントの
+hook を取り除くときだけ、その後ろの hook の位置が詰まります。
 壊れた JSON と空白を含むインストールパスは拒否します。信頼記録や `config.toml` は
 編集しません。新規・変更 hook はユーザーの信頼確認が必要で、導入成功だけでは稼働を
 証明しません。撤去するとロード済みの ccm hook も無効になり、未配達通知は取り消します。

@@ -193,6 +193,8 @@ class TestClassify:
         assert owner.strip(copy.deepcopy(settings), owned) == _settings(("Stop", [{"hooks": odd}]))
         synced = owner.sync_timeouts(copy.deepcopy(settings), owned, 5)
         assert synced["hooks"]["Stop"][0]["hooks"][1:] == odd
+        placed = owner.place(copy.deepcopy(settings), owned, ("Stop",), _hook(f"{hooks}/on-stop.sh"))
+        assert placed["hooks"]["Stop"][0]["hooks"][1:] == odd
 
     @pytest.mark.parametrize("settings", [
         [], {"hooks": []}, {"hooks": {"Stop": 5}}, {"hooks": {"Stop": None}},

@@ -943,7 +943,9 @@ Snapshots v1/v2 are unchanged: they do not save notification overrides. Global c
 
 The installer merges only this installation's hook entries into Codex's
 `hooks.json` (under `CODEX_HOME`, or `~/.codex`), keeps a `.ccm-bak`, and preserves
-other hooks. Invalid JSON and installation paths containing spaces are refused.
+other hooks. A reinstall updates ccm's entries where they are, so other hooks keep
+their positions and Codex does not ask to review them again; only removing a
+duplicate ccm entry, or one for an event ccm no longer uses, moves the hooks after it. Invalid JSON and installation paths containing spaces are refused.
 It does not edit trust records or `config.toml`. New or changed hooks need the
 user's trust review; installation alone does not establish that they run.
 Removal disables loaded ccm hooks and cancels pending notices; restart/review
