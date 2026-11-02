@@ -1421,6 +1421,16 @@ def cmd_sidekick_send(args):
             f"({pane_id} → {again[0]}) — refusing. Retry the command."
         )
 
+    # A sidekick waiting on a dialog takes keys as answers, so a body
+    # typed into it could approve or deny something. Where ccm reads the
+    # sidekick's screen (Codex, Antigravity), refuse while it shows one;
+    # a screen it cannot read is sent to as before.
+    if ccm_core.sidekick_screen_state(pane_id, agent) == "PERMIT":
+        ccm_core.ccm_die(
+            f"The sidekick ({agent}, {pane_id}) is waiting on a dialog — "
+            "refusing to type into it. Answer the dialog in that pane "
+            "first, then retry.")
+
     # Defensively exit any tmux mode on the target pane, then type
     # the body literally (shared helpers — see cmd_send).
     _send_keys(pane_id, "-X", "cancel", label="sidekick-pre-cancel")

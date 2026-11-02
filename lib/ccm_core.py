@@ -1152,7 +1152,7 @@ def sidekick_pane_states(panes_cache, win_target, markers, hooks_cache,
         if name in SIDEKICK_SCREEN_READERS:
             if screen:
                 state = (_codex_pane_state(pc, hooks_cache, ps_lines) if name == "codex"
-                         else _screen_pane_state(pc, name) or "IDLE")
+                         else sidekick_screen_state(pc[2], name) or "IDLE")
                 if state != "IDLE":
                     states[pc[2]] = (name, state)
             continue
@@ -1168,7 +1168,7 @@ def _codex_pane_state(pc, hooks_cache, ps_lines):
     hooks last recorded for that pane, if the record was written for
     the Codex process running there now (a Codex restarted in the same
     pane must not inherit its predecessor's wait)."""
-    state = _screen_pane_state(pc, "codex")
+    state = sidekick_screen_state(pc[2], "codex")
     if state is not None:
         return state
     if not hooks_cache:
@@ -1185,12 +1185,16 @@ def _codex_pane_state(pc, hooks_cache, ps_lines):
     return "IDLE"
 
 
-def _screen_pane_state(pc, name):
-    """What the screen of sidekick `name` shows, or None when it shows
-    none of its marks or cannot be read."""
+def sidekick_screen_state(pane_id, name):
+    """What the screen of sidekick `name` in `pane_id` shows ("PERMIT",
+    "BUSY", "IDLE"), or None when ccm does not read that sidekick's
+    screen, the screen shows none of its marks, or it cannot be read.
+    Shared by the badge and by `ccm sidekick-send`."""
+    reader = SIDEKICK_SCREEN_READERS.get(name)
+    if reader is None:
+        return None
     try:
-        return SIDEKICK_SCREEN_READERS[name](
-            ccm_pane_state.capture_pane_screen(pc[2]))
+        return reader(ccm_pane_state.capture_pane_screen(pane_id))
     except Exception:
         log_caught_exception(name + "_screen")
         return None

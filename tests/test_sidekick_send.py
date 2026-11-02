@@ -1,10 +1,11 @@
 """Tests for `ccm sidekick-send` — delivery to the external-agent
 sidekick pane of the caller's own window.
 
-The command's safety story is identity, not state: ccm tracks no
-state for a non-Claude pane, so the target is found from tmux
-metadata (foreground command + working directory), every ambiguity
-refuses, and delivery is confirmed by capture."""
+The command's safety story is identity first: the target is found
+from tmux metadata (foreground command + working directory), every
+ambiguity refuses, and delivery is confirmed by capture. Where ccm
+reads a sidekick's screen (Codex, Antigravity), a dialog waiting for
+a key refuses too."""
 
 import pytest
 
@@ -33,7 +34,7 @@ class TestSidekickSend:
         pane_calls = [0]
         calls = []
 
-        def tmux(*args):
+        def tmux(*args, **kw):
             calls.append(args)
             cmd = args[0]
             if cmd == "display-message":
@@ -79,6 +80,57 @@ class TestSidekickSend:
         out = capsys.readouterr().out
         assert "seen on screen" in out and "receipt not confirmed" in out
         assert "Enter attempted" in out and "Sent to" not in out
+
+    # --- a sidekick waiting on a dialog ---
+
+    _CODEX_DIALOG = ("  Would you like to run the following command?\n"
+                     "› 1. Yes, proceed (y)\n"
+                     "  3. No, and tell Codex what to do differently (esc)\n"
+                     "  Press enter to confirm or esc to cancel\n")
+    _AGY_MENU = ("─" * 80 + "\nRun this command?\n> 1. Yes, run command\n"
+                 "  2. No, cancel\n  ↑/↓ Navigate · tab Amend\n"
+                 "esc to cancel        Example Model\n")
+    _CODEX_IDLE = "› Ask Codex to do anything\n  ? for shortcuts\n"
+    _CODEX_WORKING = ("Working (5s • esc to interrupt)\n"
+                      "› Ask Codex to do anything\n  ? for shortcuts\n")
+
+    def _screen_stub(self, monkeypatch, tmp_path, agent, first_screen):
+        """A sidekick `agent` in a temporary project whose first capture
+        is `first_screen` and later ones show the message."""
+        proj = str(tmp_path)
+        screens = iter([first_screen])
+
+        def capture(args):
+            screen = next(screens, _MSG)
+            if isinstance(screen, Exception):
+                raise screen
+            return screen
+        return self._stub(monkeypatch, caller_info=f"@1\tclaude\t{proj}",
+                          panes=(("%2", agent, proj),), ccm_dir=proj,
+                          capture=capture)
+
+    @pytest.mark.parametrize("agent, screen", [
+        ("codex", _CODEX_DIALOG), ("agy", _AGY_MENU)])
+    @pytest.mark.parametrize("flags", [[], ["--no-enter"]])
+    def test_waiting_sidekick_refused_before_any_key(
+            self, monkeypatch, capsys, tmp_path, agent, screen, flags):
+        calls = self._screen_stub(monkeypatch, tmp_path, agent, screen)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_sidekick_send(flags + [_MSG])
+        assert [c for c in calls if c[0] == "send-keys"] == []
+        assert "waiting on a dialog" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("agent, screen", [
+        ("codex", _CODEX_IDLE),
+        ("codex", _CODEX_WORKING),
+        ("agy", "an overlay ccm cannot read\n"),
+        ("codex", RuntimeError("capture failed")),
+    ])
+    def test_other_screens_are_sent_to(self, monkeypatch, tmp_path, agent,
+                                       screen):
+        calls = self._screen_stub(monkeypatch, tmp_path, agent, screen)
+        ccm_send.cmd_sidekick_send([_MSG])
+        assert ("send-keys", "-t", "%2", "Enter") in calls
 
     def test_multiline_uses_m_enter_between_lines(self, monkeypatch):
         body = "first line of the brief\nsecond line of the brief"

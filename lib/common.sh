@@ -666,7 +666,8 @@ Use the following commands to discover, inspect, and coordinate other projects:
   a pane of this window. It finds the sidekick pane itself (a known
   external agent CLI whose working directory belongs to this project),
   refuses when there is no sidekick or more than one, re-checks the
-  pane right before typing, waits for the peer's composer to settle
+  pane right before typing (and refuses a Codex or Antigravity
+  sidekick whose screen shows a dialog waiting for a key), waits for the peer's composer to settle
   before sending Enter, and captures the pane afterwards to confirm
   the text landed — a non-zero exit means it could not confirm, so
   treat that as "delivery unconfirmed": check the conversation and input
