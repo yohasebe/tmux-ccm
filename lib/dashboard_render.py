@@ -31,7 +31,7 @@ from ccm_render import (
     display_width,
     EXTERNAL_AGENT_MARK,
     external_agent_badge,
-    external_agent_state,
+    external_agent_segments,
     format_age_short,
     format_dir,
     format_elapsed,
@@ -961,18 +961,19 @@ class RenderMixin:
                     # — the window's colour vocabulary, without joining
                     # the 4-state model.
                     if ann.get("ext_badge"):
-                        ext_state = external_agent_state(p)
-                        badge_attr = (
-                            curses.color_pair(C_PERMIT) | curses.A_BOLD
-                            if ext_state == "PERMIT"
-                            else curses.color_pair(C_BUSY)
-                            if ext_state == "BUSY"
-                            else curses.color_pair(C_DIM))
                         mark = EXTERNAL_AGENT_MARK
                         self._addstr(stdscr, y, col, mark,
                                      curses.color_pair(C_DIM))
-                        self._addstr(stdscr, y, col + display_width(mark),
-                                     ann["ext_badge"][len(mark):], badge_attr)
+                        x = col + display_width(mark)
+                        for text, ext_state in external_agent_segments(p):
+                            badge_attr = (
+                                curses.color_pair(C_PERMIT) | curses.A_BOLD
+                                if ext_state == "PERMIT"
+                                else curses.color_pair(C_BUSY)
+                                if ext_state == "BUSY"
+                                else curses.color_pair(C_DIM))
+                            self._addstr(stdscr, y, x, text, badge_attr)
+                            x += display_width(text)
                         col += display_width(ann["ext_badge"]) + 1
 
                     # Spool marker ✉N: messages queued for this project

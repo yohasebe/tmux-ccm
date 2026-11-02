@@ -1039,6 +1039,10 @@ there is no hook record to fall back on. Antigravity gets no attention marker,
 desktop notice or completion notice. `w` and `@ccm-sidekick-attention off` hide
 both states.
 
+With several sidekicks in one window, each name on the badge carries its own
+state's mark and colour, so `▸ codex ◉,agy ⚠` reads as Codex working and
+Antigravity waiting.
+
 
 Grok Build gets its own hook file (`~/.grok/hooks/ccm-sidekick-attention.json`) instead of an edit to your config, so removing it is an unlink and nothing of yours is ever merged with.
 

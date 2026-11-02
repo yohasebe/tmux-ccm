@@ -338,36 +338,33 @@ def format_dir(directory, prefix_len, cols):
     return ""
 
 
-def external_agent_label(project):
-    """Compact label for a project's external-agent CLI panes
-    ("" when none). Names are the pane foreground commands
-    de-duplicated in first-seen order; a name hosted by several
-    panes gets a `×N` count suffix. Shared by `ccm status`, the
-    dashboard, and the status bar so the badge text is identical
-    on every surface."""
+def external_agent_segments(project):
+    """The badge after its mark, as (text, state) pieces: each sidekick
+    name (with its `×N`) followed by its own state's icon, and the `,`
+    between names with no state. A state is "PERMIT" while that
+    sidekick waits for a person, "BUSY" while it works on a turn (a
+    waiting one outranks a working one, as PERMIT outranks BUSY for the
+    window), else "". Names keep their first-seen order, and a name
+    hosted by several panes gets a `×N` count. Shared by `ccm status`,
+    the dashboard and the status bar, so each name's text, icon and
+    colour agree everywhere and two sidekicks in one window are told
+    apart."""
     names = getattr(project, "external_agents", ()) or ()
-    if not names:
-        return ""
-    parts = []
+    attention = set(getattr(project, "attention_agents", ()) or ())
+    busy = set(getattr(project, "busy_agents", ()) or ())
+    segments = []
     for name in dict.fromkeys(names):
+        if segments:
+            segments.append((",", ""))
         count = names.count(name)
-        parts.append(name if count == 1 else f"{name}×{count}")
-    return ",".join(parts)
-
-
-def external_agent_state(project):
-    """"PERMIT" when a sidekick in the window waits for a person,
-    "BUSY" when one is working on a turn, else "". Shared by every
-    surface, like `external_agent_label`, so the badge's icon and
-    colour agree everywhere. A waiting sidekick outranks a working one,
-    as PERMIT outranks BUSY for the window."""
-    shown = set(getattr(project, "external_agents", ()) or ())
-    # An ignored Claude sidekick waits under `⊘`, not under `▸`.
-    if shown & set(getattr(project, "attention_agents", ()) or ()):
-        return "PERMIT"
-    if shown & set(getattr(project, "busy_agents", ()) or ()):
-        return "BUSY"
-    return ""
+        label = name if count == 1 else f"{name}×{count}"
+        # An ignored Claude sidekick waits under `⊘`, not under `▸`,
+        # and is never among these names.
+        state = ("PERMIT" if name in attention
+                 else "BUSY" if name in busy else "")
+        segments.append((f"{label} {STATE_ICONS[state]}" if state else label,
+                         state))
+    return segments
 
 
 #: The badge's leading mark. Every surface draws it dim and colours only
@@ -377,17 +374,20 @@ EXTERNAL_AGENT_MARK = "▸ "
 
 
 def external_agent_badge(project):
-    """The badge text, `▸ <label>` plus ` <icon>` when the sidekick
-    waits or works ("" when there is no sidekick). The spaces keep the
-    name readable between the two marks."""
-    label = external_agent_label(project)
-    if not label:
+    """The badge text, `▸ ` and the segments (`external_agent_segments`),
+    or "" when there is no sidekick."""
+    segments = external_agent_segments(project)
+    if not segments:
         return ""
-    state = external_agent_state(project)
-    return f"{EXTERNAL_AGENT_MARK}{label}{' ' + STATE_ICONS[state] if state else ''}"
+    return EXTERNAL_AGENT_MARK + "".join(text for text, _ in segments)
 
 
 # ─── CLI commands ───
+
+#: `ccm status` PROJECT column: its usual width, and how much of a
+#: project's name it keeps beside long markers before it widens.
+PROJECT_COL_W = 20
+PROJECT_NAME_KEEP = 12
 
 def print_status():
     """Print status of all ccm projects (for `ccm status` CLI command)."""
@@ -431,9 +431,7 @@ def print_status():
     # a `(name)` note in this column repeated the badge, and widening
     # the column to fit it shifted every other row's layout.
     status_w = 12
-
-    print(f"{C_BOLD}{'STATUS':<{status_w}} {'PROJECT':<20} {'MODE':<8} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
-    print(f"{'------':<{status_w}} {'-------':<20} {'----':<8} {'------':<16} {'-----':<12} {'---------'}")
+    rows = []
 
     for p in projects:
         color = C_STATE.get(p.state, C_DIM)
@@ -505,11 +503,10 @@ def print_status():
         # 4-state model itself.
         badge = external_agent_badge(p)
         if badge:
-            ext_state = external_agent_state(p)
-            colour = C_STATE[ext_state] if ext_state else C_DIM
-            mark = EXTERNAL_AGENT_MARK
-            pane_marker += (f" {C_DIM}{mark}{C_RESET}"
-                            f"{colour}{badge[len(mark):]}{C_RESET}")
+            pane_marker += f" {C_DIM}{EXTERNAL_AGENT_MARK}{C_RESET}"
+            for text, ext_state in external_agent_segments(p):
+                colour = C_STATE[ext_state] if ext_state else C_DIM
+                pane_marker += f"{colour}{text}{C_RESET}"
             pane_marker_visible_w += 1 + display_width(badge)
         # Spool marker `✉N`: N messages are queued for this project
         # (store-and-forward). Dim like `⊘` — a queue length, not a
@@ -543,8 +540,22 @@ def print_status():
         # whole) instead of being clamped to zero padding, which
         # previously let an overlong name shove every later column
         # rightward and break the table.
-        name_avail = max(0, 20 - pane_marker_visible_w)
-        name_text = truncate_to_width(p.name, name_avail)
+        rows.append((status_field, p.name, pane_marker, pane_marker_visible_w,
+                     mode_field, branch, ports, d))
+
+    # The PROJECT column is 20 wide, wider when a row's markers would
+    # leave its name fewer than PROJECT_NAME_KEEP columns (several
+    # sidekicks, each with its state's icon). One width for every row,
+    # so the later columns stay aligned.
+    project_w = max([PROJECT_COL_W] + [
+        marker_w + min(display_width(name), PROJECT_NAME_KEEP)
+        for _, name, _, marker_w, *_ in rows])
+    print(f"{C_BOLD}{'STATUS':<{status_w}} {pad_to_width('PROJECT', project_w)} {'MODE':<8} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
+    print(f"{'------':<{status_w}} {pad_to_width('-------', project_w)} {'----':<8} {'------':<16} {'-----':<12} {'---------'}")
+    for (status_field, name, pane_marker, marker_w, mode_field, branch,
+         ports, d) in rows:
+        name_avail = max(0, project_w - marker_w)
+        name_text = truncate_to_width(name, name_avail)
         name_pad_w = max(0, name_avail - display_width(name_text))
         name_field = f"{name_text}{pane_marker}{' ' * name_pad_w}"
         print(f"{status_field} {name_field} {mode_field} "

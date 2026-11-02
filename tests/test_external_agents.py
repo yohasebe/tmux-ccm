@@ -83,21 +83,21 @@ class TestExternalAgentLabel:
         # Backward compat: positional/kwarg-less construction (every
         # pre-existing test) must yield no badge.
         assert _make_project("alpha", "IDLE").external_agents == ()
-        assert ccm_render.external_agent_label(
+        assert ccm_render.external_agent_badge(
             _make_project("alpha", "IDLE")) == ""
 
     def test_single(self):
         p = _make_project("a", "IDLE", external_agents=("kimi",))
-        assert ccm_render.external_agent_label(p) == "kimi"
+        assert ccm_render.external_agent_badge(p) == "▸ kimi"
 
     def test_duplicate_gets_count_suffix(self):
         p = _make_project("a", "IDLE", external_agents=("kimi", "kimi"))
-        assert ccm_render.external_agent_label(p) == "kimi×2"
+        assert ccm_render.external_agent_badge(p) == "▸ kimi×2"
 
     def test_distinct_names_joined(self):
         p = _make_project("a", "IDLE",
                           external_agents=("kimi", "kimi-code"))
-        assert ccm_render.external_agent_label(p) == "kimi,kimi-code"
+        assert ccm_render.external_agent_badge(p) == "▸ kimi,kimi-code"
 
 
 class TestPrintStatusExternalAgent:
@@ -134,6 +134,38 @@ class TestPrintStatusExternalAgent:
         # The column stays 12 wide: the name starts where it would
         # without the note.
         assert plain.index("pair") == 13
+
+    def test_two_sidekicks_each_coloured(self, monkeypatch, capsys):
+        projects = [_make_project("pair", "IDLE", pane_count=3,
+                                  external_agents=("codex", "agy"),
+                                  attention_agents=("agy",),
+                                  busy_agents=("codex",))]
+        out = self._run(projects, monkeypatch, capsys)
+        row = next(l for l in out.splitlines() if "▸" in l)
+        assert f"{ccm_render.C_STATE['BUSY']}codex ◉" in row
+        assert f"{ccm_render.C_STATE['PERMIT']}agy ⚠" in row
+
+    def test_long_badges_widen_the_project_column_for_every_row(
+            self, monkeypatch, capsys):
+        projects = [
+            ccm_core.Project(win_target="0:1", win_idx="1", name="first-project",
+                             directory="/example/a", state="IDLE", pane_count=3,
+                             external_agents=("codex", "agy"),
+                             attention_agents=("agy",), busy_agents=("codex",)),
+            ccm_core.Project(win_target="0:2", win_idx="2", name="second",
+                             directory="/example/b", state="IDLE"),
+        ]
+        out = self._run(projects, monkeypatch, capsys)
+        lines = [_strip_ansi(l) for l in out.splitlines()]
+        header = next(l for l in lines if l.startswith("STATUS"))
+        first = next(l for l in lines if "/example/a" in l)
+        second = next(l for l in lines if "/example/b" in l)
+        assert "first-projec" in first
+        assert "[3] ▸ codex ◉,agy ⚠" in first
+        mode = header.index("MODE")
+        assert first[mode] == "-"
+        assert second[mode] == "-"
+        assert first.index("/example/a") == second.index("/example/b")
 
     def test_badge_after_project_name(self, monkeypatch, capsys):
         projects = [_make_project("sidekick", "IDLE",
@@ -233,6 +265,14 @@ class TestBuildDetailEntriesExternalAgent:
                           attention_agents=("codex",), busy_agents=("codex",))
         entries = self._entries([p], True, monkeypatch)
         assert "#[fg=#666666]▸ #[fg=yellow,bold]codex ⚠" in entries[0]
+
+    def test_mode2_two_sidekicks_each_coloured(self, monkeypatch):
+        p = _make_project("pair", "IDLE", external_agents=("codex", "agy"),
+                          attention_agents=("agy",), busy_agents=("codex",))
+        entry = self._entries([p], True, monkeypatch)[0]
+        busy = inject_status.TMUX_COLORS["BUSY"]
+        assert (f"#[fg=#666666]▸ #[fg={busy}]codex ◉#[nobold]"
+                f"#[fg=#666666],#[nobold]#[fg=yellow,bold]agy ⚠#[nobold]") in entry
 
     def test_mode2_bg_follows_claudes_icon_before_the_badge(
             self, monkeypatch):
@@ -350,8 +390,8 @@ class TestDashboardExternalAgent:
         monkeypatch.setattr(_curses, "color_pair", lambda n: n)
         monkeypatch.setattr(dashboard.Dashboard, "_addstr", capture)
         d = dashboard.Dashboard(initial_mode="dashboard")
-        d.projects = [_make_project("pair", "IDLE",
-                                    external_agents=("codex",), **kw)]
+        kw.setdefault("external_agents", ("codex",))
+        d.projects = [_make_project("pair", "IDLE", **kw)]
         stdscr = MagicMock()
         stdscr.getmaxyx.return_value = (40, 200)
         d.render(stdscr)
@@ -370,6 +410,15 @@ class TestDashboardExternalAgent:
                             busy_agents=("codex",))
         assert ("▸ ", dashboard.C_DIM) in draws
         assert ("codex ⚠", dashboard.C_PERMIT | _curses.A_BOLD) in draws
+
+    def test_two_sidekicks_each_coloured(self, monkeypatch):
+        import curses as _curses
+        import dashboard
+        draws = self._draws(monkeypatch, external_agents=("codex", "agy"),
+                            attention_agents=("agy",), busy_agents=("codex",))
+        assert ("codex ◉", dashboard.C_BUSY) in draws
+        assert (",", dashboard.C_DIM) in draws
+        assert ("agy ⚠", dashboard.C_PERMIT | _curses.A_BOLD) in draws
 
     def test_idle_codex_badge_is_dim(self, monkeypatch):
         import dashboard

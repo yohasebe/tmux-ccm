@@ -28,7 +28,7 @@ import ccm_spool
 from ccm_notify import notify
 from ccm_render import (ambiguous_width_declared, display_width,
                         EXTERNAL_AGENT_MARK, external_agent_badge,
-                        external_agent_state,
+                        external_agent_segments,
                         signal_age_suffix)
 from ccm_runtime import (
     auto_exit_idle,
@@ -298,16 +298,13 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
             # it waits for a person, BUSY's colour with ◉ while it
             # works — without entering the window's state model.
             if ext_badge:
-                ext_state = external_agent_state(p)
-                badge_fg = ("yellow,bold" if ext_state == "PERMIT"
-                            else TMUX_COLORS["BUSY"] if ext_state == "BUSY"
-                            else "#666666")
-                mark = EXTERNAL_AGENT_MARK
-                entry += (
-                    f" #[fg=#666666]{mark}"
-                    f"#[fg={badge_fg}]{ext_badge[len(mark):]}"
-                    f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
-                )
+                entry += f" #[fg=#666666]{EXTERNAL_AGENT_MARK}"
+                for text, ext_state in external_agent_segments(p):
+                    badge_fg = ("yellow,bold" if ext_state == "PERMIT"
+                                else TMUX_COLORS["BUSY"] if ext_state == "BUSY"
+                                else "#666666")
+                    entry += f"#[fg={badge_fg}]{text}#[nobold]"
+                entry += f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
             if is_current:
                 entry += "#[nobold]"
         else:

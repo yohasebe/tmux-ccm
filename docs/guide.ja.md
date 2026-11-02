@@ -1021,6 +1021,9 @@ Antigravity の hook には承認のイベントがないので、agy のペイ�
 Antigravity には attention marker・デスクトップ通知・完了通知はありません。
 `w` と `@ccm-sidekick-attention off` は、どちらの状態も隠します。
 
+ひとつの窓にサイドキックが複数あるときは、バッジの名前ごとにその状態の印と色が付きます。
+`▸ codex ◉,agy ⚠` は、Codex が作業中で Antigravity が承認待ちという意味です。
+
 
 Grok Build には設定の書き換えではなく専用の hook ファイル（`~/.grok/hooks/ccm-sidekick-attention.json`）を置くので、削除は unlink 一発で、あなたの設定と混ざることは一切ありません。
 

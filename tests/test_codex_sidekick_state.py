@@ -256,21 +256,31 @@ def project(agents=("codex",), attention=(), busy=()):
 class TestBadge:
     def test_idle_badge_is_the_name(self):
         assert ccm_render.external_agent_badge(project()) == "▸ codex"
-        assert ccm_render.external_agent_state(project()) == ""
+        assert ccm_render.external_agent_segments(project()) == [("codex", "")]
 
     def test_busy_badge(self):
         p = project(busy=("codex",))
         assert ccm_render.external_agent_badge(p) == "▸ codex ◉"
-        assert ccm_render.external_agent_state(p) == "BUSY"
+        assert ccm_render.external_agent_segments(p) == [("codex ◉", "BUSY")]
 
     def test_waiting_outranks_working(self):
         p = project(attention=("codex",), busy=("codex",))
         assert ccm_render.external_agent_badge(p) == "▸ codex ⚠"
-        assert ccm_render.external_agent_state(p) == "PERMIT"
+        assert ccm_render.external_agent_segments(p) == [("codex ⚠", "PERMIT")]
 
     def test_ignored_claude_waiting_does_not_mark_the_badge(self):
         p = project(attention=("claude",))
         assert ccm_render.external_agent_badge(p) == "▸ codex"
+
+    def test_each_sidekick_shows_its_own_state(self):
+        p = project(agents=("codex", "agy"), attention=("agy",), busy=("codex",))
+        assert ccm_render.external_agent_badge(p) == "▸ codex ◉,agy ⚠"
+        assert ccm_render.external_agent_segments(p) == [
+            ("codex ◉", "BUSY"), (",", ""), ("agy ⚠", "PERMIT")]
+
+    def test_a_quiet_sidekick_beside_a_busy_one_stays_plain(self):
+        p = project(agents=("codex", "agy", "agy"), busy=("agy",))
+        assert ccm_render.external_agent_badge(p) == "▸ codex,agy×2 ◉"
 
     def test_no_sidekick_no_badge(self):
         assert ccm_render.external_agent_badge(project(agents=())) == ""
