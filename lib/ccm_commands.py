@@ -1674,8 +1674,7 @@ def cmd_setup_sidekick_hooks(agent):
     if agent != "kimi":
         ccm_core.ccm_die(
             f"unsupported sidekick agent: {agent!r}. Supported: codex, kimi, grok.\n"
-            "  Antigravity CLI loads hooks without "
-            "firing them (measured against 1.1.10).")
+            "  Antigravity CLI needs none: ccm reads its screen.")
     config = _kimi_config_path()
     if not os.path.isdir(os.path.dirname(config)):
         ccm_core.ccm_die(

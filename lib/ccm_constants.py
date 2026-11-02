@@ -885,6 +885,97 @@ def codex_screen_state(lines):
     return "IDLE"
 
 
+# Antigravity CLI (`agy`) sidekick screen (measured on 1.4.12). Its
+# hooks have no event for an approval, so the screen is the only
+# source. The bottom of the screen is agy's own frame, read by shape so
+# that a transcript quoting the same words does not count:
+#   - the last line is the footer: `? for shortcuts` at the composer,
+#     `esc to cancel` while a turn runs, with a rule right above it;
+#   - the composer is a line starting with `>` right below a rule as
+#     wide as that one (a sent prompt is echoed the same way, but below
+#     the narrower start-up rule), and the lowest such line counts;
+#   - a subagent's approval is a box of `┃` lines ending in its key hint
+#     (`ctrl+k approve · alt+j manage`) right above the composer's rule,
+#     and the agent list between the composer and the footer shows an
+#     agent whose status is `Blocked`. The box alone can be quoted by a reply; the list
+#     sits inside the frame, where a reply never reaches. A list folded
+#     past the blocked agent is missed rather than guessed;
+#   - a menu (the main agent's approval, the folder-trust question)
+#     replaces the composer: its key hint (`↑/↓ Navigate · …`) sits on
+#     the line above the last, its selected item starts with `>` a few
+#     lines up, and the last line is `esc to cancel` or the bare status
+#     line (indented model name).
+# Words are matched loosely, not as fixed strings.
+_AGY_RULE = re.compile(r"^─{20,}\s*$")
+_AGY_MENU_HINT = re.compile(r"^\s*↑/↓\s+\S")
+_AGY_MENU_ITEM = re.compile(r"^>\s+\S")
+_AGY_BOX = re.compile(r"^\s*┃")
+_AGY_BOX_HINT = re.compile(r"^\s*┃.*\bctrl\+k\b", re.IGNORECASE)
+# An agent-list row: `● Agent(self: <name>)  <status> · <task> · <age>`.
+# The status is the field between the closing `)` and the first `·`; a
+# task or name that merely mentions "blocked" is not one. A name with
+# its own brackets leaves the field's start unknown, so the row is not read.
+_AGY_BLOCKED_AGENT = re.compile(r"^[^()]*\([^()]*\)\s{2,}Blocked\s+·", re.IGNORECASE)
+_AGY_BUSY_FOOTER = re.compile(r"^esc to \w", re.IGNORECASE)
+_AGY_IDLE_FOOTER = re.compile(r"^\?\s+\w")
+_AGY_BARE_STATUS = re.compile(r"^\s{2,}\S")
+#: How many lines above a menu's key hint its selected item may sit.
+AGY_MENU_LOOKBACK = 10
+
+
+def _agy_menu(lines):
+    """True when the bottom of the screen is an agy menu."""
+    if not (_AGY_BUSY_FOOTER.match(lines[-1]) or _AGY_BARE_STATUS.match(lines[-1])):
+        return False
+    if not _AGY_MENU_HINT.match(lines[-2]):
+        return False
+    for line in reversed(lines[max(0, len(lines) - 2 - AGY_MENU_LOOKBACK):-2]):
+        if _AGY_RULE.match(line):
+            return False
+        if _AGY_MENU_ITEM.match(line):
+            return True
+    return False
+
+
+def agy_screen_state(lines):
+    """Classify an Antigravity CLI pane from its visible lines
+    (non-empty, oldest first, not stripped), with the same answers as
+    `codex_screen_state`: "PERMIT", "BUSY", "IDLE", or None when the
+    bottom of the screen is not agy's frame."""
+    if len(lines) < 4:
+        return None
+    if _agy_menu(lines):
+        return "PERMIT"
+    if _AGY_BUSY_FOOTER.match(lines[-1]):
+        footer = "BUSY"
+    elif _AGY_IDLE_FOOTER.match(lines[-1]):
+        footer = "IDLE"
+    else:
+        return None
+    if not _AGY_RULE.match(lines[-2]):
+        return None
+    width = len(lines[-2].rstrip())
+    composer = next((i for i in range(len(lines) - 3, 0, -1)
+                     if lines[i].startswith(">")
+                     and _AGY_RULE.match(lines[i - 1])
+                     and len(lines[i - 1].rstrip()) == width), None)
+    if composer is None:
+        return None
+    if (composer >= 3 and _AGY_BOX_HINT.match(lines[composer - 2])
+            and _AGY_BOX.match(lines[composer - 3])):
+        below = next((i for i in range(composer + 1, len(lines) - 1)
+                      if _AGY_RULE.match(lines[i])), None)
+        if below is not None and any(_AGY_BLOCKED_AGENT.match(line)
+                                     for line in lines[below + 1:-2]):
+            return "PERMIT"
+    return footer
+
+
+#: Sidekicks whose state ccm reads from their screen, by short name
+#: (`external_agent_name`).
+SIDEKICK_SCREEN_READERS = {"codex": codex_screen_state, "agy": agy_screen_state}
+
+
 #: The two launch commands. A launch into an existing shell always
 #: types the first; `ccm add` types the second only when ccm has
 #: seen that the directory holds no conversation to resume

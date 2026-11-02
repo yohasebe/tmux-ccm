@@ -58,7 +58,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     CLAUDE_PROCESS_NAME,
     COMPLETED_AT_TIMEOUT,
     EXTERNAL_AGENT_COMMANDS,
-    codex_screen_state,
+    SIDEKICK_SCREEN_READERS,
     external_agent_name,
     is_recorded_agent,
     HOOK_FRESH_THRESHOLD,
@@ -1127,30 +1127,34 @@ def _resolve_external_agent_panes(panes_cache, win_target):
 
 
 def sidekick_pane_states(panes_cache, win_target, markers, hooks_cache,
-                         ps_lines, codex=True):
+                         ps_lines, screen=True):
     """{pane id: (agent name, "PERMIT" | "BUSY")} for this window's
     sidekick panes that wait for a person or work on a turn. The one
     answer to "does a sidekick here need me?", shared by the badge
     (`build_project_list`) and the focus on attach
     (`ccm_window.auto_focus_attention_pane`).
 
-    A Codex pane is read from its screen, with its hook record as the
-    fallback (`_codex_pane_state`), never from its attention marker:
-    the marker cannot know when an approval was answered. Any other
-    sidekick (Kimi, Grok, an ignored Claude) waits while its marker
-    says so (`markers`, from `_read_attention_markers`). `codex=False`
-    leaves Codex panes out, as the attention toggle does for markers.
+    A Codex or Antigravity pane is read from its screen
+    (`SIDEKICK_SCREEN_READERS`), never from an attention marker: a
+    marker cannot know when an approval was answered. Codex falls back
+    to its hook record (`_codex_pane_state`); an unreadable agy screen
+    counts as idle. Any other sidekick (Kimi, Grok, an ignored Claude)
+    waits while its marker says so (`markers`, from
+    `_read_attention_markers`). `screen=False` leaves the screen-read
+    panes out, as the attention toggle does for markers.
     `hooks_cache` is a per-build list that holds the Codex hook
     records once read."""
     states = {}
     for pc in panes_cache:
         if pc[0] != win_target:
             continue
-        if external_agent_name(pc[3]) == "codex":
-            if codex:
-                state = _codex_pane_state(pc, hooks_cache, ps_lines)
+        name = external_agent_name(pc[3])
+        if name in SIDEKICK_SCREEN_READERS:
+            if screen:
+                state = (_codex_pane_state(pc, hooks_cache, ps_lines) if name == "codex"
+                         else _screen_pane_state(pc, name) or "IDLE")
                 if state != "IDLE":
-                    states[pc[2]] = ("codex", state)
+                    states[pc[2]] = (name, state)
             continue
         marker = markers.get(pc[2])
         if marker:
@@ -1164,11 +1168,7 @@ def _codex_pane_state(pc, hooks_cache, ps_lines):
     hooks last recorded for that pane, if the record was written for
     the Codex process running there now (a Codex restarted in the same
     pane must not inherit its predecessor's wait)."""
-    try:
-        state = codex_screen_state(ccm_pane_state.capture_pane_screen(pc[2]))
-    except Exception:
-        log_caught_exception("codex_screen")
-        state = None
+    state = _screen_pane_state(pc, "codex")
     if state is not None:
         return state
     if not hooks_cache:
@@ -1183,6 +1183,17 @@ def _codex_pane_state(pc, hooks_cache, ps_lines):
     except Exception:
         log_caught_exception("codex_process_identity")
     return "IDLE"
+
+
+def _screen_pane_state(pc, name):
+    """What the screen of sidekick `name` shows, or None when it shows
+    none of its marks or cannot be read."""
+    try:
+        return SIDEKICK_SCREEN_READERS[name](
+            ccm_pane_state.capture_pane_screen(pc[2]))
+    except Exception:
+        log_caught_exception(name + "_screen")
+        return None
 
 
 def _codex_hook_activity():
@@ -1235,7 +1246,7 @@ def build_project_list(fast=False):
             if (not _pane_is_ignored(pc)
                 and pc[3] not in SHELL_FOREGROUND_COMMANDS
                 and ccm_detection.find_claude_pid(pc[1], ps_lines))
-            or external_agent_name(pc[3]) == "codex"])
+            or external_agent_name(pc[3]) in SIDEKICK_SCREEN_READERS])
     codex_hooks = []  # filled on first need: [ {pane: state} ]
     # Sidekick attention markers: read once per build (a single
     # readdir), lazily on the first row because the global
@@ -1294,7 +1305,7 @@ def build_project_list(fast=False):
         # name into the set.
         pane_states = (sidekick_pane_states(
             panes_cache, row["win_target"], attention_markers, codex_hooks,
-            ps_lines, codex=row["attention_toggle"] != "off")
+            ps_lines, screen=row["attention_toggle"] != "off")
             if not fast else {})
         attention_agents = tuple(sorted(
             {name for name, st in pane_states.values() if st == "PERMIT"}))

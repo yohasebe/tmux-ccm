@@ -291,8 +291,8 @@ class TestSidekickHooksInstaller:
             ccm_commands.cmd_setup_sidekick_hooks("antigravity")
         err = capsys.readouterr().err
         assert "antigravity" in err
-        # The unsupported agent still names the reason.
-        assert "without firing" in err
+        # The refusal says what covers Antigravity instead.
+        assert "reads its screen" in err
 
     def test_missing_kimi_install_refused(self, tmp_path, monkeypatch,
                                           capsys):
@@ -346,10 +346,10 @@ class TestGrokInstaller:
             ccm_commands.cmd_setup_sidekick_hooks("grok")
         assert "installed" in capsys.readouterr().err
 
-    def test_antigravity_refusal_names_the_upstream_gap(self, capsys):
+    def test_antigravity_refusal_points_to_the_screen(self, capsys):
         with pytest.raises(SystemExit):
             ccm_commands.cmd_setup_sidekick_hooks("antigravity")
-        assert "without firing" in capsys.readouterr().err
+        assert "reads its screen" in capsys.readouterr().err
 
 
 class TestAttentionReaderUnknownListing:

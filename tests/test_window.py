@@ -637,11 +637,12 @@ class TestAutoFocusWaitingSidekick:
                   "  ← for agents · ? for shortcuts\n")
 
     def _world(self, monkeypatch, *, claude_screen="❯ ", codex_screen=None,
-               codex_active=False, claude_ps="claude", toggle=""):
-        """%0 runs Claude, %1 runs Codex. Returns the select-pane calls."""
+               codex_active=False, claude_ps="claude", toggle="", agent="codex"):
+        """%0 runs Claude, %1 runs Codex (or `agent`). Returns the
+        select-pane calls."""
         ps = make_ps_lines(
             (100, 1, 100, "zsh"), (101, 100, 100, claude_ps),
-            (200, 1, 200, "zsh"), (201, 200, 200, "codex"),
+            (200, 1, 200, "zsh"), (201, 200, 200, agent),
         )
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "\n".join(ps))
         codex_screen = self.APPROVAL if codex_screen is None else codex_screen
@@ -654,12 +655,12 @@ class TestAutoFocusWaitingSidekick:
                 return toggle
             if args[0] == "list-panes" and "-a" in args:
                 return ("main:5\t100\t%0\tclaude\t{}\t40\t\t\n"
-                        "main:5\t200\t%1\tcodex\t{}\t40\t\t").format(
-                            "0" if codex_active else "1",
+                        "main:5\t200\t%1\t{}\t{}\t40\t\t").format(
+                            "0" if codex_active else "1", agent,
                             "1" if codex_active else "0")
             if args[0] == "list-panes":
-                return ("100\t%0\tclaude\t{}\t40\n200\t%1\tcodex\t{}\t40"
-                        .format("0" if codex_active else "1",
+                return ("100\t%0\tclaude\t{}\t40\n200\t%1\t{}\t{}\t40"
+                        .format("0" if codex_active else "1", agent,
                                 "1" if codex_active else "0"))
             if args[0] == "display-message":
                 return "main:5"
@@ -691,6 +692,22 @@ class TestAutoFocusWaitingSidekick:
 
     def test_focus_already_on_the_waiting_sidekick(self, monkeypatch):
         selected = self._world(monkeypatch, codex_active=True)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == []
+
+    AGY_RULE = "─" * 80
+    AGY_APPROVAL = (f"{AGY_RULE}\nRequesting permission for:\n   make check\n"
+                    "Run this command?\n> 1. Yes, run command\n  2. No, cancel\n"
+                    "  ↑/↓ Navigate · tab Amend\nesc to cancel        Example Model\n")
+    AGY_IDLE = f"{AGY_RULE}\n>\n{AGY_RULE}\n? for shortcuts        Example Model\n"
+
+    def test_waiting_agy_is_focused(self, monkeypatch):
+        selected = self._world(monkeypatch, agent="agy", codex_screen=self.AGY_APPROVAL)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%1"]
+
+    def test_idle_agy_is_not_focused(self, monkeypatch):
+        selected = self._world(monkeypatch, agent="agy", codex_screen=self.AGY_IDLE)
         ccm_window.auto_focus_attention_pane("5")
         assert selected == []
 

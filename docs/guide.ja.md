@@ -891,7 +891,7 @@ Claude Code 以外のエージェント CLI を、プロジェクトウィンド
 
 ## サイドキックの注意喚起: いつあなたを必要としているかを知る
 
-サイドキックの承認ダイアログは見落としやすいものです。hook が無いと、*「Run this command?」* でブロックされた Kimi も、作業中の Kimi も、見た目は同じ dim の `▸ kimi` です。各製品の画面をパースする代わりに（書式は CLI ごとに違い、予告なく変わります）、ccm はサイドキック**自身に報告させます** — そのベンダー自身が出荷している hook 機構を通じて。例外は Codex だけで、後述のとおり、承認に答えたことを hook が伝えないので、画面も読みます:
+サイドキックの承認ダイアログは見落としやすいものです。hook が無いと、*「Run this command?」* でブロックされた Kimi も、作業中の Kimi も、見た目は同じ dim の `▸ kimi` です。各製品の画面をパースする代わりに（書式は CLI ごとに違い、予告なく変わります）、ccm はサイドキック**自身に報告させます** — そのベンダー自身が出荷している hook 機構を通じて。例外は Codex と Antigravity です。後述のとおり、Codex は承認に答えたことを hook が伝えないので画面も読み、Antigravity は hook に承認のイベントがないので画面だけを読みます:
 
 ```bash
 ccm setup-sidekick-hooks kimi     # ~/.kimi-code/config.toml に [[hooks]] エントリを書き込む
@@ -911,7 +911,7 @@ ccm remove-sidekick-hooks kimi    # 削除する（どちらもバックアッ�
 
 インストールできるのは **Kimi Code** と **Grok Build**（どちらも実際に動いているペインで検証済み）、それに **Codex**（後述）です。正確なのは Kimi の方です — hook セットに `PermissionRequest` と `PermissionResult` の両方があり、待ちの開始と終了が正確に取れます。Grok にはどちらもありません: 許可待ちは `Notification` の `notificationType: "permission_prompt"` として届き、ツールの詳細を持たず（summary は Grok 自身の「Tool permission requested」にフォールバックします）、次の活動イベントで閉じます。
 
-**Antigravity CLI**（Gemini CLI の後継）は hook をロードするものの一度も発火しません — 1.1.10 で実測し、実際の承認ダイアログを出しても 6 つのイベントのいずれも呼ばれませんでした。`ccm setup-sidekick-hooks` は未対応のエージェントを名指しで拒否し、どちらに該当するかを表示します。`agy` のペインはサイドキックとしては認識されます（`▸ agy` バッジ、起動・終了の対象外、保存点ではサイドキック）。表示されないのは承認待ちだけです。
+**Antigravity CLI**（`agy`）は導入が要りません。ccm はペインの画面を読みます（下の「Antigravity の作業中と承認待ち」）。`ccm setup-sidekick-hooks` は agy を名指しで拒否します。`agy` のペインはサイドキックとして認識されます（`▸ agy` バッジ、起動・終了の対象外、保存点ではサイドキック）。
 
 **Codex の attention と完了通知。** hook の導入と Claude への通知の有効化は別々です。
 
@@ -1010,6 +1010,16 @@ dashboard の `u` と `ccm doctor` で、期限切れ・上限超過・取消・
 この完了通知経路は現在 Codex のみ対応です。Kimi・Grok・ignore された Claude は既存の
 attention 動作を維持します。承認待ちや解除の Claude 宛て通知、`codex queue` による配送は
 含みません。
+
+**Antigravity の作業中と承認待ち。** `▸ agy` バッジも Codex と同じ 3 つの状態を示します。
+Antigravity の hook には承認のイベントがないので、agy のペインの画面だけで決めます。
+メニュー（承認や、フォルダを信頼するかの確認）があれば承認待ちです。入力欄のすぐ上に
+サブエージェントの承認の枠があり、下のエージェント一覧でその agent が `Blocked` のときも
+承認待ちです（一覧が畳まれてその行が見えないときは示しません）。最終行が `esc to cancel` なら
+作業中です。本体がサブエージェントの報告を待っているだけのときは agy 自身が待機中を示し、バッジも同じです。画面がどれも示さないとき
+（オーバーレイやスクロール中など）は印を付けません。代わりに使う hook の記録はありません。
+Antigravity には attention marker・デスクトップ通知・完了通知はありません。
+`w` と `@ccm-sidekick-attention off` は、どちらの状態も隠します。
 
 
 Grok Build には設定の書き換えではなく専用の hook ファイル（`~/.grok/hooks/ccm-sidekick-attention.json`）を置くので、削除は unlink 一発で、あなたの設定と混ざることは一切ありません。

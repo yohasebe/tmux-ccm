@@ -894,7 +894,7 @@ The conventions that make the relay work:
 
 ## Sidekick attention: knowing when it needs you
 
-A sidekick's approval dialog is easy to miss: without its hooks, a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸ kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships. Codex is the one exception, described below: its hooks cannot say when an approval is answered, so ccm also reads its screen.
+A sidekick's approval dialog is easy to miss: without its hooks, a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸ kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships. Codex and Antigravity are the exceptions, described below: Codex's hooks cannot say when an approval is answered, so ccm also reads its screen, and Antigravity's have no approval event at all, so ccm reads only its screen.
 
 ```bash
 ccm setup-sidekick-hooks kimi     # writes [[hooks]] entries into ~/.kimi-code/config.toml
@@ -914,7 +914,7 @@ Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-side
 
 Installable for **Kimi Code** and **Grok Build**, both verified against a running pane, and for **Codex** (described below). Kimi is the precise one — its hook set has `PermissionRequest` *and* `PermissionResult`, so waits open and close exactly. Grok has neither: its permission wait arrives as `Notification` with `notificationType: "permission_prompt"`, carries no tool details (the summary falls back to Grok's own "Tool permission requested"), and closes on the next activity event.
 
-**Antigravity CLI** (Gemini CLI's successor) loads hooks without ever firing them — measured against 1.1.10, where a real approval dialog produced nothing from any of its six events. `ccm setup-sidekick-hooks` refuses an unsupported agent by name and says which case applies. An `agy` pane is still recognised as a sidekick (the `▸ agy` badge, kept out of launch and exit, saved as a sidekick); only its waits are not shown.
+**Antigravity CLI** (`agy`) needs no installer: ccm reads its pane's screen (see *Antigravity working and waiting* below), and `ccm setup-sidekick-hooks` refuses it by name. An `agy` pane is recognised as a sidekick (the `▸ agy` badge, kept out of launch and exit, saved as a sidekick).
 
 **Codex attention and completion notifications.** Install the adapter separately
 from enabling Claude notifications:
@@ -1025,6 +1025,19 @@ Enabling notifications sends excerpts to Claude’s conversation history and out
 This completion path currently supports Codex only. Kimi, Grok and ignored
 Claude sidekicks retain their existing attention behavior. Approval-wait and
 resolution messages to Claude, and `codex queue` transport, are not included.
+
+**Antigravity working and waiting.** The `▸ agy` badge shows the same three
+states as Codex's, read from the agy pane's screen alone, because Antigravity's
+hooks have no event for an approval. A menu (an approval, the folder-trust
+question) means waiting, and so does a subagent's approval box just above the
+input box while the agent list below it shows that agent `Blocked` (when the
+list is folded past it, the wait is not shown);
+`esc to cancel` on the last line means working. While the main agent only waits
+for its subagents, agy shows itself idle, and so does the badge. When the screen
+shows none of these (an overlay, a scrolled view), the badge shows no mark;
+there is no hook record to fall back on. Antigravity gets no attention marker,
+desktop notice or completion notice. `w` and `@ccm-sidekick-attention off` hide
+both states.
 
 
 Grok Build gets its own hook file (`~/.grok/hooks/ccm-sidekick-attention.json`) instead of an edit to your config, so removing it is an unlink and nothing of yours is ever merged with.
