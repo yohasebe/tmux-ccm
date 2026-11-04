@@ -856,10 +856,18 @@ def external_agent_name(command):
 #     starts at column 0 just above the composer, where transcript
 #     lines start with a bullet or an indent instead;
 #   - the composer line starts with `›` at column 0.
+# A dialog replaces the composer and the working line, and its selected
+# option also starts with `›` (`› 1. Yes, proceed`). The same kind of
+# key hint also closes a view that sits under the composer without
+# replacing it, such as text selected in the transcript
+# (`New activity · ⌃c copy · enter copy & follow · esc clear`): there
+# the working line and the composer are still drawn, so the turn is
+# read from them, while the keys typed still go to the view.
 # Words are matched loosely, not as fixed strings.
 _CODEX_DIALOG_HINT = re.compile(r"\benter\b.*\besc\b", re.IGNORECASE)
 _CODEX_WORKING = re.compile(r"^[A-Za-z][A-Za-z ]* \([^()]*\besc to interrupt\)")
 _CODEX_COMPOSER = re.compile(r"^›")
+_CODEX_OPTION = re.compile(r"^›\s*\d+\.\s")
 #: How many lines above the composer the working line may sit (a tip
 #: line can come between them).
 CODEX_WORKING_LOOKBACK = 6
@@ -873,16 +881,27 @@ def codex_screen_state(lines):
     view, a capture that failed) and something else has to decide."""
     if not lines:
         return None
-    if _CODEX_DIALOG_HINT.search(lines[-1]):
-        return "PERMIT"
     composer = next((i for i in range(len(lines) - 1, -1, -1)
                      if _CODEX_COMPOSER.match(lines[i])), None)
+    working = composer is not None and any(
+        _CODEX_WORKING.match(line)
+        for line in lines[max(0, composer - CODEX_WORKING_LOOKBACK):composer])
+    if codex_screen_holds_keys(lines):
+        # Under a key hint, a `›` line that reads as a numbered option
+        # is taken for a dialog's, even when it is a numbered draft.
+        if working and not _CODEX_OPTION.match(lines[composer]):
+            return "BUSY"
+        return "PERMIT"
     if composer is None:
         return None
-    above = lines[max(0, composer - CODEX_WORKING_LOOKBACK):composer]
-    if any(_CODEX_WORKING.match(line) for line in above):
-        return "BUSY"
-    return "IDLE"
+    return "BUSY" if working else "IDLE"
+
+
+def codex_screen_holds_keys(lines):
+    """True when the last line of a Codex pane is a key hint: a dialog,
+    or a view such as a transcript selection, takes the keys typed
+    there instead of the composer."""
+    return bool(lines) and bool(_CODEX_DIALOG_HINT.search(lines[-1]))
 
 
 # Antigravity CLI (`agy`) sidekick screen (measured on 1.4.12). Its
@@ -974,6 +993,10 @@ def agy_screen_state(lines):
 #: Sidekicks whose state ccm reads from their screen, by short name
 #: (`external_agent_name`).
 SIDEKICK_SCREEN_READERS = {"codex": codex_screen_state, "agy": agy_screen_state}
+
+#: Sidekicks whose screen can take typed keys while not waiting on a
+#: dialog. For any other reader, only a "PERMIT" screen takes them.
+SIDEKICK_KEY_HOLDERS = {"codex": codex_screen_holds_keys}
 
 
 #: The two launch commands. A launch into an existing shell always

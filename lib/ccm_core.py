@@ -58,6 +58,7 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     CLAUDE_PROCESS_NAME,
     COMPLETED_AT_TIMEOUT,
     EXTERNAL_AGENT_COMMANDS,
+    SIDEKICK_KEY_HOLDERS,
     SIDEKICK_SCREEN_READERS,
     external_agent_name,
     is_recorded_agent,
@@ -1185,19 +1186,30 @@ def _codex_pane_state(pc, hooks_cache, ps_lines):
     return "IDLE"
 
 
-def sidekick_screen_state(pane_id, name):
-    """What the screen of sidekick `name` in `pane_id` shows ("PERMIT",
-    "BUSY", "IDLE"), or None when ccm does not read that sidekick's
-    screen, the screen shows none of its marks, or it cannot be read.
-    Shared by the badge and by `ccm sidekick-send`."""
+def sidekick_screen(pane_id, name):
+    """(state, holds_keys) for the screen of sidekick `name` in
+    `pane_id`. `state` is what it shows ("PERMIT", "BUSY", "IDLE"), or
+    None when ccm does not read that sidekick's screen, the screen
+    shows none of its marks, or it cannot be read. `holds_keys` is True
+    when keys typed there would not reach the composer: a dialog, or a
+    view such as a Codex transcript selection. Shared by the badge and
+    by `ccm sidekick-send`."""
     reader = SIDEKICK_SCREEN_READERS.get(name)
     if reader is None:
-        return None
+        return None, False
     try:
-        return reader(ccm_pane_state.capture_pane_screen(pane_id))
+        lines = ccm_pane_state.capture_pane_screen(pane_id)
+        state = reader(lines)
+        holder = SIDEKICK_KEY_HOLDERS.get(name)
+        return state, state == "PERMIT" or bool(holder and holder(lines))
     except Exception:
         log_caught_exception(name + "_screen")
-        return None
+        return None, False
+
+
+def sidekick_screen_state(pane_id, name):
+    """The state half of `sidekick_screen`."""
+    return sidekick_screen(pane_id, name)[0]
 
 
 def _codex_hook_activity():

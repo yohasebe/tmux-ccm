@@ -8,7 +8,7 @@ import pytest
 import ccm_core
 import ccm_pane_state
 import ccm_render
-from ccm_constants import codex_screen_state
+from ccm_constants import codex_screen_holds_keys, codex_screen_state
 
 
 def lines(text):
@@ -72,7 +72,63 @@ HOOK_REVIEW = lines("""\
   enter confirm · esc skip""")
 
 
+# Text selected in the transcript while a turn runs: the view's key
+# hint replaces the footer, the working line and the composer stay.
+SELECTION_WORKING = lines("""\
+• Running the example task.
+Working (2m 10s • esc to interrupt) · 1 background terminal running …
+  └ Tip: Use /statusline to configure which items appear.
+› Ask Codex to do anything
+  GPT-6-Astra medium Fast · ~/example · Continue
+  New activity · ⌃c copy · enter copy & follow · esc clear""")
+
+# The same view with no turn running.
+SELECTION_IDLE = lines("""\
+  Worked for 1m 0s
+› Ask Codex to do anything
+  GPT-6-Astra medium · ~/example · Continue
+  ⌃c copy · enter copy · esc clear""")
+
+
 class TestCodexScreenState:
+    def test_selection_during_turn_is_busy(self):
+        assert codex_screen_state(SELECTION_WORKING) == "BUSY"
+
+    def test_selection_without_turn_stays_permit(self):
+        """Nothing tells this view from a dialog once the turn is over,
+        so it keeps the side that does not type into it."""
+        assert codex_screen_state(SELECTION_IDLE) == "PERMIT"
+
+    def test_working_line_above_dialog_option_is_not_busy(self):
+        """A dialog's selected option starts with `›` like the
+        composer; a working line above it does not make it a turn."""
+        screen = (["Working (3s • esc to interrupt)"] + APPROVAL[-4:])
+        assert codex_screen_state(screen) == "PERMIT"
+
+    def test_numbered_draft_during_turn_is_busy(self):
+        screen = lines("""\
+Working (5s • esc to interrupt)
+› 1. Review the changes
+  ? for shortcuts""")
+        assert codex_screen_state(screen) == "BUSY"
+
+    def test_numbered_draft_under_selection_reads_as_dialog(self):
+        """With a key hint below, a numbered draft cannot be told from
+        a dialog's option, so it keeps the side that does not type."""
+        screen = lines("""\
+Working (5s • esc to interrupt)
+› 1. Review the changes
+  Example Model · ~/example
+  ⌃c copy · enter copy & follow · esc clear""")
+        assert codex_screen_state(screen) == "PERMIT"
+        assert codex_screen_holds_keys(screen)
+
+    @pytest.mark.parametrize("screen, held", [
+        (SELECTION_WORKING, True), (SELECTION_IDLE, True), (APPROVAL, True),
+        (HOOK_REVIEW, True), (WORKING, False), (IDLE, False), ([], False)])
+    def test_holds_keys(self, screen, held):
+        assert codex_screen_holds_keys(screen) is held
+
     def test_idle(self):
         assert codex_screen_state(IDLE) == "IDLE"
 
@@ -294,6 +350,13 @@ class TestScreenCaptureKeepsIndent:
     QUOTED_AT_TOP = ("  Working (4s • esc to interrupt)\n"
                      "› Ask Codex to do anything\n"
                      "  ← for agents · ? for shortcuts\n")
+
+    @pytest.fixture(autouse=True)
+    def _drop_prefetched(self):
+        """A batch capture outlives its test for a second; later tests
+        that capture the same pane id must not be served from it."""
+        yield
+        ccm_pane_state.clear_prefetched()
 
     def _tmux_stdout(self, monkeypatch, stdout_for):
         import subprocess

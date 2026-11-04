@@ -91,6 +91,10 @@ class TestSidekickSend:
                  "  2. No, cancel\n  ↑/↓ Navigate · tab Amend\n"
                  "esc to cancel        Example Model\n")
     _CODEX_IDLE = "› Ask Codex to do anything\n  ? for shortcuts\n"
+    _CODEX_SELECTION = ("Working (5s • esc to interrupt)\n"
+                        "› Ask Codex to do anything\n"
+                        "  Example Model · ~/example\n"
+                        "  New activity · ⌃c copy · enter copy & follow · esc clear\n")
     _CODEX_WORKING = ("Working (5s • esc to interrupt)\n"
                       "› Ask Codex to do anything\n  ? for shortcuts\n")
 
@@ -119,6 +123,20 @@ class TestSidekickSend:
             ccm_send.cmd_sidekick_send(flags + [_MSG])
         assert [c for c in calls if c[0] == "send-keys"] == []
         assert "waiting on a dialog" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("flags", [[], ["--no-enter"]])
+    def test_view_taking_keys_refused_before_any_key(
+            self, monkeypatch, capsys, tmp_path, flags):
+        """A working Codex with text selected reads BUSY, but the keys
+        typed would go to the selection, so nothing is typed."""
+        calls = self._screen_stub(monkeypatch, tmp_path, "codex",
+                                  self._CODEX_SELECTION)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_sidekick_send(flags + [_MSG])
+        assert [c for c in calls if c[0] == "send-keys"] == []
+        err = capsys.readouterr().err
+        assert "view that takes keys" in err
+        assert "waiting on a dialog" not in err
 
     @pytest.mark.parametrize("agent, screen", [
         ("codex", _CODEX_IDLE),

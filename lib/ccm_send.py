@@ -1422,14 +1422,22 @@ def cmd_sidekick_send(args):
         )
 
     # A sidekick waiting on a dialog takes keys as answers, so a body
-    # typed into it could approve or deny something. Where ccm reads the
-    # sidekick's screen (Codex, Antigravity), refuse while it shows one;
-    # a screen it cannot read is sent to as before.
-    if ccm_core.sidekick_screen_state(pane_id, agent) == "PERMIT":
+    # typed into it could approve or deny something; a view such as a
+    # Codex transcript selection takes them too, with Enter copying
+    # instead of sending. Where ccm reads the sidekick's screen (Codex,
+    # Antigravity), refuse while it shows either; a screen it cannot
+    # read is sent to as before.
+    state, holds_keys = ccm_core.sidekick_screen(pane_id, agent)
+    if state == "PERMIT":
         ccm_core.ccm_die(
             f"The sidekick ({agent}, {pane_id}) is waiting on a dialog — "
             "refusing to type into it. Answer the dialog in that pane "
             "first, then retry.")
+    if holds_keys:
+        ccm_core.ccm_die(
+            f"The sidekick ({agent}, {pane_id}) shows a view that takes "
+            "keys (such as selected text) — refusing to type into it. "
+            "Close the view in that pane as its last line says, then retry.")
 
     # Defensively exit any tmux mode on the target pane, then type
     # the body literally (shared helpers — see cmd_send).

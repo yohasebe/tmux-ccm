@@ -869,7 +869,7 @@ You can run an agent CLI other than Claude Code in a split pane of a project win
 The conventions that make the relay work:
 
 - **Other agent → Claude**: the other agent runs `ccm send <project> "<message>"`. State gating applies (never into PERMIT), and the message lands as Claude's next turn — no one needs to watch.
-- **Claude → the sidekick in its own window**: run `ccm sidekick-send "<message>"` from a pane of the project window. Check the peer is ready with `ccm capture <its own project>` first. For a Codex or Antigravity sidekick the command also refuses when the screen shows a dialog waiting for a key (answer it first); it still sends when it cannot read the screen. The command then does what the hand procedure used to leave to your attention: it finds the sidekick pane from tmux metadata (a known external-agent CLI whose working directory belongs to this project), refuses when there is no sidekick or more than one, types the body literally (`send-keys -l --`), waits 0.3 s before sending `Enter` separately, and captures the pane afterwards to confirm a fragment of the message actually landed — exiting non-zero when it cannot confirm.
+- **Claude → the sidekick in its own window**: run `ccm sidekick-send "<message>"` from a pane of the project window. Check the peer is ready with `ccm capture <its own project>` first. For a Codex or Antigravity sidekick the command also refuses when the screen shows a dialog waiting for a key (answer it first), and for Codex when text is selected in its pane, since the keys would go to the selection (clear it first); it still sends when it cannot read the screen. The command then does what the hand procedure used to leave to your attention: it finds the sidekick pane from tmux metadata (a known external-agent CLI whose working directory belongs to this project), refuses when there is no sidekick or more than one, types the body literally (`send-keys -l --`), waits 0.3 s before sending `Enter` separately, and captures the pane afterwards to confirm a fragment of the message actually landed — exiting non-zero when it cannot confirm.
 
   The pieces it packages still matter if you ever type into a foreign TUI by hand. `-l` sends the text literally; without it tmux resolves arguments as key *names*, so a word like `Space` or `Enter` inside the message silently becomes that keystroke. Newline keys differ between CLIs (Claude uses `M-Enter`), so multi-line bodies are typed line by line with the peer's newline key between them — `ccm sidekick-send` uses `M-Enter`.
 
@@ -975,7 +975,9 @@ but nothing fires when the approval is answered: the next event comes when the
 approved command finishes, minutes later for a long one. So ccm reads the Codex
 pane's screen, which shows the answer at once: the dialog's key hint on the
 last line means waiting, and the working line just above the input box
-(`Working (… • esc to interrupt)` and its other wordings) means working. When
+(`Working (… • esc to interrupt)` and its other wordings) means working, even
+when the last line holds the key hint of text selected in the pane (unless the
+input box holds a numbered draft, which reads as a dialog's option). When
 the screen shows neither (an overlay, a scrolled view), the hooks' last record
 for that pane decides, for up to 30 minutes after its last event. `w` and
 `@ccm-sidekick-attention off` hide both states.
