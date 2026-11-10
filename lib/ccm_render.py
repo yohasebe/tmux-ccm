@@ -243,41 +243,14 @@ def signal_age_suffix(project_dir, state, session_id=None):
 # becomes visible in dashboard / statusline renderers. Hides the
 # marker during the first few seconds after a BUSY→IDLE transition.
 #
-# Why this exists (added, ccm 0.3.x post-agent-view):
-#   Multi-turn auto-loop commands — `/goal` is the canonical case,
-#   `/loop` and `/plan`-driven follow-ups have similar shape —
-#   execute as `BUSY → end_turn → (1-3 s IDLE gap) → auto-fired
-#   UserPromptSubmit → BUSY → …`. State detection during the gap
-#   is correct (Claude IS briefly idle waiting for the auto-prompt),
-#   but the dashboard would otherwise render `* 1s` / `* 2s` markers
-#   for each gap — falsely implying the work just completed when
-#   the loop is still mid-flight. Verified empirically on
-# with `ccm debug trace` against a 3-turn `/goal`
-#   condition: two ~2 s IDLE windows between turns, both surfaced
-#   the marker. See memory `project_goal_flicker_2026_05_13`.
-#
-#   The notification path (`on-stop.sh` grace sentinel) already
-#   absorbed these gaps via `CCM_COMPLETION_GRACE_SEC=3`. This
-#   constant brings the visual marker into the same window —
-#   conceptually one knob, applied at two layers.
-#
-# When this code can be removed (audit guide):
-#   - Upstream Claude Code exposes a "goal/loop active" signal
-#     (JSONL field or hook payload) that lets us suppress the
-#     marker only during real auto-loops. Then a blanket 3 s rule
-#     is too coarse and this should go.
-#   - `/goal` and similar auto-multi-turn commands disappear
-#     upstream (unlikely). Verify by running the empirical test
-#     below before deleting.
-#   - User reports the 3 s delay on normal completions is
-#     disruptive. In that case the tradeoff was wrong; remove
-#     this and restore immediate marker visibility.
-#
-# How to verify it's still load-bearing:
-#   `ccm debug trace <project> 0.3`, dispatch a `/goal` condition
-#   that requires 3+ turns (e.g. `/goal create files /tmp/x{1,2,3}.txt
-#   one per turn`). If short (<3 s) BUSY→IDLE→BUSY oscillations
-#   still appear in the trace, this suppression is still needed.
+# Multi-turn auto-loop commands (`/goal`, and `/loop`-like follow-ups)
+# run as `BUSY → end_turn → (1-3 s IDLE gap) → auto-fired
+# UserPromptSubmit → BUSY → …`. The state during the gap is correct
+# (Claude is briefly idle), but a `* 1s` marker for each gap would say
+# the work just completed while the loop is still running. The
+# notification path absorbs the same gaps with
+# `CCM_COMPLETION_GRACE_SEC=3` (`on-stop.sh`); this constant applies
+# that window to the visual marker.
 MIN_ELAPSED_DISPLAY_SEC = 3
 
 

@@ -248,9 +248,7 @@ def strip_sgr(text):
 # signal that distinguishes "approved tool running" (spinner
 # present) from "menu / permission wait" (spinner absent — Claude
 # has stopped generating to ask) and "true idle" (spinner absent).
-# Empirically verified: running panes show the spinner,
-# AskUserQuestion menu waits do not. See memory
-# project_false_idle_long_tool.md.
+# Running panes show the spinner; AskUserQuestion menu waits do not.
 #
 # Elapsed forms: "59s", "2m 2s", or "3h 11m 16s". Token forms: "8.0k",
 # "8k", or — below 1000 — a bare count with NO k suffix ("557 tokens";

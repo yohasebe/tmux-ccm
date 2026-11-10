@@ -41,13 +41,11 @@ Delivery-pane resolution: the project state is a WINDOW-level
 aggregation across panes (PERMIT > BUSY > IDLE > SHELL), but
 `send-keys -t <session>:<idx>` delivers to the window's ACTIVE
 pane — which in a split window may be a plain shell sitting next
-to the Claude pane. incident: a two-pane window
-(Claude idle in pane A, active zsh in pane B) aggregated to IDLE,
-so a `ccm send --start` decided no launch was needed and typed the
-whole message into zsh. `_resolve_delivery_pane` closes the gap by
-locating the pane that actually hosts the claude process and
-targeting keystrokes (and captures) at that pane id instead of the
-window.
+to the Claude pane. A two-pane window (Claude idle in pane A, active
+zsh in pane B) aggregates to IDLE, and keys sent to the window would
+go to zsh. `_resolve_delivery_pane` locates the pane that actually
+hosts the claude process and targets keystrokes (and captures) at
+that pane id instead of the window.
 
 The companion `ccm sidekick-send` (bottom of this file) delivers to a
 NON-Claude sidekick pane of the caller's own window instead. There is
@@ -380,17 +378,12 @@ def _type_body(win_target, lines, *, checked=False):
     The `--` terminator before the line text is load-bearing: tmux's
     argument parser treats any argument starting with `-` as a flag
     cluster, so without it every line beginning with a dash — most
-    commonly a Markdown bullet (`- item`) — failed the whole
-    send-keys call with "invalid flag" and was SILENTLY DROPPED
+    commonly a Markdown bullet (`- item`) — fails the whole
+    send-keys call with "invalid flag" and is silently dropped
     (stderr is swallowed by tmux_cmd), while the surrounding
-    M-Enters still landed. The receiver saw the message with all
-    its bullet lines missing and a blank line where each had been.
-    This mangled three real cross-project briefs before being
-    diagnosed (design replies/11 arriving
-    with empty design/implementation sections; the contract brief
- arriving with an empty slug section) — the delivery
-    verification did not catch it because the signature it checks
-    survived in the non-bullet lines."""
+    M-Enters still land: the receiver sees a blank line where each
+    bullet was. The delivery check does not catch it when the
+    signature it looks for survives in the other lines."""
     options = {"checked": True} if checked else {}
     for line_i, line in enumerate(lines):
         if line:
@@ -404,10 +397,9 @@ def _type_body(win_target, lines, *, checked=False):
 # target lands in the ACTIVE pane. In a split window those can
 # disagree: Claude idle in a side pane makes the window IDLE while
 # the active pane is a bare zsh — and the message would be typed
-# into the shell (incident: `ccm send --start` saw
-# IDLE, skipped the launch, and flooded zsh with the body as shell
-# commands). Resolving the actual claude-hosting pane and targeting
-# it directly makes state and delivery refer to the same pane.
+# into the shell as commands. Resolving the actual claude-hosting
+# pane and targeting it directly makes state and delivery refer to
+# the same pane.
 
 def _resolve_claude_pane_strict(win_target):
     """The pane that hosts claude in `win_target`, or None — with no
