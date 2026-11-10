@@ -716,6 +716,50 @@ ccm status --json self        # the window this command runs in
   `tmux_unavailable`. `ccm status --json --help` returns the usage as
   `help`.
 
+### `ccm sidekick-send --json`
+
+```bash
+ccm sidekick-send --json "Please review request-12.md"
+```
+
+```json
+{"schema": 1, "outcome": "attempted_seen", "reason": null,
+ "agent": "codex", "pane": "%34", "enter_requested": true,
+ "enter_sent": true, "message": "Typed into sidekick codex (%34); …"}
+```
+
+- `outcome` says what happened:
+  - `refused`: no key was sent. `reason` says why: `dialog` or `view`
+    (the sidekick would take the keys), `no_sidekick`,
+    `multiple_sidekicks`, `pane_changed`, `pane_unidentified` (ccm cannot
+    tell which process runs in the pane), `not_in_tmux`,
+    `caller_unverified`, `wrong_direction` (run from the sidekick itself),
+    `outside_project`, `project_dir_unavailable`, `file_unreadable`,
+    `stdin_unreadable`, `unsupported_text` (the message holds a NUL
+    character) or `usage`.
+  - `attempted_seen`: the keys were tried and a fragment of the message
+    is visible in the pane. The fragment may be an earlier one; it does
+    not prove that this message arrived, arrived whole, or was accepted.
+  - `attempted_unseen`: the keys were tried but no fragment appeared.
+  - `attempted_unchecked`: the keys were tried; the message was too short
+    to look for.
+  - `attempted_stopped`: the message was typed, but before `Enter` a
+    dialog appeared (`dialog`), a view took the keys (`view`), or the
+    pane could not be confirmed to be the same sidekick of this window
+    any more (`pane_changed`), so `Enter` was not sent. The text may be
+    in the sidekick's input box.
+  - `attempted_failed`: tmux failed part-way (`typing_failed`,
+    `enter_failed`); what reached the pane is unknown.
+- `enter_sent` is `false` when `Enter` was not tried, `true` when tmux took
+  it, and `null` when it was tried and the result is unknown. `true` does
+  not mean the sidekick accepted the message.
+- The exit code stays as before: 0 for `attempted_seen` and
+  `attempted_unchecked`, 1 otherwise. Neither proves delivery: check with
+  `ccm capture` before resending, and never resend on an `outcome` alone.
+- `--json` counts only as a flag: after `--` it is part of the message, and
+  as the value of `--file` it is a file name. `message` repeats the text
+  line, which also goes to stderr on failure.
+
 ### Compatibility
 
 Within `"schema": 1`, fields and values are only added. A reader should
@@ -949,7 +993,7 @@ You can run an agent CLI other than Claude Code in a split pane of a project win
 The conventions that make the relay work:
 
 - **Other agent → Claude**: the other agent runs `ccm send <project> "<message>"`. State gating applies (never into PERMIT), and the message lands as Claude's next turn — no one needs to watch.
-- **Claude → the sidekick in its own window**: run `ccm sidekick-send "<message>"` from a pane of the project window. Check the peer is ready with `ccm capture <its own project>` first. For a Codex or Antigravity sidekick the command also refuses when the screen shows a dialog waiting for a key (answer it first), and for Codex when text is selected in its pane, since the keys would go to the selection (clear it first); it still sends when it cannot read the screen. The command then does what the hand procedure used to leave to your attention: it finds the sidekick pane from tmux metadata (a known external-agent CLI whose working directory belongs to this project), refuses when there is no sidekick or more than one, types the body literally (`send-keys -l --`), waits 0.3 s before sending `Enter` separately, and captures the pane afterwards to confirm a fragment of the message actually landed — exiting non-zero when it cannot confirm.
+- **Claude → the sidekick in its own window**: run `ccm sidekick-send "<message>"` from a pane of the project window. Check the peer is ready with `ccm capture <its own project>` first. The command refuses when it can see the sidekick waiting for a key: a dialog on a Codex or Antigravity screen, Codex's hook record of an approval while its screen cannot be read, or a waiting marker from Kimi or Grok (answer it first). It also refuses for Codex when text is selected in its pane, since the keys would go to the selection (clear it first), and when it cannot tell which process runs in the pane. Just before `Enter` it looks again and leaves `Enter` unsent if a wait appeared or the sidekick was restarted. It still sends when it cannot tell what the sidekick is doing. The command then does what the hand procedure used to leave to your attention: it finds the sidekick pane from tmux metadata (a known external-agent CLI whose working directory belongs to this project), refuses when there is no sidekick or more than one, types the body literally (`send-keys -l --`), waits 0.3 s before sending `Enter` separately, and captures the pane afterwards to confirm a fragment of the message actually landed — exiting non-zero when it cannot confirm.
 
   The pieces it packages still matter if you ever type into a foreign TUI by hand. `-l` sends the text literally; without it tmux resolves arguments as key *names*, so a word like `Space` or `Enter` inside the message silently becomes that keystroke. Newline keys differ between CLIs (Claude uses `M-Enter`), so multi-line bodies are typed line by line with the peer's newline key between them — `ccm sidekick-send` uses `M-Enter`.
 

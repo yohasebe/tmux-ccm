@@ -35,3 +35,15 @@ teardown() {
     [[ "$output" == *'do not resend if received'* ]]
     [[ "$output" != *'treat that as "not delivered"'* ]]
 }
+
+@test "sidekick-send: --json --help answers with the usage as JSON" {
+    run bash "$CCM_ROOT/ccm" sidekick-send --json --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == '{"schema": 1, "help": "Usage: ccm sidekick-send'* ]]
+}
+
+@test "sidekick-send: --json without a message is a refusal as JSON" {
+    run bash -c 'bash "$1" sidekick-send --json 2>/dev/null' _ "$CCM_ROOT/ccm"
+    [ "$status" -eq 1 ]
+    [[ "$output" == '{"schema": 1, "outcome": "refused", "reason": "usage"'* ]]
+}

@@ -1204,20 +1204,26 @@ def cmd_send(args):
 #     known external agent (EXTERNAL_AGENT_COMMANDS), with a working
 #     directory inside this project. A mis-targeted send cannot
 #     happen silently.
+#   - no keys into a wait ccm can see: the sidekick is observed
+#     (`ccm_core.observe_sidekicks`: its screen, Codex's hook record,
+#     a waiting marker) before the body and again before Enter, and a
+#     dialog or a view that takes keys stops the send. A sidekick
+#     ccm cannot read is sent to; the guarantee is only for waits ccm
+#     can confirm, and a change after the last look can still win.
 #   - procedure: literal `-l --` typing, the settle pause before the
 #     committing Enter, and a post-send capture confirming a fragment
 #     of the message actually landed.
 #
-# What it deliberately does NOT do is read the sidekick's SCREEN
-# state: ccm tracks no state for a non-Claude pane, and matching
-# another TUI's prompt text would inherit every vendor's redesign.
-# Readiness stays the caller's judgment (`ccm capture` first).
+# Each run ends in one result (`_sidekick_send`): refused (no key
+# sent), or attempted_* (keys were sent, with what is known after).
+# The text output and `--json` are two renderings of it.
 
 _SIDEKICK_SEND_USAGE = (
     "Usage: ccm sidekick-send <message> "
-    "[--file path] [--stdin|-] [--no-enter]\n"
+    "[--file path] [--stdin|-] [--no-enter] [--json]\n"
     "       ccm sidekick-send -- <message starting with a dash>\n"
-    "Delivers to the sidekick agent CLI in a split pane of THIS window."
+    "Delivers to the sidekick agent CLI in a split pane of THIS window.\n"
+    "--json prints one JSON object with the result."
 )
 
 # Pause between the typed body and the committing Enter. A peer TUI
@@ -1227,6 +1233,9 @@ _SIDEKICK_SEND_USAGE = (
 # Kimi K3: no gap fails every time, 0.3 s submits. Claude Code's own
 # composer tolerates a zero gap, which is why `ccm send` needs none.
 _SIDEKICK_SUBMIT_SETTLE_SEC = 0.3
+# How long before the end of that pause the sidekick is looked at
+# again, so the look falls inside the pause rather than lengthening it.
+_SIDEKICK_RECHECK_LEAD_SEC = 0.1
 
 # Post-send confirmation polls the pane for a message fragment.
 # Presence can pass spuriously when the same text was already on
@@ -1236,17 +1245,25 @@ _SIDEKICK_VERIFY_TIMEOUT_SEC = 2.0
 _SIDEKICK_VERIFY_POLL_SEC = 0.5
 
 
+class _SidekickRefusal(Exception):
+    """No key was sent; `reason` names why for `--json`."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
 def _resolve_sidekick_pane(caller_pane):
     """Return `(pane_id, agent_name)` of THE sidekick pane in the
-    caller's window, refusing (ccm_die) on every ambiguity.
+    caller's window, refusing (_SidekickRefusal) on every ambiguity.
 
     Identity comes from tmux metadata only — the pane's foreground
     command against `external_agent_name`, and its working directory
-    against the project directory. The sidekick's screen is never
-    read."""
+    against the project directory."""
     _, verified_pane = ccm_core.caller_context(resolve_project=False)
     if not verified_pane or verified_pane != caller_pane:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "caller_unverified",
             "Cannot verify the caller pane from process ancestry or working directory. "
             "Run sidekick-send from a pane of the registered project; "
             "the pane environment may be stale. Nothing sent.")
@@ -1255,7 +1272,8 @@ def _resolve_sidekick_pane(caller_pane):
         "display-message", "-p", "-t", caller_pane, fmt) or "").strip()
     parts = info.split("\t")
     if len(parts) < 3 or not parts[0]:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "caller_unverified",
             f"Cannot identify the caller's window from {caller_pane} — "
             "is $TMUX_PANE stale? Run `ccm sidekick-send` from a live "
             "pane of the project window."
@@ -1264,7 +1282,8 @@ def _resolve_sidekick_pane(caller_pane):
 
     agent = external_agent_name(caller_cmd)
     if agent:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "wrong_direction",
             f"This pane IS the sidekick ({agent}) — refusing the "
             "reverse lane. To reach the window's Claude session, use "
             "`ccm send <project>`."
@@ -1283,7 +1302,8 @@ def _resolve_sidekick_pane(caller_pane):
             sidekicks.append((f[0], name, f[2]))
 
     if not sidekicks:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "no_sidekick",
             "No sidekick pane in this window — no pane is running a "
             "known external agent CLI.\n"
             "  Start the sidekick in a split pane of this window first. "
@@ -1292,7 +1312,8 @@ def _resolve_sidekick_pane(caller_pane):
         )
     if len(sidekicks) > 1:
         listing = ", ".join(f"{pid} ({name})" for pid, name, _ in sidekicks)
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "multiple_sidekicks",
             f"{len(sidekicks)} sidekick panes in this window "
             f"({listing}) — the target is ambiguous, refusing.\n"
             "  Keep exactly one sidekick pane in the window, or type "
@@ -1310,7 +1331,8 @@ def _resolve_sidekick_pane(caller_pane):
         "show-option", "-w", "-t", win_id, "-qv", "@ccm_dir") or "").strip()
     ref = ref or caller_cwd
     if not ref:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "project_dir_unavailable",
             "Cannot establish this window's project directory (no "
             "@ccm_dir tag and the caller's cwd is unreadable) — "
             "refusing rather than guessing at the target."
@@ -1318,12 +1340,284 @@ def _resolve_sidekick_pane(caller_pane):
     ref_c = ccm_core.canonical_dir(ref)
     pane_c = ccm_core.canonical_dir(pane_cwd)
     if pane_c != ref_c and not pane_c.startswith(ref_c + os.sep):
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "outside_project",
             f"The sidekick pane {pane_id} runs in {pane_cwd}, outside "
             f"this project ({ref}) — refusing: the pane does not "
             "belong to this window's project."
         )
     return pane_id, agent_name
+
+
+def _observe_sidekick(pane_id, agent):
+    """(observation, identity) of the sidekick in `pane_id` now, from a
+    fresh pane list, process list, markers and hook records — nothing
+    carried over from an earlier look. The observation is None when the
+    pane is gone or runs another agent; the identity
+    (`ccm_sidekick_notify.agent_process_identity`) is None when its
+    process cannot be told. A look that fails part-way leaves the state
+    unknown, which by itself does not stop a send."""
+    import ccm_sidekick_notify
+    cache = ccm_core._build_panes_cache()
+    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+    pc = next((p for p in cache if p[2] == pane_id), None)
+    if pc is None or external_agent_name(pc[3]) != agent:
+        return None, None
+    identity = ccm_sidekick_notify.agent_process_identity(pc[1], agent, ps_lines)
+    try:
+        markers = ccm_core._read_attention_markers(cache, ps_lines)
+        observed = next(o for o in ccm_core.observe_sidekicks(
+            cache, pc[0], markers, [], ps_lines) if o.pane == pane_id)
+    except Exception:
+        ccm_core.log_caught_exception("sidekick_send_observe")
+        observed = ccm_core.SidekickObservation(agent, pane_id, None, None, None)
+    return observed, identity
+
+
+def _wait_reason(observed):
+    """"dialog" / "view" when the observed sidekick would take typed
+    keys, else None."""
+    if observed.state == "PERMIT":
+        return "dialog"
+    if observed.keys == "held":
+        return "view"
+    return None
+
+
+_WAIT_TEXT = {
+    "dialog": "is waiting on a dialog",
+    "view": "shows a view that takes keys (such as selected text)",
+    "pane_changed": "cannot be confirmed to be the same sidekick of this window",
+}
+
+
+def _sidekick_send(message, no_enter):
+    """Send `message` to the caller's sidekick and return the result:
+    {"outcome", "reason", "agent", "pane", "enter_requested",
+    "enter_sent", "message"} with outcome "refused" (no key sent) or
+    "attempted_seen" / "attempted_unseen" / "attempted_unchecked" /
+    "attempted_stopped" / "attempted_failed" (keys were sent).
+    `enter_sent` is False when Enter was not tried, True when tmux
+    took it, None when it was tried and the result is unknown."""
+    result = {"outcome": "refused", "reason": None, "agent": None,
+              "pane": None, "enter_requested": not no_enter,
+              "enter_sent": False, "message": ""}
+
+    def done(outcome, reason=None, message=""):
+        result.update(outcome=outcome, reason=reason, message=message)
+        return result
+
+    caller_pane = os.environ.get("TMUX_PANE", "")
+    if not caller_pane:
+        return done("refused", "not_in_tmux",
+                    "ccm sidekick-send must run inside tmux ($TMUX_PANE is "
+                    "unset) — it delivers to the sidekick pane of the caller's "
+                    "own window.")
+    try:
+        pane_id, agent = _resolve_sidekick_pane(caller_pane)
+        result.update(agent=agent, pane=pane_id)
+        # TOCTOU: re-resolve immediately before typing. The pane found a
+        # moment ago may have exited or been replaced while the message
+        # was being read (a slow --file, a human at the keys) — typing
+        # into its successor would be the mis-send this command exists
+        # to prevent.
+        again = _resolve_sidekick_pane(caller_pane)
+    except _SidekickRefusal as refusal:
+        return done("refused", refusal.reason, str(refusal))
+    if again != (pane_id, agent):
+        return done("refused", "pane_changed",
+                    f"The sidekick pane changed while preparing the send "
+                    f"({pane_id} → {again[0]}) — refusing. Retry the command.")
+
+    observed, identity = _observe_sidekick(pane_id, agent)
+    if observed is None:
+        return done("refused", "pane_changed",
+                    f"The sidekick ({agent}, {pane_id}) changed while preparing "
+                    "the send — refusing. Retry the command.")
+    if identity is None:
+        return done("refused", "pane_unidentified",
+                    f"Cannot tell which {agent} process runs in {pane_id}, so a "
+                    "change before Enter could not be noticed — refusing. "
+                    "Type into it by hand if you must.")
+    wait = _wait_reason(observed)
+    if wait == "dialog":
+        return done("refused", "dialog",
+                    f"The sidekick ({agent}, {pane_id}) is waiting on a dialog — "
+                    "refusing to type into it. Answer the dialog in that pane "
+                    "first, then retry.")
+    if wait == "view":
+        return done("refused", "view",
+                    f"The sidekick ({agent}, {pane_id}) shows a view that takes "
+                    "keys (such as selected text) — refusing to type into it. "
+                    "Close the view in that pane as its last line says, then retry.")
+
+    # Defensively exit any tmux mode on the target pane (tmux reports
+    # failure when the pane is in none, the usual case), then type the
+    # body literally (shared helpers — see cmd_send).
+    _send_keys(pane_id, "-X", "cancel", label="sidekick-pre-cancel")
+    lines = message.split("\n")
+    if _trace_enabled():
+        _trace_record(pane_id, "sidekick-send-start",
+                      (f"agent={agent}", f"lines={len(lines)}",
+                       f"bytes={len(message)}"))
+    try:
+        _type_body(pane_id, lines, checked=True)
+    except (OSError, ValueError):
+        return done("attempted_failed", "typing_failed",
+                    f"tmux failed while typing into the sidekick ({agent}, "
+                    f"{pane_id}); what reached it is unknown and Enter was not "
+                    "sent. Check its input box with `ccm capture` before "
+                    "deciding whether to resend.")
+
+    if not no_enter:
+        # The settle pause is load-bearing — see the constant's note.
+        # The sidekick is looked at again near its end; a look that
+        # runs past it adds no further wait.
+        deadline = time.monotonic() + _SIDEKICK_SUBMIT_SETTLE_SEC
+        time.sleep(max(0.0, deadline - _SIDEKICK_RECHECK_LEAD_SEC
+                       - time.monotonic()))
+        # Still THE sidekick of the caller's window, not a pane that
+        # moved away or one beside a newcomer — never a switch to
+        # another pane.
+        try:
+            still = _resolve_sidekick_pane(caller_pane) == (pane_id, agent)
+        except _SidekickRefusal:
+            still = False
+        now_observed, now_identity = (_observe_sidekick(pane_id, agent)
+                                      if still else (None, None))
+        time.sleep(max(0.0, deadline - time.monotonic()))
+        stop = ("pane_changed"
+                if now_observed is None or now_identity != identity
+                else _wait_reason(now_observed))
+        if stop:
+            return done("attempted_stopped", stop,
+                        f"Typed into the sidekick ({agent}, {pane_id}) but did "
+                        f"not press Enter: it {_WAIT_TEXT[stop]}. The text may be "
+                        "in its input box; check with `ccm capture` before "
+                        "deciding what to do.")
+        try:
+            _send_keys(pane_id, "Enter", label="sidekick-submit", checked=True)
+        except OSError:
+            result["enter_sent"] = None
+            return done("attempted_failed", "enter_failed",
+                        f"tmux did not confirm Enter for the sidekick ({agent}, "
+                        f"{pane_id}); whether it was submitted is unknown. Check "
+                        "with `ccm capture`; do not resend if received.")
+        result["enter_sent"] = True
+
+    # A visible fragment may be in the composer or an earlier conversation;
+    # it does not confirm that this submission was accepted.
+    submit = "submit Enter not sent" if no_enter else "submit Enter attempted"
+    signature = _message_signature(message)
+    if signature is None:
+        return done("attempted_unchecked", None,
+                    f"Delivery unconfirmed for sidekick {agent} ({pane_id}); {submit}; "
+                    "message too short to auto-verify. "
+                    "Check the conversation and input box with `ccm capture`.")
+    deadline = time.time() + _SIDEKICK_VERIFY_TIMEOUT_SEC
+    while not _body_landed(pane_id, signature):
+        if time.time() >= deadline:
+            if _trace_enabled():
+                _trace_record(pane_id, "sidekick-send-unverified",
+                              (f"agent={agent}",))
+            return done("attempted_unseen", None,
+                        f"Delivery to the sidekick ({agent}, {pane_id}) could "
+                        "not be confirmed: no fragment of the message appeared "
+                        "in the pane after sending.\n"
+                        "  Check the conversation and input box with `ccm capture`: "
+                        "do not resend if received; resolve leftover text before "
+                        "deciding whether to resend.")
+        time.sleep(_SIDEKICK_VERIFY_POLL_SEC)
+    if _trace_enabled():
+        _trace_record(pane_id, "sidekick-send-end", (f"agent={agent}",))
+    return done("attempted_seen", None,
+                f"Typed into sidekick {agent} ({pane_id}); {submit}; "
+                "seen on screen, receipt not confirmed.")
+
+
+#: Outcomes that end `ccm sidekick-send` with status 0.
+_SIDEKICK_SEND_OK = ("attempted_seen", "attempted_unchecked")
+
+
+def _sidekick_send_args(args):
+    """(message, no_enter, as_json) from the arguments, or a
+    _SidekickRefusal. `--json` counts only where a flag can stand:
+    not after `--` and not as the value of `--file`."""
+    positional_parts = []
+    message_file = None
+    use_stdin = False
+    no_enter = False
+    as_json = False
+
+    stop_flags = False
+    i = 0
+    problem = None
+    while i < len(args):
+        arg = args[i]
+        if not stop_flags and arg == "--":
+            stop_flags = True
+            i += 1
+            continue
+        if not stop_flags and arg.startswith("-") and arg != "-":
+            if arg == "--file":
+                i += 1
+                if i >= len(args):
+                    problem = problem or "--file requires a path argument"
+                else:
+                    message_file = args[i]
+            elif arg == "--stdin":
+                use_stdin = True
+            elif arg == "--no-enter":
+                no_enter = True
+            elif arg == "--json":
+                as_json = True
+            else:
+                problem = problem or f"Unknown flag: {arg}\n{_SIDEKICK_SEND_USAGE}"
+        else:
+            if arg == "-":  # conventional stdin alias
+                use_stdin = True
+            else:
+                positional_parts.append(arg)
+        i += 1
+    return (positional_parts, message_file, use_stdin, no_enter, as_json,
+            problem)
+
+
+def _sidekick_send_message(positional_parts, message_file, use_stdin, no_enter):
+    """The message to send, from exactly one source, or a
+    _SidekickRefusal (mirroring cmd_send's conventions)."""
+    positional_message = " ".join(positional_parts) if positional_parts else None
+    source_count = sum(x is not None and x is not False for x in
+                       (positional_message, message_file, use_stdin or None))
+    if source_count == 0:
+        raise _SidekickRefusal(
+            "usage", "No message provided (positional, --file, or --stdin)")
+    if source_count > 1:
+        raise _SidekickRefusal(
+            "usage", "Provide exactly one of: positional message, --file, or --stdin")
+    if message_file is not None:
+        try:
+            with open(message_file, encoding="utf-8") as f:
+                message = f.read()
+        except (OSError, UnicodeDecodeError) as e:
+            raise _SidekickRefusal(
+                "file_unreadable", f"Failed to read message file: {e}")
+    elif use_stdin:
+        try:
+            message = sys.stdin.read()
+        except (OSError, UnicodeDecodeError) as e:
+            raise _SidekickRefusal(
+                "stdin_unreadable", f"Failed to read the message from stdin: {e}")
+    else:
+        message = positional_message
+    if not message.strip() and not no_enter:
+        raise _SidekickRefusal(
+            "usage", "Empty message (use --no-enter to send only Enter suppression)")
+    if "\x00" in message:
+        raise _SidekickRefusal(
+            "unsupported_text", "The message holds a NUL character, which "
+            "cannot be typed into a pane — refusing before any key.")
+    return message
 
 
 @ccm_core.caller_process_scope()
@@ -1335,155 +1629,37 @@ def cmd_sidekick_send(args):
       ccm sidekick-send --file <path>        Read message from a file
       ccm sidekick-send --stdin              Read message from stdin
       ccm sidekick-send --no-enter <msg>     Send without submitting
+      ccm sidekick-send --json <msg>         Print the result as JSON
       ccm sidekick-send -- "--literal"       `--` ends flag parsing
     """
+    (positional_parts, message_file, use_stdin, no_enter, as_json,
+     problem) = _sidekick_send_args(args)
     if any(a in ("-h", "--help") for a in args):
+        if as_json:
+            import ccm_json
+            ccm_json.emit({"help": _SIDEKICK_SEND_USAGE})
         print(_SIDEKICK_SEND_USAGE)
         return
-    positional_parts = []
-    message_file = None
-    use_stdin = False
-    no_enter = False
-
-    stop_flags = False
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if not stop_flags and arg == "--":
-            stop_flags = True
-            i += 1
-            continue
-        if not stop_flags and arg.startswith("-") and arg != "-":
-            if arg == "--file":
-                i += 1
-                if i >= len(args):
-                    ccm_core.ccm_die("--file requires a path argument")
-                message_file = args[i]
-            elif arg == "--stdin":
-                use_stdin = True
-            elif arg == "--no-enter":
-                no_enter = True
-            else:
-                ccm_core.ccm_die(
-                    f"Unknown flag: {arg}\n{_SIDEKICK_SEND_USAGE}")
-        else:
-            if arg == "-":  # conventional stdin alias
-                use_stdin = True
-            else:
-                positional_parts.append(arg)
-        i += 1
-
-    # Resolve message source (exactly one of the three), mirroring
-    # cmd_send's conventions.
-    positional_message = " ".join(positional_parts) if positional_parts else None
-    source_count = sum(x is not None and x is not False for x in
-                       (positional_message, message_file, use_stdin or None))
-    if source_count == 0:
-        ccm_core.ccm_die("No message provided (positional, --file, or --stdin)")
-    if source_count > 1:
-        ccm_core.ccm_die(
-            "Provide exactly one of: positional message, --file, or --stdin"
-        )
-    if message_file:
-        try:
-            with open(message_file, encoding="utf-8") as f:
-                message = f.read()
-        except OSError as e:
-            ccm_core.ccm_die(f"Failed to read message file: {e}")
-    elif use_stdin:
-        message = sys.stdin.read()
+    try:
+        if problem:
+            raise _SidekickRefusal("usage", problem)
+        message = _sidekick_send_message(positional_parts, message_file,
+                                         use_stdin, no_enter)
+    except _SidekickRefusal as refusal:
+        result = {"outcome": "refused", "reason": refusal.reason,
+                  "agent": None, "pane": None,
+                  "enter_requested": not no_enter, "enter_sent": False,
+                  "message": str(refusal)}
     else:
-        message = positional_message
-    if not message.strip() and not no_enter:
-        ccm_core.ccm_die(
-            "Empty message (use --no-enter to send only Enter suppression)"
-        )
+        result = _sidekick_send(message, no_enter)
 
-    caller_pane = os.environ.get("TMUX_PANE", "")
-    if not caller_pane:
-        ccm_core.ccm_die(
-            "ccm sidekick-send must run inside tmux ($TMUX_PANE is "
-            "unset) — it delivers to the sidekick pane of the caller's "
-            "own window."
-        )
-
-    pane_id, agent = _resolve_sidekick_pane(caller_pane)
-
-    # TOCTOU: re-resolve immediately before typing. The pane found a
-    # moment ago may have exited or been replaced while the message
-    # was being read (a slow --file, a human at the keys) — typing
-    # into its successor would be the mis-send this command exists to
-    # prevent.
-    again = _resolve_sidekick_pane(caller_pane)
-    if again != (pane_id, agent):
-        ccm_core.ccm_die(
-            f"The sidekick pane changed while preparing the send "
-            f"({pane_id} → {again[0]}) — refusing. Retry the command."
-        )
-
-    # A sidekick waiting on a dialog takes keys as answers, so a body
-    # typed into it could approve or deny something; a view such as a
-    # Codex transcript selection takes them too, with Enter copying
-    # instead of sending. Where ccm reads the sidekick's screen (Codex,
-    # Antigravity), refuse while it shows either; a screen it cannot
-    # read is sent to as before.
-    state, keys = ccm_core.sidekick_screen(pane_id, agent)
-    if state == "PERMIT":
-        ccm_core.ccm_die(
-            f"The sidekick ({agent}, {pane_id}) is waiting on a dialog — "
-            "refusing to type into it. Answer the dialog in that pane "
-            "first, then retry.")
-    if keys == "held":
-        ccm_core.ccm_die(
-            f"The sidekick ({agent}, {pane_id}) shows a view that takes "
-            "keys (such as selected text) — refusing to type into it. "
-            "Close the view in that pane as its last line says, then retry.")
-
-    # Defensively exit any tmux mode on the target pane, then type
-    # the body literally (shared helpers — see cmd_send).
-    _send_keys(pane_id, "-X", "cancel", label="sidekick-pre-cancel")
-    lines = message.split("\n")
-    if _trace_enabled():
-        _trace_record(pane_id, "sidekick-send-start",
-                      (f"agent={agent}", f"lines={len(lines)}",
-                       f"bytes={len(message)}"))
-    _type_body(pane_id, lines)
-
-    if not no_enter:
-        # The settle pause is load-bearing — see the constant's note.
-        time.sleep(_SIDEKICK_SUBMIT_SETTLE_SEC)
-        _send_keys(pane_id, "Enter", label="sidekick-submit")
-
-    # A visible fragment may be in the composer or an earlier conversation;
-    # it does not confirm that this submission was accepted.
-    submit = "submit Enter not sent" if no_enter else "submit Enter attempted"
-    signature = _message_signature(message)
-    if signature is None:
-        ccm_core.ccm_info(
-            f"Delivery unconfirmed for sidekick {agent} ({pane_id}); {submit}; "
-            "message too short to auto-verify. "
-            "Check the conversation and input box with `ccm capture`."
-        )
-        return
-    deadline = time.time() + _SIDEKICK_VERIFY_TIMEOUT_SEC
-    while True:
-        if _body_landed(pane_id, signature):
-            break
-        if time.time() >= deadline:
-            if _trace_enabled():
-                _trace_record(pane_id, "sidekick-send-unverified",
-                              (f"agent={agent}",))
-            ccm_core.ccm_die(
-                f"Delivery to the sidekick ({agent}, {pane_id}) could "
-                "not be confirmed: no fragment of the message appeared "
-                "in the pane after sending.\n"
-                "  Check the conversation and input box with `ccm capture`: "
-                "do not resend if received; resolve leftover text before "
-                "deciding whether to resend."
-            )
-        time.sleep(_SIDEKICK_VERIFY_POLL_SEC)
-    if _trace_enabled():
-        _trace_record(pane_id, "sidekick-send-end", (f"agent={agent}",))
-    ccm_core.ccm_info(
-        f"Typed into sidekick {agent} ({pane_id}); {submit}; "
-        "seen on screen, receipt not confirmed.")
+    ok = result["outcome"] in _SIDEKICK_SEND_OK
+    if as_json:
+        import ccm_json
+        if not ok:
+            print(result["message"], file=sys.stderr)
+        ccm_json.emit(result, 0 if ok else 1)
+    if ok:
+        ccm_core.ccm_info(result["message"])
+    else:
+        ccm_core.ccm_die(result["message"])

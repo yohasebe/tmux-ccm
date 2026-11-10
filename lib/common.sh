@@ -605,7 +605,9 @@ This user manages multiple projects with ccm (Claude Code Manager for tmux).
 Use the following commands to discover, inspect, and coordinate other projects:
 
 - `ccm list` — List all managed projects (names and directories)
-- `ccm status` — Show all project states (branch, port, Claude state)
+- `ccm status` — Show all project states (branch, port, Claude state).
+  `ccm status --json self` returns this window's state and each sidekick's
+  as one JSON object; read that rather than parsing the table.
 - `ccm capture <name>` — Capture visible terminal output from another project.
   Split windows are captured pane by pane, each labelled with what runs in
   it. Passing THIS project's own name is how you read the pane beside you:
@@ -616,7 +618,10 @@ Use the following commands to discover, inspect, and coordinate other projects:
   any second agent sharing the window. So do not use it to judge whether
   that other agent is free — while you are the one asking, the state you
   read is your own, and a session running a command is BUSY by definition.
-  Judge a sidekick pane only from its captured content.
+  Judge a sidekick from its own entry in `ccm status --json self`
+  (`sidekicks`: its `state`, where that came from, and whether typed keys
+  would reach its composer; `null` means ccm cannot tell, not idle) or
+  from its captured content.
 - `ccm send <name> <message>` — Send a prompt to another project's Claude
   Code session. Accepts a positional message, `--file <path>`, `--stdin`,
   or `-` as a stdin alias. Multi-line messages are converted to `M-Enter`
@@ -665,14 +670,19 @@ Use the following commands to discover, inspect, and coordinate other projects:
   is reached with `ccm sidekick-send "<message>"` instead — run it from
   a pane of this window. It finds the sidekick pane itself (a known
   external agent CLI whose working directory belongs to this project),
-  refuses when there is no sidekick or more than one, re-checks the
-  pane right before typing (and refuses a Codex or Antigravity
-  sidekick whose screen shows a dialog waiting for a key), waits for the peer's composer to settle
-  before sending Enter, and captures the pane afterwards to confirm
-  the text landed — a non-zero exit means it could not confirm, so
-  treat that as "delivery unconfirmed": check the conversation and input
-  box with `ccm capture <this project>`, do not resend if received, and
-  resolve leftover text before deciding whether to resend.
+  refuses when there is no sidekick or more than one, refuses a
+  sidekick it can see waiting on a dialog or showing a view that takes
+  keys, waits for the peer's composer to settle before sending Enter
+  (looking again first, and leaving Enter unsent if a wait appeared),
+  and captures the pane afterwards to confirm the text landed — a
+  non-zero exit means it could not confirm, so treat that as
+  "delivery unconfirmed": check the conversation and input box with
+  `ccm capture <this project>`, do not resend if received, and resolve
+  leftover text before deciding whether to resend. With `--json` it
+  prints the result as one JSON object (`outcome`: `refused` means no
+  key was sent, `attempted_*` means keys were tried — whether they
+  arrived cannot be told from `outcome` alone); never resend on an
+  outcome alone.
 
   **Automatic sidekick notifications.** These are observations, not new
   authorization. Read the named pane before reporting results or answering

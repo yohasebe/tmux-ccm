@@ -13,26 +13,61 @@ import ccm_core
 import ccm_send
 
 _MSG = "review the draft please"  # long enough for a verify signature
-_CALLER = "@1\tclaude\t/tmp/proj"  # window_id, command, cwd
-_KIMI = ("%2", "kimi", "/tmp/proj")
+_CALLER = "@1\tclaude\t/example/proj"  # window_id, command, cwd
+_KIMI = ("%2", "kimi", "/example/proj")
 
 
 class TestSidekickSend:
     def _stub(self, monkeypatch, caller_info=_CALLER, panes=(_KIMI,),
-              ccm_dir="/tmp/proj", capture=""):
-        """Install tmux_cmd / TMUX_PANE / time.sleep stubs and return
-        the shared call list (time.sleep is recorded into it as
-        ("sleep", seconds) so key/pause ordering is assertable).
+              ccm_dir="/example/proj", capture="", markers=None,
+              identities=None, failing_keys=()):
+        """Install tmux_cmd / tmux_query / TMUX_PANE / time.sleep stubs
+        and return the shared call list (time.sleep is recorded into it
+        as ("sleep", seconds) so key/pause ordering is assertable).
 
         `panes` may be a list of (pane_id, command, cwd) tuples — or
         a list of such lists to make successive list-panes calls
         change (TOCTOU re-resolution tests). `capture` is a string or
-        a callable taking the tmux args."""
+        a callable taking the tmux args. `markers` is a list of marker
+        dicts by look (the sidekick is looked at before the body and
+        before Enter), `identities` the sidekick's process identity by
+        look, and `failing_keys` the checked send-keys (by their last
+        key) that tmux does not confirm."""
         monkeypatch.setenv("TMUX_PANE", "%1")
         monkeypatch.setattr(ccm_core, "caller_context", lambda **kw: ("demo", "%1"))
         panes_seq = panes if panes and isinstance(panes[0], list) else [panes]
         pane_calls = [0]
         calls = []
+        looks = {"cache": 0, "identity": 0}
+
+        def panes_cache():
+            # What the latest list-panes of the caller's window showed.
+            i = min(max(pane_calls[0] - 1, 0), len(panes_seq) - 1)
+            looks["cache"] += 1
+            return [("s:1", "1" + pid[1:], pid, cmd, "0", "40", "", "")
+                    for pid, cmd, _ in panes_seq[i]]
+
+        def read_markers(cache, ps_lines):
+            seq = markers or [{}]
+            return seq[min(looks["cache"] - 1, len(seq) - 1)]
+
+        def identity(pane_pid, agent, lines):
+            seq = identities or [[["1", "birth"]]]
+            looks["identity"] += 1
+            return seq[min(looks["identity"] - 1, len(seq) - 1)]
+
+        def query(*args, **kw):
+            calls.append(args)
+            if args[0] == "send-keys" and args[-1] in failing_keys:
+                return None
+            return ""
+
+        import ccm_sidekick_notify
+        monkeypatch.setattr(ccm_core, "_build_panes_cache", panes_cache)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_core, "_read_attention_markers", read_markers)
+        monkeypatch.setattr(ccm_sidekick_notify, "agent_process_identity", identity)
+        monkeypatch.setattr(ccm_core, "tmux_query", query)
 
         def tmux(*args, **kw):
             calls.append(args)
@@ -50,8 +85,14 @@ class TestSidekickSend:
             return ""
 
         monkeypatch.setattr(ccm_core, "tmux_cmd", tmux)
-        monkeypatch.setattr(ccm_send.time, "sleep",
-                            lambda s: calls.append(("sleep", s)))
+        clock = [ccm_send.time.time()]
+
+        def sleep(seconds):
+            calls.append(("sleep", seconds))
+            clock[0] += seconds
+        monkeypatch.setattr(ccm_send.time, "sleep", sleep)
+        monkeypatch.setattr(ccm_send.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
         return calls
 
     @staticmethod
@@ -72,9 +113,10 @@ class TestSidekickSend:
         body = ("send-keys", "-t", "%2", "-l", "--", _MSG)
         enter = ("send-keys", "-t", "%2", "Enter")
         assert cancel in seq and body in seq and enter in seq
-        assert ("sleep", 0.3) in seq
-        assert (seq.index(cancel) < seq.index(body)
-                < seq.index(("sleep", 0.3)) < seq.index(enter))
+        assert seq.index(cancel) < seq.index(body) < seq.index(enter)
+        settle = [c[1] for c in seq[seq.index(body):seq.index(enter)]
+                  if c[0] == "sleep"]
+        assert sum(settle) == pytest.approx(0.3)
         # The confirmation capture happens after the Enter.
         assert seq[-1][0] == "capture-pane"
         out = capsys.readouterr().out
@@ -206,7 +248,7 @@ class TestSidekickSend:
     def test_conflicting_sources_refused(self, monkeypatch):
         self._stub(monkeypatch)
         with pytest.raises(SystemExit):
-            ccm_send.cmd_sidekick_send([_MSG, "--file", "/tmp/x.md"])
+            ccm_send.cmd_sidekick_send([_MSG, "--file", "message.md"])
 
     def test_unknown_flag_refused(self, monkeypatch, capsys):
         self._stub(monkeypatch)
@@ -239,7 +281,7 @@ class TestSidekickSend:
     def test_reverse_lane_refused(self, monkeypatch, capsys):
         """The caller IS the sidekick: the reverse lane is `ccm send
         <project>`, not this command."""
-        calls = self._stub(monkeypatch, caller_info="@1\tkimi\t/tmp/proj")
+        calls = self._stub(monkeypatch, caller_info="@1\tkimi\t/example/proj")
         with pytest.raises(SystemExit):
             ccm_send.cmd_sidekick_send([_MSG])
         assert not self._keys(calls, "-l", "--", _MSG)
@@ -249,14 +291,14 @@ class TestSidekickSend:
     # --- identity: target pane ---
 
     def test_no_sidekick_refused(self, monkeypatch, capsys):
-        self._stub(monkeypatch, panes=(("%2", "zsh", "/tmp/proj"),))
+        self._stub(monkeypatch, panes=(("%2", "zsh", "/example/proj"),))
         with pytest.raises(SystemExit):
             ccm_send.cmd_sidekick_send([_MSG])
         assert "No sidekick pane" in capsys.readouterr().err
 
     def test_two_sidekicks_refused_as_ambiguous(self, monkeypatch, capsys):
         calls = self._stub(monkeypatch,
-                           panes=(_KIMI, ("%3", "grok", "/tmp/proj")))
+                           panes=(_KIMI, ("%3", "grok", "/example/proj")))
         with pytest.raises(SystemExit):
             ccm_send.cmd_sidekick_send([_MSG])
         assert not self._keys(calls, "-l", "--", _MSG)
@@ -278,7 +320,7 @@ class TestSidekickSend:
         """A sidekick started in a subdirectory of the project is
         still this project's."""
         calls = self._stub(monkeypatch,
-                           panes=(("%2", "kimi", "/tmp/proj/sub"),),
+                           panes=(("%2", "kimi", "/example/proj/sub"),),
                            capture=_MSG)
         ccm_send.cmd_sidekick_send([_MSG])
         assert self._keys(calls, "-l", "--", _MSG)
@@ -297,7 +339,7 @@ class TestSidekickSend:
         pane (the original exited, a new one appeared) — refuse
         rather than type into the successor."""
         calls = self._stub(monkeypatch,
-                           panes=[[_KIMI], [("%3", "kimi", "/tmp/proj")]])
+                           panes=[[_KIMI], [("%3", "kimi", "/example/proj")]])
         with pytest.raises(SystemExit):
             ccm_send.cmd_sidekick_send([_MSG])
         assert not self._keys(calls, "-l", "--", _MSG)
@@ -345,3 +387,278 @@ class TestSidekickSend:
         self._stub(monkeypatch, capture=capture)
         ccm_send.cmd_sidekick_send([_MSG])  # must NOT raise
         assert reads[0] >= 3
+
+
+class TestSendResult:
+    """One result per run: refused before any key, or attempted_* with
+    what is known after; `--json` prints it, the text output words it."""
+
+    _WAITING = {"agent": "kimi", "state": "waiting"}
+
+    @pytest.fixture
+    def stub(self, monkeypatch):
+        return lambda **kw: TestSidekickSend._stub(
+            TestSidekickSend(), monkeypatch, **{"capture": f"{_MSG}\n", **kw})
+
+    @staticmethod
+    def run_json(args, capsys):
+        """(the JSON object printed, the exit code, stderr); a run that
+        ends without exactly one object fails the test."""
+        import json
+        try:
+            ccm_send.cmd_sidekick_send(["--json"] + args)
+            code = None
+        except SystemExit as exit_:
+            code = exit_.code
+        except Exception as exc:  # the object is owed whatever happens
+            code = repr(exc)
+        captured = capsys.readouterr()
+        assert captured.out.count("\n") == 1, (code, captured.out)
+        return json.loads(captured.out), code, captured.err
+
+    @staticmethod
+    def keys(calls):
+        return [c[3:] for c in calls if c[0] == "send-keys" and c[3:] != ("-X", "cancel")]
+
+    @pytest.mark.parametrize("state, keys, outcome", [
+        ("IDLE", "free", "attempted_seen"),
+        ("BUSY", "free", "attempted_seen"),
+        ("IDLE", None, "attempted_seen"),
+        (None, None, "attempted_seen"),
+        ("PERMIT", "held", "refused"),
+        ("PERMIT", None, "refused"),
+        ("BUSY", "held", "refused"),
+        (None, "held", "refused"),
+    ])
+    def test_send_condition(self, stub, monkeypatch, capsys, state, keys, outcome):
+        calls = stub()
+        monkeypatch.setattr(ccm_send, "_observe_sidekick", lambda pane, agent: (
+            ccm_core.SidekickObservation(agent, pane, state, None, keys), [["1", "b"]]))
+        out, code, _ = self.run_json([_MSG], capsys)
+        assert out["outcome"] == outcome
+        assert (code == 0) is (outcome == "attempted_seen")
+        if outcome == "refused":
+            assert out["reason"] == ("dialog" if state == "PERMIT" else "view")
+            assert self.keys(calls) == []
+
+    def test_seen(self, stub, capsys):
+        stub()
+        out, code, _ = self.run_json([_MSG], capsys)
+        assert code == 0
+        assert out == {"schema": 1, "outcome": "attempted_seen", "reason": None,
+                       "agent": "kimi", "pane": "%2", "enter_requested": True,
+                       "enter_sent": True, "message": out["message"]}
+
+    def test_marker_before_the_body_refuses(self, stub, capsys):
+        calls = stub(markers=[{"%2": self._WAITING}])
+        out, code, err = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], code) == ("refused", "dialog", 1)
+        assert self.keys(calls) == []
+        assert "waiting on a dialog" in err
+
+    def test_codex_hook_wait_refuses_while_the_screen_is_unreadable(
+            self, stub, monkeypatch, capsys):
+        calls = stub(panes=(("%2", "codex", "/example/proj"),))
+        monkeypatch.setattr(ccm_core, "_codex_hook_state", lambda *a: "PERMIT")
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"]) == ("refused", "dialog")
+        assert self.keys(calls) == []
+
+    def test_wait_seen_only_before_enter_stops_the_send(self, stub, capsys):
+        calls = stub(markers=[{}, {"%2": self._WAITING}])
+        out, code, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], code) == ("attempted_stopped", "dialog", 1)
+        assert out["enter_sent"] is False
+        assert self.keys(calls) == [("-l", "--", _MSG)]
+
+    @pytest.mark.parametrize("identities", [
+        [[["1", "birth-A"]], [["1", "birth-B"]]],   # restarted in the same pane
+        [[["1", "birth-A"]], None],                 # cannot be told any more
+    ])
+    def test_another_process_before_enter_stops_the_send(self, stub, capsys, identities):
+        calls = stub(identities=identities)
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"]) == ("attempted_stopped", "pane_changed")
+        assert self.keys(calls) == [("-l", "--", _MSG)]
+
+    def test_pane_gone_before_enter_stops_the_send(self, stub, monkeypatch, capsys):
+        calls = stub()
+        looks = []
+
+        def observe(pane, agent):
+            looks.append(1)
+            if len(looks) == 1:
+                return ccm_core.SidekickObservation(agent, pane, None, None, None), [["1", "b"]]
+            return None, None
+        monkeypatch.setattr(ccm_send, "_observe_sidekick", observe)
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"]) == ("attempted_stopped", "pane_changed")
+        assert self.keys(calls) == [("-l", "--", _MSG)]
+
+    def test_another_program_in_the_pane_before_enter_stops_the_send(
+            self, stub, monkeypatch, capsys):
+        calls = stub()
+        listings = iter([[("s:1", "12", "%2", "kimi", "0", "40", "", "")],
+                         [("s:1", "12", "%2", "zsh", "0", "40", "", "")]])
+        monkeypatch.setattr(ccm_core, "_build_panes_cache", lambda: next(listings))
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"]) == ("attempted_stopped", "pane_changed")
+        assert self.keys(calls) == [("-l", "--", _MSG)]
+
+    @pytest.mark.parametrize("third", [
+        [("%3", "kimi", "/example/proj")],                                # %2 moved away
+        [("%2", "kimi", "/example/proj"), ("%3", "codex", "/example/proj")],  # a newcomer
+        [],                                                               # gone
+    ])
+    def test_no_longer_the_windows_sidekick_before_enter_stops_the_send(
+            self, stub, capsys, third):
+        calls = stub(panes=[[_KIMI], [_KIMI], third])
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], out["enter_sent"]) == (
+            "attempted_stopped", "pane_changed", False)
+        assert self.keys(calls) == [("-l", "--", _MSG)]
+
+    @pytest.mark.parametrize("source", ["file", "stdin"])
+    def test_nul_is_refused_before_any_key(self, stub, monkeypatch, capsys, tmp_path, source):
+        calls = stub()
+        text = "first line\nsecond\x00line"
+        if source == "file":
+            path = tmp_path / "message.md"
+            path.write_text(text)
+            args = ["--file", str(path)]
+        else:
+            import io
+            monkeypatch.setattr(ccm_send.sys, "stdin", io.StringIO(text))
+            args = ["--stdin"]
+        out, code, _ = self.run_json(args, capsys)
+        assert (out["outcome"], out["reason"], code) == ("refused", "unsupported_text", 1)
+        assert [c for c in calls if c[0] == "send-keys"] == []
+
+    def test_empty_file_name_is_refused(self, stub, capsys):
+        calls = stub()
+        out, code, _ = self.run_json(["--file", ""], capsys)
+        assert (out["outcome"], out["reason"], code) == ("refused", "file_unreadable", 1)
+        assert [c for c in calls if c[0] == "send-keys"] == []
+
+    def test_an_unidentified_process_is_refused_before_the_body(self, stub, capsys):
+        calls = stub(identities=[None])
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"]) == ("refused", "pane_unidentified")
+        assert self.keys(calls) == []
+
+    def test_typing_failure(self, stub, capsys):
+        calls = stub(failing_keys=(_MSG,))
+        out, code, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], out["enter_sent"], code) == (
+            "attempted_failed", "typing_failed", False, 1)
+        assert ("Enter",) not in self.keys(calls)
+
+    def test_enter_failure_is_unknown(self, stub, capsys):
+        stub(failing_keys=("Enter",))
+        out, code, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], out["enter_sent"], code) == (
+            "attempted_failed", "enter_failed", None, 1)
+
+    def test_no_enter_skips_the_second_look(self, stub, monkeypatch, capsys):
+        calls = stub()
+        looks = []
+        real = ccm_send._observe_sidekick
+        monkeypatch.setattr(ccm_send, "_observe_sidekick",
+                            lambda *a: looks.append(1) or real(*a))
+        out, code, _ = self.run_json(["--no-enter", _MSG], capsys)
+        assert (out["outcome"], out["enter_requested"], out["enter_sent"]) == (
+            "attempted_seen", False, False)
+        assert len(looks) == 1
+        assert ("Enter",) not in self.keys(calls)
+
+    def test_the_second_look_falls_inside_the_pause(self, stub, monkeypatch, capsys):
+        calls = stub()
+        times = []
+        real = ccm_send._observe_sidekick
+        monkeypatch.setattr(ccm_send, "_observe_sidekick", lambda *a: times.append(
+            ccm_send.time.monotonic()) or real(*a))
+        self.run_json([_MSG], capsys)
+        body = next(i for i, c in enumerate(calls) if c[0] == "send-keys" and c[-1] == _MSG)
+        enter = next(i for i, c in enumerate(calls) if c[0] == "send-keys" and c[-1] == "Enter")
+        pause = [c[1] for c in calls[body:enter] if c[0] == "sleep"]
+        assert sum(pause) == pytest.approx(0.3)
+        assert times[1] - times[0] == pytest.approx(0.2)
+
+    def test_a_slow_second_look_adds_no_wait(self, stub, monkeypatch, capsys):
+        calls = stub()
+        real = ccm_send._observe_sidekick
+        looks = []
+
+        def slow(*a):
+            looks.append(1)
+            if len(looks) == 2:
+                ccm_send.time.sleep(0.5)  # the look itself takes 0.5 s
+            return real(*a)
+        monkeypatch.setattr(ccm_send, "_observe_sidekick", slow)
+        self.run_json([_MSG], capsys)
+        body = next(i for i, c in enumerate(calls) if c[0] == "send-keys" and c[-1] == _MSG)
+        enter = next(i for i, c in enumerate(calls) if c[0] == "send-keys" and c[-1] == "Enter")
+        assert [c[1] for c in calls[body:enter] if c[0] == "sleep"] == [
+            pytest.approx(0.2), 0.5, 0.0]
+
+    def test_unseen_and_unchecked(self, stub, capsys):
+        stub(capture="")
+        out, code, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], code) == ("attempted_unseen", 1)
+        out, code, _ = self.run_json(["hi"], capsys)
+        assert (out["outcome"], code) == ("attempted_unchecked", 0)
+
+    @pytest.mark.parametrize("args, reason", [
+        ([], "usage"),
+        (["   "], "usage"),
+        (["--bogus", _MSG], "usage"),
+        (["--file"], "usage"),
+    ])
+    def test_usage_errors_are_json(self, stub, capsys, args, reason):
+        calls = stub()
+        out, code, _ = self.run_json(args, capsys)
+        assert (out["outcome"], out["reason"], code) == ("refused", reason, 1)
+        assert self.keys(calls) == []
+
+    def test_unreadable_file_is_json(self, stub, capsys, tmp_path):
+        bad = tmp_path / "message.md"
+        bad.write_bytes(b"\xff\xfe not text")
+        out, _, _ = self.run_json(["--file", str(bad)], capsys)
+        assert (out["outcome"], out["reason"]) == ("refused", "file_unreadable")
+        out, _, _ = self.run_json(["--file", str(tmp_path / "missing.md")], capsys)
+        assert out["reason"] == "file_unreadable"
+
+    def test_unreadable_stdin_is_json(self, stub, monkeypatch, capsys):
+        class Broken:
+            def read(self):
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+        monkeypatch.setattr(ccm_send.sys, "stdin", Broken())
+        out, _, _ = self.run_json(["--stdin"], capsys)
+        assert (out["outcome"], out["reason"]) == ("refused", "stdin_unreadable")
+
+    def test_json_only_where_a_flag_stands(self, stub, capsys, tmp_path):
+        calls = stub(capture="--json is the text\n" + _MSG)
+
+        def text_output(args):
+            try:
+                ccm_send.cmd_sidekick_send(args)
+            except SystemExit:
+                pass
+            return capsys.readouterr().out
+        assert not text_output(["--", "--json", "is the text"]).startswith("{")
+        assert ("-l", "--", "--json is the text") in self.keys(calls)
+        named = tmp_path / "--json"
+        named.write_text(_MSG)
+        assert not text_output(["--file", str(named)]).startswith("{")
+        assert ("-l", "--", _MSG) in self.keys(calls)
+
+    def test_json_help(self, capsys):
+        out, code, _ = self.run_json(["--help"], capsys)
+        assert code == 0
+        assert out["help"].startswith("Usage: ccm sidekick-send")
+
+    def test_not_in_tmux_is_json(self, monkeypatch, capsys):
+        monkeypatch.delenv("TMUX_PANE", raising=False)
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], out["agent"], out["pane"]) == (
+            "refused", "not_in_tmux", None, None)

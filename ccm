@@ -87,7 +87,7 @@ Usage:
                                            --force (BUSY) | --start (SHELL) | -y/--yes
                                            -- (end flags; for a msg starting with -)
   ccm sidekick-send <msg> [flags]   Send a prompt to the sidekick agent CLI in this window
-                                    flags: --file <path> | --stdin | - | --no-enter | --
+                                    flags: --file <path> | --stdin | - | --no-enter | --json | --
   ccm spool list|show|cancel|discard|resend|clear-expired|clear-held  Manage queued and undelivered messages
   ccm menu                          Interactive menu (for keybinding)
   ccm init                          Interactive setup wizard

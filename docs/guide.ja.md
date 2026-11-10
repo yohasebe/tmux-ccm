@@ -717,6 +717,50 @@ ccm status --json self        # このコマンドを実行した窓
   選ばない）、`self_unresolved`、`tmux_unavailable` です。
   `ccm status --json --help` は使い方を `help` として返します。
 
+### `ccm sidekick-send --json`
+
+```bash
+ccm sidekick-send --json "request-12.md をレビューしてください"
+```
+
+```json
+{"schema": 1, "outcome": "attempted_seen", "reason": null,
+ "agent": "codex", "pane": "%34", "enter_requested": true,
+ "enter_sent": true, "message": "Typed into sidekick codex (%34); …"}
+```
+
+- `outcome` は起きたことを表します。
+  - `refused`: キーを 1 つも送っていません。`reason` が理由です。`dialog` か
+    `view`（サイドキックがキーを受け取ってしまう）、`no_sidekick`、
+    `multiple_sidekicks`、`pane_changed`、`pane_unidentified`（ペインで
+    どのプロセスが動いているか分からない）、`not_in_tmux`、
+    `caller_unverified`、`wrong_direction`（サイドキック側から実行した）、
+    `outside_project`、`project_dir_unavailable`、`file_unreadable`、
+    `stdin_unreadable`、`unsupported_text`（メッセージに NUL 文字が
+    ある）、`usage` のいずれかです。
+  - `attempted_seen`: キーを送ろうとし、メッセージの断片がペインに見えて
+    います。断片は以前のものかもしれず、今回のメッセージが届いたこと、
+    全文が届いたこと、受け取られたことの証明にはなりません。
+  - `attempted_unseen`: キーを送ろうとしましたが、断片が現れませんでした。
+  - `attempted_unchecked`: キーを送ろうとしました。メッセージが短すぎて
+    照合していません。
+  - `attempted_stopped`: 本文は打ちましたが、`Enter` の前にダイアログが
+    現れた（`dialog`）、キーを受け取る画面になった（`view`）、またはペイン
+    がこの窓の同じサイドキックだと確かめられなくなった（`pane_changed`）
+    ので、`Enter` を送っていません。本文がサイドキックの入力欄に残って
+    いる可能性があります。
+  - `attempted_failed`: 途中で tmux が失敗しました（`typing_failed`、
+    `enter_failed`）。ペインに何が届いたかは分かりません。
+- `enter_sent` は、`Enter` を試していなければ `false`、tmux が受け付けたら
+  `true`、試したが結果が分からなければ `null` です。`true` はサイドキックが
+  受け取ったという意味ではありません。
+- 終了コードはこれまでどおりで、`attempted_seen` と `attempted_unchecked` は
+  0、それ以外は 1 です。どちらも配達の証明ではありません。送り直す前に
+  `ccm capture` で確かめ、`outcome` だけを根拠に送り直さないでください。
+- `--json` はフラグの位置でだけ効きます。`--` の後ではメッセージの一部、
+  `--file` の値としてはファイル名です。`message` は文章の出力と同じ一文で、
+  失敗のときは標準エラーにも出します。
+
 ### 互換性
 
 `"schema": 1` の間は、項目と値を追加するだけです。読む側は、知らない項目を
@@ -950,7 +994,7 @@ Claude Code 以外のエージェント CLI を、プロジェクトウィンド
 機能する規約は次のとおりです:
 
 - **他のエージェント → Claude**: 相手側が `ccm send <project> "<message>"` を実行します。state gating が効き（PERMIT には決して送らない）、メッセージは Claude の新しいターンとして着弾します。誰も見張る必要はありません。
-- **Claude → 自分のウィンドウのサイドキック**: プロジェクトのウィンドウのペインから `ccm sidekick-send "<message>"` を実行します。事前に `ccm capture <自分のプロジェクト>` で相手が入力可能かを確認してください。Codex と Antigravity のサイドキックでは、キーを待つダイアログが画面に出ていればコマンドも拒否します（先にダイアログに答えてください）。Codex のペインで文字を選択しているときも、キーが選択のほうへ渡るため拒否します（先に選択を解除してください）。画面が読めないときは送ります。あとの手順はコマンドが機械的に行います（かつて手順書が注意力に委ねていた部分です）: tmux のメタデータからサイドキックのペインを特定し（既知の外部エージェント CLI で、作業ディレクトリがこのプロジェクトに属するもの）、0個・2個以上なら拒否し、本文をリテラル（`send-keys -l --`）で打ち込み、0.3秒待ってから `Enter` を別送し、送信後に capture してメッセージの断片が実際に現れたかを確認します。確認できなければ非ゼロ終了になります。
+- **Claude → 自分のウィンドウのサイドキック**: プロジェクトのウィンドウのペインから `ccm sidekick-send "<message>"` を実行します。事前に `ccm capture <自分のプロジェクト>` で相手が入力可能かを確認してください。コマンドは、サイドキックがキーを待っているのが分かれば拒否します。Codex や Antigravity の画面に出たダイアログ、画面が読めない間の Codex の hook に残った承認待ちの記録、Kimi や Grok の承認待ちの印がそれにあたります（先に答えてください）。Codex のペインで文字を選択しているときも、キーが選択のほうへ渡るため拒否します（先に選択を解除してください）。ペインでどのプロセスが動いているか分からないときも拒否します。`Enter` の直前にもう一度確かめ、待ちが現れたかサイドキックが起動し直されていれば `Enter` を押しません。サイドキックが何をしているか分からないだけのときは送ります。あとの手順はコマンドが機械的に行います（かつて手順書が注意力に委ねていた部分です）: tmux のメタデータからサイドキックのペインを特定し（既知の外部エージェント CLI で、作業ディレクトリがこのプロジェクトに属するもの）、0個・2個以上なら拒否し、本文をリテラル（`send-keys -l --`）で打ち込み、0.3秒待ってから `Enter` を別送し、送信後に capture してメッセージの断片が実際に現れたかを確認します。確認できなければ非ゼロ終了になります。
 
   手で他の TUI に打ち込むことがあれば、コマンドに内蔵された各部の理由は今でも有効です。`-l` はテキストをリテラルに送るもので、付けないと tmux は引数を**キー名**として解決し、`Space` や `Enter` といった語がそのキー入力に化けます。改行キーは CLI ごとに異なり（Claude は `M-Enter`）、複数行の本文は行ごとにリテラル送信して間に相手の改行キーを挟みます。`ccm sidekick-send` は `M-Enter` を使います。
 

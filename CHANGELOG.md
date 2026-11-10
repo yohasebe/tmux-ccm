@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **`ccm status --json`.** Agents and scripts can read each window's state, its sidekicks' states and the queued messages as one JSON object, for all windows, one by name, or `self`.
+- **`ccm sidekick-send --json`.** The result of a send comes back as one JSON object: refused before any key, or attempted, with whether a fragment of the message appeared and whether Enter was sent.
+
+### Changed
+
+- **`ccm sidekick-send` stops for more waits.** It refuses a sidekick whose wait it learns from Codex's hooks or a Kimi or Grok marker, not only from the screen, and one whose process it cannot identify; it looks again before Enter and leaves Enter unsent if a wait appeared or the sidekick was restarted.
 
 ## [0.13.0] - 2026-11-05
 
