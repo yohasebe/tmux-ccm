@@ -568,6 +568,54 @@ def test_process_birth_stable_and_complete(monkeypatch):
         ['200', 'Wed Sep 1 00:00:00 2026'], ['201', 'Wed Sep 1 00:00:01 2026']]
 
 
+PROCESSES = ['200 1 200 zsh', '201 200 200 codex', '202 201 200 node',
+             '300 1 300 zsh', '301 300 300 kimi', '400 1 400 zsh',
+             '500 1 500 zsh', '501 500 500 grok-macos-aarch64',
+             '600 1 600 agy', '700 1 700 codex']
+
+
+@pytest.mark.parametrize('pane_pid, agent, expected', [
+    ('200', 'codex', ['200', '201']),
+    ('300', 'kimi', ['300', '301']),
+    ('500', 'grok', ['500', '501']),
+    ('600', 'agy', ['600']),      # started as the pane's own command
+    ('700', 'codex', ['700']),
+    ('300', 'codex', None),
+    ('400', 'grok', None),
+])
+def test_agent_process_identity_finds_that_agent(monkeypatch, pane_pid, agent, expected):
+    asked = []
+    monkeypatch.setattr(notices, '_process_identity',
+                        lambda pids: asked.append(sorted(set(pids)))
+                        or [[p, 'birth'] for p in sorted(set(pids))])
+    identity = notices.agent_process_identity(pane_pid, agent, PROCESSES)
+    assert identity == ([[p, 'birth'] for p in expected] if expected else None)
+    assert asked == ([expected] if expected else [])
+
+
+def test_codex_identity_is_unchanged_by_the_shared_reader(monkeypatch):
+    monkeypatch.setattr(notices, '_process_identity', lambda pids: list(pids))
+    assert notices.process_identity('200', PROCESSES) == ['200', '201']
+
+
+def test_claude_identity_is_found_like_claude_everywhere(monkeypatch):
+    monkeypatch.setattr(notices, '_process_identity', lambda pids: list(pids))
+    import ccm_detection
+    monkeypatch.setattr(ccm_detection, 'find_claude_pid',
+                        lambda pid, lines: '401' if pid == '400' else None)
+    assert notices.agent_process_identity('400', 'claude', PROCESSES) == ['400', '401']
+    assert notices.agent_process_identity('300', 'claude', PROCESSES) is None
+
+
+def test_restarted_agent_in_the_same_pane_is_another_identity(monkeypatch):
+    births = {'301': 'birth-A'}
+    monkeypatch.setattr(notices, '_process_identity',
+                        lambda pids: [[p, births.get(p, 'shell')] for p in sorted(pids)])
+    before = notices.agent_process_identity('300', 'kimi', PROCESSES)
+    births['301'] = 'birth-B'
+    assert notices.agent_process_identity('300', 'kimi', PROCESSES) != before
+
+
 def test_hook_main_always_silent_on_malformed_input(monkeypatch, capsys):
     import io
     monkeypatch.setattr('sys.stdin', SimpleNamespace(buffer=io.BytesIO(b'{invalid')))
@@ -1052,7 +1100,7 @@ def test_pane_activity_forgets_an_old_open_turn(world):
     server = 'server-example:1:socket-example'
     world['emit']('UserPromptSubmit')
     later = world['now'] + notices.HOOK_ACTIVITY_MAX_AGE + 1
-    assert notices.pane_activity(server, now=later)['%2'][0] == 'IDLE'
+    assert notices.pane_activity(server, now=later)['%2'][0] is None
     just_inside = world['now'] + notices.HOOK_ACTIVITY_MAX_AGE
     assert notices.pane_activity(server, now=just_inside)['%2'][0] == 'BUSY'
 

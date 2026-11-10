@@ -1427,13 +1427,13 @@ def cmd_sidekick_send(args):
     # instead of sending. Where ccm reads the sidekick's screen (Codex,
     # Antigravity), refuse while it shows either; a screen it cannot
     # read is sent to as before.
-    state, holds_keys = ccm_core.sidekick_screen(pane_id, agent)
+    state, keys = ccm_core.sidekick_screen(pane_id, agent)
     if state == "PERMIT":
         ccm_core.ccm_die(
             f"The sidekick ({agent}, {pane_id}) is waiting on a dialog — "
             "refusing to type into it. Answer the dialog in that pane "
             "first, then retry.")
-    if holds_keys:
+    if keys == "held":
         ccm_core.ccm_die(
             f"The sidekick ({agent}, {pane_id}) shows a view that takes "
             "keys (such as selected text) — refusing to type into it. "

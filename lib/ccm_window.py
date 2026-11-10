@@ -444,8 +444,8 @@ def _waiting_sidekick_pane(win_target, rows, ps_lines):
         if not all(pane_id in listed for _, pane_id, _, _, _ in rows):
             return None
         markers = ccm_core._read_attention_markers(cache, ps_lines)
-        states = ccm_core.sidekick_pane_states(cache, target, markers, [],
-                                               ps_lines)
+        states = ccm_core.sidekick_pane_states(ccm_core.observe_sidekicks(
+            cache, target, markers, [], ps_lines))
     except Exception:
         ccm_core.log_caught_exception("sidekick_focus")
         return None

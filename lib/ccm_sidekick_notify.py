@@ -217,19 +217,34 @@ def _process_identity(pids):
 
 
 def _source_identity(pane, lines):
+    return agent_process_identity(pane.pane_pid, 'codex', lines)
+
+
+def agent_process_identity(pane_pid, agent, lines):
+    """Birth identity of the `agent` sidekick running in a pane: the
+    pane's own process and the agent's processes under it, each with
+    its start time, so a sidekick restarted in the same pane (same pane
+    id, pane pid and command) reads as another one. `agent` is a short
+    name (`external_agent_name`) or "claude", found the way Claude is
+    found everywhere else. None when no such process is found or the
+    process list cannot be read."""
+    if agent == 'claude':
+        import ccm_detection
+        claude = ccm_detection.find_claude_pid(str(pane_pid), lines)
+        return _process_identity([str(pane_pid), str(claude)]) if claude else None
     parents, commands = {}, {}
     for line in lines:
         fields = line.split()
         if len(fields) >= 4:
             parents[fields[0]], commands[fields[0]] = fields[1], os.path.basename(fields[3])
-    children = {str(pane.pane_pid)}
+    children = {str(pane_pid)}
     while True:
         more = {pid for pid, parent in parents.items() if parent in children}
         if more <= children:
             break
         children |= more
-    codex = [pid for pid in children if ccm_core.external_agent_name(commands.get(pid, '')) == 'codex']
-    return _process_identity([str(pane.pane_pid)] + codex) if codex else None
+    found = [pid for pid in children if ccm_core.external_agent_name(commands.get(pid, '')) == agent]
+    return _process_identity([str(pane_pid)] + found) if found else None
 
 
 def _context(cwd):
@@ -676,7 +691,9 @@ HOOK_ACTIVITY_MAX_AGE = 1800
 
 def pane_activity(server, now=None):
     """What the hooks last said about each Codex pane of this tmux
-    server: {pane id: ("PERMIT" | "BUSY" | "IDLE", process identity)}.
+    server: {pane id: ("PERMIT" | "BUSY" | "IDLE" | None, process
+    identity)}, None for a record past HOOK_ACTIVITY_MAX_AGE, which no
+    longer says anything.
     Read-only. The screen decides when it is legible
     (`ccm_constants.codex_screen_state`); this answers only for a pane
     whose screen shows none of its marks, and only for the Codex process
@@ -694,7 +711,9 @@ def pane_activity(server, now=None):
             continue
         if pane in newest and newest[pane][0] >= received:
             continue  # an older window binding that once had this pane id
-        if state.get('ended') or now - received > HOOK_ACTIVITY_MAX_AGE:
+        if now - received > HOOK_ACTIVITY_MAX_AGE:
+            value = None
+        elif state.get('ended'):
             value = 'IDLE'
         elif state.get('waits'):
             value = 'PERMIT'

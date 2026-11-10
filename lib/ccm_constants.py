@@ -999,6 +999,23 @@ SIDEKICK_SCREEN_READERS = {"codex": codex_screen_state, "agy": agy_screen_state}
 SIDEKICK_KEY_HOLDERS = {"codex": codex_screen_holds_keys}
 
 
+def sidekick_screen_reading(name, lines):
+    """(state, keys) read from one screen of sidekick `name`. `state` is
+    the reader's answer ("PERMIT", "BUSY", "IDLE") or None. `keys` is
+    "held" when a dialog or a view takes typed keys, "free" when the
+    reader found its composer in front, and None when neither can be
+    told (no reader, or a screen it does not recognise)."""
+    reader = SIDEKICK_SCREEN_READERS.get(name)
+    if reader is None or not lines:
+        return None, None
+    state = reader(lines)
+    holder = SIDEKICK_KEY_HOLDERS.get(name)
+    if state == "PERMIT" or (holder and holder(lines)):
+        return state, "held"
+    # IDLE and BUSY are only answered when the reader found its composer.
+    return state, ("free" if state in ("IDLE", "BUSY") else None)
+
+
 #: The two launch commands. A launch into an existing shell always
 #: types the first; `ccm add` types the second only when ccm has
 #: seen that the directory holds no conversation to resume

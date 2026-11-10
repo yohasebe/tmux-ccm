@@ -5,7 +5,7 @@ import pytest
 
 import ccm_core
 import ccm_pane_state
-from ccm_constants import agy_screen_state
+from ccm_constants import agy_screen_state, sidekick_screen_reading
 
 
 def lines(text):
@@ -74,6 +74,28 @@ SUBAGENT_APPROVAL = lines(f"""\
   ● Agent(self: Reader)  Reading file · 3m12s
 {RULE}
 ? for shortcuts                              auto · Example Model · medium · 2 subagent(s)""")
+
+
+class TestScreenReading:
+    """State and keys from one screen: keys are free only where the
+    reader found its composer, held under any approval."""
+
+    @pytest.mark.parametrize("screen, expected", [
+        ("IDLE", ("IDLE", "free")),
+        ("WORKING", ("BUSY", "free")),
+        ("APPROVAL", ("PERMIT", "held")),
+        ("SUBAGENT_APPROVAL", ("PERMIT", "held")),
+    ])
+    def test_agy(self, screen, expected):
+        assert sidekick_screen_reading("agy", globals()[screen]) == expected
+
+    @pytest.mark.parametrize("name, screen", [
+        ("agy", lines("some transcript\nmore text\nand more\nlast")),
+        ("agy", []),
+        ("kimi", IDLE),
+    ])
+    def test_unknown(self, name, screen):
+        assert sidekick_screen_reading(name, screen) == (None, None)
 
 
 class TestAgyScreenState:

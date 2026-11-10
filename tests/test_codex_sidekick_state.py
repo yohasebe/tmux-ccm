@@ -304,6 +304,100 @@ class TestBuildProjectListCodex:
         assert p.busy_agents == ()
 
 
+class TestObservation:
+    """One observation per sidekick pane: state, its source and whether
+    keys reach the composer, with unknown kept as None rather than idle."""
+
+    def observe(self, window):
+        cache = ccm_core._build_panes_cache()
+        return {o.pane: o for o in ccm_core.observe_sidekicks(
+            cache, WIN, ccm_core._read_attention_markers(cache, []), [], [])}
+
+    @pytest.mark.parametrize("screen, state, keys", [
+        ("IDLE", "IDLE", "free"),
+        ("WORKING", "BUSY", "free"),
+        ("APPROVAL", "PERMIT", "held"),
+        ("SELECTION_WORKING", "BUSY", "held"),
+    ])
+    def test_screen(self, window, screen, state, keys):
+        window["screen"] = globals()[screen]
+        o = self.observe(window)["%2"]
+        assert (o.agent, o.state, o.state_source, o.keys) == (
+            "codex", state, "screen", keys)
+
+    def test_the_claude_pane_is_not_a_sidekick(self, window):
+        assert set(self.observe(window)) == {"%2"}
+
+    @pytest.mark.parametrize("hook, keys", [
+        ("PERMIT", "held"), ("BUSY", None), ("IDLE", None)])
+    def test_illegible_screen_takes_a_valid_hook_record(self, window, hook, keys):
+        window["screen"] = []
+        window["hooks"] = {"%2": (hook, [["200", "birth-A"]])}
+        o = self.observe(window)["%2"]
+        assert (o.state, o.state_source, o.keys) == (hook, "hook", keys)
+
+    @pytest.mark.parametrize("hooks, identity", [
+        ({}, [["200", "birth-A"]]),                              # no record
+        ({"%2": (None, [["200", "birth-A"]])}, [["200", "birth-A"]]),  # past its age
+        ({"%2": ("IDLE", [["200", "birth-A"]])}, [["200", "birth-B"]]),  # another process
+        ({"%2": ("IDLE", [["200", "birth-A"]])}, None),          # cannot tell
+    ])
+    def test_unknown_is_none_not_idle(self, window, hooks, identity):
+        window["screen"] = []
+        window["hooks"] = hooks
+        window["identity"] = identity
+        o = self.observe(window)["%2"]
+        assert (o.state, o.state_source, o.keys) == (None, None, None)
+
+    def test_toggle_off_hides_the_badge_state_not_the_observation(self, window):
+        window["toggle"] = "off"
+        window["screen"] = APPROVAL
+        assert window["build"]().attention_agents == ()
+        assert self.observe(window)["%2"].state == "PERMIT"
+
+    def test_badge_states_keep_only_permit_and_busy(self):
+        O = ccm_core.SidekickObservation
+        observed = [O("codex", "%2", "BUSY", "screen", "free"),
+                    O("kimi", "%3", "PERMIT", "marker", "held"),
+                    O("agy", "%4", "IDLE", "screen", "free"),
+                    O("grok", "%5", None, None, None)]
+        assert ccm_core.sidekick_pane_states(observed) == {
+            "%2": ("codex", "BUSY"), "%3": ("kimi", "PERMIT")}
+
+
+class TestObservationWithoutAScreenReader:
+    """Kimi, Grok and an ignored Claude are known only from a waiting
+    marker; no marker says nothing about them."""
+
+    PANES = [(WIN, "100", "%1", "claude", "1", "40", "", ""),
+             (WIN, "300", "%3", "kimi", "0", "40", "", ""),
+             (WIN, "400", "%4", "2.1.321", "0", "40", "1", ""),
+             (WIN, "500", "%5", "zsh", "0", "40", "", "")]
+
+    @pytest.fixture(autouse=True)
+    def _stubs(self, monkeypatch):
+        monkeypatch.setattr(ccm_core.ccm_detection, "find_claude_pid",
+                            lambda pid, lines: {"100": "101", "400": "401"}.get(pid))
+        monkeypatch.setattr(ccm_pane_state, "capture_pane_screen",
+                            lambda pane: pytest.fail("no screen to read"))
+
+    def observe(self, markers):
+        return {o.pane: o for o in ccm_core.observe_sidekicks(
+            self.PANES, WIN, markers, [], ["ps"])}
+
+    def test_no_marker_is_unknown(self):
+        observed = self.observe({})
+        assert set(observed) == {"%3", "%4"}
+        assert observed["%3"] == ("kimi", "%3", None, None, None)
+        assert observed["%4"] == ("claude", "%4", None, None, None)
+
+    def test_waiting_marker_is_permit_with_held_keys(self):
+        observed = self.observe({"%3": {"agent": "kimi", "state": "waiting"},
+                                 "%4": {"agent": "claude", "state": "waiting"}})
+        assert observed["%3"] == ("kimi", "%3", "PERMIT", "marker", "held")
+        assert observed["%4"] == ("claude", "%4", "PERMIT", "marker", "held")
+
+
 def project(agents=("codex",), attention=(), busy=()):
     return SimpleNamespace(external_agents=agents, attention_agents=attention,
                            busy_agents=busy)
