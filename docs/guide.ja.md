@@ -97,6 +97,9 @@ STATUS       PROJECT              MODE     BRANCH           PORTS        DIRECTO
 ノイズ削減のため非表示）。セッション中のモード変更（shift+tab）は次の
 フック発火時に反映されます。
 
+エージェントやスクリプト向けには、`ccm status --json` が各窓とその相棒の状態を
+JSON で返します（[機械可読な出力](#機械可読な出力)を参照）。
+
 ## ダッシュボード
 
 `prefix + Tab` で開きます。プロジェクト管理のメインインターフェースです。prefixなしの単一キー（例: `F1`）でトグルする設定も可能です — 詳しくは[READMEのキーバインドセクション](../README.ja.md#キーバインド)を参照してください。
@@ -645,6 +648,81 @@ ccm snapshot delete old
 ```
 
 固定予備 `_autosave.prev` は一覧に出ません。予備を使うときは保存ディレクトリで未使用の `recovery.json` にコピーし、モードを 0600 にして `ccm start recovery` を実行します。復元途中の記録がある場合は、先に元の復元の状態を確認してください。[形式・保護・予備・競合の詳細](diagnostics.ja.md#スナップショットの保存点)を参照してください。
+
+## 機械可読な出力
+
+エージェントやスクリプトは、ccm の答えを文章の表ではなく JSON で読めます。
+実行ごとに標準出力へ JSON を 1 つ出します。失敗したときも同じです。
+
+### `ccm status --json`
+
+```bash
+ccm status --json             # 登録されたすべての窓
+ccm status --json my-project  # my-project として登録された窓
+ccm status --json self        # このコマンドを実行した窓
+```
+
+```json
+{
+  "schema": 1,
+  "ccm_version": "0.13.0",
+  "generated_at": 1794261478,
+  "hooks": {"configured": true},
+  "warnings": [],
+  "spool": {"pending": 0, "held": 0, "expired": 0},
+  "projects": [
+    {
+      "window_id": "@12",
+      "name": "my-project",
+      "dir": "/projects/my-project",
+      "dir_raw": "/projects/my-project",
+      "state": "IDLE",
+      "bg": false,
+      "permission_mode": "default",
+      "completed_at": 1794261400,
+      "branch": "main",
+      "sidekicks": [
+        {"agent": "codex", "pane": "%34", "state": "BUSY",
+         "state_source": "screen", "keys": "free"}
+      ]
+    }
+  ]
+}
+```
+
+- `projects` は tmux の窓 1 つにつき 1 件です。複数のセッションにリンクされた
+  窓は 1 件に数え、同じディレクトリの窓が 2 つあれば両方を出します（文章の
+  表は最初の 1 つだけを出します）。
+- `state` は窓の状態で、`PERMIT`、`BUSY`、`IDLE`、`SHELL`、`IGNORED`、
+  `DOWN` のいずれかです。
+- `dir` は解決した絶対パスで、解決できなければ `null` です。`dir_raw` は
+  登録されたままのディレクトリです。窓を特定するのはディレクトリではなく
+  `window_id` です。
+- `permission_mode` は Claude Code が報告するモード（`default`、
+  `acceptEdits`、`plan`、`auto` など）で、分からなければ `null` です。
+- `completed_at` は最後のターンが完了した時刻（エポック秒）で、まだ無ければ
+  `null` です。
+- `hooks.configured` は設定を読めなければ `null` です。
+- `sidekicks` の各要素は、その窓のサイドキックのペインです。
+  - `state` は `PERMIT`、`BUSY`、`IDLE`、または ccm が判断できないときの
+    `null` です。`null` は空きという意味ではありません。
+  - `state_source` は状態の出どころです。`screen`、`hook`（画面が読めない
+    間に使う Codex の hook の記録）、`marker`（Kimi、Grok、2 つ目の Claude
+    の承認待ちの印）のいずれかで、`state` が `null` のときは `null` です。
+  - `keys` は、ダイアログや画面が打鍵を受け取るなら `held`、入力欄が前面に
+    あると確認できれば `free`、判断できなければ `null` です。`free` は
+    送ったメッセージが受け取られることを約束するものではありません。
+- 失敗したときは `error.code` と `error.message` を返し、終了コードは 1 です。
+  コードは `usage`、`no_match`、`ambiguous`（その名前の窓が複数あり、どれも
+  選ばない）、`self_unresolved`、`tmux_unavailable` です。
+  `ccm status --json --help` は使い方を `help` として返します。
+
+### 互換性
+
+`"schema": 1` の間は、項目と値を追加するだけです。読む側は、知らない項目を
+無視し、知らない値を「分からない」として扱い、それを根拠に操作や再送を
+しないでください。受け取った `schema` に対応していない読み手は、その出力を
+使わないでください。
 
 ## Tips
 

@@ -389,6 +389,30 @@ def external_agent_badge(project):
 PROJECT_COL_W = 20
 PROJECT_NAME_KEEP = 12
 
+def status_warnings(projects):
+    """The warnings `ccm status` prints above its table, and
+    `ccm status --json` returns, for these projects."""
+    warnings = [w for w in (
+        ccm_canaries.hooks_log_warning(),
+        ccm_canaries.disable_all_hooks_warning(),
+        ccm_canaries.managed_hooks_only_warning(),
+    ) if w]
+    warnings += ccm_canaries.shell_cluster_warnings(projects)
+    warnings += ccm_canaries.hook_silence_warnings(projects)
+    # A project whose launch command will not resume its conversation:
+    # the newest transcript hands off to a background session the
+    # daemon still lists, so `claude --continue` starts fresh there.
+    warnings += ccm_agentview.continue_blocker_warnings(projects)
+    # A message that expired without arriving is a loss, not a queue
+    # length — the same weight the dashboard gives it. Left in the dim
+    # summary below it read as routine to anyone (or anything) that
+    # polls this output.
+    expired_msg = spool_expired_warning()
+    if expired_msg:
+        warnings.append(expired_msg)
+    return warnings
+
+
 def print_status():
     """Print status of all ccm projects (for `ccm status` CLI command)."""
     projects = ccm_core.build_project_list(fast=False)
@@ -401,29 +425,8 @@ def print_status():
 
     if not ccm_core.hooks_configured():
         print(f"{C_DIM}Hooks: OFF (run 'ccm setup-hooks' for improved detection){C_RESET}")
-    for warning in (
-        ccm_canaries.hooks_log_warning(),
-        ccm_canaries.disable_all_hooks_warning(),
-        ccm_canaries.managed_hooks_only_warning(),
-    ):
-        if warning:
-            print(f"\033[33m⚠ {warning}\033[0m")
-    for cluster_msg in ccm_canaries.shell_cluster_warnings(projects):
-        print(f"\033[33m⚠ {cluster_msg}\033[0m")
-    for silence_msg in ccm_canaries.hook_silence_warnings(projects):
-        print(f"\033[33m⚠ {silence_msg}\033[0m")
-    # A project whose launch command will not resume its conversation:
-    # the newest transcript hands off to a background session the
-    # daemon still lists, so `claude --continue` starts fresh there.
-    for handoff_msg in ccm_agentview.continue_blocker_warnings(projects):
-        print(f"\033[33m⚠ {handoff_msg}\033[0m")
-    # A message that expired without arriving is a loss, not a queue
-    # length — the same weight the dashboard gives it. Left in the dim
-    # summary below it read as routine to anyone (or anything) that
-    # polls this output.
-    expired_msg = spool_expired_warning()
-    if expired_msg:
-        print(f"\033[33m⚠ {expired_msg}\033[0m")
+    for warning in status_warnings(projects):
+        print(f"\033[33m⚠ {warning}\033[0m")
     print()
 
     # A SHELL row hosting an external agent says so once, with the

@@ -382,6 +382,7 @@ ccm remove <name>                 プロジェクトウィンドウ削除（ウ�
 ccm attach <name|number>          プロジェクトウィンドウに切替
 ccm list                          管理中プロジェクト一覧
 ccm status                        全プロジェクト状態表示（permission mode・ブランチ・ポート含む）
+ccm status --json [name|self]     窓と相棒の状態を JSON で出力（エージェント・スクリプト向け）
 ccm tree                          セッション/ウィンドウ/ペインの階層表示
 ccm ports                         プロジェクトごとのリスニングポート表示
 ccm capture [--copy] <name|#id>   ペイン内容をキャプチャ（--copy: クリップボード）

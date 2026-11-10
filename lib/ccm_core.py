@@ -687,14 +687,15 @@ class Project:
         "branch", "ports", "completed_at", "bg_active", "pane_count",
         "ignored_panes", "permission_mode", "sort_key",
         "cached_session_id", "external_agents", "attention_agents",
-        "busy_agents",
+        "busy_agents", "window_id", "completed_raw", "sidekicks",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
                  branch="", ports="", completed_at=0, bg_active=False,
                  pane_count=1, permission_mode="", ignored_panes=0,
                  cached_session_id=None, external_agents=(),
-                 attention_agents=(), busy_agents=()):
+                 attention_agents=(), busy_agents=(), window_id="",
+                 completed_raw=None, sidekicks=()):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -745,6 +746,14 @@ class Project:
         # whose screen and hooks say so. Display-only like
         # attention_agents; an agent in both shows as attention.
         self.busy_agents = busy_agents
+        # tmux `#{window_id}` ("@N"): one id for a window linked into
+        # several sessions, unlike win_target.
+        self.window_id = window_id
+        # `@ccm_completed_at` as stored (epoch seconds), None when unset.
+        # `completed_at` above mixes in window activity for sorting.
+        self.completed_raw = completed_raw
+        # SidekickObservation per sidekick pane; () on the fast path.
+        self.sidekicks = sidekicks
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
@@ -794,7 +803,7 @@ _WINDOW_FORMAT = (
     "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
     "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}\t"
     "#{@ccm_work_clock}\t#{@ccm_work_clock_ts}\t#{@ccm_unresolved_idle}\t"
-    "#{status-interval}\t#{@ccm_restore_pending}"
+    "#{status-interval}\t#{@ccm_restore_pending}\t#{window_id}"
 )
 _WINDOW_FIELDS_MIN = 6  # win_target, project, dir, prev_state, completed_at, win_activity
 
@@ -898,6 +907,7 @@ def _parse_window_line(line):
         "work_clock_ts": work_clock_ts,
         "unresolved_idle": parts[11] if len(parts) >= 12 else "",
         "status_interval": parts[12] if len(parts) >= 13 else "",
+        "window_id": parts[14] if len(parts) >= 15 else "",
     }
 
 
@@ -1243,8 +1253,17 @@ def _codex_hook_activity():
         return {}
 
 
-def build_project_list(fast=False):
+def build_project_list(fast=False, *, by_window=False, window_id=None,
+                       windows=None):
     """Build the active project list from tmux state.
+
+    One Project per project directory, the first window that has it
+    (what `ccm status` and the dashboard show), or with `by_window`
+    one per tmux window, a window linked into several sessions once.
+    `window_id` builds only that window (implies `by_window`): the
+    other windows are neither detected, observed nor reconciled.
+    `windows` is a `list-windows` output in `_WINDOW_FORMAT` the caller
+    already holds, so a selection and the records come from one listing.
 
     Two paths:
       - fast=True  → statusline path. Uses `@ccm_prev_state` plus a
@@ -1261,15 +1280,22 @@ def build_project_list(fast=False):
     if _force_mock_state():
         fast = True
 
-    raw = tmux_cmd("list-windows", "-a", "-F", _WINDOW_FORMAT)
+    raw = (windows if windows is not None
+           else tmux_cmd("list-windows", "-a", "-F", _WINDOW_FORMAT))
     if not raw:
         return []
+    # The selected window under every session it is linked into.
+    only = None
+    if window_id is not None:
+        only = {row["win_target"] for row in map(
+            _parse_window_line, raw.split("\n"))
+            if row and row["window_id"] == window_id}
 
     ps_lines = [] if fast else ps_snapshot().strip().split("\n")
     panes_cache = [] if fast else _build_panes_cache()
     import ccm_roles
     for pc in panes_cache:
-        if len(pc) >= 8 and pc[7]:
+        if len(pc) >= 8 and pc[7] and (only is None or pc[0] in only):
             agent = 'claude' if ccm_detection.find_claude_pid(pc[1], ps_lines) else external_agent_name(pc[3])
             ccm_roles.reconcile(pc[2], pc[7], agent)
     own_pgid = str(os.getpgrp())
@@ -1279,10 +1305,11 @@ def build_project_list(fast=False):
         # it adds costs nothing but its text.
         ccm_pane_state.prefetch_visible([
             pc[2] for pc in panes_cache
-            if (not _pane_is_ignored(pc)
+            if (only is None or pc[0] in only)
+            and (not _pane_is_ignored(pc)
                 and pc[3] not in SHELL_FOREGROUND_COMMANDS
-                and ccm_detection.find_claude_pid(pc[1], ps_lines))
-            or external_agent_name(pc[3]) in SIDEKICK_SCREEN_READERS])
+                and ccm_detection.find_claude_pid(pc[1], ps_lines)
+                or external_agent_name(pc[3]) in SIDEKICK_SCREEN_READERS)])
     codex_hooks = []  # filled on first need: [ {pane: state} ]
     # Sidekick attention markers: read once per build (a single
     # readdir), lazily on the first row. {} on the fast path. Never
@@ -1296,11 +1323,15 @@ def build_project_list(fast=False):
         row = _parse_window_line(line)
         if row is None:
             continue
-
-        resolved = canonical_dir(row["proj_dir"])
-        if resolved in seen_dirs:
+        if window_id is not None and row["window_id"] != window_id:
             continue
-        seen_dirs.add(resolved)
+
+        key = (row["window_id"] or row["win_target"]
+               if by_window or window_id is not None
+               else canonical_dir(row["proj_dir"]))
+        if key in seen_dirs:
+            continue
+        seen_dirs.add(key)
 
         completed_at = _safe_int(row["completed_at_str"])
         win_activity = _safe_int(row["win_activity_str"])
@@ -1375,6 +1406,9 @@ def build_project_list(fast=False):
             external_agents=external_agents,
             attention_agents=attention_agents,
             busy_agents=busy_agents,
+            window_id=row["window_id"],
+            completed_raw=completed_at or None,
+            sidekicks=tuple(observations),
         ))
 
     projects.sort(key=lambda p: p.sort_key)
@@ -1703,6 +1737,7 @@ def fzf_select(items, prompt="Select: "):
 import ccm_canaries  # noqa: E402, F401
 import ccm_commands  # noqa: E402, F401
 import ccm_detection  # noqa: E402, F401
+import ccm_json  # noqa: E402, F401
 import ccm_jsonl  # noqa: E402, F401
 import ccm_notify  # noqa: E402, F401
 import ccm_pane_state  # noqa: E402, F401
@@ -1858,8 +1893,8 @@ def _passthrough_argparse_config(p):
 # Use `_passthrough_argparse_config` as the configurer to opt a
 # subcommand into raw-argv passthrough (handler parses its own flags).
 _SUBCOMMANDS = (
-    ("status", lambda p: None,
-     lambda a: ccm_render.print_status()),
+    ("status", _passthrough_argparse_config,
+     lambda a: ccm_json.cmd_status(a.rest)),
     ("ports", lambda p: None,
      lambda a: ccm_render.print_ports()),
     ("tree", lambda p: None,

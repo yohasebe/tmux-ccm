@@ -376,6 +376,7 @@ ccm remove <name>                 Remove project window (kill window)
 ccm attach <name|number>          Switch to project window
 ccm list                          List managed projects
 ccm status                        Show projects with status, permission mode, branch, ports
+ccm status --json [name|self]     Window and sidekick states as JSON, for agents and scripts
 ccm tree                          Show session/window/pane hierarchy
 ccm ports                         Show listening ports per project
 ccm capture [--copy] <name|#id>   Capture pane content (--copy: clipboard)

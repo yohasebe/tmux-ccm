@@ -96,6 +96,9 @@ information as a `{mode}` badge after the project name, omitted for the
 everyday `manual` mode to keep rows quiet. A mid-session mode change
 (shift+tab) updates on the next hook firing.
 
+For agents and scripts, `ccm status --json` returns each window's state
+and its sidekicks' as JSON (see [Machine-readable Output](#machine-readable-output)).
+
 ## The Dashboard
 
 Open with `prefix + Tab`. This is the primary interface for managing projects. You can also bind a single key (e.g. `F1`) for prefix-free toggle — see the [Keybindings section in README](../README.md#keybindings) for details.
@@ -642,6 +645,83 @@ ccm snapshot delete old
 ```
 
 The fixed `_autosave.prev` backup is absent from the list. To use it, copy it in the snapshot directory to an unused name such as `recovery.json`, set its mode to 0600, then run `ccm start recovery`. Inspect an existing incomplete restore before switching checkpoints. See [format, protection, backup and conflict details](diagnostics.md#snapshot-checkpoints).
+
+## Machine-readable Output
+
+Agents and scripts can read ccm's answers as JSON instead of the text
+tables. Each run prints one JSON object on stdout, failures included.
+
+### `ccm status --json`
+
+```bash
+ccm status --json             # every registered window
+ccm status --json my-project  # the window registered as my-project
+ccm status --json self        # the window this command runs in
+```
+
+```json
+{
+  "schema": 1,
+  "ccm_version": "0.13.0",
+  "generated_at": 1794261478,
+  "hooks": {"configured": true},
+  "warnings": [],
+  "spool": {"pending": 0, "held": 0, "expired": 0},
+  "projects": [
+    {
+      "window_id": "@12",
+      "name": "my-project",
+      "dir": "/projects/my-project",
+      "dir_raw": "/projects/my-project",
+      "state": "IDLE",
+      "bg": false,
+      "permission_mode": "default",
+      "completed_at": 1794261400,
+      "branch": "main",
+      "sidekicks": [
+        {"agent": "codex", "pane": "%34", "state": "BUSY",
+         "state_source": "screen", "keys": "free"}
+      ]
+    }
+  ]
+}
+```
+
+- `projects` holds one record per tmux window. A window linked into
+  several sessions counts once, and two windows on the same directory
+  both appear (the text table shows only the first).
+- `state` is the window's state: `PERMIT`, `BUSY`, `IDLE`, `SHELL`,
+  `IGNORED` or `DOWN`.
+- `dir` is the resolved absolute path, `null` when it cannot be resolved;
+  `dir_raw` is the directory as registered. A directory does not identify
+  a window; `window_id` does.
+- `permission_mode` is the mode as Claude Code reports it (`default`,
+  `acceptEdits`, `plan`, `auto`, …), `null` when none is known.
+- `completed_at` is when the last turn completed (epoch seconds), `null`
+  when none has.
+- `hooks.configured` is `null` when the settings cannot be read.
+- Each `sidekicks` entry is a sidekick pane of the window:
+  - `state` is `PERMIT`, `BUSY` or `IDLE`, or `null` when ccm cannot
+    tell. `null` does not mean idle.
+  - `state_source` says where the state came from: `screen`, `hook`
+    (Codex's hook record, used while its screen is unreadable) or
+    `marker` (a waiting marker from Kimi, Grok or a second Claude), and
+    is `null` when the state is.
+  - `keys` is `held` when a dialog or a view would take typed keys, `free`
+    when ccm saw the composer in front, and `null` when it cannot tell.
+    `free` is not a promise that a message will be accepted.
+- On failure the object has `error.code` and `error.message`, and the exit
+  code is 1. The codes are `usage`, `no_match`, `ambiguous` (several
+  windows have that name; none is chosen), `self_unresolved` and
+  `tmux_unavailable`. `ccm status --json --help` returns the usage as
+  `help`.
+
+### Compatibility
+
+Within `"schema": 1`, fields and values are only added. A reader should
+ignore fields it does not know, treat a value it does not know as
+unknown, and never act or resend on one. A reader that does not support
+the `schema` it gets should not use the output.
 
 ## Tips
 

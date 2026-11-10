@@ -196,7 +196,7 @@ def window(monkeypatch):
              (WIN, "200", "%2", "codex", "0", "40", "", "")]
     row = {"win_target": WIN, "project": "demo", "proj_dir": "/example/demo",
            "completed_at_str": "", "win_activity_str": "", "bg_active_str": "",
-           "cached_session_id": "", "attention_toggle": ""}
+           "cached_session_id": "", "attention_toggle": "", "window_id": "@1"}
     monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **k: (
         world.__setitem__("server_reads", world["server_reads"] + 1)
         or "server-example" if a[0] == "display-message" else "rows"))

@@ -64,6 +64,7 @@ Usage:
   ccm attach <name|window_index>    Switch to a project window
   ccm list                          List managed project windows
   ccm status                        Show all projects with Claude state
+  ccm status --json [name|self]     Window and sidekick states as JSON, for agents
   ccm tree                          Show session/window/pane hierarchy
   ccm capture [--copy] <name|window_index>  Capture project window (--copy: to clipboard)
   ccm ports                          Show listening ports per project
@@ -134,7 +135,8 @@ case "${1:-help}" in
         "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" list
         ;;
     status|st)
-        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" status
+        shift
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" status "$@"
         ;;
     tree)
         "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" tree

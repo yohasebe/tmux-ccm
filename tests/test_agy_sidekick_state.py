@@ -202,7 +202,7 @@ def window(monkeypatch):
              (WIN, "200", "%2", "agy", "0", "40", "", "")]
     row = {"win_target": WIN, "project": "demo", "proj_dir": "/example/demo",
            "completed_at_str": "", "win_activity_str": "", "bg_active_str": "",
-           "cached_session_id": "", "attention_toggle": ""}
+           "cached_session_id": "", "attention_toggle": "", "window_id": "@1"}
     monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **k: "rows")
     monkeypatch.setattr(ccm_core, "_parse_window_line",
                         lambda line: dict(row, attention_toggle=world["toggle"]))
