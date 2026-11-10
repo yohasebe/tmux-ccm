@@ -736,7 +736,8 @@ ccm sidekick-send --json "Please review request-12.md"
     `caller_unverified`, `wrong_direction` (run from the sidekick itself),
     `outside_project`, `project_dir_unavailable`, `file_unreadable`,
     `stdin_unreadable`, `unsupported_text` (the message holds a NUL
-    character) or `usage`.
+    character), `observation_failed` (ccm could not look at the sidekick)
+    or `usage`.
   - `attempted_seen`: the keys were tried and a fragment of the message
     is visible in the pane. The fragment may be an earlier one; it does
     not prove that this message arrived, arrived whole, or was accepted.
@@ -744,9 +745,10 @@ ccm sidekick-send --json "Please review request-12.md"
   - `attempted_unchecked`: the keys were tried; the message was too short
     to look for.
   - `attempted_stopped`: the message was typed, but before `Enter` a
-    dialog appeared (`dialog`), a view took the keys (`view`), or the
+    dialog appeared (`dialog`), a view took the keys (`view`), the
     pane could not be confirmed to be the same sidekick of this window
-    any more (`pane_changed`), so `Enter` was not sent. The text may be
+    any more (`pane_changed`), or ccm could not look at it again
+    (`observation_failed`), so `Enter` was not sent. The text may be
     in the sidekick's input box.
   - `attempted_failed`: tmux failed part-way (`typing_failed`,
     `enter_failed`); what reached the pane is unknown.

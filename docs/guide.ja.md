@@ -737,7 +737,8 @@ ccm sidekick-send --json "request-12.md をレビューしてください"
     `caller_unverified`、`wrong_direction`（サイドキック側から実行した）、
     `outside_project`、`project_dir_unavailable`、`file_unreadable`、
     `stdin_unreadable`、`unsupported_text`（メッセージに NUL 文字が
-    ある）、`usage` のいずれかです。
+    ある）、`observation_failed`（ccm がサイドキックの様子を確かめられ
+    なかった）、`usage` のいずれかです。
   - `attempted_seen`: キーを送ろうとし、メッセージの断片がペインに見えて
     います。断片は以前のものかもしれず、今回のメッセージが届いたこと、
     全文が届いたこと、受け取られたことの証明にはなりません。
@@ -745,9 +746,10 @@ ccm sidekick-send --json "request-12.md をレビューしてください"
   - `attempted_unchecked`: キーを送ろうとしました。メッセージが短すぎて
     照合していません。
   - `attempted_stopped`: 本文は打ちましたが、`Enter` の前にダイアログが
-    現れた（`dialog`）、キーを受け取る画面になった（`view`）、またはペイン
-    がこの窓の同じサイドキックだと確かめられなくなった（`pane_changed`）
-    ので、`Enter` を送っていません。本文がサイドキックの入力欄に残って
+    現れた（`dialog`）、キーを受け取る画面になった（`view`）、ペインが
+    この窓の同じサイドキックだと確かめられなくなった（`pane_changed`）、
+    または様子をもう一度確かめられなかった（`observation_failed`）ので、
+    `Enter` を送っていません。本文がサイドキックの入力欄に残って
     いる可能性があります。
   - `attempted_failed`: 途中で tmux が失敗しました（`typing_failed`、
     `enter_failed`）。ペインに何が届いたかは分かりません。

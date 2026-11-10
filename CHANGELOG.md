@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **`ccm sidekick-send` stops for more waits.** It refuses a sidekick whose wait it learns from Codex's hooks or a Kimi or Grok marker, not only from the screen, and one whose process it cannot identify; it looks again before Enter and leaves Enter unsent if a wait appeared or the sidekick was restarted.
+- **`ccm sidekick-send` stops for more waits.** It refuses a sidekick whose wait it learns from Codex's hooks or a Kimi or Grok marker, not only from the screen, and one whose process it cannot identify or whose observation fails; it looks again before Enter and leaves Enter unsent if a wait appeared or the sidekick was restarted.
 
 ## [0.13.0] - 2026-11-05
 

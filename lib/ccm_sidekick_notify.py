@@ -127,14 +127,22 @@ def _key(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def _read(path, default=None):
+def _read(path, default=None, strict=False):
+    """The JSON object in `path`, or `default` when there is none. With
+    `strict`, a file that exists but cannot be read raises instead."""
     try:
         if Path(path).is_symlink():
             return default
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
         return data if isinstance(data, dict) else default
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return default
+    except OSError:
+        if strict:
+            raise
+        return default
+    except ValueError:
         return default
 
 
@@ -689,7 +697,7 @@ def reconcile(projects, regular_pending):
 HOOK_ACTIVITY_MAX_AGE = 1800
 
 
-def pane_activity(server, now=None):
+def pane_activity(server, now=None, strict=False):
     """What the hooks last said about each Codex pane of this tmux
     server: {pane id: ("PERMIT" | "BUSY" | "IDLE" | None, process
     identity)}, None for a record past HOOK_ACTIVITY_MAX_AGE, which no
@@ -697,11 +705,22 @@ def pane_activity(server, now=None):
     Read-only. The screen decides when it is legible
     (`ccm_constants.codex_screen_state`); this answers only for a pane
     whose screen shows none of its marks, and only for the Codex process
-    the record was written for (`process_identity`)."""
+    the record was written for (`process_identity`). With `strict`, a
+    record directory or file that exists but cannot be read raises
+    instead of reading as no record."""
     now = time.time() if now is None else now
     newest = {}
-    for path in (Path(ccm_spool.SPOOL_ROOT) / '.sidekick').glob('*.json'):
-        state = _read(path, {})
+    directory = Path(ccm_spool.SPOOL_ROOT) / '.sidekick'
+    try:
+        names = sorted(os.listdir(directory))
+    except FileNotFoundError:
+        names = []
+    except OSError:
+        if strict:
+            raise
+        names = []
+    for path in (directory / name for name in names if name.endswith('.json')):
+        state = _read(path, {}, strict=strict)
         binding = state.get('binding') if isinstance(state, dict) else None
         if not isinstance(binding, dict) or binding.get('server') != server:
             continue

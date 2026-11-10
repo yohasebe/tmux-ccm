@@ -216,7 +216,7 @@ def window(monkeypatch):
         {"%2": world["marker"]} if world["marker"] else {}))
     import ccm_sidekick_notify
 
-    def activity(server, now=None):
+    def activity(server, now=None, strict=False):
         world["hook_reads"] += 1
         return world["hooks"]
     monkeypatch.setattr(ccm_sidekick_notify, "pane_activity", activity)

@@ -13,6 +13,7 @@ import ccm_core
 import ccm_send
 
 _MSG = "review the draft please"  # long enough for a verify signature
+_READ_MARKERS = ccm_core._read_attention_markers  # before any stub
 _CALLER = "@1\tclaude\t/example/proj"  # window_id, command, cwd
 _KIMI = ("%2", "kimi", "/example/proj")
 
@@ -20,7 +21,7 @@ _KIMI = ("%2", "kimi", "/example/proj")
 class TestSidekickSend:
     def _stub(self, monkeypatch, caller_info=_CALLER, panes=(_KIMI,),
               ccm_dir="/example/proj", capture="", markers=None,
-              identities=None, failing_keys=()):
+              identities=None, failing_keys=(), server="server-example"):
         """Install tmux_cmd / tmux_query / TMUX_PANE / time.sleep stubs
         and return the shared call list (time.sleep is recorded into it
         as ("sleep", seconds) so key/pause ordering is assertable).
@@ -32,7 +33,8 @@ class TestSidekickSend:
         dicts by look (the sidekick is looked at before the body and
         before Enter), `identities` the sidekick's process identity by
         look, and `failing_keys` the checked send-keys (by their last
-        key) that tmux does not confirm."""
+        key) that tmux does not confirm. `server` is what tmux says
+        when asked which server it is (None: it cannot be asked)."""
         monkeypatch.setenv("TMUX_PANE", "%1")
         monkeypatch.setattr(ccm_core, "caller_context", lambda **kw: ("demo", "%1"))
         panes_seq = panes if panes and isinstance(panes[0], list) else [panes]
@@ -47,7 +49,7 @@ class TestSidekickSend:
             return [("s:1", "1" + pid[1:], pid, cmd, "0", "40", "", "")
                     for pid, cmd, _ in panes_seq[i]]
 
-        def read_markers(cache, ps_lines):
+        def read_markers(cache, ps_lines, strict=False):
             seq = markers or [{}]
             return seq[min(looks["cache"] - 1, len(seq) - 1)]
 
@@ -60,6 +62,8 @@ class TestSidekickSend:
             calls.append(args)
             if args[0] == "send-keys" and args[-1] in failing_keys:
                 return None
+            if args[0] == "display-message":
+                return server
             return ""
 
         import ccm_sidekick_notify
@@ -533,6 +537,191 @@ class TestSendResult:
         out, code, _ = self.run_json(args, capsys)
         assert (out["outcome"], out["reason"], code) == ("refused", "unsupported_text", 1)
         assert [c for c in calls if c[0] == "send-keys"] == []
+
+    @pytest.mark.parametrize("breaks_on, outcome", [
+        (1, "refused"),             # before the body: no key sent
+        (2, "attempted_stopped"),   # before Enter: Enter not sent
+    ])
+    def test_a_look_that_breaks_stops_the_send(self, stub, monkeypatch, capsys,
+                                               breaks_on, outcome):
+        calls = stub()
+        looks = []
+
+        def markers(cache, ps_lines, strict=False):
+            looks.append(1)
+            if len(looks) == breaks_on:
+                raise RuntimeError("marker directory unreadable")
+            return {}
+        monkeypatch.setattr(ccm_core, "_read_attention_markers", markers)
+        out, code, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], out["enter_sent"], code) == (
+            outcome, "observation_failed", False, 1)
+        assert self.keys(calls) == ([] if breaks_on == 1 else [("-l", "--", _MSG)])
+
+    @pytest.mark.parametrize("breaks_on, outcome", [
+        (1, "refused"), (2, "attempted_stopped")])
+    def test_an_unreadable_marker_directory_stops_the_send(
+            self, stub, monkeypatch, capsys, tmp_path, breaks_on, outcome):
+        import os
+        if os.geteuid() == 0:
+            pytest.skip("root reads any directory")
+        calls = stub()
+        markers = tmp_path / "attention"; markers.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_ATTENTION_DIR", str(markers))
+        looks = []
+
+        def read(cache, ps_lines, strict=False):
+            looks.append(1)
+            if len(looks) == breaks_on:
+                markers.chmod(0)
+            return _READ_MARKERS(cache, ps_lines, strict=strict)
+        monkeypatch.setattr(ccm_core, "_read_attention_markers", read)
+        try:
+            out, _, _ = self.run_json([_MSG], capsys)
+        finally:
+            markers.chmod(0o700)
+        assert (out["outcome"], out["reason"], out["enter_sent"]) == (
+            outcome, "observation_failed", False)
+        assert self.keys(calls) == ([] if breaks_on == 1 else [("-l", "--", _MSG)])
+
+    @pytest.mark.parametrize("breaks_on, outcome", [
+        (1, "refused"), (2, "attempted_stopped")])
+    def test_a_failing_codex_hook_read_stops_the_send(
+            self, stub, monkeypatch, capsys, breaks_on, outcome):
+        import ccm_sidekick_notify
+        # A Codex screen with none of its marks: the hook record decides.
+        calls = stub(panes=(("%2", "codex", "/example/proj"),))
+        reads = []
+
+        def activity(server, now=None, strict=False):
+            reads.append(1)
+            if len(reads) == breaks_on:
+                raise RuntimeError("hook records unreadable")
+            return {}
+        monkeypatch.setattr(ccm_sidekick_notify, "pane_activity", activity)
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], out["enter_sent"]) == (
+            outcome, "observation_failed", False)
+        assert self.keys(calls) == ([] if breaks_on == 1 else [("-l", "--", _MSG)])
+
+    @pytest.mark.parametrize("breaks_on, outcome", [
+        (1, "refused"), (2, "attempted_stopped")])
+    def test_an_unreadable_codex_hook_record_stops_the_send(
+            self, stub, monkeypatch, capsys, tmp_path, breaks_on, outcome):
+        import json
+        import os
+        import time as real_time
+        import ccm_sidekick_notify
+        import ccm_spool
+        if os.geteuid() == 0:
+            pytest.skip("root reads any file")
+        # A Codex screen with none of its marks: the hook record decides.
+        calls = stub(panes=(("%2", "codex", "/example/proj"),))
+        monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", str(tmp_path))
+        records = tmp_path / ".sidekick"; records.mkdir()
+        record = records / "window.json"
+        record.write_text(json.dumps({
+            "binding": {"server": "server-example", "source": "%2", "process": [["1", "birth"]]},
+            "received": real_time.time(), "open_turn": True}))
+        real = ccm_sidekick_notify.pane_activity
+        reads = []
+
+        def activity(server, now=None, strict=False):
+            reads.append(1)
+            if len(reads) == breaks_on:
+                record.chmod(0)
+            return real(server, now=now, strict=strict)
+        monkeypatch.setattr(ccm_sidekick_notify, "pane_activity", activity)
+        try:
+            out, _, _ = self.run_json([_MSG], capsys)
+        finally:
+            record.chmod(0o600)
+        assert (out["outcome"], out["reason"], out["enter_sent"]) == (
+            outcome, "observation_failed", False)
+        assert self.keys(calls) == ([] if breaks_on == 1 else [("-l", "--", _MSG)])
+
+    def test_a_readable_codex_hook_wait_refuses(self, stub, monkeypatch, capsys, tmp_path):
+        import json
+        import time as real_time
+        import ccm_spool
+        calls = stub(panes=(("%2", "codex", "/example/proj"),))
+        monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", str(tmp_path))
+        records = tmp_path / ".sidekick"; records.mkdir()
+        (records / "window.json").write_text(json.dumps({
+            "binding": {"server": "server-example", "source": "%2", "process": [["1", "birth"]]},
+            "received": real_time.time(), "waits": {"call": {}}}))
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"]) == ("refused", "dialog")
+        assert self.keys(calls) == []
+
+    @staticmethod
+    def codex_record(monkeypatch, tmp_path, **record):
+        """A Codex hook record for %2 on the stub's tmux server."""
+        import json
+        import time as real_time
+        import ccm_spool
+        monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", str(tmp_path))
+        records = tmp_path / ".sidekick"; records.mkdir()
+        (records / "window.json").write_text(json.dumps({
+            "binding": {"server": "server-example", "source": "%2",
+                        "process": [["1", "birth"]]},
+            "received": real_time.time(), **record}))
+
+    @pytest.mark.parametrize("breaks_on, outcome", [
+        (1, "refused"), (2, "attempted_stopped")])
+    def test_an_unknown_tmux_server_stops_the_send(
+            self, stub, monkeypatch, capsys, tmp_path, breaks_on, outcome):
+        calls = stub(panes=(("%2", "codex", "/example/proj"),))
+        self.codex_record(monkeypatch, tmp_path, open_turn=True)
+        query = ccm_core.tmux_query
+        asked = []
+
+        def failing(*args, **kw):
+            if args[0] == "display-message":
+                asked.append(1)
+                if len(asked) == breaks_on:
+                    return None
+            return query(*args, **kw)
+        monkeypatch.setattr(ccm_core, "tmux_query", failing)
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], out["enter_sent"]) == (
+            outcome, "observation_failed", False)
+        assert self.keys(calls) == ([] if breaks_on == 1 else [("-l", "--", _MSG)])
+
+    @pytest.mark.parametrize("identities, outcome", [
+        # each look asks twice: for the send, then to match the hook record
+        ([[["1", "birth"]], None], "refused"),
+        ([[["1", "birth"]], [["1", "birth"]], [["1", "birth"]], None], "attempted_stopped"),
+    ])
+    def test_a_process_the_hook_record_cannot_be_matched_to_stops_the_send(
+            self, stub, monkeypatch, capsys, tmp_path, identities, outcome):
+        calls = stub(panes=(("%2", "codex", "/example/proj"),), identities=identities)
+        self.codex_record(monkeypatch, tmp_path, open_turn=True)
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert (out["outcome"], out["reason"], out["enter_sent"]) == (
+            outcome, "observation_failed", False)
+
+    def test_a_record_of_another_process_still_reads_as_no_record(
+            self, stub, monkeypatch, capsys, tmp_path):
+        stub(panes=(("%2", "codex", "/example/proj"),),
+             identities=[[["1", "birth"]], [["1", "birth-B"]]] * 2)
+        self.codex_record(monkeypatch, tmp_path, waits={"call": {}})
+        out, _, _ = self.run_json([_MSG], capsys)
+        assert out["outcome"] == "attempted_seen"
+
+    def test_a_display_build_still_reads_failures_as_no_record(
+            self, monkeypatch, tmp_path):
+        import os
+        if os.geteuid() == 0:
+            pytest.skip("root reads any directory")
+        markers = tmp_path / "attention"; markers.mkdir(); markers.chmod(0)
+        monkeypatch.setattr(ccm_core, "CCM_ATTENTION_DIR", str(markers))
+        try:
+            assert _READ_MARKERS([], []) == {}
+            with pytest.raises(PermissionError):
+                _READ_MARKERS([], [], strict=True)
+        finally:
+            markers.chmod(0o700)
 
     def test_empty_file_name_is_refused(self, stub, capsys):
         calls = stub()

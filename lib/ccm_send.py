@@ -1349,28 +1349,33 @@ def _resolve_sidekick_pane(caller_pane):
     return pane_id, agent_name
 
 
+class _ObservationFailed(Exception):
+    """A look at the sidekick broke part-way: what it would have shown,
+    a wait from a hook or a marker included, is lost."""
+
+
 def _observe_sidekick(pane_id, agent):
     """(observation, identity) of the sidekick in `pane_id` now, from a
     fresh pane list, process list, markers and hook records — nothing
     carried over from an earlier look. The observation is None when the
     pane is gone or runs another agent; the identity
     (`ccm_sidekick_notify.agent_process_identity`) is None when its
-    process cannot be told. A look that fails part-way leaves the state
-    unknown, which by itself does not stop a send."""
-    import ccm_sidekick_notify
-    cache = ccm_core._build_panes_cache()
-    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
-    pc = next((p for p in cache if p[2] == pane_id), None)
-    if pc is None or external_agent_name(pc[3]) != agent:
-        return None, None
-    identity = ccm_sidekick_notify.agent_process_identity(pc[1], agent, ps_lines)
+    process cannot be told. A screen ccm cannot read only leaves the
+    state unknown; a look that breaks raises _ObservationFailed."""
     try:
-        markers = ccm_core._read_attention_markers(cache, ps_lines)
+        import ccm_sidekick_notify
+        cache = ccm_core._build_panes_cache()
+        ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+        pc = next((p for p in cache if p[2] == pane_id), None)
+        if pc is None or external_agent_name(pc[3]) != agent:
+            return None, None
+        identity = ccm_sidekick_notify.agent_process_identity(pc[1], agent, ps_lines)
+        markers = ccm_core._read_attention_markers(cache, ps_lines, strict=True)
         observed = next(o for o in ccm_core.observe_sidekicks(
-            cache, pc[0], markers, [], ps_lines) if o.pane == pane_id)
-    except Exception:
+            cache, pc[0], markers, [], ps_lines, strict=True) if o.pane == pane_id)
+    except Exception as exc:
         ccm_core.log_caught_exception("sidekick_send_observe")
-        observed = ccm_core.SidekickObservation(agent, pane_id, None, None, None)
+        raise _ObservationFailed from exc
     return observed, identity
 
 
@@ -1388,6 +1393,7 @@ _WAIT_TEXT = {
     "dialog": "is waiting on a dialog",
     "view": "shows a view that takes keys (such as selected text)",
     "pane_changed": "cannot be confirmed to be the same sidekick of this window",
+    "observation_failed": "could not be looked at again",
 }
 
 
@@ -1429,7 +1435,13 @@ def _sidekick_send(message, no_enter):
                     f"The sidekick pane changed while preparing the send "
                     f"({pane_id} → {again[0]}) — refusing. Retry the command.")
 
-    observed, identity = _observe_sidekick(pane_id, agent)
+    try:
+        observed, identity = _observe_sidekick(pane_id, agent)
+    except _ObservationFailed:
+        return done("refused", "observation_failed",
+                    f"Could not look at the sidekick ({agent}, {pane_id}) — "
+                    "refusing, since a dialog it shows could not be ruled out. "
+                    "Retry the command.")
     if observed is None:
         return done("refused", "pane_changed",
                     f"The sidekick ({agent}, {pane_id}) changed while preparing "
@@ -1483,10 +1495,15 @@ def _sidekick_send(message, no_enter):
             still = _resolve_sidekick_pane(caller_pane) == (pane_id, agent)
         except _SidekickRefusal:
             still = False
-        now_observed, now_identity = (_observe_sidekick(pane_id, agent)
-                                      if still else (None, None))
+        try:
+            now_observed, now_identity = (_observe_sidekick(pane_id, agent)
+                                          if still else (None, None))
+            failed = False
+        except _ObservationFailed:
+            failed = True
         time.sleep(max(0.0, deadline - time.monotonic()))
-        stop = ("pane_changed"
+        stop = ("observation_failed" if failed
+                else "pane_changed"
                 if now_observed is None or now_identity != identity
                 else _wait_reason(now_observed))
         if stop:

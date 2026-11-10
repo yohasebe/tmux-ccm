@@ -984,7 +984,7 @@ def _resolve_ignored_panes(panes_cache, win_target, ps_lines):
     return count
 
 
-def _read_attention_markers(panes_cache, ps_lines):
+def _read_attention_markers(panes_cache, ps_lines, strict=False):
     """Read every sidekick attention marker once per build and GC the
     dead ones. Returns {pane_id: marker_dict} for markers that are
     live `waiting` — the only state any display surface acts on.
@@ -1004,10 +1004,17 @@ def _read_attention_markers(panes_cache, ps_lines):
         ATTENTION_WAITING_TTL_SEC has — the safety net for an agent
         that died mid-wait without firing anything.
     Unparseable files are treated as dead. All failures are silent:
-    attention is a display garnish and must never break a build."""
+    attention is a display garnish and must never break a build —
+    unless `strict`, for a caller that must not take a directory or a
+    marker it could not read for one with no wait in it (a missing
+    directory still means no markers)."""
     try:
         entries = os.listdir(CCM_ATTENTION_DIR)
+    except FileNotFoundError:
+        return {}
     except OSError:
+        if strict:
+            raise
         return {}
     import json as _json
     from datetime import datetime, timezone
@@ -1077,7 +1084,12 @@ def _read_attention_markers(panes_cache, ps_lines):
         try:
             with open(path, encoding="utf-8") as f:
                 marker = _json.load(f)
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            continue  # reaped or resolved since the listing
+        except OSError:
+            if strict:
+                raise
+        except ValueError:
             pass
         reap = False
         if not isinstance(marker, dict):
@@ -1149,7 +1161,8 @@ SidekickObservation = namedtuple(
     "SidekickObservation", "agent pane state state_source keys")
 
 
-def observe_sidekicks(panes_cache, win_target, markers, hooks_cache, ps_lines):
+def observe_sidekicks(panes_cache, win_target, markers, hooks_cache, ps_lines,
+                      strict=False):
     """The sidekick panes of one window, observed now: a
     SidekickObservation per pane running a known external agent CLI,
     per ignored Claude pane, and per pane holding a valid attention
@@ -1169,7 +1182,9 @@ def observe_sidekicks(panes_cache, win_target, markers, hooks_cache, ps_lines):
     record if it is still valid for the process running there now
     (`_codex_hook_state`), else a waiting marker, which says PERMIT —
     no marker is not evidence of idle. A PERMIT from any source means
-    the keys are held."""
+    the keys are held. `strict` lets a failure to read the hook records
+    or to tell the process raise instead of reading as no record, for
+    a caller about to type (`ccm sidekick-send`)."""
     observed = []
     for pc in panes_cache:
         if pc[0] != win_target:
@@ -1186,7 +1201,7 @@ def observe_sidekicks(panes_cache, win_target, markers, hooks_cache, ps_lines):
                        if name in SIDEKICK_SCREEN_READERS else (None, None))
         source = "screen" if state else None
         if state is None and name == "codex":
-            state = _codex_hook_state(pc, hooks_cache, ps_lines)
+            state = _codex_hook_state(pc, hooks_cache, ps_lines, strict)
             source = "hook" if state else None
         if state is None and marker is not None \
                 and name not in SIDEKICK_SCREEN_READERS:
@@ -1207,24 +1222,30 @@ def sidekick_pane_states(observations):
             if o.state in ("PERMIT", "BUSY")}
 
 
-def _codex_hook_state(pc, hooks_cache, ps_lines):
+def _codex_hook_state(pc, hooks_cache, ps_lines, strict=False):
     """What the Codex hooks last recorded for this pane ("PERMIT",
     "BUSY", "IDLE"), or None: no record, a record past its age, or one
     written for another Codex process than the one running there now
     (a Codex restarted in the same pane must not inherit its
     predecessor's state, idle included)."""
     if not hooks_cache:
-        hooks_cache.append(_codex_hook_activity())
+        hooks_cache.append(_codex_hook_activity(strict))
     recorded, process = hooks_cache[0].get(pc[2], (None, None))
     if recorded is None or not process:
         return None
     try:
         import ccm_sidekick_notify
-        if ccm_sidekick_notify.process_identity(pc[1], ps_lines) == process:
-            return recorded
+        now_running = ccm_sidekick_notify.process_identity(pc[1], ps_lines)
     except Exception:
         log_caught_exception("codex_process_identity")
-    return None
+        if strict:
+            raise
+        return None
+    if now_running is None and strict:
+        # Not told apart is not a different process: the record may
+        # still be this process's wait.
+        raise RuntimeError("cannot tell the Codex process to match its hook record")
+    return recorded if now_running == process else None
 
 
 def sidekick_screen(pane_id, name):
@@ -1242,14 +1263,19 @@ def sidekick_screen(pane_id, name):
         return None, None
 
 
-def _codex_hook_activity():
+def _codex_hook_activity(strict=False):
     try:
         import ccm_sidekick_notify
-        server = tmux_cmd("display-message", "-p",
-                          "#{pid}:#{start_time}:#{socket_path}")
-        return ccm_sidekick_notify.pane_activity(server) if server else {}
+        server = (tmux_query if strict else tmux_cmd)(
+            "display-message", "-p", "#{pid}:#{start_time}:#{socket_path}")
+        if not server and strict:
+            raise RuntimeError("cannot tell the tmux server the hook records name")
+        return (ccm_sidekick_notify.pane_activity(server, strict=strict)
+                if server else {})
     except Exception:
         log_caught_exception("codex_hook_activity")
+        if strict:
+            raise
         return {}
 
 
