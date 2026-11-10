@@ -646,6 +646,10 @@ class TestCmdAdd:
         projects = tmp_path / "projects"; projects.mkdir()
         monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
         proj_dir = tmp_path / "my-project"; proj_dir.mkdir()
+        # Only the history decides here, however long the temporary
+        # directory is; a slug past the limit has its own test.
+        monkeypatch.setattr(ccm_jsonl, "PROJECT_SLUG_MAX", max(
+            len(ccm_jsonl._project_slug(str(p))) for p in (proj_dir, proj_dir.resolve())))
         if has_history:
             slug = projects / ccm_jsonl._project_slug(str(proj_dir)); slug.mkdir()
             (slug / "s.jsonl").write_text("{}\n")
