@@ -274,7 +274,8 @@ class ActionsMixin:
         # absolute path starting with "/", so this only rejects
         # upstream-malformed values.
         if cwd and not cwd.startswith("-") and os.path.isdir(cwd):
-            args.extend(["-c", cwd])
+            # `-c` expands tmux formats: double `#` so it stays literal.
+            args.extend(["-c", cwd.replace("#", "##")])
         new_target = tmux_cmd(*args)
         if not new_target:
             self._show_message(stdscr, "Failed to open attach window", 2)

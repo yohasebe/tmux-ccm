@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`ccm sidekick-send` stops for more waits.** It refuses a sidekick whose wait it learns from Codex's hooks or a Kimi or Grok marker, not only from the screen, and one whose process it cannot identify or whose observation fails; it looks again before Enter and leaves Enter unsent if a wait appeared or the sidekick was restarted.
 
+### Security
+
+- **A project directory is opened as a literal path.** `ccm add` (and loading a v1 snapshot through it) and the dashboard's attach window pass the directory to tmux's `new-window -c`, which expands tmux formats: a `#(...)` in a directory name ran as a shell command when the window opened. Every `#` is now doubled for `-c`, as restoration already does, so the window opens in the directory itself.
+
 ## [0.13.0] - 2026-11-05
 
 ### Added
