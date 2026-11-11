@@ -104,6 +104,17 @@ class TestEnqueue:
         msg_id, _ = ccm_spool.enqueue("demo", "we ird/sender", "x")
         assert "/" not in msg_id and " " not in msg_id
 
+    def test_enqueue_refuses_control_characters(self, spool_root):
+        """Nothing is queued that delivery would refuse to type."""
+        with pytest.raises(ValueError, match="control character"):
+            ccm_spool.enqueue("demo", "tester", "summarise\rthen do more")
+        assert _pending(spool_root) == []
+
+    def test_enqueue_folds_crlf_and_tabs(self, spool_root):
+        ccm_spool.enqueue("demo", "tester", "a\r\n\tb")
+        with open(os.path.join(spool_root, "demo", _pending(spool_root)[0])) as f:
+            assert f.read() == "a\n    b"
+
 
 class TestExpiredVisibility:
     """A message that expired without arriving must be visible in the
@@ -376,6 +387,26 @@ class TestReconcileDelivery:
         held_dir = os.path.join(spool_root, "demo", "held")
         assert len(os.listdir(held_dir)) == 1
         assert ccm_spool.spool_summary()["held"] == 1
+
+    def test_a_queued_body_with_control_characters_is_retired_unsent(
+            self, spool_root, monkeypatch):
+        """A body queued before enqueue refused control characters (or
+        written into the spool by hand) is never typed — it would press
+        keys the sender never wrote — and never put back, which would
+        retry it every pass. It moves to `expired/`; the rest deliver."""
+        typed, _keys = self._stub_delivery(monkeypatch)
+        pdir = os.path.join(spool_root, "demo")
+        os.makedirs(pdir)
+        bad = f"{int(time.time() * 1000) - 5}-tester.msg"
+        with open(os.path.join(pdir, bad), "w", encoding="utf-8") as f:
+            f.write("looks fine\x1b\x03\x03then a shell command")
+        ccm_spool.enqueue("demo", "tester", "the good one")
+        for _ in range(2):
+            ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert any("the good one" in ln for ln in typed)
+        assert not any("\x1b" in ln or "\x03" in ln for ln in typed)
+        assert os.listdir(os.path.join(pdir, "expired")) == [bad]
+        assert _pending(spool_root) == []
 
     def test_a_held_record_is_listed_and_can_be_acknowledged(
             self, spool_root, monkeypatch, capsys):

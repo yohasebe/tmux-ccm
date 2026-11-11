@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`ccm sidekick-send` stops for more waits.** It refuses a sidekick whose wait it learns from Codex's hooks or a Kimi or Grok marker, not only from the screen, and one whose process it cannot identify or whose observation fails; it looks again before Enter and leaves Enter unsent if a wait appeared or the sidekick was restarted.
 
+### Security
+
+- **Messages cannot press keys.** `ccm send`, the message queue and `ccm sidekick-send` refuse a message holding a control character (a lone carriage return, ESC, Ctrl-C, Ctrl-U, DEL, ...) before any key is typed, since each would be typed into the target pane as a key. Windows line endings are folded and tabs become four spaces. A message already queued with one is retired to `expired/` unsent.
+
 ## [0.13.0] - 2026-11-05
 
 ### Added

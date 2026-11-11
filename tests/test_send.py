@@ -2203,3 +2203,39 @@ class TestComposerDraftGuard:
         calls = self._patch(monkeypatch, capture)
         ccm_send.cmd_send(["demo", "--now", "hello"])
         assert self._literal_sent(calls)
+
+
+class TestControlCharacters:
+    """`send-keys -l` types every character as a key, so a body holding
+    `\\r`, ESC, `^C`, ... would press keys the sender never wrote:
+    submit extra prompts, interrupt the target, or quit its Claude and
+    reach the shell behind it. Bodies are refused before any key."""
+
+    @pytest.mark.parametrize("char", [
+        "\x00", "\r", "\x1b", "\x03", "\x15", "\x7f", "\x9b"])
+    def test_clean_message_refuses_control_characters(self, char):
+        with pytest.raises(ValueError, match="control character"):
+            ccm_send.clean_message(f"first\nsecond{char}third")
+
+    def test_clean_message_keeps_ordinary_text(self):
+        text = "line one\r\nline\ttwo\n日本語 ✅ zero​width"
+        assert ccm_send.clean_message(text) == (
+            "line one\nline    two\n日本語 ✅ zero​width")
+
+    def test_type_body_refuses_before_the_first_key(self, monkeypatch):
+        keys = []
+        monkeypatch.setattr(ccm_send, "_send_keys", lambda *a, **k: keys.append(a))
+        with pytest.raises(ValueError):
+            ccm_send._type_body("%1", ["fine", "then\x1b[2Jgone"])
+        assert keys == []
+
+    @pytest.mark.parametrize("body", ["one\rtwo", "stop\x03\x03now", "esc\x1b"])
+    def test_cmd_send_refuses_before_resolving_the_target(
+            self, monkeypatch, capsys, body):
+        def no_tmux(*a, **k):
+            pytest.fail("cmd_send reached tmux with a control character")
+        monkeypatch.setattr(ccm_core, "tmux_cmd", no_tmux)
+        monkeypatch.setattr(ccm_send, "_send_keys", no_tmux)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", body])
+        assert "control character" in capsys.readouterr().err

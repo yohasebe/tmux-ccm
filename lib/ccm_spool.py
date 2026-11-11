@@ -179,7 +179,12 @@ def enqueue(project, sender, body):
     delivery time so its `delivered` timestamp is real. The write is
     tmp-then-rename so a concurrent delivery pass never reads a
     half-written message.
+
+    Raises ValueError for a body holding control characters
+    (`ccm_send.clean_message`), so nothing is queued that delivery
+    would refuse to type.
     """
+    body = ccm_send.clean_message(body)
     pdir = _project_dir(project)
     os.makedirs(pdir, exist_ok=True)
     ms = int(time.time() * 1000)
@@ -616,12 +621,26 @@ def _deliver(project, pdir, msg_names):
         now = time.time()
         mark = secrets.token_hex(3)
         items = []
-        for name in claimed:
+        for name in list(claimed):
             parsed = _parse_msg_name(name)
             queued, sender = parsed if parsed else (None, "unknown")
             with open(os.path.join(pdir, name + ".delivering"),
                       encoding="utf-8") as f:
-                items.append((sender, queued, f.read()))
+                body = f.read()
+            if ccm_send.has_control_chars(body):
+                # Queued before enqueue refused control characters, or
+                # written into the spool by hand. Typing it would press
+                # keys the sender never meant, and putting it back would
+                # retry it every pass: retire it unsent, where `ccm spool
+                # list` shows it, and deliver the rest.
+                os.makedirs(os.path.join(pdir, "expired"), exist_ok=True)
+                os.rename(os.path.join(pdir, name + ".delivering"),
+                          os.path.join(pdir, "expired", name))
+                claimed.remove(name)
+                continue
+            items.append((sender, queued, body))
+        if not items:
+            return False
 
         def compose():
             n = len(items)
