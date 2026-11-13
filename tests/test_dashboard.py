@@ -35,8 +35,7 @@ class TestDashboardImports:
 # render() executes to completion without raising on a few realistic
 # project-list shapes. Catches the class of bug where a code edit
 # references a local variable before it is bound (UnboundLocalError),
-# which the old test suite never exercised because dashboard.py was
-# untested at the function-body level.
+# which only running the function bodies can catch.
 
 def _dashboard_modules():
     """dashboard and the modules its Dashboard is assembled from."""
@@ -135,8 +134,7 @@ class TestRenderSmoke:
         the clobbered cells are still correct and never repaints
         them — the garbage sticks. redrawwin() marks the window
         corrupted so the following refresh re-emits every cell,
-        self-healing within one render tick (observed live
-, dashboard over a streaming CJK response)."""
+        self-healing within one render tick."""
         _stub_dashboard_environment(monkeypatch)
         for mode in ("dashboard", "tree", "menu"):
             d = Dashboard(initial_mode=mode)
@@ -206,11 +204,8 @@ class TestRenderSmoke:
 
     def test_elapsed_marker_does_not_perturb_path_column(self, monkeypatch):
         """Whether or not a project has the `* elapsed` marker, every
-        path must render at the same X column. Before this change,
-        elapsed lived inside the inline annotation cluster between
-        name and path, which pushed COL_DIR right (and every project
-        row's path with it) whenever the marker was shown. With
-        elapsed relocated to a right-anchored slot, the path column
+        path must render at the same X column. With elapsed in a
+        right-anchored slot, the path column
         stays put across refresh ticks.
 
         We render the SAME project list twice — once with no recent
@@ -796,7 +791,7 @@ class TestRenderSmoke:
 
         The new-window invocation must keep `-t <session>:` adjacent
         (any flag inserted between them makes tmux read the flag name
-        as the target — a regression we hit once already)."""
+        as the target)."""
         _stub_dashboard_environment(monkeypatch)
 
         captured = []
@@ -837,9 +832,8 @@ class TestRenderSmoke:
         send_keys_call = next(c for c in captured if c and c[0] == "send-keys")
         assert "claude attach abcd1234" in send_keys_call
 
-        # -t must be immediately followed by the session target.
-        # Inserting `-c <cwd>` between them broke new-window silently
-        # (tmux parsed `-c` as the target value and exited non-zero).
+        # -t must be immediately followed by the session target;
+        # anything between them is parsed by tmux as the target value.
         new_window_call = next(c for c in captured if c and c[0] == "new-window")
         t_idx = new_window_call.index("-t")
         assert new_window_call[t_idx + 1] == "0:", (
@@ -1684,9 +1678,8 @@ class TestDoRemove:
 
     def test_delete_choice_confirms_then_removes(self, monkeypatch):
         """Delete closes a window and ends its session, so it costs
-        one more keypress than unregister — the menu route already
-        confirmed, and the single-key route being the harsher of the
-        two was the wrong way around."""
+        one more keypress than unregister, on the single-key route as
+        on the menu route."""
         calls = self._cmds(monkeypatch)
         d, messages, rebuilds, _ = _interaction_dash(
             monkeypatch, [_one_project()], prompt_answers=["d", "y"])
@@ -1989,7 +1982,7 @@ def _list_literal(name, closing_indent):
 
     Matched to the bracket at a known indent rather than the first
     `]` — the first one belongs to `"[↑↓/jk] select"`, and stopping
-    there made this check report every key as missing.
+    there would make this check report every key as missing.
     """
     import re
     m = re.search(rf"{name} = \[(.*?)\n{closing_indent}\]",
@@ -2069,10 +2062,9 @@ class TestEveryKeyAndOperationIsFindable:
     """What the dashboard can do has to be visible before you press
     anything.
 
-    Unregistering a project was reachable only behind `r`, which the
-    footer rendered as "remove" and the menu did not mention at all,
-    so the operation read as unsupported. The instance is easy to fix;
-    these tests are here so the class of oversight cannot come back.
+    An operation reachable only behind a key the menu does not mention
+    reads as unsupported, so every handled key and operation must be
+    offered.
     """
 
     def test_every_handled_letter_key_is_offered_in_the_help_line(self):

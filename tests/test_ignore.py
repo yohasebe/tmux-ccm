@@ -180,7 +180,7 @@ class TestIgnoredVerdict:
 
     def test_ignored_claude_plus_visible_claude_unchanged(self):
         # Claude ignored + ANOTHER claude visible → the visible one
-        # answers, as before.
+        # answers.
         cache = [
             ("0:1", "100", "%0", "claude", "1", "40", ""),   # visible, IDLE
             ("0:1", "200", "%1", "claude", "0", "40", "1"),  # ignored claude
@@ -201,8 +201,8 @@ class TestIgnoredVerdict:
         assert self._run(cache, {}, set()) == "DOWN"
 
     def test_all_panes_ignored_with_claude_is_ignored(self):
-        # Was DOWN — another claim ccm has no basis for while the
-        # window's only claude is deliberately unseen.
+        # Not DOWN — a claim ccm has no basis for while the window's
+        # only claude is deliberately unseen.
         cache = [("0:1", "200", "%1", "claude", "0", "40", "1")]
         assert self._run(cache, {}, {"200"}) == "IGNORED"
 

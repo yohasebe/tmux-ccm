@@ -23,8 +23,8 @@ the file (records are written at message completion, not during
 generation). A stale mtime does not imply IDLE — only fresh mtime
 is actionable. Detection uses this as a positive BUSY signal only.
 
-Slug rule (verified empirically against ~/.claude/projects/):
-  `/Users/alice/code/myproject` → `-Users-alice-code-myproject`
+Slug rule:
+  `/work/code/myproject` → `-work-code-myproject`
 Claude Code uses the *literal* cwd at session start (no realpath
 resolution), so we must NOT resolve symlinks here.
 """
@@ -234,17 +234,10 @@ def _project_slug(project_dir: str) -> str:
     Claude Code replaces EVERY non-alphanumeric character with `-`
     (not just `/`): `/ほげ/ふが2000` becomes
     `------2000` (one dash per CJK char, digits survive) and
-    `test_project` becomes `test-project`. ccm used to replace only
-    `/`, which silently missed the JSONL for any project whose path
-    contains non-ASCII (incident: with the JSONL
-    unresolvable, a trailing `stop` event could not be confirmed
-    terminal, the pause-class branch stayed conservative, and the
-    dashboard held a false BUSY indefinitely — the combined-stale
-    release also needs a valid jsonl_age, so nothing ever expired it).
-    Rule verified against every existing slug directory in
-    ~/.claude/projects (ASCII paths are unaffected: `/` and `-` both
-    map to `-`). Tilde is expanded but symlinks are NOT resolved
-    (Claude Code records the cwd as-given).
+    `test_project` becomes `test-project`. A wrong slug hides the
+    transcript, so a trailing `stop` cannot be confirmed terminal.
+    Tilde is expanded but symlinks are NOT resolved (Claude Code
+    records the cwd as-given).
     """
     expanded = os.path.expanduser(project_dir)
     return re.sub(r"[^A-Za-z0-9]", "-", expanded)
@@ -668,7 +661,7 @@ def _parse_jsonl_tail(
     truncation and its write-back may see an incomplete tail, and that
     parse is cached until mtime or size changes. What it does to the
     activity and stop-reason readings depends on the records the read
-    happened to see; this has not been observed under a live rewrite.
+    happened to see.
     """
     key = (mtime, size)
     cached = _jsonl_activity_cache.get(path)

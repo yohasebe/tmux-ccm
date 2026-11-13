@@ -22,8 +22,7 @@
 # marker whose pane no longer hosts an agent, so a synthetic
 # `TMUX_PANE=%my-probe` is collected the moment ccm next builds its
 # project list — which looks exactly like "the resolve step deleted
-# the file" if a build lands between two invocations. (Reported by
-# a consumer, who caught their own measurement before filing it.)
+# the file" if a build lands between two invocations.
 #
 # Fail-quiet by design: the sidekick's hook runners are fail-open with
 # short timeouts, and a broken marker must never cost the user their
@@ -54,11 +53,10 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // .toolName // empty' 2>/dev/null)
 # One-line summary: tool name plus its most descriptive input field,
 # hard-capped — this string crosses into other tools' UIs (ccm
-# notification, a consumer's watch face), so it is data, never markup.
+# notification, other tools' displays), so it is data, never markup.
 # `.message` is the last resort: Grok Build's permission Notification
-# carries no tool fields at all (measured — only "Tool permission
-# requested"), and a generic line still beats an empty one on a watch
-# face, which is the surface the consumer asked this field for.
+# carries no tool fields at all (only "Tool permission requested"),
+# and a generic line still beats an empty one.
 SUMMARY=$(printf '%s' "$INPUT" | jq -r '
     . as $p
     | ([ ($p.tool_name // $p.toolName // empty),
@@ -71,11 +69,8 @@ NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Normalize the event name to lowercase-without-separators before
 # dispatching. Vendors disagree on casing for the SAME event and are
 # free to change it: Kimi sends "PermissionRequest", Grok Build sends
-# "pre_tool_use" / "stop" (measured), and a consumer found Grok's
-# values snake_case where its own dispatch expected PascalCase — an
-# accidental near-miss. Matching a normalized form instead of listing
-# spellings is the same lesson 0.8.2 taught about upstream strings:
-# never pin a shape the vendor can restyle.
+# "pre_tool_use" / "stop". Matching a normalized form instead of
+# listing spellings means a vendor's restyling cannot slip past.
 # (`tr` rather than `${var,,}`: hooks must run under macOS bash 3.2.)
 EVENT=$(printf '%s' "$EVENT" | tr '[:upper:]' '[:lower:]' | tr -d '_-')
 

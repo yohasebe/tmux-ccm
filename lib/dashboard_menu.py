@@ -32,7 +32,7 @@ class MenuMixin:
         # The list's selection survives into menu mode, so a plain
         # Enter targets it — typing a name the dashboard is already
         # pointing at would be busywork. Esc still cancels; with no
-        # usable selection an empty answer cancels as before.
+        # usable selection an empty answer cancels.
         default = ""
         if 0 <= self.selected < len(self.projects):
             default = self.projects[self.selected].name

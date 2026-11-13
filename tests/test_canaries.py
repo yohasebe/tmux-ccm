@@ -254,13 +254,10 @@ def _project(name, directory):
 
 
 class TestSettingsScanScope:
-    """These canaries used to read one file and report a bare tick.
-
-    The tick is the dangerous part: it is produced by a scan that ran
-    correctly, so it is believed. `allowManagedHooksOnly` is
-    documented as an administrator setting, which made the single file
-    being read the one place the deployment it warns about would never
-    put it.
+    """A bare tick from reading one file would be believed, because it
+    comes from a scan that ran correctly. `allowManagedHooksOnly` is
+    documented as an administrator setting, so a single user file is
+    the one place the deployment it warns about would never put it.
     """
 
     def _isolate(self, monkeypatch, tmp_path):
@@ -310,9 +307,9 @@ class TestSettingsScanScope:
     def test_the_warning_does_not_key_on_a_spelling(self, tmp_path,
                                                      monkeypatch):
         """The managed label is displayed AND compared against, so the
-        two must be one definition. When they were two, renaming the
-        display stopped the warning firing — a canary going quiet, the
-        one direction it must never fail in."""
+        two must be one definition: two copies would let a renamed
+        display stop the warning firing — a canary going quiet, the one
+        direction it must never fail in."""
         self._isolate(monkeypatch, tmp_path)
         managed = tmp_path / "managed-settings.json"
         managed.write_text('{"allowManagedHooksOnly": true}')
@@ -762,8 +759,7 @@ class TestHookSilenceCanary:
 
     The signature it detects: fresh JSONL real-activity whose timestamp
     leads the newest hook event by a wide margin — real work the hook
-    log never recorded (#16047-class silence). Mirrors the
-    incident where hooks went silent through a whole real turn.
+    log never recorded (#16047-class silence).
     """
 
     NOW = 1_000_000
@@ -932,7 +928,7 @@ class TestHookSilenceCanary:
 
 
 class TestHookSilenceFiringLog:
-    """Evidence log for the default-on promotion review: every canary
+    """The firing log: every canary
     firing appends one JSON record, rate-limited per project so the
     ~2 s warning-surface polls do not turn one episode into a flood.
     The log path is sandboxed per-test by the autouse

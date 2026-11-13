@@ -73,15 +73,7 @@ def find_claude_pid(parent_pid, ps_lines):
     * the pane process *being* `claude` — what `tmux new-window
       "claude …"` creates, with no shell in between.
 
-    The second shape was missed at first: the walk only ever
-    looked for a child, so a pane whose own process is claude resolved
-    to None and read as SHELL forever. `ccm debug trace` on a probe
-    session hit this immediately (probes launch claude as the pane
-    command), and a window registered with `ccm register` after being
-    created that way would have been just as invisible.
-
-    A child match still wins, so the common shape keeps its exact
-    previous result and only the previously-blind case changes.
+    A child match wins when both shapes apply.
     """
     want = str(parent_pid)
     self_match = None
@@ -232,7 +224,7 @@ def prefetch_visible(pane_ids):
     line between panes that carries a fresh random token, so no screen
     can contain it. If the separators do not come back one per pane, or
     tmux fails (a pane closed meanwhile aborts the rest), nothing is
-    kept and each pane is captured on its own as before. An empty
+    kept and each pane is captured on its own. An empty
     capture (an alternate-screen app) still takes the existing
     alternate-screen read in `capture_pane_visible`."""
     global _prefetched_until
@@ -590,8 +582,8 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
         #
         # Do NOT read the match as locating the input area. A
         # submitted prompt is drawn into the transcript with the same
-        # glyph, so the first `❯` on screen is usually an old message
-        # — a belief that cost the send path a real bug. Nothing here
+        # glyph, so the first `❯` on screen is usually an old message.
+        # Nothing here
         # depends on which row matched, and the BUSY/IDLE call below
         # is made by the spinner, not by this.
         prompt_visible = any(
@@ -630,8 +622,7 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
             return "IDLE"
         return "BUSY"
 
-    # No child process. That used to end the question, on the
-    # reasoning that work means a tool is running — but a turn spends
+    # No child process. That does not end the question: a turn spends
     # its thinking and its generation entirely inside claude, with
     # nothing spawned, and the pane says so all the while: the
     # spinner's elapsed-time footer is on screen, ticking. Reading
@@ -695,7 +686,7 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,
     unseen. SHELL ("claude is not running") or DOWN would then be
     claims ccm has no basis for — it chose not to look. IGNORED says
     "ccm cannot answer" instead. When no ignored pane hosts claude,
-    SHELL / DOWN stand as before (nothing is hidden, so the claim is
+    SHELL / DOWN stand (nothing is hidden, so the claim is
     honest). Liveness uses the same `find_claude_pid` predicate
     `_resolve_ignored_panes` uses, on the already-fetched `ps_lines`.
     """

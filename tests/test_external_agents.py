@@ -180,8 +180,7 @@ class TestPrintStatusExternalAgent:
             self, monkeypatch, capsys):
         """A kimi-only window is SHELL (no claude) — the state is not
         faked — and the `▸ kimi` badge beside the name is the ONE place
-        the agent is named. A `(kimi)` note in the STATUS cell used to
-        say it a second time on the same row."""
+        the agent is named; the STATUS cell does not repeat it."""
         projects = [_make_project("kimionly", "SHELL",
                                   pane_count=1,
                                   external_agents=("kimi",))]
@@ -210,8 +209,8 @@ class TestPrintStatusExternalAgent:
             f"PROJECT column must stay aligned, got {name_cols}")
 
     def test_no_badge_no_note_for_claude_only(self, monkeypatch, capsys):
-        """Non-regression: a claude-only window renders exactly as
-        before — no badge, no note, STATUS column stays 12 wide."""
+        """A claude-only window has no badge and no note, and the
+        STATUS column stays 12 wide."""
         projects = [_make_project("plain", "IDLE")]
         out = self._run(projects, monkeypatch, capsys)
         assert "▸" not in out
@@ -361,9 +360,8 @@ class TestDashboardExternalAgent:
     def test_columns_do_not_move_when_an_agent_is_discovered(
             self, monkeypatch):
         """The first paint happens before the full detection pass has
-        found external agents; the note used to arrive with that pass,
-        widen the state column, and shove every name sideways in front
-        of the user. Column positions must not depend on what agents
+        found external agents, and an agent found by that pass must not
+        widen the state column. Column positions must not depend on what agents
         are present."""
         def name_x(projects):
             calls = self._render_calls(monkeypatch, projects)
@@ -483,9 +481,9 @@ class TestPlatformSuffixedBinaries:
     """A launcher symlink can resolve to a platform-suffixed binary,
     and tmux reports the RESOLVED (truncated) name — Grok Build's
     `grok` arrives as `grok-macos-aarc` (measured,
-    grok 0.2.118). Enumerating every platform/arch spelling, and
-    guessing tmux's truncation width, is the fixed-shape mistake this
-    project keeps paying for; a prefix stands in for the family."""
+    grok 0.2.118). Enumerating every platform/arch spelling would also
+    mean guessing tmux's truncation width; a prefix stands in for the
+    family."""
 
     @pytest.mark.parametrize("command,expected", [
         ("grok-macos-aarc", "grok"),      # measured, truncated by tmux

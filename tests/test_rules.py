@@ -226,10 +226,9 @@ class TestEvaluateRules:
     def test_jsonl_user_pending_gives_up_with_the_event_log(self):
         """Both paths stop claiming a turn is running at the same
         moment. The event-log path abstains past its release window;
-        this rule used to keep asserting BUSY for ten times longer,
-        so an Esc that landed before the answer began — writing no
-        terminal record for either path to find — held the pane BUSY
-        for ten minutes with nothing running. The shorter window is
+        this rule stops with it, because an Esc that lands before the
+        answer begins writes no terminal record for either path to
+        find. The shorter window is
         safe because a childless working turn shows a ticking work
         clock (thinking / generation / retry backoff) and reads
         raw=BUSY, never reaching this rule."""

@@ -1,9 +1,7 @@
-"""Regression tests for the "silent exception class" of bug.
+"""Tests for the "silent exception class" of bug.
 
-The autosave NameError that ran for 38 hours, the notify dedup
-keying mismatch, and the multi-line ❯ false-BUSY were all silent
-because their failure paths were caught by broad `except Exception:`
-clauses or by `log_caught_exception`. Tests that mock the called
+A failure path caught by a broad `except Exception:` clause or by
+`log_caught_exception` stays silent. Tests that mock the called
 function pass even when the real function would NameError.
 
 This module specifically exercises the HAPPY path of every
@@ -133,10 +131,9 @@ class TestInjectStatusSmoke:
         switch) must NOT skip when another inject-status holds the
         lock. It is read-only on `@ccm_prev_state` (cached render), so
         it cannot cause the state flicker the lock guards against — and
-        skipping it was the intermittent "status bar didn't switch on
-        dashboard select" bug: a switch landing during a
-        periodic full-detection tick dropped the focus refresh, leaving
-        the highlight stalled until the next tick. Pin that it runs the
+        skipping it would leave the highlight stalled until the next
+        tick whenever a switch lands during a periodic
+        full-detection tick. Pin that it runs the
         impl AND issues the redraw even with the lock held."""
         import inject_status
 
@@ -190,11 +187,7 @@ class TestDashboardRefreshLoopSmoke:
         # would swallow exactly the NameError/AttributeError class of
         # bug this smoke test exists to catch — making the test pass
         # while its mission fails. Record every silent catch and
-        # assert none happened. (This is not hypothetical: this test's
-        # own scaffold once lacked `bg_visible` after the bg-section
-        # feature added that attribute, and the AttributeError was
-        # silently logged — to the user's REAL errors.log — on every
-        # pytest run while the test kept passing..)
+        # assert none happened.
         caught = []
         monkeypatch.setattr(
             "dashboard_refresh.log_caught_exception",
@@ -254,11 +247,9 @@ class TestDashboardRefreshLoopSmoke:
 class TestTmuxBatchFailureLogging:
     """`tmux_batch` chains commands with `;` — when tmux rejects ANY
     command in the chain, it aborts the rest, so one bad value can
-    silently drop every subsequent write. The frozen-status
-    -bar incident (`set -g status 6` above tmux's max of 5) stayed
-    invisible for days because the stderr was swallowed here. A
-    non-zero exit must now land in the silent-exception log so the
-    errors-burst canary surfaces the next such bug within minutes."""
+    silently drop every subsequent write. A non-zero exit must land
+    in the silent-exception log so the errors-burst canary surfaces
+    it within minutes."""
 
     def _read_log(self):
         import json

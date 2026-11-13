@@ -5,9 +5,8 @@
 # for a moment — not the instant it gets the focus. tmux reports focus
 # to the active pane whenever the terminal comes back to the front or
 # the window is switched to, which is exactly how one goes to look at
-# a reply: clearing on that event removed the mark before it could be
-# seen, so the only marks that ever showed were on a neighbouring
-# pane of the window already in front.
+# a reply: clearing on that event would remove the mark before it
+# could be seen.
 #
 # Usage (from ccm.tmux): on-pane-focus.sh <hook_pane> <pane_id>
 # `@ccm-unread-linger` is how long the mark stays, in seconds.

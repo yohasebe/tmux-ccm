@@ -273,11 +273,9 @@ class TestClassifyActivity:
     def test_permit_release_survives_the_gap_tolerance_window(self):
         """A dismissed modal stays dismissed. The terminal record is
         ordered after the permit event, and that fact does not age out
-        — before this, the permit path borrowed the start-class
-        `JSONL_HOOK_GAP_TOLERANCE` window, so at 61 s the evidence was
-        discarded and the resolved permit came back. Measured live on
- under Claude Code 2.1.227: IDLE for 60 s, then
-        PERMIT again, and it never released after that."""
+        — it is not bound by the start-class
+        `JSONL_HOOK_GAP_TOLERANCE` window, so the resolved permit does
+        not come back at 61 s."""
         from ccm_activity import ACTIVITY_AT_REST
         from ccm_constants import JSONL_HOOK_GAP_TOLERANCE
         a, _e = self._classify(
@@ -364,12 +362,7 @@ class TestClassifyActivity:
         a turn whose prompt/pretool events precede it — a lone
         subagent means either a phantom fired outside any turn or
         hooks went silent mid-turn, and the event log is
-        untrustworthy either way. incident: hooks
-        were silent for a whole real turn, then a single phantom
-        subagent event at the recap moment held a false BUSY for the
-        entire 10-minute staleness window because this guard —
-        documented in _strip_phantom_subagents — was never
-        implemented."""
+        untrustworthy either way."""
         from ccm_activity import ACTIVITY_UNKNOWN
         a, e = self._classify(
             events=({"ts": 1000, "type": "subagent"},),
@@ -434,8 +427,7 @@ class TestMapActivityToState:
         window → defer to legacy (None → IDLE). A genuinely working
         session shows a spinner (raw=BUSY), so raw=IDLE here means the
         event log is stale — a hook-silent turn end or a recap-moment
-        phantom SubagentStart holding a stuck BUSY (the recap
-        incident)."""
+        phantom SubagentStart holding a stuck BUSY."""
         from ccm_activity import ACTIVITY_IN_PROGRESS, BUSY_STALE_RELEASE_SEC
         assert self._map(
             ACTIVITY_IN_PROGRESS, raw="IDLE",
@@ -506,18 +498,13 @@ class TestMapActivityToState:
         PERMIT_MAX_TIMEOUT defers to legacy (→ IDLE) instead of
         holding PERMIT forever.
 
-        This inverts the pre-behaviour. PERMIT used to be
-        excluded from the staleness guard because an idle screen was
-        thought indistinguishable from an interactive choice menu
-        awaiting a selection. Measurement killed that premise: a live
+        An interactive choice menu is not at risk: a live
         menu renders a footer `PATTERN_PERMIT_FOOTER` matches, so it
         arrives here as raw=PERMIT (covered by
         `test_stale_permit_with_modal_on_screen_stays_permit`), never
         raw=IDLE. What raw=IDLE actually means is a permission that
         was already resolved — typically Esc'd, which fires no Stop
-        hook, so a permit event stays "latest" indefinitely
-        (incident: `⚠ PERMIT` for 15+ minutes
-        on an empty `❯` prompt)."""
+        hook, so a permit event stays "latest" indefinitely."""
         from ccm_activity import ACTIVITY_AWAITING_PERMIT
         assert self._map(
             ACTIVITY_AWAITING_PERMIT, raw="IDLE",
@@ -565,12 +552,12 @@ class TestMapActivityToState:
         assert self._map(ACTIVITY_AWAITING_PERMIT, raw="PERMIT") == "PERMIT"
 
     def test_awaiting_permit_maps_to_permit_regardless_of_jsonl(self):
-        # The auto-approved-tool promotion now lives in
+        # The auto-approved-tool promotion lives in
         # `classify_activity` (where event_age is accessible to
         # bound the heuristic to recent permits). Once the
         # classifier has decided the activity is AWAITING_PERMIT,
         # the mapper unconditionally returns PERMIT — fresh
-        # tool_use no longer overrides here. Coverage for the
+        # tool_use does not override here. Coverage for the
         # promotion path lives in `TestClassifyActivity` and the
         # `TestDeriveStateFromEvents` end-to-end cases.
         from ccm_activity import ACTIVITY_AWAITING_PERMIT
@@ -666,17 +653,13 @@ class TestDeriveStateFromEvents:
     def test_esc_interrupt_record_releases_immediately(self):
         """The transcript's own interrupt note ends the turn at once.
 
-        Before this, an Esc with an idle screen still read BUSY for
+        Without it, an Esc with an idle screen would read BUSY for
         the whole BUSY_STALE_RELEASE_SEC window, because the only
-        evidence was an ABSENCE (no Stop hook, frozen log) and absence
+        evidence would be an ABSENCE (no Stop hook, frozen log) and absence
         has to be aged before it can be trusted. Claude Code writes a
         `[Request interrupted by user]` transcript record, which
         `ccm_jsonl` surfaces as the synthetic terminal
-        JSONL_INTERRUPTED — positive evidence, so no waiting.
-
-        Measured consequence: a cross-project `ccm send` was refused
-        three times in a row against a session sitting at an empty
-        prompt (reported downstream)."""
+        JSONL_INTERRUPTED — positive evidence, so no waiting."""
         now = 1800000000
         event_ts = now - 100          # prompt submitted
         for since_interrupt in (1, 5, 30):
@@ -707,13 +690,9 @@ class TestDeriveStateFromEvents:
         """No transcript must not mean no release.
 
         The guard compares the JSONL age against its window, and an
-        unreadable transcript reports -1 — never past any window, so
-        the condition was unsatisfiable and the session stayed BUSY
-        forever. Legacy would have released it, but derive returning a
-        state means legacy is never consulted. This is the shape of
-        the non-ASCII-path failure (a slug rule that could not find the
-        file → indefinite false BUSY); closing it here makes the
-        outcome independent of whether the transcript is findable.
+        unreadable transcript reports -1 — never past any window — and
+        derive returning a state means legacy is never consulted. The
+        outcome must not depend on whether the transcript is findable.
 
         The event's own age answers the same question, so the window
         itself is unchanged — only the clock it reads."""
@@ -778,10 +757,8 @@ class TestDeriveStateFromEvents:
 
     def test_pid_present_no_events_returns_none(self):
         """Empty event log → None (caller falls back to legacy).
-        The previous behaviour returned IDLE here; that masked a
-        real outage scenario where the event
-        log file went temporarily missing while the pane was
-        actually showing a PERMIT modal."""
+        IDLE here would hide a PERMIT modal on screen while the event
+        log file is missing."""
         assert ccm_activity.derive_state_from_events(
             events=(), jsonl_stop_reason=None,
             pid_present=True, claude_pid_age=2,
@@ -799,8 +776,7 @@ class TestDeriveStateFromEvents:
     def _start_events(event_type, ts=100):
         """A start-class event as the log tail. `subagent` gets its
         turn's preceding `prompt` for context — a LONE subagent log
-        defers to legacy since the all-subagent guard (the lone
-        phantom incident); with context it is legitimate
+        defers to legacy; with context it is legitimate
         Task-tool work and still start-class."""
         if event_type == "subagent":
             return ({"ts": ts - 10, "type": "prompt"},
@@ -1060,9 +1036,7 @@ class TestDeriveStateFromEvents:
     # ─── Lifecycle scenarios ───
 
     def test_long_running_tool_stays_busy(self):
-        """Regression from project_false_idle_long_tool: hook went
-        silent mid-build, prev decayed to IDLE in legacy pipeline.
-        In the event-log model the tail still ends at `stop` with
+        """A hook goes silent mid-build. In the event-log model the tail still ends at `stop` with
         tool_use (intermediate Stop boundary), so state stays BUSY
         authoritatively. The tool_use mid-turn pause classifies as BUSY
         because both states represent "ball is on Claude's side"
@@ -1109,7 +1083,7 @@ class TestDeriveStateFromEvents:
         ) == "IDLE"
 
     def test_stale_permit_with_running_tool_stays_permit(self):
-        """The exact scenario from project_false_idle_long_tool.md:
+        """The long-tool scenario:
         user accepted a permission dialog, Claude started a long tool,
         but PreToolUse fired silently (Claude Code #16047-class bug).
         In the legacy pipeline raw=IDLE + stale hook + no prev=BUSY
@@ -1140,8 +1114,8 @@ class TestDeriveStateFromEvents:
 
         The event-log pipeline must produce BUSY at the intermediate
         boundary (tool pending, ball still on Claude's side) and stay
-        BUSY through the next start event. CONT was collapsed into
-        BUSY (at this resolution the user does not need
+        BUSY through the next start event. Between tools is BUSY too
+        (at this resolution the user does not need
         to distinguish "actively running tool" from "between tools"
         since neither requires user action."""
         # Turn 1: prompt, tool runs, intermediate Stop.
@@ -1217,8 +1191,7 @@ class TestDeriveStateFromEvents:
         override an event-log IDLE — that is the leftover-dev-server
         scenario where the legacy process-tree heuristic falsely
         flags BUSY but the event log correctly says the conversation
-        is IDLE. Letting BUSY override would re-introduce the false
-        BUSY that the event log was designed to fix."""
+        is IDLE."""
         events = (
             {"ts": 100, "type": "stop"},
         )
@@ -1281,9 +1254,8 @@ class TestDeriveStateFromEvents:
         the Esc-fallback. The JSONL terminal stop_reason in that
         case belongs to the prior turn, not the current event.
 
-        Pre-fix this scenario produced a phantom IDLE flicker —
-        without it, while Claude is clearly
-        Incubating but the dashboard rendered ● IDLE ✓0s."""
+        Otherwise the pane would flicker to IDLE while Claude is
+        clearly working."""
         # event_ts=200 (just now), now=205 → event_age=5
         # jsonl_age=10 (previous turn ended 10 s ago)
         # event_age (5) < jsonl_age (10) → JSONL terminal is OLDER
@@ -1388,12 +1360,9 @@ class TestDeriveStateFromEvents:
         PERMIT or IDLE, never BUSY. So raw=BUSY promotes to BUSY even
         when the permit event is fresher than the last JSONL terminal.
 
-        This scenario (permit fresher than a prior end_turn, raw=BUSY)
-        is EXACTLY the false-PERMIT shape: a new
-        turn dispatched a subagent whose WebFetch raised a permit,
-        the fetch ran for minutes (spinner → raw=BUSY), but the old
-        'fresher permit ⇒ keep PERMIT' rule stuck the dashboard at
-        PERMIT. The current on-screen raw signal wins."""
+        For example a new turn dispatches a subagent whose WebFetch
+        raises a permit and runs for minutes (spinner → raw=BUSY): the
+        current on-screen raw signal wins over the fresher permit."""
         assert ccm_activity.derive_state_from_events(
             events=({"ts": 200, "type": "permit_req"},),
             jsonl_stop_reason="end_turn",
@@ -1435,13 +1404,11 @@ class TestDeriveStateFromEvents:
         ) == "PERMIT"
 
     def test_permit_event_raw_busy_promotes_despite_stale_tool_use(self):
-        """A stale JSONL tool_use (past BUSY_HOOK_JSONL_WINDOW) no
-        longer forces PERMIT when raw=BUSY. The JSONL age governs
+        """A stale JSONL tool_use (past BUSY_HOOK_JSONL_WINDOW) does
+        not force PERMIT when raw=BUSY. The JSONL age governs
         only the raw=IDLE promotion (where JSONL is the sole activity
         evidence); raw=BUSY is a fresh on-screen signal that Claude
-        is working NOW, independent of how old the JSONL record is.
-        The old 'stale tool_use ⇒ PERMIT' rule ignored the live raw
-        and produced the sticky false-PERMIT this fix removes."""
+        is working NOW, independent of how old the JSONL record is."""
         assert ccm_activity.derive_state_from_events(
             events=({"ts": 100, "type": "permit_req"},),
             jsonl_stop_reason="tool_use",
@@ -1451,14 +1418,11 @@ class TestDeriveStateFromEvents:
         ) == "BUSY"
 
     def test_permit_event_subagent_webfetch_raw_busy_no_jsonl_tool_use(self):
-        """Distilled from a live failure: a background
-        subagent's WebFetch raised a permit and ran for minutes
-        (spinner → raw=BUSY), but its tool_use record landed in the
-        SUBAGENT's JSONL, so the main session's JSONL showed no fresh
-        tool_use (stop_reason end_turn / None). The old code gated
-        the raw=BUSY promotion behind main-session `jsonl tool_use`
-        and stuck the dashboard at PERMIT for the whole fetch. raw=
-        BUSY must promote to BUSY regardless of the JSONL stop_reason."""
+        """A background subagent's WebFetch raises a permit and runs
+        for minutes (spinner → raw=BUSY), but its tool_use record lands
+        in the SUBAGENT's JSONL, so the main session's JSONL shows no
+        fresh tool_use (stop_reason end_turn / None). raw=BUSY must
+        promote to BUSY regardless of the JSONL stop_reason."""
         for sr in ("end_turn", None):
             assert ccm_activity.derive_state_from_events(
                 events=({"ts": 100, "type": "notify_permit"},),
@@ -1500,17 +1464,15 @@ class TestDeriveStateFromEvents:
         ) == "PERMIT"
 
     def test_permit_event_interactive_menu_case_returns_permit_immediately(self):
-        """User-reported scenario: Claude rendered an
-        interactive choice menu as a permit-class hook. Latest
-        event is notify_permit, JSONL last `tool_use` is from BEFORE
-        the menu was rendered. Earlier versions held false BUSY for
-        the entire `BUSY_HOOK_JSONL_WINDOW` (10 min) until the JSONL
-        aged out of the window. The fix surfaces PERMIT immediately
-        so the dashboard correctly says "this project needs your
-        attention".
+        """Claude renders an interactive choice menu as a
+        permit-class hook. Latest event is notify_permit, JSONL last
+        `tool_use` is from BEFORE the menu was rendered. PERMIT
+        surfaces immediately, not after the JSONL ages out of
+        `BUSY_HOOK_JSONL_WINDOW` (10 min), so the dashboard says "this
+        project needs your attention".
 
         `raw` reflects what the pane actually shows. A menu ON SCREEN
-        matches `PATTERN_PERMIT_FOOTER` (measured:
+        matches `PATTERN_PERMIT_FOOTER` (for example
         `Enter to select · ↑/↓ to navigate · n to add notes · Esc to
         cancel`), so it arrives as raw=PERMIT and is held at any age
         — that is the case a real waiting menu produces, and it is
@@ -1622,7 +1584,7 @@ class TestDeriveStateFromEvents:
         """`stop` with terminal `stop_reason` resolves identically to
         a direct `stop` latest event — the phantom did not change
         anything. Same logic as EVENT_CLASS_PAUSE handling.
-        Observed in the wild: idle_prompt has documented latency
+        The idle_prompt notification has documented latency
         (anthropics/claude-code#5186), so claude can sit at rest
         for many minutes after `stop` without `notify_idle` ever
         landing — yet phantom subagent events still fire."""
@@ -1765,10 +1727,8 @@ class TestDeriveStateFromEvents:
         working — defer to legacy which resolves via
         the legacy fallback to IDLE.
 
-        Concrete scenario: phantom
-        `subagent` fired 41 minutes ago, no follow-up, JSONL stale
-        from 44 min ago. event-log path returned BUSY indefinitely
-        until this fallback was added."""
+        For example a phantom `subagent` event with no follow-up and
+        a stale JSONL: both ages past the window."""
         # event_ts=100, now=900 → event_age=800 > 600
         # jsonl_age=2658 > 600
         result = ccm_activity.derive_state_from_events(

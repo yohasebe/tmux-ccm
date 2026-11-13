@@ -997,8 +997,7 @@ class RenderMixin:
                                      badge_attr)
                         col += display_width(ann["mode_badge"]) + 1
 
-                    # NOTE: `* elapsed` used to live here inline. It
-                    # was relocated to a right-anchored slot at the
+                    # `* elapsed` goes in a right-anchored slot at the
                     # end of the row (rendered after the path below)
                     # so the path column stays put when the timer
                     # ticks or the marker appears/disappears.
@@ -1095,9 +1094,8 @@ class RenderMixin:
                 self._addstr(stdscr, footer_row, hooks_col, self.hooks_status, hooks_color)
 
             # Preview panel. Skip during a navigation burst so rapid
-            # ↑/↓ presses don't each pay the ~2000-addstr cost of
-            # character-by-character ANSI-colored preview painting
-            # (the single biggest expense per render). The main loop
+            # ↑/↓ presses don't each pay for character-by-character
+            # ANSI-colored preview painting. The main loop
             # schedules a full redraw once the burst settles, which
             # restores the preview.
             if preview_height > 0 and time.monotonic() >= self._nav_deadline:

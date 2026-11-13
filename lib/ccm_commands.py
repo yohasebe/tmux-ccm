@@ -487,17 +487,13 @@ def _capture_window_text(session, idx):
     """Visible text of a window, pane by pane.
 
     `capture-pane -t <window>` delivers only the window's ACTIVE
-    pane, so on a split window this silently returned one pane and
-    dropped the rest — from inside the window that is usually the
-    caller's own pane, and from outside it is whichever pane happened
-    to hold focus. (Same window-vs-pane flaw the dashboard preview
-    had before `_resolve_preview_pane`.) Enumerate the panes and
-    capture each, labelled, so a split window is fully visible and
-    the result does not depend on focus.
+    pane, so a split window would show one pane, and which one would
+    depend on focus. Enumerate the panes and capture each, labelled,
+    so a split window is fully visible.
 
-    Single-pane windows keep the previous output byte-for-byte (no
-    headers). Enumeration failure falls back to the window target,
-    preserving the old behaviour rather than returning nothing.
+    A single-pane window is captured through the window target, with
+    no headers. Enumeration failure falls back to the window target
+    rather than returning nothing.
 
     The pane count is probed with a bare `list-panes` before the full
     enumeration so the common single-pane case never pays for a `ps`
@@ -673,8 +669,7 @@ def cmd_reset(name):
       - snapshots
 
     Intended as a recovery hatch for the rare cases where a stuck
-    `(Nm)` suffix won't clear (e.g. the upstream double silent fail
-    described in `memory/project_known_limitations.md`). For normal
+    `(Nm)` suffix won't clear. For normal
     "Claude got stuck" situations, `/exit` inside the pane is still
     the right answer."""
     if not name:
@@ -1004,7 +999,7 @@ def cmd_doctor(verbose=False):
         row(OK, "cluster-SHELL transitions",
             f"none in last {ccm_canaries.SHELL_CLUSTER_WINDOW // 60} min")
 
-    # Hook-silence canary is opt-in (observe-first). Report its state
+    # Hook-silence canary is opt-in. Report its state
     # so `ccm doctor` explains why it is or isn't watching, then list
     # any live suspects (empty unless opted in).
     if ccm_canaries.hook_silence_enabled():
@@ -1014,9 +1009,7 @@ def cmd_doctor(verbose=False):
                 row(WARN, "hook-silence", msg)
         else:
             row(OK, "hook-silence", "on — no silent sessions")
-        # Firing-log evidence count (default-on promotion review):
-        # each past firing is one JSON line in the log; zero across a
-        # long dogfood window is the "no false fires" evidence.
+        # Each past firing is one JSON line in the log.
         fired = evidence_count(ccm_canaries.hook_silence_log_path(), "hook-silence log")
         if fired is None:
             pass
@@ -1112,9 +1105,9 @@ def cmd_doctor(verbose=False):
     # sidekick nobody hid — and they want opposite things, so this
     # states the fact and names both. It must not read as "hide one":
     # for the teammate reading that is advice which costs the reader a
-    # PERMIT. Same reason the standing dashboard hint was dropped in
-    # favour of the `ccm send` refusal line, which fires only once the
-    # ambiguity has actually bitten.
+    # PERMIT. For the same reason the dashboard carries no standing
+    # hint; the `ccm send` refusal line names it only once the
+    # ambiguity actually matters.
     #
     # Computed here rather than carried on `Project`: only doctor wants
     # it, and doctor is on-demand, whereas `build_project_list` runs on
@@ -1122,7 +1115,7 @@ def cmd_doctor(verbose=False):
     #
     # One bulk `list-panes -a` for every window, not
     # `enumerate_window_panes` per project — that helper forks once per
-    # window, which measured +40% on a 34-project doctor. Same trade
+    # window, which is costly with many projects. Same trade
     # `_resolve_ignored_panes` already makes for the `⊘` count, and the
     # same reason: this is a whole-inventory question, so ask it once.
     multi_claude = []
@@ -1267,14 +1260,11 @@ def _resolve_trace_target(target):
        JSONL transcript on.
 
     Pass 2 exists because probe sessions launched for an experiment
-    are not ccm projects, so the pass-1 lookup misses them and the
-    investigator falls back to hand-rolled greps over
-    `$HOOK_DIR/*.events.jsonl`. That glob aggregates every session's
-    events and silently re-introduces the cross-session contamination
-    the session_id keying was built to remove — a miscount that has
-    already sent one investigation down a false trail. Tracing an
-    unregistered pane directly keeps the observation scoped to the one
-    session under test.
+    are not ccm projects, so the pass-1 lookup misses them. A glob
+    over `$HOOK_DIR/*.events.jsonl` would aggregate every session's
+    events and re-introduce the cross-session contamination the
+    session_id keying removes; tracing an unregistered pane directly
+    keeps the observation scoped to the one session under test.
 
     Project matching stays first so an existing project name never
     changes meaning. Returns None when neither pass resolves.
@@ -1493,12 +1483,8 @@ def cmd_debug_trace(target_match, interval=0.3,
             write_session_cache=False,
         )
         # Use the REAL two-path merge (event-log derive primary,
-        # legacy fallback), not evaluate_rules alone. The trace used
-        # to run only the legacy table, which silently observed a
-        # different detection path than production — during the
-        # phantom-subagent incident it printed
-        # "default → IDLE" while the live pipeline was resolving
-        # derive=BUSY, misdirecting the investigation. Still
+        # legacy fallback), not evaluate_rules alone, so the trace
+        # shows what the live pipeline decides. Still
         # read-only: resolve_state_from_context has no side effects
         # (apply_actions is what writes, and we don't call it).
         state, rule, event_log_state = (
@@ -1508,9 +1494,9 @@ def cmd_debug_trace(target_match, interval=0.3,
         pid_age = ctx.claude_pid_age if ctx.claude_pid_age >= 0 else "-"
         jsonl_str = f"{ctx.jsonl_age if ctx.jsonl_age >= 0 else '-'},{ctx.jsonl_last_stop_reason or '-'}"
         action_short = "WRITE" if rule.action == ccm_rules.Action.DEFAULT else "HOLD"
-        # Phase annotation is metadata only (Step 1 of phase-machine
-        # roadmap) — show it next to the rule name so "why fired?"
-        # investigations include the intended session-lifecycle scope.
+        # The phase is metadata only; show it next to the rule name so
+        # "why fired?" questions include the rule's session-lifecycle
+        # scope.
         rule_label = f"{rule.name}[{rule.phase or '-'}]"
 
         idle_label = ""

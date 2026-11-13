@@ -102,7 +102,7 @@ def prefetch_global_options(names):
     names are then served from memory until `clear_global_options`, and
     a write to one of them through `tmux_cmd` or `tmux_batch` drops it,
     so it is read again live. On any failure nothing is kept and every
-    read goes to tmux as before."""
+    value is read from tmux directly."""
     global _GLOBAL_OPTIONS
     names = list(dict.fromkeys(names))
     args = []
@@ -222,11 +222,7 @@ def tmux_batch(*commands):
     silent-exception log. This matters more for batches than for
     single commands — when ANY command in a `;`-chain is invalid,
     tmux aborts the REST of the chain too, so one bad value silently
-    drops every subsequent write. That is exactly how the
-    frozen-status-bar incident stayed invisible for days: `set -g
-    status 6` (above tmux's max of 5) was rejected and took all the
-    status-format writes down with it, every second, with stderr
-    swallowed here. Logging turns the next such bug into an
+    drops every subsequent write. Logging turns such a failure into an
     `errors.log` burst the canaries surface within minutes.
     """
     if not commands:
@@ -355,9 +351,8 @@ def shorten_home(path):
 # `inject_status` and `dashboard._refresh_loop` both wrap their main
 # body in `except Exception: pass` because crashing the tmux status
 # refresh or the dashboard render loop is worse than skipping a tick.
-# But silent swallowing kept the recent UTF-8 decode regression
-# invisible until users noticed states freezing across every project.
-# `log_caught_exception` records each silent catch so the next
+# Silent swallowing would keep such a failure invisible.
+# `log_caught_exception` records each silent catch so a
 # regression of this class is debuggable without having to enable
 # `CCM_DEBUG_TRACE` in advance. The log is size-capped so a runaway
 # loop cannot exhaust disk.
@@ -1027,13 +1022,11 @@ def _read_attention_markers(panes_cache, ps_lines, strict=False):
         A pane running a known external agent CLI answers from
         `pane_current_command` alone. A Claude sidekick does NOT:
         the versioned-install symlink makes tmux report the launcher
-        name (`2.1.221`, measured), never `claude`, so comparing the
+        name (e.g. `2.1.221`), never `claude`, so comparing the
         command to CLAUDE_PROCESS_NAME is false in every real
         environment — `ccm_runtime.auto_exit_idle` documents the same
-        quirk and resolves it the same way. Left as a name compare,
-        every Claude-sidekick marker was reaped by the next slow build
-        and the whole Claude path of the contract silently did
-        nothing.
+        quirk and resolves it the same way. A name compare would reap
+        every Claude-sidekick marker.
 
         The process walk runs only for panes that actually have a
         marker (usually none), so it costs nothing on the common

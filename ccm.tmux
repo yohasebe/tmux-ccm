@@ -91,8 +91,7 @@ tmux bind-key -n MouseDown1Status \
 tmux set-environment -g CLAUDE_CODE_NO_FLICKER 1
 
 # Status-interval drives how often tmux invokes `ccm inject-status`.
-# 5 seconds keeps the steady-state CPU cost negligible (each
-# invocation is ~150-200ms, so 5 s polling is ~3-4% of one core).
+# 5 seconds keeps the steady-state CPU cost negligible.
 # The PERMIT-axis instant path bypasses polling entirely: hooks
 # write @ccm-permit-pending which inject-status promotes on the
 # next tick, so the actionable "user must approve a tool" signal
@@ -134,17 +133,15 @@ tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_BIN inject-statu
 # highlight. `--fast` is the point: the per-project states are
 # already cached in `@ccm_prev_state` and a window switch changes
 # only WHICH window is current, so the focus refresh skips the full
-# detection pass (~250 ms) and re-renders from the cache (~10 ms),
-# making the highlight feel instant — exactly the "the info is
+# detection pass and re-renders from the cache, making the highlight feel instant — exactly the "the info is
 # already known, reflect it now" case. The next regular poll tick
 # re-detects. `-ga` appends so a theme/user hook on the same event
 # is preserved; `-b` keeps the switch itself snappy and the inject
 # lockfile prevents pile-up during rapid switching.
 #
 # Append-once guard: re-sourcing .tmux.conf (or reloading TPM) re-runs
-# this script, and a blind `-ga` stacks an identical hook per reload —
-# observed live with two copies firing a double --fast
-# render on every switch. Match on the distinctive command substring
+# this script, and a blind `-ga` stacks an identical hook per reload,
+# each firing its own --fast render on every switch. Match on the distinctive command substring
 # rather than the full string so an install whose path changed (e.g.
 # a symlinked plugin dir) still counts as "already registered" instead
 # of accumulating a second variant.

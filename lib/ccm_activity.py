@@ -126,11 +126,9 @@ def _jsonl_terminal_after_event(latest, jsonl_stop_reason, jsonl_age, now):
     after the permit event means Claude finished that turn, and it
     still means that ten minutes later.
 
-    Ageing the evidence out re-raised a PERMIT that was definitively
-    resolved — measured under Claude Code 2.1.227, where a
-    dismissed dialog read IDLE for 60 s and then flipped back to PERMIT
-    and stayed there, taking `ccm send` (which refuses to type into a
-    PERMIT pane) down with it.
+    Ageing the evidence out would re-raise a PERMIT that was
+    definitively resolved, and `ccm send` refuses to type into a
+    PERMIT pane.
 
     Ordering still carries the weight, so a re-raised modal is not
     released: a newer permit event makes the old terminal record older
@@ -293,17 +291,12 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
     # A real SubagentStart always happens inside a turn, and a turn
     # (with healthy hooks) logs its prompt/pretool first — so a log
     # consisting ONLY of subagent events is either a phantom
-    # SubagentStart fired outside any turn (observed at the recap
+    # SubagentStart fired outside any turn (at the recap
     # moment when the user returns to an idle session) or a session
     # whose hooks went silent mid-turn (#16047-class), which makes
     # the event log untrustworthy either way. Defer to legacy
     # (raw + JSONL): real subagent work still surfaces as BUSY via
     # the spinner/process-tree raw signal or fresh JSONL tool_use.
-    # incident: hooks were silent for a whole
-    # real turn, then a lone phantom subagent event at recap held a
-    # false BUSY for the entire 10-minute staleness window. This
-    # guard implements what _strip_phantom_subagents' all-subagent
-    # branch always documented but never enforced.
     if all(isinstance(e, dict) and e.get("type") == "subagent"
            for e in events_seq):
         return ACTIVITY_UNKNOWN, events_seq[-1]
@@ -357,12 +350,10 @@ def classify_activity(events, jsonl_stop_reason, jsonl_age, raw, now):
         #    corroboration — a permission wait shows no spinner
         #    (Claude has stopped generating to ask) and its options
         #    make raw PERMIT or IDLE, never BUSY. Gating this behind
-        #    `jsonl_stop_reason == "tool_use"` used to hide a real
-        #    BUSY as PERMIT whenever the JSONL signal was absent —
+        #    `jsonl_stop_reason == "tool_use"` would hide a real
+        #    BUSY as PERMIT whenever the JSONL signal is absent —
         #    notably a background subagent's WebFetch, whose tool_use
-        #    lands in the SUBAGENT's JSONL, not the main session's, so
-        #    the main JSONL showed no fresh tool_use while the fetch
-        #    ran for minutes (incident).
+        #    lands in the SUBAGENT's JSONL, not the main session's.
         if raw == "BUSY":
             return ACTIVITY_IN_PROGRESS, latest
         #
@@ -433,7 +424,7 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     run may legitimately take minutes) must NOT be cut by the short
     release window; it keeps the long-tool semantics of the permit
     promotion itself. None (direct callers) keeps the release
-    enabled, matching the pre-parameter behaviour.
+    enabled.
 
     agent_age: seconds since a subagent last acted, or -1. Used only
     when the transcript is unreadable and the main conversation is in
@@ -468,51 +459,31 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
     # means the in-progress claim is stale: a turn that ended without a Stop event
     # (hook silence, so a start event stays "latest" forever), or a
     # recap-moment phantom SubagentStart fired when the user returned to
-    # an idle session (incident: a recap phantom
-    # subagent held a stuck BUSY, raw=IDLE throughout). Defer to legacy,
+    # an idle session. Defer to legacy,
     # which reads raw=IDLE → IDLE.
     #
     # PERMIT gets the same treatment, bounded by PERMIT_MAX_TIMEOUT.
-    # This used to be excluded on the grounds that permit-latest +
-    # raw=IDLE + stale JSONL was indistinguishable from an interactive
-    # choice menu whose `❯` selector matched the input prompt (the
-    # case), so an aging PERMIT risked a false IDLE on a
-    # menu still awaiting a selection. **That premise no longer holds,
-    # measured**: a live choice menu renders the footer
+    # A displayed choice menu does not reach this guard: its footer
     # `Enter to select · ↑/↓ to navigate · n to add notes · Esc to
-    # cancel`, which `PATTERN_PERMIT_FOOTER` matches through its
-    # structural `Enter to \S… · …Esc to \w+` branch (the literal-verb
-    # pattern was pivoted to that shape after the `/model`
-    # rename), so a displayed menu yields raw=PERMIT and never reaches
-    # this guard — the `raw == "PERMIT"` override below re-commits it.
-    # Verified against real captures of both states: menu on screen →
-    # footer match, empty composer → no match.
+    # cancel` matches `PATTERN_PERMIT_FOOTER` through its structural
+    # `Enter to \S… · …Esc to \w+` branch, so it yields raw=PERMIT and
+    # the `raw == "PERMIT"` override below re-commits it.
     #
-    # What the guard releases is therefore only the case that used to
-    # stick forever: a permission that WAS resolved (typically Esc'd,
-    # which fires no Stop hook and writes no further assistant record,
-    # so a permit-class event stays "latest" indefinitely) leaving an
-    # idle screen. incident: `⚠ PERMIT` shown
-    # for 15+ minutes on a pane sitting at an empty `❯` prompt. Aging
-    # also makes the long-documented "PERMIT auto-clears after 10 min
-    # as a safety net" true for the first time — `PERMIT_MAX_TIMEOUT`
-    # had become a dead constant (defined, imported, referenced only
-    # by tests) when detection moved to the event-log path, so the
-    # promise in docs/guide had no implementation behind it.
+    # What the guard releases is therefore only a permission that WAS
+    # resolved (typically Esc'd, which fires no Stop hook and writes no
+    # further assistant record, so a permit-class event stays "latest"
+    # indefinitely) leaving an idle screen.
     #
     # Long-tool cases stay intact for both candidates: they carry
     # FRESH JSONL (tool_use within minutes), well inside the window.
     #
-    # The BUSY window is BUSY_STALE_RELEASE_SEC (default 60s, split
-    # from BUSY_HOOK_JSONL_WINDOW's 600s). It is a FLICKER-PREVENTION
-    # window, not an estimate of the longest silent tool: the actual
-    # safety net against killing a working session is on the auto-exit
-    # side (IDLE_EXIT_TIMEOUT requires 600s of sustained IDLE), so
-    # 600→60 only moves the worst-case kill threshold for a silent
-    # tool from 1200s to 660s of silence, while an Esc-interrupted
-    # session (no Stop hook, no further JSONL — the conjunction of
-    # raw=IDLE AND frozen JSONL is what earns the release) escapes a
-    # stuck BUSY in 60s instead of 10 minutes.
+    # The BUSY window is BUSY_STALE_RELEASE_SEC (default 60s). It is a
+    # FLICKER-PREVENTION window, not an estimate of the longest silent
+    # tool: the actual safety net against killing a working session is
+    # on the auto-exit side (IDLE_EXIT_TIMEOUT requires 600s of
+    # sustained IDLE). A turn that ended with no terminal evidence
+    # releases when raw is IDLE now and the activity age (JSONL, or the
+    # event when the JSONL is unreadable) is past the window.
     # The release covers START-class origins and ambiguous Stop evidence: a BUSY
     # promoted from a permit event (auto-approved tool) can run for
     # minutes legitimately, so it is exempt from the short window and
@@ -528,16 +499,13 @@ def map_activity_to_state(activity, raw, jsonl_stop_reason, jsonl_age,
                  and event_age > BUSY_STALE_RELEASE_SEC)))
     # An ambiguous Stop must itself be old, even if the latest readable
     # transcript record predates it. Known tool work stays protected.
-    # With no readable JSONL the guard used to be unsatisfiable — the
-    # age it compares is -1, which is never past the window — so a
-    # session whose transcript ccm cannot find (missing file, a slug
-    # rule that drifted, a session too new to have one) stayed BUSY
-    # with no release path at all. Legacy would have freed it, but
-    # returning a state here means legacy is never consulted. The
+    # With no readable JSONL the age the guard compares is -1, which
+    # is never past the window, so a session whose transcript ccm
+    # cannot find (missing file, a slug rule that drifted, a session
+    # too new to have one) would stay BUSY with no release path, and
+    # legacy is never consulted once a state is returned here. The
     # event's own age answers the same question the JSONL age was
-    # asked: has the screen been idle long enough to trust. Falling
-    # back to it keeps the guard's shape while removing the
-    # indefinite-BUSY corner (the non-ASCII-path failure class).
+    # asked: has the screen been idle long enough to trust.
     aging_age = jsonl_age
     # A subagent's request says nothing about the main transcript,
     # which has usually been quiet since the main turn ended; its own

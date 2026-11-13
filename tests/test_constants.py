@@ -110,10 +110,8 @@ class TestClassifyPermitModal:
     @pytest.mark.parametrize("age", ["45m", "2h 15m", "2d 4h", "1d"])
     def test_session_resume_age_takes_any_units(self, age):
         """The age line carries whatever units it needs. Requiring a
-        fixed `\\d+h \\d+m` pair excluded every session under the hour,
-        and `--continue` also resumes ones days old. Found while fixing
-        the same mistake in PATTERN_ACTIVE_SPINNER, where
-        an hours component silently stopped the match.
+        fixed `\\d+h \\d+m` pair would exclude every session under the
+        hour, and `--continue` also resumes ones days old.
 
         The age line alone must classify: the recommended-summary line
         that would otherwise carry it is dropped here on purpose."""
@@ -173,9 +171,8 @@ class TestClassifyPermitModal:
         cat, _ = ccm_constants.classify_permit_modal(text)
         assert cat == "confirmation-modal"
 
-    def test_ask_user_question_menu_footer_measured_2026_07_26(self):
-        """Verbatim footer of a live `AskUserQuestion` choice menu,
-        captured from a real pane on (v2.1.220).
+    def test_ask_user_question_menu_footer_is_a_permit_footer(self):
+        """The footer of a live `AskUserQuestion` choice menu.
 
         This one is load-bearing beyond classification: the PERMIT
         staleness guard in `ccm_activity.map_activity_to_state`
@@ -201,7 +198,7 @@ class TestClassifyPermitModal:
         assert ccm_constants.PATTERN_PERMIT_FOOTER.search(text)
 
     def test_idle_composer_is_not_a_permit_footer(self):
-        """The other half of the measurement: the same pane with no
+        """The other half: the same pane with no
         modal (empty `❯` composer + status line) must NOT match, or
         every idle session would read as PERMIT. Captured alongside
         the menu above."""
@@ -215,7 +212,7 @@ class TestClassifyPermitModal:
 
     def test_footerless_webfetch_permission_is_permission_request(self):
         """Footer-less WebFetch / web-content permission dialog
-        (observed, raised by a background subagent). It
+        (raised by a background subagent). It
         must classify as the DANGEROUS permission-request kind, not a
         safe confirmation-modal — `ccm send` warns the operator not
         to dismiss a permission prompt from another pane, and that
@@ -358,36 +355,33 @@ class TestPermitFooterPattern:
         assert self._matches("Enter to confirm · Esc to exit")
 
     def test_confirm_modal_v2_1_144_model_picker(self):
-        """v2.1.144 added a `d to set as default` action key between
+        """The `/model` footer with a `d to set as default` action key between
         `Enter to confirm` and `Esc to cancel` on `/model`. Without
-        the intermediate-segment tolerance the pre-existing regex
-        would have silently dropped this footer — `ccm send` would
+        the intermediate-segment tolerance the regex
+        would silently drop this footer — `ccm send` would
         then deliver keystrokes into the open picker and could
-        accidentally confirm a model change. Verified empirically
- against Claude Code v2.1.144."""
+        accidentally confirm a model change."""
         assert self._matches(
             "Enter to confirm · d to set as default for new sessions · Esc to cancel"
         )
 
     def test_confirm_modal_v2_1_153_model_picker(self):
-        """v2.1.153 reworded the `/model` footer: the Enter verb is
-        now `set as default` (formerly `confirm`) and the alternate
-        action is `s to use this session only`. The pre-v2.1.153
-        regex hard-coded `Enter to confirm` and would silently
-        drop this footer, leaving `/model` undetected (IDLE) while
-        the user is actually blocked at the picker. Verified
-        empirically against Claude Code v2.1.153."""
+        """The `/model` footer whose Enter verb is `set as default`
+        and whose alternate action is `s to use this session only`. A
+        regex that hard-codes `Enter to confirm` would drop this footer,
+        leaving `/model` undetected (IDLE) while the user is blocked at
+        the picker."""
         assert self._matches(
             "Enter to set as default · s to use this session only · Esc to cancel"
         )
 
     def test_confirm_modal_with_pipe_separator(self):
-        """`|` separator variant — observed historically as an
+        """`|` separator variant, an
         alternative to `·` on some terminals/themes."""
         assert self._matches("Enter to confirm | Esc to cancel")
 
     def test_footerless_permission_dialog_deny_option(self):
-        """Footer-less permission dialog (observed on a
+        """Footer-less permission dialog (a
         WebFetch permission raised by a background subagent):
             Do you want to allow Claude to fetch this content?
             ❯ 1. Yes
@@ -395,9 +389,7 @@ class TestPermitFooterPattern:
               3. No, and tell Claude what to do differently (esc)
         There is NO `Esc to cancel · Tab to amend` footer here — the
         `(esc)` is inline on the deny option. The deny-option line is
-        the PERMIT signal. ccm showed IDLE for this blocking dialog
-        until the deny-option alternative was added; verified live
-        against the paused dialog."""
+        the PERMIT signal."""
         assert self._matches(
             "  3. No, and tell Claude what to do differently (esc)"
         )
@@ -418,10 +410,7 @@ class TestPermitFooterPattern:
             ❯ 1. Allow
               2. Allow all actions on www.example.org for this session
               3. Deny (esc)
-        The old alternative fixed the deny label to one dialog's
-        wording, so this one read as no-match — hook path only, and
-        BUSY/IDLE whenever hooks are silent. Verified against the live
-        dialog. The label is matched as a negative word, not a
+        The label is matched as a negative word, not a
         wording."""
         assert self._matches("  3. Deny (esc)")
 
@@ -433,9 +422,9 @@ class TestPermitFooterPattern:
     def test_cursor_on_the_deny_line_still_matches(self):
         """Arrowing onto the deny option rewrites the line as
         `❯ 3. Deny (esc)`. Without the optional cursor prefix the
-        footer match dropped out at exactly that moment — and the line
-        fell through to PATTERN_INPUT_PROMPT, reading as an idle
-        prompt while the dialog was open. Review finding."""
+        footer match would drop out at exactly that moment, and the
+        line would fall through to PATTERN_INPUT_PROMPT, reading as an
+        idle prompt while the dialog is open."""
         assert self._matches("❯ 3. Deny (esc)")
         assert self._matches("❯ 2. No, and tell Claude what to do differently (esc)")
 
@@ -630,8 +619,8 @@ class TestAgentsTUIDetection:
 
 
 class TestStaleReleaseWindows:
-    """The BUSY and PERMIT stale-release windows were split apart so
-    they could be tuned independently. The behaviour
+    """The BUSY and PERMIT stale-release windows are separate so they
+    can be tuned independently. The behaviour
     tests around them are written boundary-relative — `W ± 1` — which
     correctly exercises the mechanism but adapts to whatever the
     constant says, so none of them would notice the BUSY window being
@@ -731,15 +720,15 @@ class TestPromptHeldNotice:
             self._screen(notice, composer="\u276f ")) is None
 
     def test_a_notice_cut_short_by_a_narrow_pane_is_not_read(self):
-        """Known limit, measured at 60 columns: the line is cut
-        before the instruction, and the send reports as it did
-        before this check existed."""
+        """At 60 columns the line is cut before the instruction, so
+        the hold is not read."""
         cut = "  Removed 1 invisible character \u00b7 review and press Enter \u2026"
         assert ccm_composer.prompt_held_notice(self._screen(cut)) is None
 
     def test_no_composer_is_no_answer(self):
         """A dialog covering the composer, or a capture that read
-        nothing: the caller reports what it reported before."""
+        nothing: no notice is read (None), and the caller reports the
+        send without a hold."""
         assert ccm_composer.prompt_held_notice("") is None
         assert ccm_composer.prompt_held_notice(
             "review and press Enter to send\nDo you want to proceed?\n"

@@ -13,10 +13,9 @@ REFRESH_INTERVAL = 2
 # detection passes (REFRESH_INTERVAL), the refresh thread samples the
 # PUSHED state channel — `@ccm_prev_state`, written instantly by the
 # Claude Code hooks (and by the slow path's own commits) — with one
-# `list-windows` subprocess per tick (~10 ms). A hook-driven state
-# change therefore reaches the dashboard in ≤ ~0.3 s instead of
-# waiting out the 2 s poll (worst case ~2.3 s), closing most of the
-# latency gap vs purely event-driven consumers of the same hooks.
+# `list-windows` subprocess per tick, so a hook-driven state change
+# is read between full detection passes rather than only at the next
+# one.
 FAST_TICK_INTERVAL = 0.25
 # A dashboard left open (a dock, typically) and not used for a while
 # refreshes at a slower pace: the pushed channel is still checked every

@@ -101,7 +101,7 @@ _request_payload() {
     [[ "$output" == *"kimi needs a decision"* ]]
     [[ "$output" == *"npm test"* ]]
     # No -sender: bundle-identity swapping makes notifications
-    # silently droppable (feedback_terminal_notifier_sender).
+    # silently droppable.
     [[ "$output" != *"-sender"* ]]
 }
 
@@ -136,15 +136,15 @@ _grok_notification() {
 
 @test "grok: summary falls back to the payload message" {
     # Grok's permission Notification has no toolName/toolInput, and an
-    # empty summary is what a consumer's watch face cannot use.
+    # summary must not be empty.
     _grok_notification | bash "$SCRIPT" grok
     run jq -r '.summary' "${ATTENTION_DIR}/%40.json"
     [[ "$output" == "Tool permission requested" ]]
 }
 
 @test "grok: snake_case activity event resolves the wait" {
-    # `post_tool_use`, not `PostToolUse` — the casing that made a consumer's
-    # PascalCase dispatch an accidental near-miss.
+    # `post_tool_use`, not `PostToolUse`: the event name is normalized
+    # before dispatch.
     _grok_notification | bash "$SCRIPT" grok
     printf '%s' '{"hookEventName":"post_tool_use","sessionId":"g-1"}' \
         | bash "$SCRIPT" grok

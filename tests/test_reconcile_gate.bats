@@ -3,10 +3,8 @@ load helpers/tmux_guard.bash
 # Rate limiting for the periodic status poll.
 #
 # tmux runs `#(ccm inject-status)` once per status-interval, which is
-# every second on a config with a seconds clock. A full pass spawns
-# ~24 processes; left ungated it made ccm a measurable share of a
-# laptop's load and a contributor to a kernel zone exhaustion panic
-#. The gate keeps the seconds in between down to the
+# every second on a config with a seconds clock, and a full pass
+# spawns many processes. The gate keeps the seconds in between down to the
 # shell itself, so these tests care as much about what does NOT run
 # as about the decision.
 
@@ -94,11 +92,10 @@ teardown() {
     # every shell: EPOCHSECONDS arrived in bash 5, and macOS still
     # ships 3.2 as /bin/bash, so there the gate spends exactly one
     # `date`. That fallback is deliberate — 3 processes per second
-    # instead of 2 is still an order of magnitude below the ~24 a full
-    # pass costs — so this asserts the stronger property only where
-    # the shell can actually deliver it, rather than pretending the
-    # guarantee is universal (which is how this test first failed on
-    # a macOS runner while passing on a homebrew bash 5).
+    # instead of 2 is still far below what a full pass costs — so
+    # this asserts the stronger property only where the shell can
+    # actually deliver it, rather than pretending the guarantee is
+    # universal.
     [[ -n "${EPOCHSECONDS:-}" ]] || skip "bash < 5: no EPOCHSECONDS builtin"
     export CCM_RECONCILE_INTERVAL=60
     export TMUX="${CCM_TMP_DIR}/fake-socket,1,0"

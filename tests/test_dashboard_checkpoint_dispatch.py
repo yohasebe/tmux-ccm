@@ -1,4 +1,4 @@
-"""Behavioral negative control: the old menu prompted and swallowed load errors."""
+"""Checkpoint save and load dispatch from the dashboard menu, with load errors shown."""
 from unittest.mock import Mock
 
 import dashboard

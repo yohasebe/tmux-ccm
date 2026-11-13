@@ -3,11 +3,8 @@ edits ccm makes to them.
 
 One definition of ownership, used everywhere that reads or rewrites
 ccm's hooks: `ccm setup-hooks`, `ccm remove-hooks` (both through
-lib/common.sh) and `ccm doctor`. They used to answer the question
-separately — the removal by matching a script name anywhere in a
-command and dropping the whole matcher entry that held it — and the
-answers disagreed, which let a repair meant to touch only ccm's hooks
-take another tool's with it.
+lib/common.sh) and `ccm doctor`. A single answer keeps a repair meant to touch only
+ccm's hooks from taking another tool's with it.
 
 A hook is ccm's when its command is a bare path (nothing but the path)
 to one of ccm's hook scripts in this ccm's hooks directory. The script

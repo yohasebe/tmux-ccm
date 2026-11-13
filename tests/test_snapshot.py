@@ -285,10 +285,8 @@ class TestSnapshotLoad:
         """A hand-edited / truncated snapshot can parse to valid JSON
         that is a top-level array or scalar (json.load does not raise
         on those). The load must die with a readable message, not an
-        AttributeError traceback from `data.get(...)`. Regression for
-        the adversarial-review finding: the first cut of the
-        malformed-JSON guard checked `projects` but not `data` itself,
-        so `[1,2,3]` still crashed."""
+        AttributeError traceback from `data.get(...)`: the guard checks
+        `data` itself, not only `projects`."""
         orig_dir = ccm_core.CCM_SNAPSHOT_DIR
         ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
         (tmp_path / "badlist.json").write_text("[1, 2, 3]")
@@ -315,11 +313,11 @@ class TestSnapshotLoad:
 
 class TestSnapshotHomeShortening:
     """Snapshot save shortens a leading $HOME to `~` for portability,
-    but ONLY at the path head. The old `str.replace(home, "~")`
-    rewrote every occurrence: with HOME=/Users/x the directory
-    `/Users/x2/work` was stored as `~2/work`, which expanduser turns
-    into `~2/work` (user `2` lookup fails / literal path) so
-    `cmd_snapshot_load` then skipped it with "Directory not found"."""
+    but ONLY at the path head. A plain `str.replace(home, "~")`
+    would rewrite every occurrence: with HOME=/Users/x the directory
+    `/Users/x2/work` would be stored as `~2/work`, which expanduser
+    cannot turn back (user `2` lookup fails / literal path), so
+    `cmd_snapshot_load` would skip it with "Directory not found"."""
 
     def _set_home(self, tmp_path, monkeypatch):
         """Point $HOME at a real tmp dir — init_dirs / expanduser

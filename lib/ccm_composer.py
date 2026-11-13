@@ -31,7 +31,7 @@ PATTERN_COMPOSER_DRAFT = re.compile(rf"^[{_PROMPT_CHARS}]\s+\S")
 # the transcript carrying the same `❯` glyph, so scanning the pane
 # top-down and taking the first hit reads the user's previous message
 # as a draft — and refuses every send for as long as one is on
-# screen. That shipped, and cost a queued message its whole TTL.
+# screen.
 #
 # A named session draws its name into the upper rule
 # (`\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 <name> \u2500`, seen with 2.1.304). Missing that rule moves
@@ -74,8 +74,7 @@ def composer_draft_fragment(pane_text, pane_text_attributed=None):
     A fragment whose text is entirely dim is the suggestion, not a
     draft → None. Any non-dim character keeps the draft verdict (the
     safe side), and a missing / misaligned attribute capture falls
-    back to the plain-text answer, unchanged from before this
-    discriminator existed.
+    back to the plain-text answer.
     """
     lines = _composer_lines(pane_text, pane_text_attributed)
     if not lines:
@@ -173,19 +172,18 @@ def _composer_lines(pane_text, pane_text_attributed=None):
 # the send landed: `reply only` is the message `Please reply only
 # OK.` minus six characters, and a prompt Claude Code held after
 # removing nine characters is no less held than one it removed one
-# from. Both of those were sent as evidence by a reviewer, in
-# opposite directions, against a comparison that tried.
+# from.
 #
 # The count and the reason belong to upstream's wording and are left
 # opaque; what is matched is the shape of the status line — a reason,
 # the `·` separator, and the instruction to the sender closing the
 # line. The instruction alone is not enough: a reply that happens to
 # say `press Enter to send` lands in the same rows as the notice
-# while it streams (measured: 46 of 100 samples of such a reply), and
-# read as the notice it failed a send the session had taken. A
+# while it streams, and read as the notice it would fail a send the
+# session had taken. A
 # rewording upstream, or a pane too narrow to show the line whole
-# (at 60 columns 2.1.278 cuts it before the instruction), means ccm
-# stops seeing the hold and reports as it did before this existed —
+# (at 60 columns it is cut before the instruction), means ccm
+# does not see the hold and reports the send as usual —
 # the same direction every other missed reading takes here.
 PATTERN_PROMPT_HELD = re.compile(
     r"\S.*\u00b7[^\u00b7\n]*\bpress Enter (?:again )?to send\s*$",
@@ -213,8 +211,7 @@ def prompt_held_notice(pane_text, pane_text_attributed=None):
     composer's own text says only that something is in it.
 
     None when the composer cannot be found (a dialog covers it, the
-    capture failed), which leaves the caller reporting what it
-    reported before.
+    capture failed); the caller then reports the send without a hold.
     """
     lines = pane_text.split("\n")
     while lines and not lines[-1].strip():

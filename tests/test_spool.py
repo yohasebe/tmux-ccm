@@ -51,8 +51,8 @@ def composer_screen(*composer_rows, scrollback=True):
     lines under them, and — crucially — submitted prompts are drawn
     into the transcript above with the SAME glyph. A fixture without
     that scrollback cannot tell a draft from a message already sent,
-    which is how the guard shipped refusing every send while any
-    prompt was still on screen.
+    so a guard that refuses every send while any prompt is on screen
+    would pass.
     """
     rule = "\u2500" * 80
     out = []
@@ -70,8 +70,7 @@ class TestSuiteIsolation:
     def test_spool_root_is_redirected_for_every_test(self):
         """Positive control for the autouse fixture: no test may write
         into the user's real spool. This one asks for no fixture at
-        all — exactly the shape of test that polluted the data
-        directory before the redirect moved into conftest."""
+        all, so the isolation must apply without one."""
         import ccm_spool
         real = os.path.join(ccm_constants.CCM_DATA_DIR, "spool")
         assert ccm_spool.SPOOL_ROOT != real
@@ -123,9 +122,9 @@ class TestExpiredVisibility:
         assert ccm_spool.expired_counts() == {}
 
     def test_expired_warning_names_the_project(self, spool_root):
-        """The line `ccm status` and the dashboard both print. They
-        used to report the queue length alone, so a project whose
-        queue had emptied by expiry looked clean in both."""
+        """The line `ccm status` and the dashboard both print. A
+        queue length alone would make a project whose queue emptied by
+        expiry look clean in both."""
         import ccm_render
         edir = os.path.join(spool_root, "demo", "expired")
         os.makedirs(edir)
@@ -293,8 +292,7 @@ class TestExpiry:
     def test_expiry_notifies_the_sender(self, spool_root, monkeypatch):
         """`ccm send` reported the message as queued, and queued is
         not delivered. Without a notification the only trace of the
-        loss is a count nobody reads until a reply goes missing —
-        which is how a report was lost for a whole TTL."""
+        loss is a count nobody reads until a reply goes missing."""
         monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
         seen = []
         monkeypatch.setattr(ccm_notify, "notify",
@@ -842,8 +840,8 @@ class TestDeliverablePane:
 
 
 class TestCmdSendSpooling:
-    """`ccm send`'s default flip: an undeliverable target queues
-    instead of refusing (the refusal lives on behind --now, pinned in
+    """By default `ccm send` queues for an undeliverable target
+    instead of refusing (the refusal is behind --now, pinned in
     tests/test_send.py)."""
 
     def _patch_resolution(self, monkeypatch, spool_root, state):

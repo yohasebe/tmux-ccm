@@ -403,9 +403,8 @@ def print_status():
     print()
 
     # A SHELL row hosting an external agent says so once, with the
-    # `▸name` badge beside the project name. It used to say it twice —
-    # a `(name)` note in this column repeated the badge, and widening
-    # the column to fit it shifted every other row's layout.
+    # `▸name` badge beside the project name, so this column stays narrow
+    # and no row's layout shifts for it.
     status_w = 12
     rows = []
 
@@ -421,8 +420,8 @@ def print_status():
         bg = " (bg)" if p.bg_active else ""
         # Pad the STATUS column by VISIBLE width (pad_to_width), not by
         # len(): the per-state colour codes differ in length (256-colour
-        # `\033[38;5;209m` is 11 chars vs `\033[1;33m` at 7), so the old
-        # `22 + len(suffix)` format spec put the PROJECT column at a
+        # `\033[38;5;209m` is 11 chars vs `\033[1;33m` at 7), so a
+        # len()-based width would put the PROJECT column at a
         # different offset for BUSY/SHELL vs PERMIT/IDLE/DOWN rows.
         status_text = f"{icon} {p.state}{suffix}{bg}"
         if display_width(status_text) > status_w:
@@ -514,7 +513,7 @@ def print_status():
         # spaces under `<20` and overflow the column by 6 columns.
         # A name wider than the column is truncated (wide chars kept
         # whole) instead of being clamped to zero padding, which
-        # previously let an overlong name shove every later column
+        # would let an overlong name shove every later column
         # rightward and break the table.
         rows.append((status_field, p.name, pane_marker, pane_marker_visible_w,
                      mode_field, branch, ports, d))

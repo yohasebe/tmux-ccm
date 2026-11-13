@@ -251,8 +251,7 @@ def build_detail_entries(projects, with_extras=False, current_win_target="",
         # badge text matches `ccm status` / the dashboard exactly.
         ext_badge = external_agent_badge(p)
         # A SHELL row with an external agent is marked once, by the
-        # `▸name` badge. A `(name)` note in the post slot used to
-        # repeat it on the same entry.
+        # `▸name` badge.
 
         def _render_pane_marker(name_color):
             """`[N]` with brackets dim and N cyan, returning to
@@ -410,8 +409,7 @@ def _ambiguous_width_allowance(text):
 
     On a terminal that draws these narrow, the hedge is not free. In
     left placement the columns nobody used stay on screen as a band of
-    empty space after `status-left` — measured at 12 columns on a real
-    theme. The reservation is right while the width is unknown and
+    empty space after `status-left`. The reservation is right while the width is unknown and
     wrong the moment it is known.
     """
     if ambiguous_width_declared():
@@ -425,9 +423,8 @@ def _ambiguous_width_allowance(text):
 # The plain text of mode 1's list structure. The width budget is
 # measured from these strings and the list is drawn from them, so the
 # accounting cannot drift away from the rendering. The bar is a box
-# drawing character, which is ambiguous-width like the state icons —
-# reserving its plain width alone left the block a column short per
-# separator.
+# drawing character, which is ambiguous-width like the state icons,
+# so its plain width alone can fall a column short per separator.
 ENTRY_LEAD = " "          # before the first entry
 ENTRY_SEPARATOR = " │ "   # between entries
 LIST_END = " │"           # closes the list, before the preserved content
@@ -473,7 +470,7 @@ def original_status_right_width(original):
     preserve.
 
     Falls back to counting the template when the option cannot be
-    expanded, which is the old behaviour: short by however much the
+    expanded: short by however much the
     variable parts expand, but better than refusing to render.
     """
     measured = reserved_width("#{T:@ccm-orig-status-right}")
@@ -501,8 +498,8 @@ def inject_status(force_fast=False):
     the cached `@ccm_prev_state` instead. Used by the focus-refresh
     path (window switch): the only thing that changed is which window
     is current, the per-project states are already known, and a full
-    detection here would add ~250 ms of lag to a switch that should
-    feel instant. The next regular poll tick re-detects."""
+    detection here would add lag to a switch that should feel
+    instant. The next regular poll tick re-detects."""
     lock_fd = acquire_lockfile()
     if lock_fd is None and not force_fast:
         # The periodic (full-detection) path must not double-run: two
@@ -512,11 +509,9 @@ def inject_status(force_fast=False):
     # force_fast proceeds EVEN IF the lock is held. It is read-only on
     # @ccm_prev_state (cached render, no detection), so it cannot
     # cause state flicker — and it must not skip: a window switch
-    # landing while a periodic tick is running (~25% of the time at
-    # status-interval 1, full detection ~250 ms) would otherwise drop
+    # landing while a periodic tick is running would otherwise drop
     # the focus refresh, leaving the highlight stalled until the next
-    # tick. That was the intermittent "status bar didn't switch on
-    # dashboard select" bug.
+    # tick.
     try:
         _inject_status_impl(force_fast=force_fast)
         if force_fast:
@@ -599,7 +594,7 @@ def _inject_status_impl(force_fast=False):
     # user's shell (the shape documented in
     # ccm_runtime.py's auto_exit_idle). They also cost several tmux
     # subprocesses per call, which contradicts the fast path's job:
-    # a ~10 ms cached-state redraw on every hook fire / window switch.
+    # a cheap cached-state redraw on every hook fire / window switch.
     if not force_fast:
         # Always update window name icons
         update_window_names(projects)
@@ -680,8 +675,7 @@ def _inject_status_impl(force_fast=False):
 
         # Spool drain: deliver messages `ccm send` queued while the
         # target was undeliverable. One driver only (this periodic
-        # full pass, under the flock) in v1 — hook-driven delivery is
-        # a latency optimisation deferred to v1.1. Must run BEFORE
+        # full pass, under the flock). Must run BEFORE
         # auto-exit: a session with a pending message is about to be
         # used, and delivering it flips the session to BUSY, which
         # auto-exit then leaves alone.
@@ -750,11 +744,9 @@ def _inject_status_impl(force_fast=False):
             # preserved. The refresh suffix is a `#()` whose command
             # prints nothing, so it draws no columns.
             #
-            # This was a flat 10 while the parts around it were
-            # approximate. Now that both segments are reserved for
-            # their worst case, the same slack is being kept twice, and
-            # it shows: on a wide bar the entries were pushed 20
-            # columns clear of `status-left`.
+            # No extra slack is added: both segments are already
+            # reserved for their worst case, and slack on top would
+            # push the entries clear of `status-left` on a wide bar.
             avail = term_width - orig_visible - _worst_case_width(LIST_END)
 
             # Select entries by priority (highest first) until width is exhausted,
@@ -769,11 +761,10 @@ def _inject_status_impl(force_fast=False):
                 # CJK — validate_name only strips shell metacharacters).
                 # What placing this entry costs beyond the entry
                 # itself: a leading space for the first, ` │ ` for
-                # every one after it. Charging 3 to all of them
-                # reserved two columns nobody drew — and charging the
-                # separator its plain width reserved one column too
-                # few, because that bar is an ambiguous-width glyph
-                # like the icons inside the entries.
+                # every one after it (ENTRY_LEAD, then ENTRY_SEPARATOR),
+                # each charged its worst-case width, because the bar is
+                # an ambiguous-width glyph like the icons inside the
+                # entries.
                 #
                 # The allowance covers the state icon and any other
                 # ambiguous-width glyph in the entry, which may draw
@@ -920,18 +911,12 @@ def _inject_status_impl(force_fast=False):
             # binding constraint is tmux's `status` option itself:
             # it accepts on/off/2..5, i.e. AT MOST 5 status lines
             # total. With 1 main bar + 1 gutter, entry lines max out
-            # at 3. This is NOT theoretical: with 27 projects the
-            # layout wanted 4 entry lines → `set -g status 6` →
-            # tmux rejected it ("unknown value: 6") and — because
-            # the whole mode-2 render is one `;`-chained batch — the
-            # status-format writes died with it. Every render path
-            # (periodic tick, focus hook, manual run) failed the
-            # same way, so the bar froze at the last good bake:
-            # stale states, stale highlight, newly added projects
-            # missing entirely (incident; the freeze
-            # looked like "the focus mechanism broke" but was the
-            # whole bar). `_MODE2_MAX_SLOTS` still bounds the
-            # cleanup range for slots left over from this bug's era.
+            # at 3. Asking for more makes tmux reject the value
+            # ("unknown value: 6"), and because the whole mode-2
+            # render is one `;`-chained batch, the status-format
+            # writes die with it and the bar freezes at its last
+            # good bake. `_MODE2_MAX_SLOTS` still bounds the
+            # cleanup range for any slots left over.
             max_entry_lines = min(_MODE2_MAX_SLOTS - 1,
                                   _TMUX_STATUS_MAX_LINES - 2)
             if num_lines > max_entry_lines:
@@ -996,8 +981,7 @@ _MODE2_MAX_SLOTS = 16
 # Hard ceiling on how many status LINES tmux will render. The
 # `status` option accepts on / off / 2..5 — passing anything above 5
 # fails with "unknown value: N" and, inside a `;`-chained batch,
-# takes every subsequent command down with it (the
-# frozen-status-bar incident). Layout math must never ask for more
+# takes every subsequent command down with it. Layout math must never ask for more
 # than this many total lines (main bar + gutter + entry lines).
 _TMUX_STATUS_MAX_LINES = 5
 
@@ -1115,8 +1099,8 @@ def _write_cache(cache_file, content):
 
 
 # The global options a pass reads, fetched in one tmux process when it
-# starts (each separately cost a process of its own). Any not listed is
-# read as before; this list only saves work. Settings only: a flag
+# starts. Any not listed is read on its own when needed; this list
+# only saves work. Settings only: a flag
 # that hooks write and a pass consumes (@ccm-permit-pending) must be
 # read when it is consumed, never from the start of the pass.
 PASS_OPTIONS = (

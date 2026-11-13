@@ -196,10 +196,10 @@ def test_info_is_flushed_before_error_even_with_buffered_stdout(monkeypatch):
     assert output.index('Starting Claude') < output.index('Error:')
 
 
-# Claude Code's input box shows height // 2 - 5 rows of a body (measured on
-# 2.1.289); a taller body shows only its tail and can never be confirmed.
+# Claude Code's input box shows height // 2 - 5 rows of a body (Claude
+# Code 2.1.289); a taller body shows only its tail and can never be confirmed.
 @pytest.mark.parametrize('height, fits, overflows', [(24, 7, 8), (25, 7, 8), (40, 15, 16), (80, 35, 36)])
-def test_body_fit_follows_the_measured_input_box_height(monkeypatch, height, fits, overflows):
+def test_body_fit_follows_the_input_box_height(monkeypatch, height, fits, overflows):
     monkeypatch.setattr(ccm_core, 'tmux_cmd', lambda *a, **k: f'120 {height}')
     body = lambda n: '\n'.join(f'line {i} of the body' for i in range(n))
     assert ccm_send._start_body_fits('%1', body(fits)) is True

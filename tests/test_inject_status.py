@@ -310,8 +310,8 @@ class TestFastPathSkipsMaintenanceSideEffects:
     the late copy landing in the post-exit shell pane, where the
     literal `exit` kills the user's shell (the shape
     documented in ccm_runtime.auto_exit_idle). Those tasks also cost
-    several tmux subprocesses per call, contradicting the fast
-    path's ~10 ms redraw budget. So the fast path must skip
+    several tmux subprocesses per call, which the fast path's quick
+    redraw cannot afford. So the fast path must skip
     window-name updates, the notify-transition cache, periodic
     autosave, and idle auto-exit — and only render the status bar."""
 
@@ -490,15 +490,11 @@ class TestMode2StatusLineCeiling:
     lines total. The mode-2 layout (1 main bar + 1 gutter + N entry
     lines) must therefore never ask for more than 3 entry lines.
 
-    Regression for the frozen-status-bar incident: with 27
-    projects the layout computed 4 entry lines → `set -g status 6` →
-    tmux rejected it ("unknown value: 6") and, because the whole
-    mode-2 render is one `;`-chained batch, every status-format write
-    aborted with it. All render paths (periodic tick, focus hook,
-    manual) failed identically and silently, so the bar froze at the
-    last good bake — stale states, stale focus highlight, and newly
-    registered projects missing entirely. The symptom was reported as
-    "the focus mechanism broke" but the whole bar was frozen.
+    With 27 projects the natural layout wants 4 entry lines, and
+    `set -g status 6` is rejected ("unknown value: 6"). The whole
+    mode-2 render is one `;`-chained batch, so every status-format
+    write would abort with it and the bar would freeze at its last
+    good bake.
     """
 
     def _run_mode2(self, monkeypatch, n_projects, term_width=120):
@@ -554,7 +550,7 @@ class TestMode2StatusLineCeiling:
 
     def test_27_projects_narrow_terminal_stays_within_tmux_limit(
             self, monkeypatch):
-        """The incident shape: enough projects that the natural
+        """Enough projects that the natural
         layout wants 4+ entry lines. `status` must be clamped to 5."""
         batches = self._run_mode2(monkeypatch, n_projects=27,
                                   term_width=120)
@@ -601,8 +597,7 @@ class TestCJKWidthInLayout:
     len(): CJK characters occupy two terminal columns each, and
     project names may legally be CJK (validate_name only strips
     shell metacharacters). len() undercounts them by half, which
-    overestimates the remaining budget and overflows/wraps the bar
-    (audit finding, sibling of the non-ASCII slug bug)."""
+    overestimates the remaining budget and overflows/wraps the bar."""
 
     def test_mode2_cjk_names_reduce_entries_per_line(self, monkeypatch):
         """The same number of projects must yield MORE lines when
@@ -676,8 +671,7 @@ class TestHideShellFilter:
 
     A machine with many registered projects has most of them at SHELL
     most of the time, and the one that needs attention is lost among
-    them — 37 of 39 rows saying "nothing here" on the setup this was
-    written for.
+    them among rows saying "nothing here".
     """
 
     def _projects(self):
@@ -793,12 +787,12 @@ class TestReservedWidth:
     is two characters that draw as eight, `%F` two that draw as ten,
     and a theme's `#{...}` segments hold whatever they hold right now.
 
-    Counting the template instead of the rendering undercounted a real
-    theme's `status-right` by 14 columns. The padding that places
-    mode 1's entries on the left is derived from that number, so the
-    block overflowed by 2 and tmux clipped it from the left — taking
-    the first character of the highest-priority entry, the one the
-    placement exists to protect.
+    Counting the template instead of the rendering can undercount a
+    theme's `status-right`. The padding that places mode 1's entries
+    on the left is derived from that number, so the block would
+    overflow and tmux would clip it from the left — taking the first
+    character of the highest-priority entry, the one the placement
+    exists to protect.
     """
 
     def _expansion(self, monkeypatch, value):
@@ -839,10 +833,9 @@ class TestReservedWidth:
 class TestMode1WidthBudget:
     """What mode 1 writes has to end up the width of the bar.
 
-    The pieces were each checked on their own while the total was
-    never asserted, and the total is what the user sees. It went wrong
-    in both directions: short by 2 and the first entry was clipped,
-    long by 20 and a band of empty space opened after `status-left`.
+    Checking the pieces on their own is not enough: the total is what
+    the user sees. Too short clips the first entry; too long opens a
+    band of empty space after `status-left`.
 
     So these tests measure the rendered result against the terminal
     width, not the arithmetic against itself.
@@ -916,8 +909,7 @@ class TestMode1WidthBudget:
         """With nothing to list — no managed windows — mode 1 writes the
         idle marker and still floors `status-right-length` on the
         terminal width, which must therefore be known on that path
-        too (it used to be read only when entries existed, and the
-        write then died on an unbound name)."""
+        too."""
         calls = []
         written = self._render(monkeypatch, n_projects=0, term_width=150,
                                length_calls=calls)
@@ -1081,8 +1073,8 @@ class TestDeclaredAmbiguousWidth:
     Reserving on top of a declared width charges twice. At `2` the
     glyph is counted two columns by `display_width` and then allowed a
     third. At `1` the layout keeps hedging against a case the user has
-    ruled out, and in left placement that hedge is visible: 12 columns
-    of empty space after `status-left` on a real theme.
+    ruled out, and in left placement that hedge is visible as empty
+    space after `status-left`.
 
     The declaration must reach every parent that starts ccm. The bar
     renders both from tmux's `#()` and from the hooks, which Claude

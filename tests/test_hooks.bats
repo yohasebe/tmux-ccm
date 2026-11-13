@@ -11,8 +11,7 @@ setup() {
     mkdir -p "${MOCK_DIR}/.claude"
 
     # Hermetic claude stub: ccm_setup_hooks requires `claude --version`
-    # on PATH, so these tests previously depended on the host's real
-    # claude binary (green locally, red on CI runners without one).
+    # on PATH, and not every test host has one.
     # Version-gate tests prepend their own bin to PATH, which overrides
     # this stub.
     mkdir -p "${MOCK_DIR}/bin"
@@ -443,9 +442,8 @@ STUB
 @test "on-notification.sh: elicitation_dialog writes PERMIT signal" {
     # End-to-end: feed the actual hook script the JSON Claude Code would
     # send for an elicitation event, and verify the signal file content.
-    # Hook signal files are now keyed on the session_id from the payload,
-    # not md5(cwd) — so we pass an explicit session_id and check that
-    # specific path.
+    # Hook signal files are keyed on the session_id from the payload,
+    # so we pass an explicit session_id and check that specific path.
     local hook_dir="${MOCK_DIR}/hooks-tap"
     local sid="11111111-1111-1111-1111-111111111111"
     mkdir -p "$hook_dir"
@@ -462,8 +460,7 @@ STUB
 }
 
 @test "on-notification.sh: permission_prompt writes PERMIT signal" {
-    # Regression: ensure the existing matcher path still works after
-    # the elicitation_dialog addition.
+    # The permission_prompt matcher path, alongside elicitation_dialog.
     local hook_dir="${MOCK_DIR}/hooks-tap2"
     local sid="22222222-2222-2222-2222-222222222222"
     mkdir -p "$hook_dir"

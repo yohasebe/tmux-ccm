@@ -439,7 +439,7 @@ class TestBadge:
 class TestScreenCaptureKeepsIndent:
     """The Codex reader tells a quote from the working line by its
     column, so the capture it reads must keep the first line's indent —
-    tmux_cmd strips its output, which used to drop exactly that."""
+    tmux_cmd strips its output, which would drop exactly that."""
 
     QUOTED_AT_TOP = ("  Working (4s • esc to interrupt)\n"
                      "› Ask Codex to do anything\n"

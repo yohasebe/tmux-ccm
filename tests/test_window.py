@@ -260,8 +260,8 @@ class TestAutoStartClaudeLaunchPane:
     def test_enumeration_failure_sends_nothing(self, monkeypatch):
         """tmux error → the panes could not be listed. "Could not
         look" is not "nothing there": no launch, and the outcome says
-        why. (The old window-target fallback typed into whatever pane
-        was active.)"""
+        why. A window-target fallback would type into whatever pane is
+        active."""
         sent = self._run(monkeypatch, "")
         assert sent == []
         assert self.result.outcome == ccm_window.UNAVAILABLE

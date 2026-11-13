@@ -9,10 +9,9 @@ CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
 load helpers/mock_tmux.bash
 
-# Synthetic session_id used in every hook payload. Bats tests no
-# longer derive KEY from cwd — session_id is the primary key, so we
-# pin a fixed UUID here and inject it into each payload via the
-# `_payload` helper.
+# Synthetic session_id used in every hook payload. session_id is the
+# primary key, so we pin a fixed UUID here and inject it into each
+# payload via the `_payload` helper.
 TEST_SESSION_ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 setup() {
@@ -41,7 +40,7 @@ setup() {
 
 # Inject session_id into a JSON payload string. Used by every
 # end-to-end hook test so payloads always carry the field hooks
-# now require for keying.
+# require for keying.
 _with_session() {
     local payload="$1"
     # Strip the trailing `}` and append the session_id field
@@ -375,7 +374,7 @@ _run_hook() {
     # Hook scripts resolve TMPDIR and write under $TMPDIR/ccm-$UID/hooks,
     # so the sandbox TMPDIR from setup() is already in effect.
     # All payloads are augmented with the test session_id since hooks
-    # now key on it.
+    # key on it.
     printf '%s' "$(_with_session "$payload")" | bash "${CCM_ROOT}/hooks/${script}"
 }
 
@@ -634,7 +633,7 @@ _latest_type() {
 
 @test "on-stop.sh: emits stop event and removes signal file" {
     # Pre-populate the signal file so we can observe the stop-path
-    # delete behaviour alongside the new event append.
+    # delete behaviour alongside the event append.
     printf '0 BUSY' > "${HOOK_DIR}/${KEY}"
     _run_hook on-stop.sh \
         '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
@@ -992,10 +991,9 @@ _latest_type() {
 # that is actively working) must survive. Only a BUSY signal OLDER
 # than CCM_IDLE_PROMPT_GUARD_SEC (default 60) may be cleared — an
 # older one necessarily predates the point where Claude decided the
-# session was idle. The pre-fix guard (`ts >= NOW`) only protected
-# signals from the same second, so a 5-second-old legitimate BUSY
-# signal was deleted and a working session falsely dropped to IDLE
-# (which feeds auto-exit's kill path).
+# session was idle. A guard that protected only signals from the same
+# second would delete a 5-second-old legitimate BUSY signal and drop a
+# working session to IDLE (which feeds auto-exit's kill path).
 
 _run_idle_prompt() {
     printf '%s' "$(_with_session \
@@ -1058,7 +1056,7 @@ _run_idle_prompt() {
     [[ "$output" == "session_end" ]]
 }
 
-# ─── Legacy signal-file path is still intact (P1 regression guard) ───
+# ─── Legacy signal-file path ───
 
 @test "on-prompt-submit.sh: still writes BUSY signal file" {
     _run_hook on-prompt-submit.sh \

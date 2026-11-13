@@ -30,8 +30,8 @@ def composer_screen(*composer_rows, scrollback=True):
     lines under them, and — crucially — submitted prompts are drawn
     into the transcript above with the SAME glyph. A fixture without
     that scrollback cannot tell a draft from a message already sent,
-    which is how the guard shipped refusing every send while any
-    prompt was still on screen.
+    so a guard that refuses every send while any prompt is on screen
+    would pass.
     """
     rule = "\u2500" * 80
     out = []
@@ -149,10 +149,9 @@ class TestCmdSend:
         tmux parses the line as a flag cluster, errors with "invalid
         flag", and the line is SILENTLY dropped while surrounding
         M-Enters land — the receiver gets the message with every
-        bullet line missing (mangled three real cross-project briefs
-        before diagnosis,..14). The delivery-verification
-        signature survived in non-bullet lines, so only a
-        content-level comparison would have caught it."""
+        bullet line missing. The delivery-verification signature survives
+        in non-bullet lines, so only a content-level comparison catches
+        it."""
         self._patch_resolution(monkeypatch)
         message = "header\n- bullet one\n- bullet two\n--flag-like"
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
@@ -318,9 +317,8 @@ class TestCmdSend:
         return fake_tmux
 
     def test_send_same_dir_second_window_accepted(self, monkeypatch):
-        """Regression: a send to the second same-dir window used to
-        die with "not a registered ccm project" because the window is
-        missing from build_project_list (seen_dirs dedup). The send
+        """A send to the second same-dir window must not die with "not a
+        registered ccm project" because the window is missing from build_project_list (seen_dirs dedup). The send
         must succeed, borrowing the tracked sibling's state for
         gating while delivering to the target window itself."""
         fake_tmux = self._patch_same_dir_second_window(monkeypatch, "IDLE")
@@ -840,8 +838,8 @@ class TestCmdSend:
         # The committing Enter (bare, no payload) was sent.
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls
 
-    # A long body whose head has scrolled out of the composer. Observed
-    # against Kimi K3: a ~30-line message rendered as
+    # A long body whose head has scrolled out of the composer: a ~30-line
+    # message renders as
     # `↑ 24 more` with only the trailing lines on screen.
     _LONG_MSG = "\n".join(
         [f"opening line of the queued message, part {i}" for i in range(3)]
@@ -955,14 +953,14 @@ class TestCmdSend:
 
 
 class TestDeliveryPaneResolution:
-    """Delivery-pane resolution (incident).
+    """Delivery-pane resolution.
 
     Window state is a pane aggregation (PERMIT > BUSY > IDLE >
     SHELL), but `send-keys -t <window>` lands in the ACTIVE pane.
     A split window with Claude idle in a side pane and an active
-    bare zsh aggregated to IDLE, so `ccm send --start` skipped the
-    launch and typed the whole message into zsh as shell commands.
-    The fix targets the claude-hosting pane id directly."""
+    bare zsh aggregates to IDLE; a send to the window would type the
+    whole message into zsh as shell commands. The send targets the
+    claude-hosting pane id directly."""
 
     # Two-pane window: %72 is the active zsh, %51 hosts claude
     # (pane shell pid 12077 with a claude child). A pane whose
@@ -1012,7 +1010,7 @@ class TestDeliveryPaneResolution:
         return stub, calls
 
     def test_idle_send_targets_claude_pane_not_active_zsh(self, monkeypatch):
-        """The reported accident: window IDLE (from the side claude
+        """Window IDLE (from the side claude
         pane) while the active pane is a bare zsh. The literal body
         must go to the claude pane id, never to the window target
         (= active zsh pane)."""
@@ -1313,8 +1311,7 @@ class TestSendSelfDeliveryGuard:
     into the caller's own composer, and the state gate would consult a
     state the caller itself is producing — a session is BUSY *because*
     it is running the command, so the gate reports BUSY and appears to
-    blame the target. That self-reference was reported as
-    "sending to the other agent says BUSY when it isn't". The guard
+    blame the target. The guard
     refuses with an explanation instead of a state verdict."""
 
     def _patch(self, monkeypatch, delivery_pane, caller_pane):
@@ -1458,9 +1455,8 @@ class TestHeldAfterSubmit:
             "Removed 1 invisible character · review and press Enter to send"
 
     def test_a_hold_that_removed_nine_characters_is_no_different(self, monkeypatch):
-        """Counting how much was removed, and deciding from that, is
-        what an earlier version did; nine was over its limit and went
-        out as sent."""
+        """How much was removed does not decide anything: a hold that
+        removed nine characters is still a hold."""
         self._capture(monkeypatch, [HELD_NINE_REMOVED])
         assert ccm_send.held_after_submit("%51", timeout=0.2)
 
@@ -1471,10 +1467,9 @@ class TestHeldAfterSubmit:
         assert ccm_send.held_after_submit("%51", timeout=0.2) is None
 
     def test_a_draft_typed_after_the_send_is_not_a_hold(self, monkeypatch):
-        """Reproduced against 2.1.278 by a reviewer: the message was
-        taken and answered, and `reply only` was typed afterwards. It
-        is the message minus six characters, so comparing text called
-        it the message held back."""
+        """The message was taken and answered, and `reply only` was
+        typed afterwards. It is the message minus six characters, so a
+        text comparison would call it the message held back."""
         self._capture(monkeypatch, [DRAFT_AFTER_THE_SEND])
         assert ccm_send.held_after_submit("%51", timeout=0.2) is None
 
@@ -1547,9 +1542,8 @@ class TestHeldAfterSubmitInTime:
         return captures
 
     def test_a_notice_drawn_a_moment_late_is_still_seen(self, monkeypatch):
-        """Measured: on screen from the first capture to about five
-        seconds. One that appears a second late, and is gone at
-        five, must be caught by the polling as configured."""
+        """A notice that appears a second late, and is gone at five,
+        must be caught by the polling as configured."""
         self._world(monkeypatch, notice_from=1.0, notice_until=5.0)
         assert ccm_send.held_after_submit("%51") is not None
 
@@ -1808,7 +1802,7 @@ class TestSendPreTypeRecheck:
     def test_recheck_permit_after_confirmation_refused(
         self, monkeypatch, capsys,
     ):
-        """The reported bug: gate sees IDLE, the operator confirms
+        """The gate sees IDLE, the operator confirms
         ("y") after the target has transitioned to PERMIT. Without
         the re-check the body would land in the dialog."""
         calls = self._patch(monkeypatch, "PERMIT", interactive=True)
@@ -1828,7 +1822,7 @@ class TestSendPreTypeRecheck:
 
     def test_recheck_shell_refused(self, monkeypatch):
         """Claude exited between the gate and the send: the body
-        would be typed into a bare shell (incident class)."""
+        would be typed into a bare shell."""
         calls = self._patch(monkeypatch, "SHELL")
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--now", "hello"])
@@ -1871,8 +1865,8 @@ class TestSendPreTypeRecheck:
 
     def test_recheck_unresolvable_fails_open(self, monkeypatch):
         """Pane enumeration failing at re-check time (tmux hiccup)
-        must not break sends that worked before the guard existed —
-        matching the delivery-pane resolution fallback."""
+        must not break an ordinary send — it falls back the same way the
+        delivery-pane resolution does."""
         calls = self._patch(monkeypatch, None)
         ccm_send.cmd_send(["demo", "hello"])
         # Delivery resolution also fell back to the window target.
@@ -1899,9 +1893,8 @@ class TestDeliveryVerification:
         break lands wherever the width falls — mid-word, or
         mid-sentence in a language written without spaces. A
         signature straddling the break is absent as a substring while
-        sitting in plain view. Found by sending a real message: it
-        arrived, the peer was already answering it, and the send
-        reported a delivery it could not confirm."""
+        sitting in plain view, and the send would report a delivery
+        it could not confirm."""
         sig = ("the quick brown fox jumps over the lazy dog",)
         wrapped = ("  the quick brown fox jumps\n"
                    "  over the lazy dog\n")
@@ -2020,8 +2013,7 @@ class TestComposerDraftGuard:
         with the same `❯` glyph the composer uses. Reading the pane
         top-down and taking the first hit therefore calls the user's
         previous message a draft, and refuses every send for as long
-        as one is on screen — which is nearly always. Reported from a
-        send that queued and then expired undelivered."""
+        as one is on screen — which is nearly always."""
         calls = self._patch(
             monkeypatch,
             composer_screen("❯ ", scrollback=True),
@@ -2094,8 +2086,8 @@ class TestComposerDraftGuard:
         assert self._literal_sent(calls)
 
     def test_unreadable_composer_fails_open(self, monkeypatch):
-        """An empty capture (tmux hiccup) must not break sends that
-        worked before this guard existed — the same fail-open call
+        """An empty capture (tmux hiccup) must not break an otherwise
+        ordinary send — the same fail-open call
         `_recheck_delivery_state` makes. Pinned so a future
         tightening is a deliberate choice, not a side effect."""
         calls = self._patch(monkeypatch, "")
