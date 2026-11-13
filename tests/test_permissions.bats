@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Regression guard for executable bits in the GIT INDEX.
 #
 # ccm is distributed via git/TPM, so what users receive is decided by
@@ -45,6 +46,16 @@ _index_mode() {
     # Guard the glob itself: if the naming scheme changes and matches
     # nothing, the loop above would pass vacuously.
     [[ "$count" -ge 7 ]]
+}
+
+@test "scripts tmux runs directly are executable in the index" {
+    # tmux's run-shell executes these by path; a mode lost in the index
+    # is a handler that silently never runs on a fresh clone. Tests that
+    # call them through `bash <script>` would not notice.
+    local f
+    for f in lib/on-resize.sh lib/on-pane-focus.sh; do
+        [[ "$(_index_mode "$f")" == "100755" ]] || { echo "$f is $(_index_mode "$f")"; return 1; }
+    done
 }
 
 @test "hooks/lib.sh stays non-executable (source-only contract)" {

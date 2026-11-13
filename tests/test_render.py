@@ -17,6 +17,7 @@ import pytest
 
 import ccm_core
 import ccm_activity
+import ccm_agentview
 import ccm_canaries
 import ccm_commands
 import ccm_detection
@@ -40,12 +41,20 @@ from conftest import (
 # Backward-compat alias used by some tests.
 _iso_ts = iso_ts
 
+class TestFormatAgeShort:
+    @pytest.mark.parametrize("seconds, text", [
+        (0, "0s"), (59, "59s"), (60, "1m"), (3599, "59m"), (3600, "1h"),
+        (86399, "23h"), (86400, "1d"), (10 * 86400, "10d"), (-5, "0s")])
+    def test_largest_whole_unit(self, seconds, text):
+        assert ccm_render.format_age_short(seconds) == text
+
+
 class TestFormatElapsed:
     # Fixed-width (3 visible cols, right-aligned digits) is a hard
     # contract — the dashboard's right-anchored elapsed slot relies on
     # this so the marker's right edge doesn't wobble at 1↔2 digit
     # boundaries as the counter ticks. Don't relax these without also
-    # widening `ELAPSED_RIGHT_SLOT` in `lib/dashboard.py`.
+    # widening `ELAPSED_RIGHT_SLOT` in `lib/dashboard_render.py`.
 
     def test_seconds_two_digit(self):
         ts = int(time.time()) - 30
@@ -318,7 +327,7 @@ class TestPrintStatus:
     STATUS column) and gets the dim-bracket / cyan-digit
     treatment, matching the dashboard and status bar."""
 
-    def _run_print_status(self, projects, monkeypatch, capsys):
+    def _run_print_status(self, projects, monkeypatch, capsys, hooks=True, warning=""):
         # build_project_list does file I/O; bypass with a stub.
         monkeypatch.setattr(ccm_core, "build_project_list",
                             lambda fast=False: projects)
@@ -326,7 +335,7 @@ class TestPrintStatus:
         # disable_all_hooks_warning, managed_hooks_only_warning,
         # shell_cluster_warnings — stub all to empty so the test
         # focuses on per-project rendering.
-        monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: "")
+        monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: warning)
         monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning",
                             lambda *a, **kw: "")
         monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
@@ -335,14 +344,28 @@ class TestPrintStatus:
                             lambda projects_arg: [])
         monkeypatch.setattr(ccm_canaries, "hook_silence_warnings",
                             lambda projects_arg: [])
+        monkeypatch.setattr(ccm_agentview, "continue_blocker_warnings",
+                            lambda projects_arg, bg_sessions=None: [])
         # signal_age_suffix reads the per-project hook signal, which
         # resolves @ccm_session_id through live tmux; stub "no signal".
         monkeypatch.setattr(ccm_signals, "read_hook_signal",
                             lambda d, session_id=None: None)
         monkeypatch.setattr(ccm_core, "hooks_configured",
-                            lambda: True)
+                            lambda: hooks)
         ccm_render.print_status()
         return capsys.readouterr().out
+
+
+    @pytest.mark.parametrize("hooks", [True, False, None])
+    @pytest.mark.parametrize("warning", ["", "Unreadable hook settings", "Hook conflict"])
+    def test_only_normal_hook_banner_is_suppressed(self, monkeypatch, capsys, hooks, warning):
+        projects = [ccm_core.Project("0:1", "1", "demo", "demo", "IDLE")]
+        out = self._run_print_status(projects, monkeypatch, capsys, hooks, warning)
+        assert "Hooks: ON" not in out
+        assert ("Hooks: OFF" in out) is (not hooks)
+        assert "demo" in out and "IDLE" in out
+        if warning:
+            assert warning in out
 
     def test_no_pane_marker_for_single_pane_window(
         self, monkeypatch, capsys
@@ -493,6 +516,40 @@ class TestPrintBgSessions:
         # Hint to start one
         assert "claude --bg" in plain or "claude agents" in plain
 
+    def test_blocked_shows_the_ask_in_the_last_column(self, monkeypatch, capsys):
+        """A blocked session's ask replaces its directory, under a
+        header that says so, and a long ask is cut to one line."""
+        import ccm_agentview
+        long_ask = "確認してください " * 20
+        sessions = [
+            ccm_agentview.BgSession(
+                short="abc00001", pid=1, cwd="/w/proj", name="s1", state="NEEDS",
+                raw_state="blocked", tempo="blocked", cli_version="", session_id="",
+                created_at=None, updated_at=None, source="", needs="go-ahead for plan A or B"),
+            ccm_agentview.BgSession(
+                short="abc00002", pid=2, cwd="/w/proj", name="s2", state="NEEDS",
+                raw_state="blocked", tempo="blocked", cli_version="", session_id="",
+                created_at=None, updated_at=None, source="", needs=long_ask),
+        ]
+        plain = _strip_ansi(self._run(monkeypatch, capsys, sessions))
+        assert "DIRECTORY / NEEDS" in plain
+        assert "go-ahead for plan A or B" in plain
+        assert "/w/proj" not in plain.split("abc00001", 1)[1].split("\n")[0]
+        long_line = next(l for l in plain.split("\n") if "abc00002" in l)
+        assert long_line.rstrip().endswith("…")
+        assert ccm_render.display_width(long_line.split("s2", 1)[1].strip()) <= \
+            8 + ccm_render.BG_NEEDS_MAX_WIDTH
+
+    def test_stopped_is_neither_done_nor_failed(self, monkeypatch, capsys):
+        import ccm_agentview
+        sessions = [ccm_agentview.BgSession(
+            short="abc00001", pid=1, cwd="/w", name="s1", state="STOPPED",
+            raw_state="stopped", tempo="idle", cli_version="", session_id="",
+            created_at=None, updated_at=None, source="")]
+        plain = _strip_ansi(self._run(monkeypatch, capsys, sessions))
+        line = next(l for l in plain.split("\n") if "abc00001" in l)
+        assert "■ STOPPED" in line and "✓" not in line and "✕" not in line
+
     def test_populated_renders_short_state_name(self, monkeypatch, capsys):
         import ccm_agentview
         now = time.time()
@@ -531,12 +588,12 @@ class TestPrintBgSessions:
                 created_at=None, updated_at=None, source="",
             )
             for i, state in enumerate(["WORKING", "NEEDS", "IDLE",
-                                       "DONE", "FAILED", "UNKNOWN"])
+                                       "DONE", "FAILED", "STOPPED", "UNKNOWN"])
         ]
         out = self._run(monkeypatch, capsys, sessions)
         plain = _strip_ansi(out)
         # Icons defined in ccm_agentview.STATE_ICONS
-        for icon in ("✽", "✻", "●", "✓", "✕", "?"):
+        for icon in ("✽", "✻", "●", "✓", "✕", "■", "?"):
             assert icon in plain, (
                 f"missing icon {icon!r} in bg list output: {plain!r}"
             )
@@ -767,3 +824,29 @@ class TestPrintStatusColumnAlignment:
         assert plain[13:23] == cjk_name[:10]
         assert ccm_render.display_width(plain[13:23]) == 20
         assert plain[24] == "-"
+
+
+@pytest.mark.parametrize("flag,effect", [
+    ("allowManagedHooksOnly", "user-scope hooks"),
+    ("disableAllHooks", "ignored"),
+])
+def test_status_reports_managed_nonboolean(tmp_path, monkeypatch, capsys, flag, effect):
+    project = ccm_core.Project(win_target="main:1", win_idx="1", name="demo",
+                               directory=str(tmp_path), state="IDLE")
+    monkeypatch.setattr(ccm_core, "build_project_list", lambda fast=False: [project])
+    monkeypatch.setattr(ccm_core, "hooks_configured", lambda: True)
+    monkeypatch.setattr(ccm_signals, "read_hook_signal", lambda *a, **kw: None)
+    monkeypatch.setattr(ccm_canaries, "hooks_log_warning", lambda: "")
+    monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings", lambda p: [])
+    monkeypatch.setattr(ccm_canaries, "hook_silence_warnings", lambda p: [])
+    monkeypatch.setattr(ccm_agentview, "continue_blocker_warnings", lambda p: [])
+    path = tmp_path / "managed.json"
+    path.write_text(json.dumps({flag: "true"}))
+    monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES", {})
+    monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(path))
+    ccm_render.print_status()
+    rows = [line for line in capsys.readouterr().out.splitlines() if flag in line]
+    assert rows, "status must display the malformed managed setting"
+    row = rows[0]
+    assert "⚠" in row and "non-boolean" in row
+    assert "managed-settings.json" in row and effect in row

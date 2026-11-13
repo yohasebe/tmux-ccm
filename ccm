@@ -7,17 +7,19 @@ _ccm_resolve() {
     local src="$1"
     while [[ -L "$src" ]]; do
         local dir
-        dir=$(cd -P "$(dirname "$src")" && pwd)
+        [[ "$src" == */* ]] || src="./$src"
+        dir=$(cd -P "${src%/*}" && pwd)
         src=$(readlink "$src")
         [[ "$src" != /* ]] && src="$dir/$src"
     done
-    cd -P "$(dirname "$src")" && pwd
+    [[ "$src" == */* ]] || src="./$src"
+    cd -P "${src%/*}" && pwd
 }
 CCM_ROOT="$(_ccm_resolve "$0")"
 
 # Version of this ccm release. Keep in sync with CHANGELOG.md's
 # top entry. Surfaced via `ccm --version` and `ccm version`.
-CCM_VERSION="0.11.0"
+CCM_VERSION="0.13.0"
 
 # Background commands must not fail on errors
 case "${1:-}" in
@@ -25,23 +27,28 @@ case "${1:-}" in
     *) set -euo pipefail ;;
 esac
 
+# The periodic status pass skips most seconds; decide that before
+# reading the rest of ccm (see lib/ccm_reconcile_gate.sh).
+# `--fast` is the hook-driven push and is never rate-limited.
+if [[ "${1:-}" == "inject-status" && "$*" != *--fast* ]]; then
+    source "${CCM_ROOT}/lib/ccm_tmp_root.sh"
+    source "${CCM_ROOT}/lib/ccm_reconcile_gate.sh"
+    _ccm_should_reconcile || exit 0
+fi
+
 # Source common library (init, hooks, deps, output helpers)
 source "${CCM_ROOT}/lib/common.sh"
 
-# Rate-limit the periodic status poll before doing ANY setup work.
-# tmux fires `#(ccm inject-status)` once per status-interval — every
-# second on a config with a seconds clock — and on the seconds this
-# skips, the whole invocation must cost nothing beyond the shell
-# itself. That means jumping the queue ahead of `ccm_init_dirs`,
-# whose mkdir and two find sweeps are three more processes per
-# second for housekeeping that does not need to run at 1 Hz.
-# `--fast` is the hook-driven push and is never rate-limited.
-if [[ "${1:-}" == "inject-status" && "$*" != *--fast* ]]     && ! _ccm_should_reconcile; then
-    exit 0
-fi
 
-# Initialize runtime directories
+# Initialize runtime directories. The cache sweep is skipped on the
+# hook-driven fast path: it fires on every state transition, and two
+# find(1) walks per transition buy nothing the periodic poll's sweep
+# does not.
 ccm_init_dirs
+ccm_resolve_python
+if [[ "$*" != *--fast* ]]; then
+    ccm_gc_tmp
+fi
 
 ccm_usage() {
     cat <<'USAGE'
@@ -57,6 +64,7 @@ Usage:
   ccm attach <name|window_index>    Switch to a project window
   ccm list                          List managed project windows
   ccm status                        Show all projects with Claude state
+  ccm status --json [name|self]     Window and sidekick states as JSON, for agents
   ccm tree                          Show session/window/pane hierarchy
   ccm capture [--copy] <name|window_index>  Capture project window (--copy: to clipboard)
   ccm ports                          Show listening ports per project
@@ -67,7 +75,11 @@ Usage:
   ccm snapshot load [name]          Load and restore a snapshot
   ccm snapshot list                 List available snapshots
   ccm snapshot delete [name]        Delete a snapshot
+  ccm roles [target] [--clear]      Inspect or release restored pane roles
+  ccm prepare-logout [-y|--cancel]   Save and protect / unseal _autosave
+  ccm finish-restore [-y]           Keep what an incomplete restore restored; resume autosave
   ccm start <snapshot>              Start from a snapshot
+  ccm exit <name> [-y]             Exit Claude; keep window and sidekicks
   ccm stop [--all|name]             Stop project window(s)
   ccm bg list                       List external Claude Code agent-view sessions (read-only)
   ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
@@ -75,18 +87,18 @@ Usage:
                                            --force (BUSY) | --start (SHELL) | -y/--yes
                                            -- (end flags; for a msg starting with -)
   ccm sidekick-send <msg> [flags]   Send a prompt to the sidekick agent CLI in this window
-                                    flags: --file <path> | --stdin | - | --no-enter | --
-  ccm spool list|cancel|clear-expired  Inspect / withdraw / acknowledge queued (store-and-forward) messages
+                                    flags: --file <path> | --stdin | - | --no-enter | --json | --
+  ccm spool list|show|cancel|discard|resend|clear-expired|clear-held  Manage queued and undelivered messages
   ccm menu                          Interactive menu (for keybinding)
   ccm init                          Interactive setup wizard
   ccm setup-hooks                   Install Claude Code hooks for improved state detection
   ccm remove-hooks                  Remove ccm hooks from Claude Code settings
   ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
   ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
-  ccm debug trace <target> [interval]  Live state-detection trace; target is a project name or tmux pane/window (read-only)
+  ccm debug trace <target> [interval] [--max-time SECONDS]  Live state-detection trace; target is a project name or tmux pane/window (read-only; stops when the window closes or after 12 hours)
   ccm errors [--clear]              View / clear the silent-exception log
   ccm reset <name>                  Clear stuck runtime state for a project (last-resort recovery)
-  ccm doctor                        Self-check: dependencies, hooks, canaries, projects, errors
+  ccm doctor [--verbose]            Show issues; --verbose includes all diagnostic details
   ccm clear-notifications           Remove all ccm notifications from macOS Notification Center
   ccm help                          Show this help
   ccm version                       Print the ccm version
@@ -99,105 +111,111 @@ USAGE
 case "${1:-help}" in
     add)
         ccm_check_deps
-        python3 "$CCM_ROOT/lib/ccm_core.py" add "${2:-}" "${3:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" add "${2:-}" "${3:-}"
         ;;
     open)
-        python3 "$CCM_ROOT/lib/ccm_core.py" open "${2:-}" "${3:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" open "${2:-}" "${3:-}"
         ;;
     register|reg)
-        python3 "$CCM_ROOT/lib/ccm_core.py" register "${2:-}" "${3:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" register "${2:-}" "${3:-}"
         ;;
     unregister|unreg)
-        python3 "$CCM_ROOT/lib/ccm_core.py" unregister "${2:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" unregister "${2:-}"
         ;;
     rename|mv)
-        python3 "$CCM_ROOT/lib/ccm_core.py" rename "${2:-}" "${3:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" rename "${2:-}" "${3:-}"
         ;;
     remove|rm)
-        python3 "$CCM_ROOT/lib/ccm_core.py" remove "${2:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" remove "${2:-}"
         ;;
     attach|a)
-        python3 "$CCM_ROOT/lib/ccm_core.py" attach "${2:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" attach "${2:-}"
         ;;
     list|ls)
-        python3 "$CCM_ROOT/lib/ccm_core.py" list
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" list
         ;;
     status|st)
-        python3 "$CCM_ROOT/lib/ccm_core.py" status
+        shift
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" status "$@"
         ;;
     tree)
-        python3 "$CCM_ROOT/lib/ccm_core.py" tree
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" tree
         ;;
     tree-interactive|ti)
-        python3 "$CCM_ROOT/lib/dashboard.py" --mode tree
+        "$CCM_PYTHON" "$CCM_ROOT/lib/dashboard.py" --mode tree
         ;;
     ports)
-        python3 "$CCM_ROOT/lib/ccm_core.py" ports
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" ports
         ;;
     capture|cap)
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" capture "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" capture "$@"
         ;;
     dashboard|dash|d)
         ccm_check_deps
         shift
-        python3 "$CCM_ROOT/lib/dashboard.py" "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/dashboard.py" "$@"
         ;;
     search)
         # Shorthand: open the dashboard directly in search mode.
         ccm_check_deps
-        python3 "$CCM_ROOT/lib/dashboard.py" --search
+        "$CCM_PYTHON" "$CCM_ROOT/lib/dashboard.py" --search
         ;;
     statusline|sl)
-        python3 "$CCM_ROOT/lib/ccm_core.py" statusline
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" statusline
         ;;
     inject-status)
         # Forward flags (e.g. --fast for the focus-refresh path).
         # Rate limiting for the periodic form happens before
         # `ccm_init_dirs` above — by the time dispatch runs, this
         # invocation has already earned its full pass.
-        python3 "$CCM_ROOT/lib/inject_status.py" "$@" || true
+        "$CCM_PYTHON" "$CCM_ROOT/lib/inject_status.py" "$@" || true
         ;;
     reset-window)
-        python3 "$CCM_ROOT/lib/ccm_core.py" reset-window || true
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" reset-window || true
+        ;;
+    dock)
+        # Internal: the docked dashboard (key binding and window hooks).
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_dock.py" "${2:-toggle}" "${3:-}"
         ;;
     reset)
-        python3 "$CCM_ROOT/lib/ccm_core.py" reset "${2:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" reset "${2:-}"
         ;;
     ignore)
         # `ccm ignore [project]` — hide a pane/project from ccm.
         # No arg = the current pane ($TMUX_PANE). Passes TMUX_PANE
         # through so the Python side can target the caller's pane.
-        python3 "$CCM_ROOT/lib/ccm_core.py" ignore "${2:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" ignore "${2:-}"
         ;;
     unignore)
-        python3 "$CCM_ROOT/lib/ccm_core.py" unignore "${2:-}"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" unignore "${2:-}"
         ;;
     debug)
         # `ccm debug trace <target> [interval]` — live state-detection trace.
         # `target` is a project name or any tmux pane / window / session:index.
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" debug "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" debug "$@"
         ;;
     errors)
         # `ccm errors [--clear]` — view / clear the silent-exception log.
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" errors "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" errors "$@"
         ;;
     doctor)
         # `ccm doctor` — aggregate self-check.
-        python3 "$CCM_ROOT/lib/ccm_core.py" doctor
+        shift
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" doctor "$@"
         ;;
     clear-notifications)
-        python3 "$CCM_ROOT/lib/ccm_core.py" clear-notifications
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" clear-notifications
         ;;
     snapshot|snap)
         ccm_check_deps
         case "${2:-}" in
-            save)  python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-save "${3:-}" ;;
-            load)  python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-load "${3:-}" ;;
-            list)  python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-list ;;
-            delete|del) python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-delete "${3:-}" ;;
+            save)  "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" snapshot-save "${3:-}" ;;
+            load)  "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" snapshot-load "${3:-}" ;;
+            list)  "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" snapshot-list ;;
+            delete|del) "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" snapshot-delete "${3:-}" ;;
             *)     ccm_die "Usage: ccm snapshot save|load|list|delete [name]" ;;
         esac
         ;;
@@ -206,41 +224,57 @@ case "${1:-help}" in
         # sessions (daemon-managed; out of ccm's control). Lifecycle
         # (dispatch / attach / stop) stays with `claude` itself.
         case "${2:-list}" in
-            list|ls) python3 "$CCM_ROOT/lib/ccm_core.py" bg-list ;;
+            list|ls) "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" bg-list ;;
             *)       ccm_die "Usage: ccm bg list" ;;
         esac
+        ;;
+    roles)
+        shift
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" roles "$@"
+        ;;
+    prepare-logout)
+        shift
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" prepare-logout "$@"
+        ;;
+    finish-restore)
+        shift
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" finish-restore "$@"
         ;;
     start)
         ccm_check_deps
         if [[ -n "${2:-}" ]]; then
-            python3 "$CCM_ROOT/lib/ccm_core.py" snapshot-load "$2"
+            "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" snapshot-load "$2"
         else
             ccm_die "Usage: ccm start <snapshot>"
         fi
+        ;;
+    exit)
+        shift
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" exit "$@"
         ;;
     stop)
         # Forward all args (`--all` is a flag, not a name); the Python
         # side parses them via raw-argv passthrough like capture/send.
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" stop "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" stop "$@"
         ;;
     send)
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" send "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" send "$@"
         ;;
     sidekick-send)
         # Raw-argv passthrough like send: the message is positional
         # and may start with a dash after `--`.
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" sidekick-send "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" sidekick-send "$@"
         ;;
     spool)
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" spool "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" spool "$@"
         ;;
     menu)
         ccm_check_deps
-        python3 "$CCM_ROOT/lib/dashboard.py" --mode menu
+        "$CCM_PYTHON" "$CCM_ROOT/lib/dashboard.py" --mode menu
         ;;
     init)
         ccm_init
@@ -257,11 +291,11 @@ case "${1:-help}" in
         # decision" — the ▸ badge turns PERMIT-yellow and a desktop
         # notification fires.
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" setup-sidekick-hooks "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" setup-sidekick-hooks "$@"
         ;;
     remove-sidekick-hooks)
         shift
-        python3 "$CCM_ROOT/lib/ccm_core.py" remove-sidekick-hooks "$@"
+        "$CCM_PYTHON" "$CCM_ROOT/lib/ccm_core.py" remove-sidekick-hooks "$@"
         ;;
     setup-claude-md)
         ccm_setup_claude_md

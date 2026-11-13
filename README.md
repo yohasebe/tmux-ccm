@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.258-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.323-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -14,7 +14,7 @@ ccm is a tmux plugin for developers who run [Claude Code](https://docs.anthropic
 
 It's effectively an **attention manager**: every project gets a state (BUSY / IDLE / waiting for permission), the dashboard sorts them by urgency, and one keystroke takes you to whichever needs you next.
 
-A popup dashboard shows every project's state (busy / idle / waiting for permission), git branch, and listening ports at a glance. Snapshots restore your full layout after a tmux restart. Desktop notifications surface only the projects that need attention.
+A popup dashboard shows every project's state (busy / idle / waiting for permission), git branch, and listening ports at a glance. Snapshots restore project windows after a tmux restart. Desktop notifications surface only the projects that need attention.
 
 ccm's value scales with parallelism: useful with 2–3 projects, daily infrastructure with 4+. Best fit for Max-tier users running agents across multiple projects in parallel.
 
@@ -35,7 +35,7 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 - **Tree View** — Hierarchical session/window/pane display with navigation
 - **Git Integration** — Per-project git branch with dirty-state indicator
 - **Port Detection** — Listening ports per project
-- **Snapshots** — Save and restore your project layout
+- **Snapshots** — Save projects and restore their windows
 - **Cross-Project Messaging** — `ccm send <project> <message>` delivers prompts between projects with state-based safety gating (PERMIT-safe), and queues for later delivery (store-and-forward) when the target is busy
 - **Permission-Mode Visibility** — each project's Claude Code permission mode (manual / accept / plan / auto / bypass) shown in `ccm status` and the dashboard, so "this project never asks for permission" is never a mystery
 - **Sidekick Support** — run a second agent CLI beside Claude in a split pane; ccm keeps it out of its own tracking and shows that it is there. See [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore) and [Relaying with a second agent CLI](docs/guide.md#relaying-with-a-second-agent-cli)
@@ -47,12 +47,12 @@ One **project** = one **folder** = one **tmux window**. A window holds any numbe
 ## Requirements
 
 - tmux 3.2+
-- Python 3.9+
+- Python 3.9+ (the `python3` on `PATH`; ccm remembers its real path in the runtime directory, `${TMPDIR:-/tmp}/ccm-<uid>/python`, so a version manager's shim is not run on every start. Delete that file to make ccm pick up a different Python.)
 - [TPM](https://github.com/tmux-plugins/tpm) (or manual install)
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107+**
-  (tested against v2.1.258 — see the badge at the top of this page)
+  (tested against v2.1.323 — see the badge at the top of this page)
 
 ## Installation
 
@@ -154,6 +154,17 @@ set -g @ccm-key-search "/"       # optional: enable prefix + / to open the dashb
 > ```
 >
 > Press `F1` to open, `F1` again to close. The coloured ccm logo on the popup title is preserved (writing your own `bind-key -n F1 display-popup …` works mechanically but loses the logo unless you replicate the full `-T` format string).
+
+> [!TIP]
+> To keep the dashboard on screen while you work, dock it as a pane instead of a popup:
+>
+> ```tmux
+> set -g @ccm-dashboard-dock top        # or bottom; off (default) keeps the popup
+> set -g @ccm-dashboard-dock-size 40    # height in percent of the window (default 40)
+> set -g @ccm-dashboard-dock-close-on-open on   # optional: close it after opening a project
+> ```
+>
+> `prefix + Tab` then opens a full-width dashboard pane in the current window and closes it again. It follows you when you switch windows, and opening a project from it keeps it open; the window it leaves gets its layout back. See [the guide](docs/guide.md#docked-dashboard).
 
 ### Desktop Notifications
 
@@ -326,7 +337,10 @@ set -g @ccm-status-bg         "#262626"   # entry-row background
 set -g @ccm-status-gutter-bg  "#1a1a1a"   # one-row gutter between main bar and entries
 set -g @ccm-status-fg         "#9E9E9E"   # default foreground
 set -g @ccm-status-fg-dim     "#5a5a5a"   # separators / hints
+set -g @ccm-status-current-bg "#505050"   # current project's background (modes 1 and 2)
 ```
+
+In modes 1 and 2, the current project has a distinct background, including one space on each side, so it is easier to locate without widening the status entries.
 
 Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named colours (`red`, `blue`, `default`, …). Invalid values fall back to the default.
 
@@ -346,13 +360,16 @@ Accepted values: hex (`#RGB` / `#RRGGBB`), `colour123` palette indices, or named
 | `g` | Register existing window |
 | `r` | Remove — choose [u]nregister (keep window) or [d]elete (close it; asks y/N). Also in the menu |
 | `i` | Toggle ignore — hide/restore the project (see [Running a second model](docs/guide.md#running-a-second-model-as-a-sidekick-ccm_ignore)) |
-| `x` | Exit all idle Claude Code sessions |
+| `x` | Review names and states, then exit Claude with screen checks; keep windows |
 | `/` | Search projects |
 | `t` | Switch to tree view |
 | `w` | Toggle sidekick attention — highlight a sidekick that is waiting for you (see [Sidekick attention](docs/guide.md#sidekick-attention-knowing-when-it-needs-you)) |
 | `b` | Toggle [background-sessions section](#background-sessions-section-agent-view-coexistence) |
-| `m` | Switch to menu |
+| `?` / `m` | Menu of actions and settings, including: prepare for logout, continue restore, choose/delete checkpoints, reset and exit Claude |
 | `q` / `Esc` / `F1` | Close |
+
+`ccm exit <name>` exits Claude while keeping its window; `ccm exit <name> [-y]             Exit Claude; keep window and sidekicks
+ccm stop <name>` closes the window. Exit refuses BUSY/PERMIT unless `-y` is supplied. In PERMIT, Escape rejects the pending tool call. Menu actions provide confirmation and readable results; see the [guide](docs/guide.md#logout-restoration-and-recovery).
 
 ### CLI Commands
 
@@ -367,6 +384,7 @@ ccm remove <name>                 Remove project window (kill window)
 ccm attach <name|number>          Switch to project window
 ccm list                          List managed projects
 ccm status                        Show projects with status, permission mode, branch, ports
+ccm status --json [name|self]     Window and sidekick states as JSON, for agents and scripts
 ccm tree                          Show session/window/pane hierarchy
 ccm ports                         Show listening ports per project
 ccm capture [--copy] <name|#id>   Capture pane content (--copy: clipboard)
@@ -374,12 +392,15 @@ ccm dashboard [--search]          Open interactive dashboard popup
 ccm search                        Open the dashboard in live-filter search mode
 ccm menu                          Interactive menu (for keybinding)
 ccm snapshot save|load|list|delete  Manage snapshots
+ccm roles [target] [--clear]      Inspect or release restored pane roles
+ccm prepare-logout [-y|--cancel]   Save, protect or unseal a checkpoint
+ccm finish-restore [-y]            End an incomplete restore with what is restored
 ccm start <snapshot>              Restore from snapshot
 ccm stop [--all|name]             Stop project (--all saves _autosave snapshot)
 ccm send <name> <msg> [flags]     Send a prompt to another project's Claude session
                                   flags: --file --stdin --no-enter --now --force --start -y --
 ccm sidekick-send <msg> [flags]   Send a prompt to the sidekick agent CLI in this window
-ccm spool list|cancel|clear-expired  Inspect / withdraw / acknowledge queued (store-and-forward) messages
+ccm spool list|cancel|clear-expired|clear-held  Inspect / withdraw / acknowledge queued (store-and-forward) messages
 ccm bg list                       List external Claude Code agent-view sessions (read-only)
 ccm init                          Interactive setup wizard (hooks, restore, status bar)
 ccm setup-hooks                   Install Claude Code hooks (improved state detection)
@@ -388,12 +409,12 @@ ccm setup-claude-md               Add ccm section to ~/.claude/CLAUDE.md
 ccm remove-claude-md              Remove ccm section from ~/.claude/CLAUDE.md
 ccm statusline                    Print one-line status (used by tmux status bar)
 ccm inject-status                 Update tmux status bar (called internally)
-ccm debug trace <target> [interval] Live state-detection trace; target is a project or tmux pane/window (read-only)
+ccm debug trace <target> [interval] Live state-detection trace; target is a project, tmux pane/window, or session:index (read-only)
 ccm errors [--clear]              View / clear the silent-exception log
 ccm reset <name>                  Clear stuck runtime state (last-resort recovery)
 ccm ignore [project]              Hide a pane (default: current) or project from ccm
 ccm unignore [project]            Restore an ignored pane/project to ccm
-ccm doctor                        Self-check (deps, hooks, canaries, projects, errors)
+ccm doctor [--verbose]            Show issues; --verbose includes all diagnostic details
 ccm clear-notifications           Remove ccm notifications from macOS Notification Center
 ```
 
@@ -408,9 +429,10 @@ ccm clear-notifications           Remove ccm notifications from macOS Notificati
 | ◉ | BUSY | Claude is processing |
 | ● | IDLE | Waiting for input |
 | `* <elapsed>` | IDLE (recently completed) | Transient marker (asterisk green, time dim) shown for 30 s after BUSY/PERMIT → IDLE |
+| `(bg)` | IDLE | Claude waits for your input, but work it started is still running (a background agent or command, a scheduled loop, a leftover process). Drawn in BUSY's colour beside Claude's state, ahead of any sidekick badge; auto-exit leaves the window alone. On the dashboard, `(bg 9h)` says how long the oldest such task has run, and the preview lists each one |
 | `[N]` | (any state, multi-pane window) | Pane count marker (brackets dim, digit cyan) when a window has more than one pane |
 | `⊘` | (any state) | Hidden-pane marker (dim): the window has a pane excluded from ccm via `CCM_IGNORE` |
-| `▸<name>` | (any state) | Presence marker (dim): a pane in the window is running an external agent CLI. ccm shows that it is there but does not track its state |
+| `▸ <name>` | (any state) | Sidekick marker: a pane in the window is running an external agent CLI. Dim while it sits there; yellow `▸ <name> ⚠` while it waits for you (with sidekick hooks installed, or read from the screen for Codex and Antigravity `agy`); for those two also `▸ <name> ◉` in BUSY's colour while it works. With several sidekicks, each name carries its own state (`▸ codex ◉,agy ⚠`). The window's own state is unaffected |
 | ■ | SHELL | Shell active, Claude not running |
 | ○ | DOWN | Window not available |
 | ⊘ | IGNORED | Every Claude pane in the window is hidden via `CCM_IGNORE` — ccm deliberately cannot see the window's Claude, so it claims no state. `ccm send` is refused and points at `ccm unignore` |
@@ -434,19 +456,21 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
+A subagent's permission request also shows as PERMIT, including a background agent's. It stays until that agent goes on (its tool runs or fails, or the agent ends), even while you carry on in the main conversation, because the request is still waiting. A request older than 10 minutes stops counting once the screen is idle, in case its answer was never reported. When another tool's hook answers permission requests outside the terminal, the dialog may not be on screen at all; answer it where that tool asks.
+
 ccm has hook-independent fallbacks so detection keeps working when Claude Code stops firing hooks mid-session:
 
 - **JSONL session-log heartbeat**: a fresh user/assistant record in the project's `~/.claude/projects/.../jsonl` confirms the session is alive (housekeeping records are filtered out).
 - **Permission dialog footer match**: the permission footer (`Esc to cancel · Tab to amend`) is detected directly from the visible pane.
-- **`~/.claude/hooks.log` size canary**: ccm warns when this file exceeds 100 MB — a known cause of silent hook failure. Clear it with `: > ~/.claude/hooks.log`.
+- **`~/.claude/hooks.log` size canary**: ccm warns when this file exceeds 100 MB — a known cause of silent hook failure. Save a copy first, then clear it with `: > ~/.claude/hooks.log`.
 
-Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
+Hook status is shown in the dashboard footer (Hooks: ON/OFF). `ccm status` shows Hooks: OFF when hooks are unavailable and retains diagnostic warnings; the normal Hooks: ON line is omitted. If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
 
 To remove: `ccm remove-hooks`
 
 ### Snapshots
 
-Save your workspace layout and restore it later:
+Save your projects and load their windows later:
 
 ```bash
 ccm snapshot save my-workspace
@@ -454,7 +478,7 @@ ccm snapshot list
 ccm start my-workspace
 ```
 
-The `_autosave` snapshot is also updated automatically every 2 minutes while projects are active. When you run `ccm stop --all`, it is saved as well:
+The `_autosave` checkpoint is checked every 2 minutes and after project operations. Identical or protected content is left intact. Use `ccm prepare-logout` to save and protect it; `ccm prepare-logout --cancel` releases protection. Saving supports one managed session. v2 restores splits, cwd and roles in your login shell; shell startup files run normally. Before logout run `ccm prepare-logout`; after login run `ccm start _autosave`. Open the windows you need to resume Claude in their reserved primary panes, or eligible shells when readable roles contain no primary; resume sidekicks manually using `ccm roles` guidance. Do not also restore this environment with tmux-resurrect.
 
 ```bash
 ccm start _autosave   # restore previous session
@@ -478,6 +502,16 @@ Claude Code sessions that remain idle are automatically exited to free system re
 set -g @ccm-idle-timeout "10"    # minutes (default: 10, 0 to disable)
 ```
 
+### Codex sidekick notifications
+
+Persist the all-window default in `~/.tmux.conf`, then reload it. Install and trust the Codex hooks separately. Window overrides win over `set -gw`, then `set -g`; without a setting, notifications are off. Window-only exceptions are not saved in snapshots. See the [guide](docs/guide.md#sidekick-completion-v1) for delivery and approval handling.
+
+```tmux
+set -g @ccm-sidekick-notify on
+set -g @ccm-sidekick-notify-limit 20
+set -g @ccm-sidekick-notify-excerpt on
+```
+
 ### Dashboard Preview Panel
 
 Show a live preview of the selected project's terminal content alongside the project list:
@@ -485,13 +519,14 @@ Show a live preview of the selected project's terminal content alongside the pro
 ```tmux
 set -g @ccm-preview "on"              # default: off
 set -g @ccm-preview-position "right"  # or "bottom"
+set -g @ccm-lang "en"               # en / ja
 ```
 
 The preview updates when you move the cursor and refreshes automatically. ANSI colors (256-color and RGB) are rendered. Requires terminal width ≥ 80 columns (right position) or height ≥ 20 rows (bottom position). Can also be toggled from the dashboard menu (`m`).
 
 ### Auto-Start Claude Code
 
-When you switch to a project window where Claude Code has exited (SHELL state), ccm automatically restarts it with `--continue` to resume the conversation.
+When you switch to a project window where Claude Code has exited (SHELL state), ccm automatically restarts it with `--continue` to resume the conversation (always `--continue` for an existing shell; only `ccm add` types plain `claude`, and only when ccm can see that the directory has no conversation yet. Nothing is chained behind `--continue`, so a failure to resume stays on screen instead of silently starting a new conversation). Right before typing the command it re-reads the window: nothing is typed if a pane already hosts Claude by then (for example after an update relaunched it in place), or if no pane can be verified as a shell prompt.
 
 ```tmux
 set -g @ccm-auto-start "on"     # default: on (set to "off" to disable)
@@ -507,7 +542,7 @@ Claude Code 2.1.139 introduced an agent view (`claude agents`, `claude --bg`, `c
 set -g @ccm-bg-section "always"   # default: off
 ```
 
-Off by default — window-as-project workflows are unaffected. Press `b` in the dashboard to toggle on demand without persisting the setting, or set `always` (also reachable from the dashboard menu `m`) to keep it visible across opens. Pressing `Enter` on a bg row opens a fresh tmux window (not a ccm project) and runs `claude attach <short>` — using a non-ccm window prevents the auto-start path from racing your attach. ccm only observes the daemon's `roster.json` and per-session `state.json`; dispatch and stop stay with the `claude` CLI itself. Outside the dashboard, `ccm bg list` prints the same data.
+Off by default — window-as-project workflows are unaffected. Press `b` in the dashboard to toggle on demand without persisting the setting, or set `always` (also reachable from the dashboard menu `m`) to keep it visible across opens. Pressing `Enter` on a bg row opens a fresh tmux window (not a ccm project) and runs `claude attach <short>` — using a non-ccm window prevents the auto-start path from racing your attach. ccm only observes the daemon's `roster.json` and per-session `state.json`; dispatch and stop stay with the `claude` CLI itself. Outside the dashboard, `ccm bg list` prints the same data. When a project's newest conversation was handed to a background session with `/bg` and the CLI still counts that session as live, `claude --continue` starts fresh there; ccm says so — on the dashboard, in `ccm status` / `ccm doctor`, and right after it types the launch command on attach — and names the `claude attach` / `claude stop` exits.
 
 ### Anti-Flicker
 
@@ -549,7 +584,7 @@ tmux switch-client -t oss      # Standard tmux session switching
 ```
 
 > [!TIP]
-> This pairs well with snapshots. Each session can save and restore its own project layout independently with `ccm snapshot save` / `ccm start`.
+> This pairs well with snapshots. Snapshot saving supports one managed session and refuses inventories spanning multiple managed sessions.
 
 ## How It Works
 
@@ -570,6 +605,7 @@ tmux switch-client -t oss      # Standard tmux session switching
    # Only if you installed sidekick attention hooks (guide feature):
    ccm remove-sidekick-hooks kimi
    ccm remove-sidekick-hooks grok
+   ccm remove-sidekick-hooks codex
    ```
    The hooks are registered with absolute paths into the plugin directory, so leaving them behind means Claude Code keeps trying to run scripts that no longer exist on every event. The `CLAUDE.md` section would likewise keep instructing sessions to use commands you have removed.
 
@@ -601,7 +637,8 @@ tmux switch-client -t oss      # Standard tmux session switching
 
 ## Documentation
 
-- [User Guide](docs/guide.md)
+- [User Guide](docs/guide.md) — setup, everyday use, and handling sends and notifications
+- [Diagnostics reference](docs/diagnostics.md) — detection, environment variables, logs, and detailed investigation
 - [日本語版 README](README.ja.md) / [ユーザーガイド](docs/guide.ja.md)
 
 ## License

@@ -2,7 +2,7 @@
 
 A snapshot is a JSON manifest at
 `$CCM_SNAPSHOT_DIR/<name>.json` recording every ccm-tagged tmux
-window: `(name, dir, auto_start_claude)`. The `_autosave` snapshot
+window and its observed pane layout (v2). The `_autosave` snapshot
 written by `cmd_snapshot_save("_autosave", quiet=True)` is the
 restore point for `ccm start _autosave`; lifecycle commands
 trigger it via `ccm_commands._autosave_trigger`.
@@ -16,10 +16,11 @@ filename hitting `os.path.join`.
 import glob
 import json
 import os
-import time
 
 import ccm_core  # late-bound for tmux_cmd / ccm_die / fzf_select / etc.
 import ccm_render
+import ccm_snapshot_store as store
+import ccm_restore
 
 
 def _sanitize_snapshot_name(name):
@@ -37,68 +38,190 @@ def _sanitize_snapshot_name(name):
 
 
 def cmd_snapshot_save(name="", quiet=False):
-    """Save the current set of ccm-tagged tmux windows to a snapshot
-    JSON file. Empty `name` prompts interactively. The `_autosave`
-    name is reserved for lifecycle-trigger autosaves and is what
-    `ccm start _autosave` restores."""
+    """Capture under the same lock used by prepare, cancel and recovery."""
     if not name:
         try:
             name = input("Snapshot name: ").strip()
         except (EOFError, KeyboardInterrupt):
             return
-    if not name:
-        ccm_core.ccm_die("Snapshot name is required")
     name = _sanitize_snapshot_name(name)
-
-    ccm_core.init_dirs()
-
-    raw = ccm_core.tmux_cmd(
-        "list-windows", "-a", "-F",
-        "#{window_index}\t#{window_name}\t#{@ccm_project}\t#{@ccm_dir}",
-    )
-    if not raw:
-        if not quiet:
-            ccm_core.ccm_die("No active projects to save")
-        return
-
-    projects_list = []
-    for line in raw.split("\n"):
-        parts = line.split("\t")
-        while len(parts) < 4:
-            parts.append("")
-        project, proj_dir = parts[2], parts[3]
-        if not project or not proj_dir:
-            continue
-        # Replace a leading $HOME with ~ for portability (prefix-only —
-        # a mid-path $HOME occurrence must survive, or the path would
-        # no longer expand back to a real directory on load).
-        proj_dir = ccm_core.shorten_home(proj_dir)
-        projects_list.append({
-            "name": project,
-            "dir": proj_dir,
-            "auto_start_claude": True,
-        })
-
-    if not projects_list:
-        if not quiet:
-            ccm_core.ccm_die("No active projects to save")
-        return
-
-    snapshot = {
-        "version": 1,
-        "name": name,
-        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "projects": projects_list,
-    }
-
-    file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
-    tmp_path = file_path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(snapshot, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, file_path)
-
+    # A background autosave during a restore would only wait for the
+    # restore's writer lock to learn it may not save; say so at once. The
+    # check under the lock below still decides.
+    if quiet and ccm_restore.paused():
+        return False
+    try:
+        with store.locked():
+            if ccm_restore.paused():
+                if not quiet:
+                    ccm_core.ccm_warn("Restore incomplete; retry the same snapshot before saving")
+                return False
+            old = store.read(store.directory() / f"{name}.json")
+            if name == "_autosave" and store.sealed(old):
+                if not quiet:
+                    ccm_core.ccm_info("Snapshot protected: _autosave; use ccm prepare-logout --cancel to unseal")
+                return False
+            data = store.collect(name)
+            changed = store.write(name, data)
+    except store.EmptySnapshot as exc:
+        if quiet:
+            return False
+        ccm_core.ccm_die(str(exc))
+    except (store.SnapshotError, OSError, ValueError) as exc:
+        if quiet:
+            raise
+        ccm_core.ccm_die(str(exc))
     if not quiet:
-        ccm_core.ccm_info(f"Snapshot saved: {name} ({file_path})")
+        ccm_core.ccm_info(f"Snapshot {'saved' if changed else 'unchanged'}: {name}")
+    return changed
+
+
+def _confirmation():
+    """Read a short terminal answer; Escape cancels without requiring Enter."""
+    import sys
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    answer = bytearray()
+    try:
+        tty.setraw(fd)
+        print("Save anyway? [y/N] ", end="", flush=True)
+        while True:
+            char = os.read(fd, 1)
+            if char in (b'', b'\x1b', b'\x03', b'\x04'):
+                return ''
+            if char in (b'\r', b'\n'):
+                return answer.decode('ascii', errors='replace')
+            if char in (b'\x7f', b'\x08'):
+                if answer:
+                    answer.pop()
+                    print('\b \b', end='', flush=True)
+            elif len(answer) < 32:
+                answer.extend(char)
+                print(char.decode('ascii', errors='replace'), end='', flush=True)
+    finally:
+        termios.tcsetattr(fd, termios.TCSAFLUSH, previous)
+        print()
+
+
+def cmd_prepare_logout(args):
+    """Save and seal a checkpoint, or explicitly release its protection."""
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(prog="ccm prepare-logout")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--cancel", action="store_true", help="Unseal without deleting the checkpoint")
+    group.add_argument("-y", "--yes", action="store_true", help="Save even when projects are PERMIT or BUSY")
+    opts = parser.parse_args(args)
+    try:
+        with store.locked():
+            if ccm_restore.paused():
+                raise store.SnapshotError("Restore incomplete; retry the same snapshot before preparing or unsealing")
+            path = store.directory() / "_autosave.json"
+            if opts.cancel:
+                data = store.read(path)
+                if not data:
+                    raise store.SnapshotError("No _autosave checkpoint to unseal")
+                if store.sealed(data):
+                    data['checkpoint']['sealed'] = False
+                    store.write("_autosave", data, backup=False)
+                ccm_core.ccm_info("Snapshot protection released: _autosave (checkpoint retained)")
+                return
+            data = store.collect("_autosave", sealed=True)
+            interrupted = data['checkpoint']['interrupted']
+            if interrupted:
+                for project in interrupted:
+                    print(f"{project['name']}: {project['state']}")
+                if not opts.yes:
+                    if not sys.stdin.isatty():
+                        raise store.SnapshotError("PERMIT/BUSY projects: non-interactive save refused; use -y to save anyway")
+                    try:
+                        answer = _confirmation().strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        answer = ''
+                    if answer != 'y':
+                        raise store.SnapshotError("Save cancelled; checkpoint unchanged")
+                    fresh = store.collect("_autosave", sealed=True)
+                    if store.comparable(fresh) != store.comparable(data):
+                        raise store.SnapshotError("Projects changed during confirmation; checkpoint unchanged, retry")
+                    data = fresh
+            store.write("_autosave", data)
+        ccm_core.ccm_info("Checkpoint saved and protected: _autosave (windows and agents are still running)")
+    except (store.SnapshotError, OSError, ValueError) as exc:
+        ccm_core.ccm_die(str(exc))
+
+
+def cmd_finish_restore(args):
+    """Keep what an incomplete restore restored and resume autosave."""
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(prog="ccm finish-restore")
+    parser.add_argument("-y", "--yes", action="store_true", help="Do not ask for confirmation")
+    opts = parser.parse_args(args)
+
+    def confirm(plan):
+        source, dropped, archive = plan['source'], plan['dropped'], plan['archive']
+        if archive:
+            print(f"Checkpoint {source}: {len(dropped)} project(s) will no longer be restored from it:")
+        else:
+            print(f"This restore of snapshot {source} ends without {len(dropped)} project(s):")
+        for name in dropped:
+            print(f"  {name}")
+        if archive:
+            print(f"The full checkpoint is kept as {archive}; restore it later with: ccm start {archive}")
+        else:
+            print(f"Snapshot {source} itself is unchanged; loading it again restores all its projects.")
+        print("Windows held back keep running as plain tmux windows, outside ccm.")
+        if opts.yes:
+            return True
+        if not sys.stdin.isatty():
+            raise store.SnapshotError("Non-interactive finish refused; use -y to confirm")
+        try:
+            return _confirmation().strip().lower() == 'y'
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+    try:
+        result = ccm_restore.finish(confirm)
+    except (store.SnapshotError, OSError, ValueError) as exc:
+        ccm_core.ccm_die(str(exc))
+    for line in result.get('fixed', ()):
+        ccm_core.ccm_warn(line)
+    done = f"Restore finished without {len(result['dropped'])} project(s)"
+    if result['autosave'] == 'sealed':
+        ccm_core.ccm_info(f"{done}. Autosave stays paused: _autosave is protected for logout; "
+                          "release it with ccm prepare-logout --cancel")
+    elif result['source'] == '_autosave' and result['autosave'] == 'absent':
+        ccm_core.ccm_info(f"{done}. No project is in use, so _autosave was removed (kept as "
+                          f"{result['archive']}); autosave starts again once a project is open")
+    elif result['source'] == '_autosave':
+        ccm_core.ccm_info(f"{done}. _autosave now holds the projects in use; autosave resumes")
+    else:
+        ccm_core.ccm_info(f"{done}. Snapshot {result['source']} is unchanged; autosave resumes")
+
+
+def snapshot_diagnostics():
+    """Read only: doctor must not recover, create files or acquire a write lock."""
+    rows = []
+    try:
+        if ccm_restore.paused():
+            rows.append((True, 'restore incomplete; retry the same snapshot load, or ccm finish-restore, '
+                               'to resume autosave'))
+        if (store.directory() / '.snapshot-transaction').exists():
+            rows.append((True, "snapshot transaction pending; next snapshot write will recover it"))
+        data = store.read(store.directory() / '_autosave.json')
+        if data:
+            meta = data['checkpoint'] if data['version'] == 2 else {}
+            rows.append((False, f"_autosave v{data['version']}: "
+                         f"{'sealed' if store.sealed(data) else 'unsealed'}, {data.get('created', '?')}"))
+            for p in meta.get('interrupted', []):
+                rows.append((False, f"interrupted at save: {p['name']} ({p['state']})"))
+        if store.read(store.directory() / '_autosave.prev'):
+            rows.append((False, "previous checkpoint available: _autosave.prev"))
+    except (store.SnapshotError, OSError, ValueError) as exc:
+        rows.append((True, str(exc)))
+    return rows
 
 
 def cmd_snapshot_load(name=""):
@@ -141,15 +264,21 @@ def cmd_snapshot_load(name=""):
     if not isinstance(data, dict):
         ccm_core.ccm_die(f"Snapshot malformed: {name} (top level is not an object)")
 
+    try:
+        store.validate(data)
+    except store.SnapshotError as exc:
+        ccm_core.ccm_die(str(exc))
+    if data['version'] == 2:
+        return ccm_restore.load(name)
+    if ccm_restore.paused():
+        ccm_core.ccm_die('Restore incomplete; finish the same v2 snapshot before loading another snapshot')
+
     snap_projects = data.get("projects", [])
     if not isinstance(snap_projects, list):
         ccm_core.ccm_die(f"Snapshot malformed: {name} (projects is not a list)")
     print(f"Loading snapshot: {name} ({len(snap_projects)} projects)")
 
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die("Not inside a tmux session — start one with "
-                         "`tmux new-session` first")
+    session = ccm_core.require_session()
 
     for proj in snap_projects:
         if not isinstance(proj, dict):
@@ -232,10 +361,13 @@ def cmd_snapshot_delete(name=""):
 
     name = _sanitize_snapshot_name(name)
     file_path = os.path.join(ccm_core.CCM_SNAPSHOT_DIR, f"{name}.json")
-    # unlink directly rather than exists-then-unlink — the file can
-    # vanish between the two calls (concurrent delete, a sync client).
     try:
-        os.unlink(file_path)
-    except FileNotFoundError:
-        ccm_core.ccm_die(f"Snapshot not found: {name}")
+        with store.locked():
+            if ccm_restore.paused():
+                raise store.SnapshotError("Restore incomplete; retry the same snapshot before deleting")
+            if name == "_autosave" and store.sealed(store.read(store.directory() / f"{name}.json")):
+                raise store.SnapshotError("Snapshot protected; run ccm prepare-logout --cancel before deleting")
+            os.unlink(file_path)
+    except (OSError, store.SnapshotError) as exc:
+        ccm_core.ccm_die(str(exc))
     ccm_core.ccm_info(f"Snapshot deleted: {name}")

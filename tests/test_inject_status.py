@@ -23,6 +23,75 @@ def make_project(win_target, win_idx, name, state):
     )
 
 
+# ─── build_detail_entries: current-project background ───
+
+class TestCurrentProjectBackground:
+    """The project in the window you are looking at sits on its own
+    background across its whole cell; the block's colours come back
+    after the space that follows it."""
+
+    @pytest.mark.parametrize("with_extras", [False, True])
+    def test_only_the_current_entry_gets_the_background(self, with_extras):
+        projects = [make_project("0:1", "1", "alpha", "IDLE"),
+                    make_project("0:2", "2", "beta", "SHELL")]
+        entries = inject_status.build_detail_entries(
+            projects, with_extras=with_extras, current_win_target="0:2",
+            pill_bg="#123456")
+        assert "#123456" not in entries[0]
+        assert entries[1].startswith("#[bg=#123456]")
+        # Every style change inside names the background, so none can drop it.
+        styles = re.findall(r"#\[([^\]]*)\]", entries[1])
+        assert styles and all("bg=#123456" in st for st in styles)
+
+    def test_dim_greys_are_lifted_on_the_background(self):
+        p = make_project("0:1", "1", "alpha", "IDLE")
+        p.pane_count = 2
+        entry = inject_status.build_detail_entries([p], current_win_target="0:1")[0]
+        assert "#666666" not in entry
+
+    def test_the_background_adds_no_columns(self):
+        projects = [make_project("0:1", "1", "alpha", "IDLE")]
+        plain = lambda e: re.sub(r"#\[[^\]]*\]", "", e)
+        on = inject_status.build_detail_entries(projects, current_win_target="0:1")
+        off = inject_status.build_detail_entries(projects, current_win_target="0:9")
+        assert plain(on[0]) == plain(off[0])
+
+    def test_the_cell_takes_in_the_spaces_on_each_side(self):
+        entries = ["one", inject_status._as_current_pill("two", "#123456"), "three"]
+        out = inject_status._join_entries(
+            entries, [" ", " | ", " | ", " ."], "#123456", "#000000", "#999999")
+        plain = re.sub(r"#\[[^\]]*\]", "", out)
+        assert plain == " one | two | three ."          # no columns added
+        assert " |#[bg=#123456] #[bg=#123456]two" in out
+        assert "two #[bg=#000000,nobold,fg=#999999]| three" in out
+
+    def test_shown_text_reads_a_doubled_hash_as_one(self):
+        """`##` draws one `#`, so `##[...]` is text, not a style."""
+        assert inject_status.shown_text("a##[b]#[fg=red]c##") == "a#[b]c#"
+
+    def test_the_background_leaves_text_after_a_doubled_hash_alone(self):
+        out = inject_status._as_current_pill("a##[fg=red]b", "#123456")
+        assert out == "#[bg=#123456]a##[fg=red]b"
+
+    def test_a_name_with_a_hash_is_measured_as_drawn(self):
+        p = make_project("0:1", "1", "a#b", "IDLE")
+        for current in ("0:1", "0:9"):
+            entry = inject_status.build_detail_entries(
+                [p], current_win_target=current)[0]
+            assert inject_status.shown_text(entry).startswith("a#b:")
+
+    def test_no_entries_keeps_the_separators(self):
+        assert inject_status._join_entries([], [" ", "  "], "#1", "#2", "#3") == "   "
+
+    @pytest.mark.parametrize("position", [0, 2])
+    def test_the_cell_at_either_end(self, position):
+        entries = ["a", "b", "c"]
+        entries[position] = inject_status._as_current_pill(entries[position], "#123456")
+        out = inject_status._join_entries(
+            entries, [" ", " | ", " | ", "  "], "#123456", "#000000", "#999999")
+        assert re.sub(r"#\[[^\]]*\]", "", out) == " a | b | c  "
+
+
 # ─── build_detail_entries: active highlighting ───
 
 class TestBuildDetailEntriesActive:
@@ -188,7 +257,7 @@ class TestPaneCountSuffixInStatusBar:
     def test_single_pane_no_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(1)],
-            with_extras=False, current_win_target="0:2",
+            with_extras=False, current_win_target="0:99",
         )
         # No bracketed digit between name and the icon-colon.
         assert "[1]" not in entries[0]
@@ -198,7 +267,7 @@ class TestPaneCountSuffixInStatusBar:
     def test_two_panes_show_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(2)],
-            with_extras=False, current_win_target="0:2",
+            with_extras=False, current_win_target="0:99",
         )
         # The digit appears between dim brackets.
         assert "[" in entries[0] and "]" in entries[0]
@@ -207,7 +276,7 @@ class TestPaneCountSuffixInStatusBar:
     def test_three_panes_show_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(3)],
-            with_extras=False, current_win_target="0:2",
+            with_extras=False, current_win_target="0:99",
         )
         assert "3" in entries[0]
         # The digit was emitted with a cyan colour code so the
@@ -217,7 +286,7 @@ class TestPaneCountSuffixInStatusBar:
     def test_mode2_two_panes_show_marker(self):
         entries = inject_status.build_detail_entries(
             [self._make(2)],
-            with_extras=True, current_win_target="0:2",
+            with_extras=True, current_win_target="0:99",
         )
         assert "#[fg=cyan]2" in entries[0]
 
@@ -236,7 +305,7 @@ class TestPaneCountSuffixInStatusBar:
         p = self._make(2, state="PERMIT")
         entries = inject_status.build_detail_entries(
             [p],
-            with_extras=False, current_win_target="0:2",
+            with_extras=False, current_win_target="0:99",
         )
         # Both markers present; order: pane marker first (pre-
         # icon), stale after (post-icon).
@@ -256,8 +325,8 @@ class TestFastPathSkipsMaintenanceSideEffects:
     the late copy landing in the post-exit shell pane, where the
     literal `exit` kills the user's shell (the shape
     documented in ccm_runtime.auto_exit_idle). Those tasks also cost
-    several tmux subprocesses per call, contradicting the fast
-    path's ~10 ms redraw budget. So the fast path must skip
+    several tmux subprocesses per call, which the fast path's quick
+    redraw cannot afford. So the fast path must skip
     window-name updates, the notify-transition cache, periodic
     autosave, and idle auto-exit — and only render the status bar."""
 
@@ -308,6 +377,71 @@ class TestFastPathSkipsMaintenanceSideEffects:
         assert (tmp_path / "notify-cache").exists(), (
             "periodic path must still record states for transition "
             "notifications")
+
+
+class TestSubagentRequestNotification:
+    """A footer-only PERMIT is notified only when a fresh hook backs
+    it. A subagent's request still waiting is such a hook, also after
+    the main conversation has gone on (a later Stop, which also
+    removes the main signal): the state keeps it, and so does the
+    notification."""
+
+    SID = "test-session-agent"
+
+    def _run(self, monkeypatch, tmp_path, stop_after_request):
+        now = 9_999_999
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(hook_dir))
+        monkeypatch.setattr(ccm_core, "CCM_NOTIFY_MARKER_DIR",
+                            str(tmp_path / "notified"))
+        monkeypatch.setattr(inject_status, "CCM_TMP_DIR", str(tmp_path))
+        monkeypatch.setattr("time.time", lambda: now)
+        (hook_dir / f"{self.SID}.agent-permit.a1").write_text(
+            f"{now - 15} PERMIT Bash: old-request")
+        if stop_after_request:
+            (hook_dir / f"{self.SID}.events.jsonl").write_text(
+                '{"ts": %d, "type": "stop"}\n' % (now - 5))
+        (tmp_path / "notify-cache").write_text("0:1\tIDLE\n")
+        project = make_project("0:1", "1", "proj", "PERMIT")
+        project.cached_session_id = self.SID
+
+        def fake_tmux_cmd(*args, **kwargs):
+            if args[:2] == ("display-message", "-p"):
+                if "#{client_width}" in args:
+                    return "120"
+                return "0:1"
+            return ""
+
+        monkeypatch.setattr(inject_status, "tmux_cmd", fake_tmux_cmd)
+        monkeypatch.setattr(inject_status, "tmux_batch", lambda *cmds: None)
+        monkeypatch.setattr(inject_status, "build_project_list",
+                            lambda fast=False: [project])
+        monkeypatch.setattr(inject_status, "detect_external_status_change",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "sanitize_orig_status",
+                            lambda: None)
+        monkeypatch.setattr(inject_status, "update_window_names", lambda p: None)
+        monkeypatch.setattr(inject_status, "periodic_autosave", lambda: None)
+        monkeypatch.setattr(inject_status, "auto_exit_idle", lambda p: None)
+        monkeypatch.setattr(inject_status.ccm_spool, "reconcile_spools",
+                            lambda p: None)
+        monkeypatch.setattr(inject_status, "signal_age_suffix",
+                            lambda d, s, session_id=None: "")
+        sent = []
+        monkeypatch.setattr(inject_status, "notify",
+                            lambda *a, **k: sent.append(a))
+        inject_status._inject_status_impl(force_fast=False)
+        return sent
+
+    def test_a_request_the_main_conversation_went_past_is_notified(
+            self, monkeypatch, tmp_path):
+        sent = self._run(monkeypatch, tmp_path, stop_after_request=True)
+        assert sent == [("PERMIT", "proj", "Bash: old-request")]
+
+    def test_an_open_request_is_notified(self, monkeypatch, tmp_path):
+        sent = self._run(monkeypatch, tmp_path, stop_after_request=False)
+        assert sent == [("PERMIT", "proj", "Bash: old-request")]
 
 
 # ─── Mode 2 helpers ───
@@ -371,15 +505,11 @@ class TestMode2StatusLineCeiling:
     lines total. The mode-2 layout (1 main bar + 1 gutter + N entry
     lines) must therefore never ask for more than 3 entry lines.
 
-    Regression for the frozen-status-bar incident: with 27
-    projects the layout computed 4 entry lines → `set -g status 6` →
-    tmux rejected it ("unknown value: 6") and, because the whole
-    mode-2 render is one `;`-chained batch, every status-format write
-    aborted with it. All render paths (periodic tick, focus hook,
-    manual) failed identically and silently, so the bar froze at the
-    last good bake — stale states, stale focus highlight, and newly
-    registered projects missing entirely. The symptom was reported as
-    "the focus mechanism broke" but the whole bar was frozen.
+    With 27 projects the natural layout wants 4 entry lines, and
+    `set -g status 6` is rejected ("unknown value: 6"). The whole
+    mode-2 render is one `;`-chained batch, so every status-format
+    write would abort with it and the bar would freeze at its last
+    good bake.
     """
 
     def _run_mode2(self, monkeypatch, n_projects, term_width=120):
@@ -420,8 +550,7 @@ class TestMode2StatusLineCeiling:
         monkeypatch.setattr(inject_status, "signal_age_suffix",
                             lambda d, s, session_id=None: "")
         monkeypatch.setattr(
-            inject_status, "read_project_notify_marker", lambda d: 0.0,
-            raising=False)
+            inject_status, "read_project_notify_marker", lambda d: 0.0)
         inject_status._inject_status_impl(force_fast=True)
         return batches
 
@@ -436,7 +565,7 @@ class TestMode2StatusLineCeiling:
 
     def test_27_projects_narrow_terminal_stays_within_tmux_limit(
             self, monkeypatch):
-        """The incident shape: enough projects that the natural
+        """Enough projects that the natural
         layout wants 4+ entry lines. `status` must be clamped to 5."""
         batches = self._run_mode2(monkeypatch, n_projects=27,
                                   term_width=120)
@@ -483,8 +612,7 @@ class TestCJKWidthInLayout:
     len(): CJK characters occupy two terminal columns each, and
     project names may legally be CJK (validate_name only strips
     shell metacharacters). len() undercounts them by half, which
-    overestimates the remaining budget and overflows/wraps the bar
-    (audit finding, sibling of the non-ASCII slug bug)."""
+    overestimates the remaining budget and overflows/wraps the bar."""
 
     def test_mode2_cjk_names_reduce_entries_per_line(self, monkeypatch):
         """The same number of projects must yield MORE lines when
@@ -558,8 +686,7 @@ class TestHideShellFilter:
 
     A machine with many registered projects has most of them at SHELL
     most of the time, and the one that needs attention is lost among
-    them — 37 of 39 rows saying "nothing here" on the setup this was
-    written for.
+    them among rows saying "nothing here".
     """
 
     def _projects(self):
@@ -675,12 +802,12 @@ class TestReservedWidth:
     is two characters that draw as eight, `%F` two that draw as ten,
     and a theme's `#{...}` segments hold whatever they hold right now.
 
-    Counting the template instead of the rendering undercounted a real
-    theme's `status-right` by 14 columns. The padding that places
-    mode 1's entries on the left is derived from that number, so the
-    block overflowed by 2 and tmux clipped it from the left — taking
-    the first character of the highest-priority entry, the one the
-    placement exists to protect.
+    Counting the template instead of the rendering can undercount a
+    theme's `status-right`. The padding that places mode 1's entries
+    on the left is derived from that number, so the block would
+    overflow and tmux would clip it from the left — taking the first
+    character of the highest-priority entry, the one the placement
+    exists to protect.
     """
 
     def _expansion(self, monkeypatch, value):
@@ -721,10 +848,9 @@ class TestReservedWidth:
 class TestMode1WidthBudget:
     """What mode 1 writes has to end up the width of the bar.
 
-    The pieces were each checked on their own while the total was
-    never asserted, and the total is what the user sees. It went wrong
-    in both directions: short by 2 and the first entry was clipped,
-    long by 20 and a band of empty space opened after `status-left`.
+    Checking the pieces on their own is not enough: the total is what
+    the user sees. Too short clips the first entry; too long opens a
+    band of empty space after `status-left`.
 
     So these tests measure the rendered result against the terminal
     width, not the arithmetic against itself.
@@ -790,10 +916,20 @@ class TestMode1WidthBudget:
             lambda *a, **k: None if length_calls is None
             else length_calls.append(k))
         monkeypatch.setattr(
-            inject_status, "read_project_notify_marker", lambda d: 0.0,
-            raising=False)
+            inject_status, "read_project_notify_marker", lambda d: 0.0)
         inject_status._inject_status_impl(force_fast=True)
         return written[-1] if written else None
+
+    def test_no_entries_still_writes_and_extends_the_length(self, monkeypatch):
+        """With nothing to list — no managed windows — mode 1 writes the
+        idle marker and still floors `status-right-length` on the
+        terminal width, which must therefore be known on that path
+        too."""
+        calls = []
+        written = self._render(monkeypatch, n_projects=0, term_width=150,
+                               length_calls=calls)
+        assert written is not None and "≡" in written
+        assert calls and calls[-1].get("minimum") == 150
 
     def _drawn_width(self, status_right, ambiguous=1):
         """Columns the written status-right occupies on screen.
@@ -952,8 +1088,8 @@ class TestDeclaredAmbiguousWidth:
     Reserving on top of a declared width charges twice. At `2` the
     glyph is counted two columns by `display_width` and then allowed a
     third. At `1` the layout keeps hedging against a case the user has
-    ruled out, and in left placement that hedge is visible: 12 columns
-    of empty space after `status-left` on a real theme.
+    ruled out, and in left placement that hedge is visible as empty
+    space after `status-left`.
 
     The declaration must reach every parent that starts ccm. The bar
     renders both from tmux's `#()` and from the hooks, which Claude
@@ -1059,3 +1195,37 @@ class TestDeclaredAmbiguousWidth:
         assert gap == inject_status.LEFT_PLACEMENT_GAP, (
             f"{gap} columns after status-left although the terminal's "
             f"width was declared; the layout is still hedging")
+
+
+class TestPermitPendingTargetsOneWindow:
+    """The hook's instant PERMIT flag is matched against the full
+    window target, not the bare index — windows in different tmux
+    sessions share indexes."""
+
+    def _projects(self):
+        import ccm_core
+        return [ccm_core.Project("A:1", "1", "alpha", "/a", "IDLE"),
+                ccm_core.Project("B:1", "1", "beta", "/b", "IDLE")]
+
+    def test_only_the_named_window_turns_permit(self):
+        ps = self._projects()
+        inject_status._apply_permit_pending(ps, "B:1")
+        assert [p.state for p in ps] == ["IDLE", "PERMIT"]
+
+    def test_legacy_index_form_matches_nothing(self):
+        ps = self._projects()
+        inject_status._apply_permit_pending(ps, "1:beta")
+        assert [p.state for p in ps] == ["IDLE", "IDLE"]
+
+    def test_already_permit_is_left_alone(self):
+        ps = self._projects()
+        ps[0].state = "PERMIT"
+        inject_status._apply_permit_pending(ps, "A:1")
+        assert ps[0].state == "PERMIT" and ps[1].state == "IDLE"
+
+
+def test_flags_that_hooks_write_are_not_read_from_the_start_of_a_pass():
+    # @ccm-permit-pending is written by hooks and consumed (then
+    # cleared) by a pass; read from the pass's start, a newer flag
+    # would be cleared unread.
+    assert "@ccm-permit-pending" not in inject_status.PASS_OPTIONS

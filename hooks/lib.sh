@@ -6,7 +6,11 @@
 # (`ccm_write_signal`, `_ccm_instant_notify`) source it from here.
 # `BASH_SOURCE` resolves to hooks/lib.sh, so its sibling lib/
 # directory holds state_meta.sh via ../lib.
-_CCM_HOOK_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The directory of this file, without a dirname process (hooks run on
+# every tool call, and each process they start is time Claude waits).
+_ccm_src="${BASH_SOURCE[0]}"
+[[ "$_ccm_src" == */* ]] || _ccm_src="./$_ccm_src"
+_CCM_HOOK_LIB_DIR="$(cd "${_ccm_src%/*}" && pwd)"
 # shellcheck source=../lib/state_meta.sh
 source "${_CCM_HOOK_LIB_DIR}/../lib/state_meta.sh"
 
@@ -59,17 +63,83 @@ _ccm_mark_ignored_pane() {
 # path must stay as cheap and unbreakable as a plain early-exit.
 _ccm_route_sidekick_attention() {
     [[ -n "${TMUX_PANE:-}" ]] || return 0
-    local script="${CCM_HOOK_LIB_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/sidekick-attention.sh"
+    local script="${_CCM_HOOK_LIB_DIR}/sidekick-attention.sh"
     [[ -x "$script" ]] || return 0
     printf '%s' "$INPUT" | "$script" claude 2>/dev/null || true
     return 0
 }
 
+# Background work a Stop reports (`background_tasks`, `session_crons`).
+# Claude Code also lists its own upkeep there (memory consolidation
+# "dream", the auto-mode scan, a memory import): nothing a user started,
+# waits on or stops, so it is not counted toward the `(bg)` note or
+# against the completion notice. The kinds of everything reported are
+# kept on the stop event, so a count can be traced to what made it.
+# `type` is Claude Code's display label for the task kind.
+#
+# A published Artifact keeps a connection open for its comments and
+# viewers, for as long as the conversation lives and again after it is
+# resumed. Claude Code lists it as a "monitor" whose description names
+# the artifact, without the MCP server and tool a monitor of a tool
+# carries; it is recorded as "artifact watch" and not counted either.
+_CCM_BG_JQ_DEFS='
+    def ccm_bg_artifact_watch:
+        type == "object" and .type == "monitor" and .server == null and .tool == null
+        and ((.description // "") | type == "string"
+             and (startswith("live updates for artifact ") or startswith("presence on artifact ")));
+    def ccm_bg_kind:
+        if ccm_bg_artifact_watch then "artifact watch"
+        elif type == "object" then ((.type // "unknown") | tostring)
+        else "unknown" end;
+    def ccm_bg_counted_tasks:
+        [(.background_tasks // [])[] | select(ccm_bg_artifact_watch | not)
+         | select(ccm_bg_kind as $k | ["dream", "auto-mode scan", "memory import"]
+                  | any(. == $k) | not)];
+    def ccm_bg_counted:
+        (ccm_bg_counted_tasks | length) + ((.session_crons // []) | length);
+    def ccm_bg_kinds:
+        [((.background_tasks // [])[] | ccm_bg_kind), ((.session_crons // [])[] | "cron")]
+        | join(",");
+    def ccm_bg_text:
+        if type == "string" then gsub("[\u0000-\u001f\u007f]+"; " ") else "" end;
+    def ccm_bg_field($k): if type == "object" then (.[$k] | ccm_bg_text) else "" end;
+    def ccm_bg_secretish:
+        test("://[^/\\s@]+:[^/\\s@]*@")
+        or test("(?i)(?<![a-z0-9_-])([a-z0-9]+[_-])*(pass(word|wd)?|secrets?|tokens?|api[_-]?keys?|credentials?|authorization)[\"\u0027]?\\s*[=:]")
+        or test("(?i)(?<![a-z0-9_])--?([a-z0-9]+-)*(pass(word|wd)?|secret|token|api-?key|auth[a-z]*)(?![a-z0-9_])")
+        or test("(?i)(?<![a-z0-9_])bearer\\s+\\S{8,}")
+        or test("(?<![A-Za-z0-9_-])(ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|sk-|xox[abprs]-|AKIA|ASIA)[A-Za-z0-9_-]{8,}")
+        or test("(?<![A-Za-z0-9_+-])(?=[A-Za-z_+-]*[0-9])(?=[0-9_+-]*[A-Za-z])[A-Za-z0-9_+-]{24,}");
+    def ccm_bg_task_list($now; $prev; $starts):
+        ([$prev | try fromjson catch null
+          | if type == "object" and (.tasks | type) == "array" then .tasks[] else empty end
+          | select(type == "object" and (.id | type) == "string" and .id != ""
+                   and (.since | type) == "number")]) as $old
+        | [ (ccm_bg_counted_tasks[]
+             | {id: ccm_bg_field("id")[0:64], kind: ccm_bg_kind[0:40],
+                label: (ccm_bg_field("description")
+                        | if ccm_bg_secretish then "" else .[0:200] end)}),
+            ((.session_crons // [])[]
+             | {id: ccm_bg_field("id")[0:64], kind: "cron", label: ""}) ]
+        | .[0:20]
+        | map(. as $t
+              | . + {since: (first($old[] | select(.id == $t.id and .kind == $t.kind
+                                                    and $t.id != "") | .since)
+                              // ($starts[$t.id] | if type == "number" and . > 0 and . <= $now
+                                                   then floor else null end)
+                              // $now)});
+'
+
 ccm_hook_init() {
     HOOK_DIR="${TMPDIR:-/tmp}/ccm-${UID}/hooks"
-    mkdir -p "$HOOK_DIR" 2>/dev/null || true
+    # An untrusted temp root (another user's, a symlink) gets nothing
+    # written into it; the hook does nothing rather than fail Claude.
+    # shellcheck source=/dev/null
+    source "${_CCM_HOOK_LIB_DIR}/../lib/ccm_tmp_root.sh" 2>/dev/null \
+        && ccm_secure_tmp_root "${HOOK_DIR%/hooks}" || exit 0
+    [[ -d "$HOOK_DIR" ]] || mkdir -p "$HOOK_DIR" 2>/dev/null || true
 
-    INPUT=$(cat)
+    IFS= read -r -d '' INPUT || true
 
     # CCM_IGNORE: launch-time opt-out (`CCM_IGNORE=1 claude`). Mark the
     # pane immediately — this only needs $TMUX_PANE, so it works even
@@ -87,17 +157,62 @@ ccm_hook_init() {
     # its own session id, stamp `@ccm_prev_state` through the fast-path
     # spawn, and fire COMPLETED notifications for turns no Claude ran.
     # `workspaceRoot` is the discriminator: Grok sends it on every
-    # event, Claude Code sends it on none. (a downstream consumer adopted the same
-    # test for the same exposure, their commit 9813d68.)
-    if printf '%s' "$INPUT" | jq -e 'has("workspaceRoot")' >/dev/null 2>&1; then
-        return 1
+    # event, Claude Code sends it on none.
+    #
+    # Every field the hooks read comes from one jq, since a jq per field
+    # would be the larger part of a hook's cost: the
+    # foreign-harness marker, session id, cwd, permission mode, event
+    # name, tool name, the subagent id, and the background work a Stop reports
+    # (its count and kinds, see `_CCM_BG_JQ_DEFS`),
+    # NUL-separated. It gives what reading each field with `jq -r`
+    # gives: a field that is an array or object (`jq -r` prints those
+    # pretty, this would print them compact) fails the read, and trailing
+    # newlines are dropped as `$(...)` drops them. If the read fails (no
+    # jq, a payload that is not an object, such a field), each field is
+    # read on its own.
+    local _fields=() _field
+    while IFS= read -r -d '' _field; do _fields+=("$_field"); done < <(
+        printf '%s' "$INPUT" | jq -j "$_CCM_BG_JQ_DEFS"'
+            def scalar: if type == "array" or type == "object"
+                        then error("not a scalar") else tostring end;
+            [ (has("workspaceRoot") | tostring),
+              ((.session_id // .sessionId // "") | scalar),
+              ((.cwd // "") | scalar),
+              ((.permission_mode // "") | scalar),
+              ((.hook_event_name // "") | scalar),
+              ((.tool_name // "") | scalar),
+              ((.agent_id // "") | scalar),
+              ccm_bg_counted, ccm_bg_kinds ]
+            | map(tostring) | join("\u0000") + "\u0000"' 2>/dev/null)
+    _CCM_FIELDS_READ=""
+    local _i
+    for _i in 1 2 3 4 5 6; do
+        while [[ "${_fields[$_i]:-}" == *$'\n' ]]; do _fields[$_i]="${_fields[$_i]%$'\n'}"; done
+    done
+    if (( ${#_fields[@]} == 9 )); then
+        [[ "${_fields[0]}" == true ]] && return 1
+        SESSION_ID="${_fields[1]}"
+        _CCM_CWD="${_fields[2]}"
+        PERMISSION_MODE="${_fields[3]}"
+        HOOK_EVENT_NAME="${_fields[4]}"
+        HOOK_TOOL_NAME="${_fields[5]}"
+        HOOK_AGENT_ID="${_fields[6]}"
+        HOOK_BG_REMAINING="${_fields[7]}"
+        HOOK_BG_KINDS="${_fields[8]}"
+        _CCM_FIELDS_READ=1
+    else
+        if printf '%s' "$INPUT" | jq -e 'has("workspaceRoot")' >/dev/null 2>&1; then
+            return 1
+        fi
+        # session_id: the primary KEY. Try snake_case then camelCase —
+        # upstream payload schema uses both depending on the field.
+        SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || \
+            SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"sessionI?d?_?i?d?" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
     fi
-
-    # session_id: the primary KEY. Try snake_case then camelCase —
-    # upstream payload schema uses both depending on the field.
-    SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null) || \
-        SESSION_ID=$(printf '%s' "$INPUT" | grep -oE '"sessionI?d?_?i?d?" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
-    [[ -z "$SESSION_ID" ]] && return 1
+    # The id names files under the hook directory: only a plain token
+    # (Claude's are UUIDs) is used, so a `/` or `..` cannot reach outside
+    # it. ccm_core.is_safe_session_id applies the same rule.
+    [[ "$SESSION_ID" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
     KEY="$SESSION_ID"
 
     # Ignore gate. Two entry points converge on the same suppression:
@@ -127,8 +242,12 @@ ccm_hook_init() {
     # window for project-name lookup, and by the project-name cache
     # file. Best-effort extraction; a missing cwd is tolerable
     # (instant notification falls back to "ccm" as group name).
-    CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || \
-        CWD=$(printf '%s' "$INPUT" | grep -o '"cwd" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    if [[ -n "$_CCM_FIELDS_READ" ]]; then
+        CWD="$_CCM_CWD"
+    else
+        CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || \
+            CWD=$(printf '%s' "$INPUT" | grep -o '"cwd" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    fi
     if [[ -n "$CWD" ]] && command -v realpath &>/dev/null && [[ -e "$CWD" ]]; then
         CWD=$(realpath "$CWD" 2>/dev/null) || true
     fi
@@ -141,11 +260,71 @@ ccm_hook_init() {
     # crosses from the upstream payload into our JSONL, so it is
     # sanitized to a conservative charset and length-capped — a mode
     # name will never need escaping downstream.
-    PERMISSION_MODE=$(printf '%s' "$INPUT" | jq -r '.permission_mode // empty' 2>/dev/null) || \
-        PERMISSION_MODE=$(printf '%s' "$INPUT" | grep -o '"permission_mode" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    if [[ -z "$_CCM_FIELDS_READ" ]]; then
+        PERMISSION_MODE=$(printf '%s' "$INPUT" | jq -r '.permission_mode // empty' 2>/dev/null) || \
+            PERMISSION_MODE=$(printf '%s' "$INPUT" | grep -o '"permission_mode" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    fi
     PERMISSION_MODE="${PERMISSION_MODE//[^A-Za-z0-9_-]/}"
     PERMISSION_MODE="${PERMISSION_MODE:0:32}"
 
+    # agent_id: present only when the hook fires inside a subagent
+    # (Claude Code leaves it out for the main conversation). Only
+    # whether it is there is used.
+    if [[ -z "$_CCM_FIELDS_READ" ]]; then
+        HOOK_AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null) || HOOK_AGENT_ID=""
+    fi
+
+    return 0
+}
+
+# True when the hook fired inside a subagent rather than the main
+# conversation. A subagent's work is not the main conversation's
+# turn: background agents keep running after the main turn ends,
+# and their tool calls must not mark the window BUSY.
+ccm_hook_in_subagent() {
+    [[ -n "${HOOK_AGENT_ID:-}" ]]
+}
+
+# A subagent's hook events are kept out of the event log and the
+# signal file, which describe the main conversation: a background
+# agent can outlast the main turn by many events, and the main
+# conversation's own signal must not be overwritten or cleared by
+# them. They have files of their own, written by subagent hooks alone:
+#   <key>.agent-activity            the time of the newest tool or
+#                                   lifecycle event of any subagent
+#   <key>.agent-permit.<agent id>   that subagent's permission request
+#                                   or denial, as a signal line, while
+#                                   it waits for an answer
+# A request is answered by its own agent's next event, which removes
+# the file: the tool ran or failed, the agent went on after a denial,
+# or it ended. Nothing the main conversation or another agent does
+# answers it, and SessionEnd removes what is left. Both kinds are read
+# by ccm_signals. The request carries no tool id, so an agent that
+# starts another tool while one waits closes the waiting one early.
+
+# The subagent's id as a file-name part: the id when it is a plain
+# token, so it cannot reach outside the hook directory, else "unknown".
+_ccm_agent_file_id() {
+    if [[ "${HOOK_AGENT_ID:-}" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+        printf '%s' "$HOOK_AGENT_ID"
+    else
+        printf 'unknown'
+    fi
+}
+
+# A subagent asked for permission (or was denied).
+# Args: $1=HOOK_DIR, $2=KEY, $3=CWD, $4=DETAIL
+ccm_agent_permit() {
+    local hook_dir="$1" key="$2" cwd="$3" detail="${4:-}"
+    ccm_write_signal "$hook_dir" "$key" "PERMIT" "$cwd" "Subagent · $detail" \
+        "${hook_dir}/${key}.agent-permit.$(_ccm_agent_file_id)"
+}
+
+# A subagent's tool or lifecycle event. No BUSY signal is written.
+# Args: $1=HOOK_DIR, $2=KEY
+ccm_agent_event() {
+    printf '%s\n' "${EPOCHSECONDS:-$(date +%s)}" > "${1}/${2}.agent-activity" 2>/dev/null || true
+    rm -f "${1}/${2}.agent-permit.$(_ccm_agent_file_id)" 2>/dev/null || true
     return 0
 }
 
@@ -157,28 +336,35 @@ ccm_hook_init() {
 # rather than guessing from hook script identity.
 ccm_hook_event_name() {
     local name
+    if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then
+        printf '%s' "$HOOK_EVENT_NAME"
+        return 0
+    fi
     name=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null) || \
         name=$(printf '%s' "$INPUT" | grep -o '"hook_event_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
     printf '%s' "$name"
 }
 
 # Append a single event record to the per-project event log.
-# This is the authoritative state timeline consumed by the Python
-# detection layer in Phase 2+ of the event-log redesign. Phase 1
-# (current) writes events in parallel to the existing signal-file
-# mechanism; detection logic is unchanged until Phase 2 opts in.
+# This is the authoritative state timeline the Python detection
+# layer reads; the signal files are written alongside it.
 #
 # Format: JSONL, append-only. One hook invocation = one line.
 # Path: $HOOK_DIR/<session_id>.events.jsonl
-# Schema: {"ts": <unix_seconds>, "type": "<normalized>"[, "mode": "<permission_mode>"]}
+# Schema: {"ts": <unix_seconds>, "type": "<normalized>"[, "mode": "<permission_mode>"][, "bg": <count>][, "bgk": "<kinds>"]}
 #
-# `type` is restricted to the 9-type normalized vocabulary:
+# `type` is restricted to the normalized vocabulary:
 #   prompt, pretool, posttool, subagent, compact, stop,
-#   permit_req, notify_permit, notify_idle, session_end
+#   permit_req, notify_permit, notify_idle, session_end,
+#   agent, agent_permit (written by earlier versions for a subagent's
+#     events, which are now kept in files of their own; still read)
 # (call sites use hard-coded values, so no escaping needed.)
 #
 # `mode` rides along when the payload carried `permission_mode`
 # (extracted and sanitized by ccm_hook_init in the caller's scope).
+# `bg` rides along on a `stop` when Claude Code reported background
+# work still outstanding (background tasks and scheduled crons); it
+# is left out when there is none.
 # Fields other than "type" are opaque to the detection layer —
 # `derive_state_from_events` keys on "type" only; display readers use
 # `ccm_signals.read_latest_permission_mode` to surface the mode badge.
@@ -187,19 +373,22 @@ ccm_hook_event_name() {
 # without flock. Errors are suppressed: a write failure must not
 # prevent the legacy signal-file path from running.
 #
-# Args: $1=HOOK_DIR, $2=KEY (Claude Code session_id), $3=TYPE (normalized event type)
+# Args: $1=HOOK_DIR, $2=KEY (Claude Code session_id), $3=TYPE (normalized event type),
+#       $4=OPTIONAL count of outstanding background work (digits only)
 ccm_append_event() {
-    local hook_dir="$1" key="$2" type="$3"
-    local ts events_file mode
+    local hook_dir="$1" key="$2" type="$3" bg="${4:-}" bg_kinds="${5:-}"
+    local ts events_file mode extra=""
     [[ -z "$hook_dir" || -z "$key" || -z "$type" ]] && return 0
-    ts=$(date +%s)
+    ts=${EPOCHSECONDS:-$(date +%s)}
     events_file="${hook_dir}/${key}.events.jsonl"
     mode="${PERMISSION_MODE:-}"
-    if [[ -n "$mode" ]]; then
-        printf '{"ts":%s,"type":"%s","mode":"%s"}\n' "$ts" "$type" "$mode" >> "$events_file" 2>/dev/null || true
-    else
-        printf '{"ts":%s,"type":"%s"}\n' "$ts" "$type" >> "$events_file" 2>/dev/null || true
-    fi
+    [[ -n "$mode" ]] && extra=",\"mode\":\"${mode}\""
+    [[ "$bg" =~ ^[1-9][0-9]{0,5}$ ]] && extra="${extra},\"bg\":${bg}"
+    # C locale, so the character class means ASCII whatever the caller's.
+    local LC_ALL=C
+    bg_kinds="${bg_kinds//[^A-Za-z0-9 ,_-]/}"
+    [[ -n "$bg_kinds" ]] && extra="${extra},\"bgk\":\"${bg_kinds:0:200}\""
+    printf '{"ts":%s,"type":"%s"%s}\n' "$ts" "$type" "$extra" >> "$events_file" 2>/dev/null || true
     return 0
 }
 
@@ -213,8 +402,12 @@ ccm_hook_format_tool_detail() {
     local prefix="${1:-}"
     local tool_name tool_detail detail=""
 
-    tool_name=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || \
-        tool_name=$(printf '%s' "$INPUT" | grep -o '"tool_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    if [[ -n "${_CCM_FIELDS_READ:-}" ]]; then
+        tool_name="$HOOK_TOOL_NAME"
+    else
+        tool_name=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) || \
+            tool_name=$(printf '%s' "$INPUT" | grep -o '"tool_name" *: *"[^"]*"' | head -1 | sed 's/.*: *"//;s/"$//')
+    fi
 
     if [[ -n "$tool_name" ]]; then
         case "$tool_name" in
@@ -249,24 +442,36 @@ ccm_hook_format_tool_detail() {
 # share this so they can feed a meaningful name into the desktop
 # notification ("ccm ✔ my-project" rather than "ccm ✔ ").
 # Args: $1=CWD to match against `@ccm_dir`.
+# A failed listing (no server, no connection) prints nothing and
+# returns 0: the caller has already recorded the state, and an
+# unknown project only means no notification.
 ccm_hook_resolve_project() {
-    local cwd="$1"
-    tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null \
-        | awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}'
+    local cwd="$1" windows
+    windows=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null) \
+        || return 0
+    awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}' <<< "$windows"
 }
 
 # Write signal to hook file AND directly update tmux window option
 # for instant status bar reflection (no polling delay).
 # Args: $1=HOOK_DIR, $2=KEY (session_id), $3=STATE (BUSY/PERMIT/SHELL), $4=CWD, $5=DETAIL (optional)
+#       $6=FILE (optional): write the line to this file instead of the
+#       signal file, whole (through a temporary file and a rename).
 ccm_write_signal() {
-    local hook_dir="$1" key="$2" state="$3" cwd="$4" detail="${5:-}"
+    local hook_dir="$1" key="$2" state="$3" cwd="$4" detail="${5:-}" file="${6:-}"
+    local line
 
     # Write signal file (for dashboard/inject-status polling)
     # Format: "<timestamp> <state>" or "<timestamp> <state> <detail>"
     if [[ -n "$detail" ]]; then
-        printf '%s %s %s' "$(date +%s)" "$state" "$detail" > "${hook_dir}/${key}"
+        printf -v line '%s %s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state" "$detail"
     else
-        printf '%s %s' "$(date +%s)" "$state" > "${hook_dir}/${key}"
+        printf -v line '%s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state"
+    fi
+    if [[ -n "$file" ]]; then
+        { printf '%s' "$line" > "${file}.$$" && mv -f "${file}.$$" "$file"; } 2>/dev/null || true
+    else
+        printf '%s' "$line" > "${hook_dir}/${key}"
     fi
 
     # Direct tmux update for instant status bar reflection
@@ -274,9 +479,12 @@ ccm_write_signal() {
     # also carries @ccm_prev_state so the push below can fire only on
     # a real transition — same subprocess, no extra cost.
     local win_target project prev_state cached_sid
-    local win_info
-    win_info=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_session_id}' 2>/dev/null \
-        | awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3"\t"$4"\t"$5; exit}')
+    local windows win_info
+    # A failed listing leaves the window unknown: the signal is
+    # written, and only the instant tmux update is skipped.
+    windows=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_session_id}' 2>/dev/null) \
+        || return 0
+    win_info=$(awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3"\t"$4"\t"$5; exit}' <<< "$windows")
     if [[ -n "$win_info" ]]; then
         IFS=$'\t' read -r win_target project prev_state cached_sid <<< "$win_info"
         # cwd alone does not prove the event came from this window's
@@ -291,13 +499,17 @@ ccm_write_signal() {
         if [[ -n "$cached_sid" && -n "$key" && "$cached_sid" != "$key" ]]; then
             return 0
         fi
-        # Update state option
-        tmux set-option -wt "$win_target" @ccm_prev_state "$state" 2>/dev/null
+        # Update state option. These tmux calls are best-effort: the
+        # signal file is already written, and a failure must not end
+        # the hook under `set -e` (`refresh-client` exits 1 when no
+        # client is attached, and Claude Code then reports the hook as
+        # failed and skips the push below).
+        tmux set-option -wt "$win_target" @ccm_prev_state "$state" 2>/dev/null || true
         # Update window name icon for instant status bar change
         if [[ -n "$project" ]]; then
             local icon
             icon=$(ccm_state_icon "$state")
-            tmux rename-window -t "$win_target" "${icon} ${project}" 2>/dev/null
+            tmux rename-window -t "$win_target" "${icon} ${project}" 2>/dev/null || true
         fi
 
         # Instant desktop notification for PERMIT
@@ -307,13 +519,13 @@ ccm_write_signal() {
             _ccm_instant_notify "PERMIT" "$project" "$detail" "$cwd" &
         else
             # Non-PERMIT transitions also benefit from forcing an
-            # immediate status redraw so BUSY ↔ IDLE flips appear in
-            # ~100 ms instead of waiting up to status-interval (1 s).
+            # immediate status redraw so BUSY ↔ IDLE flips appear at
+            # once instead of waiting up to status-interval.
             # The PERMIT branch above already calls refresh-client via
             # `_ccm_instant_permit_icon`, so this `else` covers BUSY
             # signal writes (PreToolUse / PostToolUse / etc.) without
             # double-refreshing.
-            tmux refresh-client -S 2>/dev/null
+            tmux refresh-client -S 2>/dev/null || true
         fi
 
         # Push the freshly written state into the rendered status bar
@@ -321,10 +533,10 @@ ccm_write_signal() {
         # but mode 0's status-right icon and mode 2's dedicated
         # line(s) are literal text baked by inject-status — a plain
         # refresh-client redraws the STALE bake, so those surfaces
-        # otherwise lag one status-interval (~1 s) behind the hook.
+        # otherwise lag one status-interval behind the hook.
         # `inject-status --fast` re-renders from @ccm_prev_state
         # (which this function just wrote) without running detection:
-        # read-only, lock-tolerant, ~100 ms — and backgrounded so
+        # read-only, lock-tolerant, and backgrounded so
         # hook latency is unaffected. Gated on a real state
         # TRANSITION so BUSY→BUSY bursts (PreToolUse/PostToolUse
         # pairs during rapid tool sequences) spawn nothing.
@@ -343,14 +555,15 @@ ccm_write_signal() {
 # instant visual feedback via window name + fast status-right update.
 _ccm_instant_permit_icon() {
     local win_target="$1" project="$2"
-    local win_idx="${win_target##*:}"
 
-    # Set flag with project info for inject-status to consume
-    tmux set -g @ccm-permit-pending "${win_idx}:${project}" 2>/dev/null
+    # Set the flag with the full window target (`session:index`) so
+    # the reader matches one window, not every window that shares an
+    # index across tmux sessions.
+    tmux set -g @ccm-permit-pending "${win_target}" 2>/dev/null || true
 
     # Force tmux to redraw status bar — this triggers #(ccm inject-status)
     # if status-interval has elapsed, giving faster pickup
-    tmux refresh-client -S 2>/dev/null
+    tmux refresh-client -S 2>/dev/null || true
 }
 
 # Schedule a COMPLETED notification after a short grace period.
@@ -379,7 +592,7 @@ _ccm_schedule_completed_notify() {
     local grace="${5:-${CCM_COMPLETION_GRACE_SEC:-3}}"
     local pending="${hook_dir}/${key}.pending"
 
-    printf '%s' "$(date +%s)" > "$pending" 2>/dev/null
+    printf '%s' "${EPOCHSECONDS:-$(date +%s)}" > "$pending" 2>/dev/null
 
     # Detach into its own process group so the sleep survives hook
     # exit (Claude Code gives hooks a few-second timeout; the bg
@@ -388,10 +601,72 @@ _ccm_schedule_completed_notify() {
         sleep "$grace"
         if [[ -f "$pending" ]]; then
             rm -f "$pending" 2>/dev/null
+            _ccm_mark_unread
             _ccm_instant_notify "COMPLETED" "$project" "" "$cwd"
         fi
     ) </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null || true
+}
+
+# ─── Unread replies (opt-in: `@ccm-pane-labels on`) ───
+# With several agents in split panes it stops being obvious which
+# pane answered last. A pane is marked when a reply completes in it
+# while the user is looking elsewhere, and unmarked when they focus
+# it or when the next prompt goes in; the pane border shows the mark
+# (ccm.tmux adds it to `pane-border-format`). "Focused" is the only
+# stand-in for "read" that ccm has.
+#
+# The mark is a tmux pane option rather than a file because the
+# border is drawn by tmux from its own state, and because a pane
+# that closes takes its mark with it.
+_ccm_pane_labels_on() {
+    [[ "$(tmux show-option -gqv @ccm-pane-labels 2>/dev/null)" == "on" ]]
+}
+
+# True when the user is looking at $1: some client whose terminal has
+# the focus is showing it as its active pane. Asked of each client,
+# because a pane has no single answer — a window linked into two
+# sessions is in front for one client and not for another, and
+# resolving the pane on its own picks one of them arbitrarily.
+# Without `focus-events on` tmux never reports a client as focused,
+# and every completed reply is marked — the safe side for a mark
+# that means "you may not have seen this".
+#
+# A popup drawn over the pane hides it while tmux goes on reporting
+# the pane as the client's active one, and tmux exposes nothing that
+# says a popup is up. ccm knows about its own: while the dashboard is
+# open nothing under it counts as watched. Another tool's popup
+# cannot be seen from here, and a reply finishing under one goes
+# unmarked.
+_ccm_pane_is_watched() {
+    # The pid file is where the dashboard writes it, which follows
+    # `CCM_TMP_DIR` when that is set. A pid left by a dashboard that
+    # crashed may since belong to something else, so the process is
+    # asked what it is, as the dashboard does before trusting the file.
+    local pane="$1" pid
+    local pidfile="${CCM_TMP_DIR:-${TMPDIR:-/tmp}/ccm-${UID}}/dashboard.pid"
+    if [[ -f "$pidfile" ]]; then
+        pid=$(cat "$pidfile" 2>/dev/null)
+        if [[ "$pid" =~ ^[0-9]+$ ]] \
+                && ps -p "$pid" -o command= 2>/dev/null | grep -q 'dashboard\.py'; then
+            return 1
+        fi
+    fi
+    tmux list-clients -F '#{pane_id} #{client_flags}' 2>/dev/null \
+        | grep -Eq "^${pane} (.*,)?focused(,|\$)"
+}
+
+_ccm_mark_unread() {
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    _ccm_pane_labels_on || return 0
+    _ccm_pane_is_watched "$TMUX_PANE" && return 0
+    tmux set-option -p -t "$TMUX_PANE" @ccm_unread "${EPOCHSECONDS:-$(date +%s)}" 2>/dev/null || true
+}
+
+_ccm_clear_unread() {
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    tmux set-option -pu -t "$TMUX_PANE" @ccm_unread 2>/dev/null || true
+    tmux set-option -pu -t "$TMUX_PANE" @ccm_unread_look 2>/dev/null || true
 }
 
 # Cancel any pending COMPLETED notification for a project — called
@@ -401,7 +676,9 @@ _ccm_schedule_completed_notify() {
 # Args: $1=HOOK_DIR, $2=KEY
 _ccm_cancel_pending_completion() {
     local hook_dir="$1" key="$2"
-    rm -f "${hook_dir}/${key}.pending" 2>/dev/null || true
+    if [[ -e "${hook_dir}/${key}.pending" ]]; then
+        rm -f "${hook_dir}/${key}.pending" 2>/dev/null || true
+    fi
 }
 
 # Send desktop notification immediately for PERMIT or COMPLETED state.
@@ -443,7 +720,7 @@ _ccm_instant_notify() {
         content=$(cat "$marker" 2>/dev/null) || true
         prev_ts="${content%% *}"
         prev_state="${content##* }"
-        now_ts=$(date +%s)
+        now_ts=${EPOCHSECONDS:-$(date +%s)}
         # Validate the stored ts is numeric before doing arithmetic on
         # it — a corrupt/truncated marker would otherwise evaluate as 0
         # in (( )), making the age look huge and silently disabling the
@@ -455,11 +732,11 @@ _ccm_instant_notify() {
     fi
 
     # Write marker BEFORE sending so a concurrent invocation sees it.
-    printf '%s %s' "$(date +%s)" "$state" > "${marker}" 2>/dev/null
+    printf '%s %s' "${EPOCHSECONDS:-$(date +%s)}" "$state" > "${marker}" 2>/dev/null
 
     # Check notification setting
     local notify_setting
-    notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null)
+    notify_setting=$(tmux show-option -gqv @ccm-notify 2>/dev/null) || notify_setting=""
     notify_setting="${notify_setting:-permit,completed}"
     # Explicit `return 0` on every skip path. A bare `return` would
     # inherit the preceding command's exit status (e.g. a failed `[[ ]]`
@@ -483,7 +760,7 @@ _ccm_instant_notify() {
 
     # Sound setting
     local sound_setting
-    sound_setting=$(tmux show-option -gqv @ccm-notify-sound 2>/dev/null)
+    sound_setting=$(tmux show-option -gqv @ccm-notify-sound 2>/dev/null) || sound_setting=""
     sound_setting="${sound_setting:-off}"
 
     # Icon comes from the state-meta table; body text is notification-
@@ -517,11 +794,9 @@ _ccm_instant_notify() {
     # the WindowServer / NotificationCenter CPU drain that long-
     # running ccm sessions can otherwise produce.
     #
-    # Notably we do NOT pass `-sender com.apple.Terminal`. Earlier
-    # versions did, intending to render the notification with the
-    # Terminal.app icon, but that meant the notification was
-    # delivered under Terminal.app's bundle identity — and macOS
-    # silently drops it for every user not running Terminal.app
+    # Notably we do NOT pass `-sender com.apple.Terminal`: the
+    # notification would be delivered under Terminal.app's bundle
+    # identity, and macOS silently drops it for every user not running Terminal.app
     # (iTerm2, WezTerm, kitty, ghostty, ...). Without the flag the
     # notification flows under terminal-notifier's own bundle id,
     # which the user authorises once and is independent of which
@@ -540,7 +815,7 @@ _ccm_instant_notify() {
                        -group "ccm-${project}")
         if [[ "$sound_setting" == "on" ]]; then
             local sound_name
-            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null)
+            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null) || sound_name=""
             tn_args+=(-sound "${sound_name:-Glass}")
         fi
         terminal-notifier "${tn_args[@]}" >/dev/null 2>&1 &
@@ -548,7 +823,7 @@ _ccm_instant_notify() {
         local sound_opt=""
         if [[ "$sound_setting" == "on" ]]; then
             local sound_name
-            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null)
+            sound_name=$(tmux show-option -gqv @ccm-notify-sound-name 2>/dev/null) || sound_name=""
             sound_name="${sound_name:-Glass}"
             sound_opt=" sound name \"${sound_name}\""
         fi

@@ -13,6 +13,13 @@ import pytest
 import ccm_core
 import ccm_commands
 import ccm_snapshot
+from snapshot_fixture import inventory_query
+
+
+@pytest.fixture(autouse=True)
+def snapshot_processes(monkeypatch):
+    monkeypatch.setattr(ccm_core, 'tmux_query', lambda *a, **k: '')
+    monkeypatch.setattr(ccm_core, 'ps_snapshot', lambda: '1 0 1 zsh 00:10')
 
 
 class TestSanitizeSnapshotName:
@@ -35,49 +42,48 @@ class TestSanitizeSnapshotName:
 
 
 class TestSnapshotSave:
-    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.tmux_query")
     def test_creates_json(self, mock_tmux, tmp_path):
-        mock_tmux.return_value = "1\twin1\tproj1\t/home/user/dir1\n2\twin2\tproj2\t/home/user/dir2"
+        mock_tmux.side_effect = inventory_query("1\twin1\tproj1\t/home/user/dir1\n2\twin2\tproj2\t/home/user/dir2")
         ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
         ccm_snapshot.cmd_snapshot_save("test-snap", quiet=True)
         fp = tmp_path / "test-snap.json"
         assert fp.exists()
         data = json.loads(fp.read_text())
         assert data["name"] == "test-snap"
-        assert data["version"] == 1
+        assert data["version"] == 2
         assert len(data["projects"]) == 2
 
-    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.tmux_query")
     def test_skips_empty_project(self, mock_tmux, tmp_path):
-        mock_tmux.return_value = "1\twin1\t\t/dir1\n2\twin2\tproj2\t/dir2"
+        mock_tmux.side_effect = inventory_query("1\twin1\t\t/dir1\n2\twin2\tproj2\t/dir2")
         ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
         ccm_snapshot.cmd_snapshot_save("test2", quiet=True)
         data = json.loads((tmp_path / "test2.json").read_text())
         assert len(data["projects"]) == 1
 
-    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.tmux_query")
     def test_round_trip_preserves_project_fields(self, mock_tmux, tmp_path):
         """Save a snapshot from a synthetic project list and verify
         every field needed by the load path round-trips through the
         on-disk JSON. Catches drift in either the save serialization
         or the load schema expectations.
 
-        Format mirrors `tmux list-windows -a -F` with the four fields
-        the saver requests:
-          window_index <TAB> window_name <TAB> @ccm_project <TAB> @ccm_dir
+        The fixture expands project rows into complete window and pane
+        listings, including a valid tmux layout checksum.
         """
-        mock_tmux.return_value = (
+        mock_tmux.side_effect = inventory_query((
             "1\twin-α\tα-プロジェクト\t/tmp/with spaces/proj-a\n"
             "2\twin-β\tproj-β\t/tmp/proj b\n"
             "3\twin-γ\tregular\t/tmp/regular"
-        )
+        ))
         ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
         ccm_snapshot.cmd_snapshot_save("rt-snap", quiet=True)
 
         on_disk = json.loads((tmp_path / "rt-snap.json").read_text())
 
         # Schema invariants
-        assert on_disk["version"] == 1
+        assert on_disk["version"] == 2
         assert on_disk["name"] == "rt-snap"
         assert "created" in on_disk
         assert isinstance(on_disk["projects"], list)
@@ -109,9 +115,9 @@ class TestSnapshotLoad:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_save_load_round_trip_via_disk(
-        self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path
+        self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path, monkeypatch
     ):
         """End-to-end round trip: save a snapshot from a synthetic
         project list, then load the same file back and assert the load
@@ -149,12 +155,18 @@ class TestSnapshotLoad:
         load_phase = {"active": False, "new_windows": []}
         mock_tmux.side_effect = tmux_side_effect
 
+        monkeypatch.setattr(ccm_core, 'tmux_query', inventory_query(save_listing))
         # SAVE
         ccm_snapshot.cmd_snapshot_save("rt-disk", quiet=True)
         snap_path = tmp_path / "rt-disk.json"
         assert snap_path.exists()
 
-        # LOAD the file we just wrote
+        # v1 continues to restore one shell window per project. v2 layout
+        # loading is exercised by the isolated tmux restore tests.
+        data = json.loads(snap_path.read_text())
+        data['version'] = 1
+        snap_path.write_text(json.dumps(data))
+        # LOAD the compatibility manifest
         load_phase["active"] = True
         ccm_snapshot.cmd_snapshot_load("rt-disk")
 
@@ -168,7 +180,7 @@ class TestSnapshotLoad:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_load_creates_windows(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         """Loading a snapshot creates windows for each project."""
         orig_dir = ccm_core.CCM_SNAPSHOT_DIR
@@ -201,7 +213,7 @@ class TestSnapshotLoad:
 
         ccm_core.CCM_SNAPSHOT_DIR = orig_dir
 
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     @patch("ccm_core.tmux_cmd", return_value="")
     def test_load_skips_missing_dir(self, mock_tmux, mock_session, tmp_path, capsys):
         """Projects with missing directories are skipped with a warning."""
@@ -220,7 +232,7 @@ class TestSnapshotLoad:
         ccm_core.CCM_SNAPSHOT_DIR = orig_dir
 
     @patch("ccm_core.find_window", return_value="1")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     @patch("ccm_core.tmux_cmd", return_value="")
     def test_load_skips_existing_project(self, mock_tmux, mock_session, mock_find, tmp_path, capsys):
         """Projects that already exist are skipped with a warning."""
@@ -251,7 +263,7 @@ class TestSnapshotLoad:
 
         ccm_core.CCM_SNAPSHOT_DIR = orig_dir
 
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     @patch("ccm_core.tmux_cmd", return_value="")
     def test_load_skips_null_entries(self, mock_tmux, mock_session, tmp_path):
         """Null/empty project entries in snapshot are silently skipped."""
@@ -273,10 +285,8 @@ class TestSnapshotLoad:
         """A hand-edited / truncated snapshot can parse to valid JSON
         that is a top-level array or scalar (json.load does not raise
         on those). The load must die with a readable message, not an
-        AttributeError traceback from `data.get(...)`. Regression for
-        the adversarial-review finding: the first cut of the
-        malformed-JSON guard checked `projects` but not `data` itself,
-        so `[1,2,3]` still crashed."""
+        AttributeError traceback from `data.get(...)`: the guard checks
+        `data` itself, not only `projects`."""
         orig_dir = ccm_core.CCM_SNAPSHOT_DIR
         ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
         (tmp_path / "badlist.json").write_text("[1, 2, 3]")
@@ -303,11 +313,11 @@ class TestSnapshotLoad:
 
 class TestSnapshotHomeShortening:
     """Snapshot save shortens a leading $HOME to `~` for portability,
-    but ONLY at the path head. The old `str.replace(home, "~")`
-    rewrote every occurrence: with HOME=/Users/x the directory
-    `/Users/x2/work` was stored as `~2/work`, which expanduser turns
-    into `~2/work` (user `2` lookup fails / literal path) so
-    `cmd_snapshot_load` then skipped it with "Directory not found"."""
+    but ONLY at the path head. A plain `str.replace(home, "~")`
+    would rewrite every occurrence: with HOME=/Users/x the directory
+    `/Users/x2/work` would be stored as `~2/work`, which expanduser
+    cannot turn back (user `2` lookup fails / literal path), so
+    `cmd_snapshot_load` would skip it with "Directory not found"."""
 
     def _set_home(self, tmp_path, monkeypatch):
         """Point $HOME at a real tmp dir — init_dirs / expanduser
@@ -317,36 +327,36 @@ class TestSnapshotHomeShortening:
         monkeypatch.setenv("HOME", str(home))
         return str(home)
 
-    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.tmux_query")
     def test_dir_under_home_shortened(self, mock_tmux, tmp_path,
                                       monkeypatch):
         home = self._set_home(tmp_path, monkeypatch)
-        mock_tmux.return_value = f"1\twin1\tproj1\t{home}/work"
+        mock_tmux.side_effect = inventory_query(f"1\twin1\tproj1\t{home}/work")
         ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
         ccm_snapshot.cmd_snapshot_save("home-snap", quiet=True)
         data = json.loads((tmp_path / "home-snap.json").read_text())
         assert data["projects"][0]["dir"] == "~/work"
 
-    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.tmux_query")
     def test_sibling_of_home_not_corrupted(self, mock_tmux, tmp_path,
                                            monkeypatch):
         """`<home>2/work` merely starts with the HOME string — it is
         not under HOME and must be stored verbatim."""
         home = self._set_home(tmp_path, monkeypatch)
         sibling = home + "2"
-        mock_tmux.return_value = f"1\twin1\tproj1\t{sibling}/work"
+        mock_tmux.side_effect = inventory_query(f"1\twin1\tproj1\t{sibling}/work")
         ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
         ccm_snapshot.cmd_snapshot_save("sibling-snap", quiet=True)
         data = json.loads((tmp_path / "sibling-snap.json").read_text())
         assert data["projects"][0]["dir"] == f"{sibling}/work"
 
-    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.tmux_query")
     def test_saved_tilde_form_round_trips_through_expanduser(
             self, mock_tmux, tmp_path, monkeypatch):
         """The portability contract: a shortened dir expands back to
         the original absolute path on load."""
         home = self._set_home(tmp_path, monkeypatch)
-        mock_tmux.return_value = f"1\twin1\tproj1\t{home}/work"
+        mock_tmux.side_effect = inventory_query(f"1\twin1\tproj1\t{home}/work")
         ccm_core.CCM_SNAPSHOT_DIR = str(tmp_path)
         ccm_snapshot.cmd_snapshot_save("rt-home", quiet=True)
         data = json.loads((tmp_path / "rt-home.json").read_text())

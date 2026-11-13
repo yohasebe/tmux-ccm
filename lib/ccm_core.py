@@ -9,10 +9,13 @@ either has I/O side effects (`tmux_cmd`, `ps_snapshot`,
 `Project`), or is the entry-point dispatcher.
 """
 
+from collections import namedtuple
 import contextlib
+from contextvars import ContextVar
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -20,6 +23,8 @@ import threading
 import time
 import traceback
 from datetime import datetime
+
+from ccm_settings import read_settings
 
 # Single-instance guarantee. When invoked as `python3 lib/ccm_core.py
 # <subcmd>`, Python loads this file as `__main__`. Submodules
@@ -54,7 +59,11 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
     CLAUDE_PROCESS_NAME,
     COMPLETED_AT_TIMEOUT,
     EXTERNAL_AGENT_COMMANDS,
+    SIDEKICK_KEY_HOLDERS,
+    SIDEKICK_SCREEN_READERS,
+    sidekick_screen_reading,
     external_agent_name,
+    is_recorded_agent,
     HOOK_FRESH_THRESHOLD,
     HOOK_SCRIPTS,
     IDLE_EXIT_TIMEOUT,
@@ -79,8 +88,90 @@ from ccm_constants import (  # noqa: F401 (used as module-local names)
 
 # ─── Subprocess helpers ───
 
-def tmux_cmd(*args, timeout=5):
-    """Run tmux command, return stdout.
+# Global options read once for a pass (see `prefetch_global_options`):
+# name -> value, or None when nothing is prefetched.
+_GLOBAL_OPTIONS = None
+_OPTION_SEP = "==ccm==option==sep=="
+
+
+def prefetch_global_options(names):
+    """Read several global options in one tmux process, for the pass
+    that follows. Each is read by the same `show-option -gqv` a single
+    read would use, so the answers do not change; a separator line
+    keeps them apart (an unset option prints nothing). Reads of these
+    names are then served from memory until `clear_global_options`, and
+    a write to one of them through `tmux_cmd` or `tmux_batch` drops it,
+    so it is read again live. On any failure nothing is kept and every
+    value is read from tmux directly."""
+    global _GLOBAL_OPTIONS
+    names = list(dict.fromkeys(names))
+    args = []
+    for i, name in enumerate(names):
+        if i:
+            args += [";", "display-message", "-p", _OPTION_SEP, ";"]
+        args += ["show-option", "-gqv", name]
+    out = tmux_query(*args) if args else None
+    if out is None:
+        _GLOBAL_OPTIONS = None
+        return
+    values, current = [], []
+    for line in out.split("\n"):
+        if line == _OPTION_SEP:
+            values.append("\n".join(current))
+            current = []
+        else:
+            current.append(line)
+    values.append("\n".join(current))
+    if len(values) != len(names):
+        _GLOBAL_OPTIONS = None
+        return
+    _GLOBAL_OPTIONS = {n: v.strip() for n, v in zip(names, values)}
+
+
+def clear_global_options():
+    global _GLOBAL_OPTIONS
+    _GLOBAL_OPTIONS = None
+
+
+def _prefetched_option(args):
+    """The prefetched answer to a global option read, or None."""
+    if (_GLOBAL_OPTIONS is not None and len(args) == 3
+            and args[0] in ("show-option", "show-options")
+            and args[1] in ("-gqv", "-gv")):
+        return _GLOBAL_OPTIONS.get(args[2])
+    return None
+
+
+def _forget_written_option(args):
+    """Drop a prefetched option that this command writes globally. A
+    window or pane write leaves the global value, and so the cache,
+    as it was."""
+    if _GLOBAL_OPTIONS is None or not args or args[0] not in ("set", "set-option"):
+        return
+    flags = ""
+    rest = iter(args[1:])
+    for arg in rest:
+        if arg.startswith("-") and arg != "-":
+            flags += arg[1:]
+            if "t" in arg[1:]:
+                next(rest, None)          # the target, not the option
+        else:
+            if "g" in flags:
+                _GLOBAL_OPTIONS.pop(arg, None)
+            return
+
+
+def tmux_literal(text):
+    """`text` as tmux reads it literally where it expands formats
+    (`new-window -c`, `split-window -c`, `display-message`): `#{...}`
+    would substitute and `#(...)` would run a shell command, so every
+    `#` is doubled."""
+    return str(text).replace("#", "##")
+
+
+def tmux_cmd(*args, timeout=5, strip=True):
+    """Run tmux command, return stdout (stripped; with `strip=False` only
+    the trailing newlines go, so the first line keeps its indent).
 
     Decodes output with `errors="replace"` because `capture-pane`
     can emit byte sequences that are not valid UTF-8 — terminal
@@ -90,15 +181,45 @@ def tmux_cmd(*args, timeout=5):
     cycle (inject_status / dashboard refresh), leaving every
     project's `@ccm_prev_state` frozen.
     """
+    cached = _prefetched_option(args)
+    if cached is not None:
+        return cached
+    _forget_written_option(args)
     try:
         r = subprocess.run(
             ["tmux"] + list(args), capture_output=True, timeout=timeout
         )
         if r.returncode != 0:
             return ""
-        return r.stdout.decode("utf-8", errors="replace").strip()
+        out = r.stdout.decode("utf-8", errors="replace")
+        return out.strip() if strip else out.rstrip("\n")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
+
+
+def tmux_query(*args, timeout=5, errors=None):
+    """Like `tmux_cmd`, but a failure is None rather than "".
+
+    When supplied, `errors` receives the diagnostic from this call;
+    callers can explain a failed query without a second probe losing
+    the original error. Existing best-effort readers remain silent.
+    """
+    try:
+        r = subprocess.run(
+            ["tmux"] + list(args), capture_output=True, timeout=timeout
+        )
+        if r.returncode == 0:
+            return r.stdout.decode("utf-8", errors="replace").strip()
+        detail = r.stderr.decode("utf-8", errors="replace").strip()
+        if not detail:
+            detail = f"tmux exited with status {r.returncode}"
+    except subprocess.TimeoutExpired:
+        detail = f"tmux query timed out after {timeout} seconds"
+    except OSError as exc:
+        detail = str(exc)
+    if errors is not None:
+        errors.append(detail)
+    return None
 
 
 def tmux_batch(*commands):
@@ -109,15 +230,13 @@ def tmux_batch(*commands):
     silent-exception log. This matters more for batches than for
     single commands — when ANY command in a `;`-chain is invalid,
     tmux aborts the REST of the chain too, so one bad value silently
-    drops every subsequent write. That is exactly how the
-    frozen-status-bar incident stayed invisible for days: `set -g
-    status 6` (above tmux's max of 5) was rejected and took all the
-    status-format writes down with it, every second, with stderr
-    swallowed here. Logging turns the next such bug into an
+    drops every subsequent write. Logging turns such a failure into an
     `errors.log` burst the canaries surface within minutes.
     """
     if not commands:
         return
+    for cmd in commands:
+        _forget_written_option(tuple(cmd))
     args = ["tmux"]
     for i, cmd in enumerate(commands):
         if i > 0:
@@ -240,9 +359,8 @@ def shorten_home(path):
 # `inject_status` and `dashboard._refresh_loop` both wrap their main
 # body in `except Exception: pass` because crashing the tmux status
 # refresh or the dashboard render loop is worse than skipping a tick.
-# But silent swallowing kept the recent UTF-8 decode regression
-# invisible until users noticed states freezing across every project.
-# `log_caught_exception` records each silent catch so the next
+# Silent swallowing would keep such a failure invisible.
+# `log_caught_exception` records each silent catch so a
 # regression of this class is debuggable without having to enable
 # `CCM_DEBUG_TRACE` in advance. The log is size-capped so a runaway
 # loop cannot exhaust disk.
@@ -302,14 +420,91 @@ def log_caught_exception(scope: str) -> None:
 
 # ─── Session detection ───
 
+def secure_tmp_root(path=None):
+    """Create or check the per-user temp root, as `ccm_secure_tmp_root`
+    in lib/ccm_tmp_root.sh does for the shell side. Where TMPDIR is
+    unset it sits in the shared /tmp, so it must be a real directory
+    owned by this user that nobody else could ever write into. A root of
+    ours others could write is moved aside unopened and made afresh; a
+    root others can only read is closed. False means: write nothing
+    there."""
+    import stat
+    path = (path or CCM_TMP_DIR).rstrip('/')
+    # `link/` and `link/.` resolve through the link; test the name itself.
+    if os.path.basename(path) in ('', '.', '..'):
+        return False
+
+    def ours(info):
+        return (not stat.S_ISLNK(info.st_mode) and stat.S_ISDIR(info.st_mode)
+                and info.st_uid == os.getuid())
+
+    old = os.umask(0o077)
+    try:
+        if not os.path.lexists(path):
+            os.makedirs(path, exist_ok=True)
+        info = os.lstat(path)
+        if not ours(info):
+            return False
+        if info.st_mode & 0o022:
+            try:
+                os.rename(path, f'{path}.untrusted-{os.getpid()}')
+            except OSError:
+                pass
+            try:
+                os.mkdir(path, 0o700)
+            except FileExistsError:
+                pass
+            info = os.lstat(path)
+            if not ours(info) or info.st_mode & 0o022:
+                return False
+        if info.st_mode & 0o077:
+            os.chmod(path, 0o700)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.umask(old)
+
+
+# A Claude session id names files under the hook directory (signals,
+# event logs, markers) and is looked up in transcript paths. It comes from
+# outside ccm (the hook payload, the session registry), so it is used
+# only when it is a plain token: one with a `/` or `..` would name a
+# file elsewhere. Claude's are UUIDs. hooks/lib.sh applies the same rule.
+_SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def is_safe_session_id(session_id):
+    # A malformed registry can hold a number, list or object here; that is
+    # no session id either, and must not raise.
+    return isinstance(session_id, str) and _SAFE_SESSION_ID.fullmatch(session_id) is not None
+
+
 def get_session():
+    """The tmux session this command acts in.
+
+    In a pane, that pane's own session, asked by its id: a popup's
+    record names whatever session last opened one, which is not this
+    pane's, and may be gone. Without a pane (inside a popup, where tmux
+    cannot say which session the popup belongs to), the record left by
+    the key that opened it, if it is recent and the session still
+    exists. Otherwise the current client's session."""
+    pane = os.environ.get("TMUX_PANE", "")
+    if pane:
+        session = tmux_cmd("display-message", "-p", "-t", pane, "#{session_name}")
+        if session:
+            return session
     popup_file = os.path.join(CCM_TMP_DIR, "popup-session")
     try:
-        if os.path.exists(popup_file):
+        # A pane that cannot be resolved (gone, or tmux failing) is still
+        # not in a popup: another session's record is no answer for it.
+        if not pane and os.path.exists(popup_file):
             age = time.time() - os.path.getmtime(popup_file)
             if age < 60:
                 with open(popup_file, encoding="utf-8") as f:
-                    return f.read().strip()
+                    recorded = f.read().strip()
+                if recorded and tmux_query("has-session", "-t", f"={recorded}") is not None:
+                    return recorded
     except OSError:
         pass
     session = tmux_cmd("display-message", "-p", "#{session_name}")
@@ -317,6 +512,166 @@ def get_session():
         return session
     out = tmux_cmd("list-clients", "-F", "#{session_name}")
     return out.split("\n")[0] if out else ""
+
+
+def require_session():
+    """Resolve a CLI session and verify tmux is reachable, even for popups."""
+    session = get_session()
+    errors = []
+    # A saved popup-session is only a name, not evidence of a live
+    # connection. Check before a failed lookup becomes "not found".
+    args = (("list-windows", "-t", session, "-F", "#{window_index}")
+            if session else ("list-sessions", "-F", "#{session_name}"))
+    reply = tmux_query(*args, errors=errors)
+    if reply is None:
+        detail = errors[0] if errors else "tmux query failed"
+        no_server = ("no server running" in detail or
+                     ("error connecting to" in detail and
+                      ("No such file or directory" in detail or
+                       "Connection refused" in detail)))
+        if not session and not os.environ.get("TMUX") and no_server:
+            ccm_die("Not inside a tmux session — start one with "
+                    "`tmux new-session` first")
+        ccm_die(f"Cannot query tmux server: {detail}. "
+                "If running inside a sandbox, run this command outside "
+                "the sandbox. Otherwise check the tmux server and socket.")
+    if not session:
+        ccm_die("No current tmux session could be determined — "
+                "attach to a session with `tmux attach-session` first")
+    return session
+
+
+def _canonical_directory(path):
+    """Existing physical directory, or None when it cannot be established."""
+    if not path:
+        return None
+    try:
+        path = os.path.expanduser(path)
+        if not os.path.isabs(path):
+            return None
+        resolved = str(Path(path).resolve(strict=True))
+        return resolved if os.path.isdir(resolved) else None
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+_caller_process_cache = ContextVar("caller_process_cache", default=None)
+
+
+@contextlib.contextmanager
+def caller_process_scope():
+    """Share one process snapshot within a command, never between commands.
+
+    Pane metadata is still queried afresh, including sidekick revalidation.
+    """
+    token = _caller_process_cache.set({})
+    try:
+        yield
+    finally:
+        _caller_process_cache.reset(token)
+
+
+def _caller_has_ancestor(pane_pid):
+    if not pane_pid.isdecimal() or int(pane_pid) <= 1:
+        return False
+    cache = _caller_process_cache.get()
+    if cache is None:
+        cache = {}
+    if 'parents' not in cache:
+        parents = {}
+        try:
+            snapshot = ps_snapshot()
+        except OSError:
+            snapshot = ''
+        for line in snapshot.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and all(p.isdecimal() for p in parts[:2]):
+                parents[int(parts[0])] = int(parts[1])
+        cache['parents'] = parents
+    parents = cache['parents']
+    pid = parents.get(os.getpid(), 0)
+    seen = set()
+    while pid > 1 and pid not in seen:
+        if pid == int(pane_pid):
+            return True
+        seen.add(pid)
+        pid = parents.get(pid, 0)
+    return False
+
+
+def caller_context(*, resolve_project=True):
+    """Return (registered project or 'unknown', verified pane or '').
+
+    A pane ancestor verifies the hint regardless of cwd. Otherwise the hint
+    must agree with cwd. A unique cwd fallback
+    identifies a project only, never the physical pane running a command.
+    Linked windows count once; distinct windows remain ambiguous even
+    when their project names or directories are identical.
+    """
+    try:
+        cwd = _canonical_directory(os.getcwd())
+    except OSError:
+        cwd = None
+
+    def contains(directory):
+        if cwd is None:
+            return False
+        try:
+            return os.path.commonpath((cwd, directory)) == directory
+        except ValueError:
+            return False
+
+    pane = os.environ.get("TMUX_PANE", "").strip()
+    if re.fullmatch(r"%[0-9]+", pane):
+        raw = tmux_query("display-message", "-p", "-t", pane,
+                         "#{pane_id}\t#{@ccm_project}\t#{@ccm_dir}\t#{pane_pid}")
+        parts = raw.split("\t") if raw else []
+        if len(parts) == 4 and parts[0] == pane and parts[1]:
+            if _caller_has_ancestor(parts[3]):
+                return parts[1], pane
+            directory = _canonical_directory(parts[2])
+            if directory and contains(directory):
+                return parts[1], pane
+    if not resolve_project or cwd is None:
+        return "unknown", ""
+
+    match = unique_registered_window(cwd)
+    return (match[1] if match else "unknown"), ""
+
+
+def unique_registered_window(cwd):
+    """Resolve an explicit cwd to exactly one (window ID, name, directory).
+
+    Do not use display-list deduplication or ambient pane/process context.
+    """
+    cwd = _canonical_directory(cwd)
+    if cwd is None:
+        return None
+    raw = tmux_query("list-windows", "-a", "-F",
+                     "#{window_id}\t#{@ccm_project}\t#{@ccm_dir}")
+    if raw is None:
+        return None
+    windows = {}
+    for line in raw.splitlines():
+        parts = line.split("\t")
+        if len(parts) > 3 or not re.fullmatch(r"@[0-9]+", parts[0]):
+            return None
+        # tmux_query strips trailing whitespace: an unregistered last
+        # window can therefore arrive as just its ID. Preserve empties.
+        parts += [""] * (3 - len(parts))
+        win, name, directory = parts
+        if not name:
+            continue
+        directory = _canonical_directory(directory)
+        if not win or directory is None:
+            return None
+        entry = (name, directory)
+        if win in windows and windows[win] != entry:
+            return None
+        windows[win] = entry
+    matches = [(win, name, directory) for win, (name, directory) in windows.items()
+               if os.path.commonpath((cwd, directory)) == directory]
+    return matches[0] if len(matches) == 1 else None
 
 
 def touch_popup_session():
@@ -335,13 +690,15 @@ class Project:
         "branch", "ports", "completed_at", "bg_active", "pane_count",
         "ignored_panes", "permission_mode", "sort_key",
         "cached_session_id", "external_agents", "attention_agents",
+        "busy_agents", "window_id", "completed_raw", "sidekicks",
     )
 
     def __init__(self, win_target, win_idx, name, directory, state,
                  branch="", ports="", completed_at=0, bg_active=False,
                  pane_count=1, permission_mode="", ignored_panes=0,
                  cached_session_id=None, external_agents=(),
-                 attention_agents=()):
+                 attention_agents=(), busy_agents=(), window_id="",
+                 completed_raw=None, sidekicks=()):
         self.win_target = win_target
         self.win_idx = win_idx
         self.name = name
@@ -388,6 +745,18 @@ class Project:
         # nothing else: NOT part of the 4-state model, never consulted
         # by detection, () on the fast path.
         self.attention_agents = attention_agents
+        # Agent names whose pane is working on a turn — only Codex,
+        # whose screen and hooks say so. Display-only like
+        # attention_agents; an agent in both shows as attention.
+        self.busy_agents = busy_agents
+        # tmux `#{window_id}` ("@N"): one id for a window linked into
+        # several sessions, unlike win_target.
+        self.window_id = window_id
+        # `@ccm_completed_at` as stored (epoch seconds), None when unset.
+        # `completed_at` above mixes in window activity for sorting.
+        self.completed_raw = completed_raw
+        # SidekickObservation per sidekick pane; () on the fast path.
+        self.sidekicks = sidekicks
         self.sort_key = (STATE_PRIORITY.get(state, 4), -(completed_at or 0))
 
 
@@ -436,7 +805,8 @@ _WINDOW_FORMAT = (
     "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_dir}\t"
     "#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t"
     "#{@ccm_bg_active}\t#{@ccm_session_id}\t#{@ccm-sidekick-attention}\t"
-    "#{@ccm_work_clock}\t#{@ccm_work_clock_ts}"
+    "#{@ccm_work_clock}\t#{@ccm_work_clock_ts}\t#{@ccm_unresolved_idle}\t"
+    "#{status-interval}\t#{@ccm_restore_pending}\t#{window_id}"
 )
 _WINDOW_FIELDS_MIN = 6  # win_target, project, dir, prev_state, completed_at, win_activity
 
@@ -449,9 +819,9 @@ def _force_mock_state() -> bool:
 
 
 def _build_panes_cache():
-    """One bulk `list-panes -a` query returning 7-tuples
+    """One bulk `list-panes -a` query returning pane tuples
     `(target, pid, pane_id, current_command, pane_active, pane_height,
-    ignore)` for every pane across every session. Used by detection
+    ignore, optional_restore_role)` for every pane across every session. Used by detection
     and pane-count phases. `ignore` is the `@ccm_ignore` pane option
     ("1" when the pane hosts a CCM_IGNORE'd session, "" otherwise) —
     carried here so every detection consumer can drop the pane without
@@ -461,18 +831,28 @@ def _build_panes_cache():
         "list-panes", "-a", "-F",
         "#{session_name}:#{window_index}\t#{pane_pid}\t#{pane_id}\t"
         "#{pane_current_command}\t#{pane_active}\t#{pane_height}\t"
-        "#{@ccm_ignore}"
+        "#{@ccm_ignore}\t#{@ccm_restore_role}\t#{@ccm_dock}"
     )
     cache = []
     for line in panes_raw.split("\n"):
         parts = line.split("\t")
+        if is_dock_field(parts, 8):
+            continue  # ccm's own docked dashboard is not a project pane
         if len(parts) >= 6:
             # Pad the ignore field so older tmux output (6 fields)
             # stays valid — treated as "not ignored".
             while len(parts) < 7:
                 parts.append("")
-            cache.append(tuple(parts[:7]))
+            cache.append(tuple(parts[:8]))
     return cache
+
+
+def is_dock_field(parts, index) -> bool:
+    """True when field `index` of a tab-split pane row is the `@ccm_dock`
+    mark. Every pane listing that feeds detection, auto-exit or focus
+    drops these rows: the docked dashboard is ccm's own pane, and a
+    python process in it would otherwise read as live work or a shell."""
+    return len(parts) > index and parts[index] == "1"
 
 
 def _pane_is_ignored(pc) -> bool:
@@ -490,6 +870,8 @@ def _parse_window_line(line):
     if len(parts) < _WINDOW_FIELDS_MIN:
         return None
     project = parts[1]
+    if len(parts) >= 14 and parts[13] == "1":
+        return None
     if not project:
         return None
     # @ccm_bg_active and @ccm_session_id are recent additions; older
@@ -526,6 +908,9 @@ def _parse_window_line(line):
         "attention_toggle": attention_toggle,
         "work_clock": work_clock,
         "work_clock_ts": work_clock_ts,
+        "unresolved_idle": parts[11] if len(parts) >= 12 else "",
+        "status_interval": parts[12] if len(parts) >= 13 else "",
+        "window_id": parts[14] if len(parts) >= 15 else "",
     }
 
 
@@ -556,6 +941,8 @@ def _resolve_window_state(row, fast, panes_cache, ps_lines, own_pgid):
             prev_bg_active=bool(row["bg_active_str"]),
             cached_session_id=row["cached_session_id"],
             cached_work_clock=(row["work_clock"], row["work_clock_ts"]),
+            cached_unresolved_idle=row["unresolved_idle"],
+            cached_status_interval=row["status_interval"],
         )
     except Exception:
         log_caught_exception(f"build_project_list[{row['project']}]")
@@ -600,7 +987,7 @@ def _resolve_ignored_panes(panes_cache, win_target, ps_lines):
     return count
 
 
-def _read_attention_markers(panes_cache, ps_lines):
+def _read_attention_markers(panes_cache, ps_lines, strict=False):
     """Read every sidekick attention marker once per build and GC the
     dead ones. Returns {pane_id: marker_dict} for markers that are
     live `waiting` — the only state any display surface acts on.
@@ -620,10 +1007,17 @@ def _read_attention_markers(panes_cache, ps_lines):
         ATTENTION_WAITING_TTL_SEC has — the safety net for an agent
         that died mid-wait without firing anything.
     Unparseable files are treated as dead. All failures are silent:
-    attention is a display garnish and must never break a build."""
+    attention is a display garnish and must never break a build —
+    unless `strict`, for a caller that must not take a directory or a
+    marker it could not read for one with no wait in it (a missing
+    directory still means no markers)."""
     try:
         entries = os.listdir(CCM_ATTENTION_DIR)
+    except FileNotFoundError:
+        return {}
     except OSError:
+        if strict:
+            raise
         return {}
     import json as _json
     from datetime import datetime, timezone
@@ -636,22 +1030,29 @@ def _read_attention_markers(panes_cache, ps_lines):
         A pane running a known external agent CLI answers from
         `pane_current_command` alone. A Claude sidekick does NOT:
         the versioned-install symlink makes tmux report the launcher
-        name (`2.1.221`, measured), never `claude`, so comparing the
+        name (e.g. `2.1.221`), never `claude`, so comparing the
         command to CLAUDE_PROCESS_NAME is false in every real
         environment — `ccm_runtime.auto_exit_idle` documents the same
-        quirk and resolves it the same way. Left as a name compare,
-        every Claude-sidekick marker was reaped by the next slow build
-        and the whole Claude path of the contract silently did
-        nothing.
+        quirk and resolves it the same way. A name compare would reap
+        every Claude-sidekick marker.
 
         The process walk runs only for panes that actually have a
         marker (usually none), so it costs nothing on the common
-        build."""
+        build.
+
+        None when it cannot be told: an empty pane listing (a failed
+        `list-panes` comes back empty, and a marker means some pane
+        existed) or an empty process list for a pane that is not an
+        external agent. An unknown pane is neither reaped nor shown."""
+        if not panes_cache:
+            return None
         pc = by_pane.get(pane_id)
         if pc is None:
             return False
         if external_agent_name(pc[3]):
             return True
+        if not ps_lines or ps_lines == [""]:
+            return None
         return bool(ccm_detection.find_claude_pid(pc[1], ps_lines))
 
     def _epoch(iso):
@@ -684,7 +1085,12 @@ def _read_attention_markers(panes_cache, ps_lines):
         try:
             with open(path, encoding="utf-8") as f:
                 marker = _json.load(f)
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            continue  # reaped or resolved since the listing
+        except OSError:
+            if strict:
+                raise
+        except ValueError:
             pass
         reap = False
         if not isinstance(marker, dict):
@@ -705,7 +1111,10 @@ def _read_attention_markers(panes_cache, ps_lines):
         elif marker.get("state") == "waiting":
             ts = _epoch(marker.get("ts"))
             exp = _epoch(marker.get("expires"))
-            if not _pane_hosts_agent(pane_id):
+            hosts = _pane_hosts_agent(pane_id)
+            if hosts is None:
+                pass  # unknown: keep the marker, show nothing
+            elif not hosts:
                 reap = True
             elif exp is not None and now > exp:
                 reap = True
@@ -743,13 +1152,152 @@ def _resolve_external_agent_panes(panes_cache, win_target):
     )
 
 
-def build_project_list(fast=False):
+#: One sidekick pane as observed at one moment: who runs there, what it
+#: is doing ("PERMIT" / "BUSY" / "IDLE", or None when that cannot be
+#: told), where that answer came from ("screen" / "hook" / "marker" /
+#: None), and whether keys typed there would reach its composer
+#: ("free"), would be taken by a dialog or view ("held"), or cannot be
+#: told (None).
+SidekickObservation = namedtuple(
+    "SidekickObservation", "agent pane state state_source keys")
+
+
+def observe_sidekicks(panes_cache, win_target, markers, hooks_cache, ps_lines,
+                      strict=False):
+    """The sidekick panes of one window, observed now: a
+    SidekickObservation per pane running a known external agent CLI,
+    per ignored Claude pane, and per pane holding a valid attention
+    marker. The one answer to "what is each sidekick here doing?" —
+    the badge, the focus on attach and the send guard all read it, and
+    any display policy (the attention toggle, an unknown shown as
+    nothing) is applied by the reader, not here.
+
+    One observation shares what it reads: `markers` comes from
+    `_read_attention_markers` over the full pane list, `hooks_cache`
+    is a per-observation list that holds the Codex hook records once
+    read, and each screen is captured once. A later moment needs a new
+    observation with fresh arguments.
+
+    Per pane, in order: the screen, where ccm reads that agent's screen
+    (`SIDEKICK_SCREEN_READERS`); when it tells no state, Codex's hook
+    record if it is still valid for the process running there now
+    (`_codex_hook_state`), else a waiting marker, which says PERMIT —
+    no marker is not evidence of idle. A PERMIT from any source means
+    the keys are held. `strict` lets a failure to read the hook records
+    or to tell the process raise instead of reading as no record, for
+    a caller about to type (`ccm sidekick-send`)."""
+    observed = []
+    for pc in panes_cache:
+        if pc[0] != win_target:
+            continue
+        name = external_agent_name(pc[3])
+        marker = markers.get(pc[2])
+        if not name and _pane_is_ignored(pc) and ps_lines \
+                and ccm_detection.find_claude_pid(pc[1], ps_lines):
+            name = "claude"
+        if not name and marker is None:
+            continue
+        agent = name or marker.get("agent") or pc[3]
+        state, keys = (sidekick_screen(pc[2], name)
+                       if name in SIDEKICK_SCREEN_READERS else (None, None))
+        source = "screen" if state else None
+        if state is None and name == "codex":
+            state = _codex_hook_state(pc, hooks_cache, ps_lines, strict)
+            source = "hook" if state else None
+        if state is None and marker is not None \
+                and name not in SIDEKICK_SCREEN_READERS:
+            state, source = "PERMIT", "marker"
+        if state == "PERMIT":
+            keys = "held"
+        observed.append(SidekickObservation(agent, pc[2], state, source, keys))
+    return observed
+
+
+def sidekick_pane_states(observations):
+    """{pane id: (agent name, "PERMIT" | "BUSY")} — the sidekicks of
+    one observation that wait for a person or work on a turn, as the
+    `▸` badge (`build_project_list`) and the focus on attach
+    (`ccm_window.auto_focus_attention_pane`) show them. A state that
+    cannot be told shows as nothing, like an idle one."""
+    return {o.pane: (o.agent, o.state) for o in observations
+            if o.state in ("PERMIT", "BUSY")}
+
+
+def _codex_hook_state(pc, hooks_cache, ps_lines, strict=False):
+    """What the Codex hooks last recorded for this pane ("PERMIT",
+    "BUSY", "IDLE"), or None: no record, a record past its age, or one
+    written for another Codex process than the one running there now
+    (a Codex restarted in the same pane must not inherit its
+    predecessor's state, idle included)."""
+    if not hooks_cache:
+        hooks_cache.append(_codex_hook_activity(strict))
+    recorded, process = hooks_cache[0].get(pc[2], (None, None))
+    if recorded is None or not process:
+        return None
+    try:
+        import ccm_sidekick_notify
+        now_running = ccm_sidekick_notify.process_identity(pc[1], ps_lines)
+    except Exception:
+        log_caught_exception("codex_process_identity")
+        if strict:
+            raise
+        return None
+    if now_running is None and strict:
+        # Not told apart is not a different process: the record may
+        # still be this process's wait.
+        raise RuntimeError("cannot tell the Codex process to match its hook record")
+    return recorded if now_running == process else None
+
+
+def sidekick_screen(pane_id, name):
+    """(state, keys) for the screen of sidekick `name` in `pane_id`,
+    from one capture (`ccm_constants.sidekick_screen_reading`). Both are
+    None when ccm does not read that sidekick's screen, or the capture
+    fails or comes back empty."""
+    if name not in SIDEKICK_SCREEN_READERS:
+        return None, None
+    try:
+        return sidekick_screen_reading(
+            name, ccm_pane_state.capture_pane_screen(pane_id))
+    except Exception:
+        log_caught_exception(name + "_screen")
+        return None, None
+
+
+def _codex_hook_activity(strict=False):
+    try:
+        import ccm_sidekick_notify
+        server = (tmux_query if strict else tmux_cmd)(
+            "display-message", "-p", "#{pid}:#{start_time}:#{socket_path}")
+        if not server and strict:
+            raise RuntimeError("cannot tell the tmux server the hook records name")
+        return (ccm_sidekick_notify.pane_activity(server, strict=strict)
+                if server else {})
+    except Exception:
+        log_caught_exception("codex_hook_activity")
+        if strict:
+            raise
+        return {}
+
+
+def build_project_list(fast=False, *, by_window=False, window_id=None,
+                       windows=None):
     """Build the active project list from tmux state.
+
+    One Project per project directory, the first window that has it
+    (what `ccm status` and the dashboard show), or with `by_window`
+    one per tmux window, a window linked into several sessions once.
+    `window_id` builds only that window (implies `by_window`): the
+    other windows are neither detected, observed nor reconciled.
+    `windows` is a `list-windows` output in `_WINDOW_FORMAT` the caller
+    already holds, so a selection and the records come from one listing.
 
     Two paths:
       - fast=True  → statusline path. Uses `@ccm_prev_state` plus a
-                     hook-signal read; skips ps / capture-pane /
-                     git/port cache I/O. Forced when CCM_MOCK_STATE=1
+                     hook-signal read and a transcript tail read;
+                     skips ps / capture-pane and the git/port
+                     refresh (the cached values are still read, mode
+                     2 shows them). Forced when CCM_MOCK_STATE=1
                      or `@ccm-mock-state` tmux option is set (used by
                      screenshots so visual state is reproducible).
       - fast=False → slow path. Runs the full detection pipeline
@@ -759,18 +1307,40 @@ def build_project_list(fast=False):
     if _force_mock_state():
         fast = True
 
-    raw = tmux_cmd("list-windows", "-a", "-F", _WINDOW_FORMAT)
+    raw = (windows if windows is not None
+           else tmux_cmd("list-windows", "-a", "-F", _WINDOW_FORMAT))
     if not raw:
         return []
+    # The selected window under every session it is linked into.
+    only = None
+    if window_id is not None:
+        only = {row["win_target"] for row in map(
+            _parse_window_line, raw.split("\n"))
+            if row and row["window_id"] == window_id}
 
     ps_lines = [] if fast else ps_snapshot().strip().split("\n")
     panes_cache = [] if fast else _build_panes_cache()
+    import ccm_roles
+    for pc in panes_cache:
+        if len(pc) >= 8 and pc[7] and (only is None or pc[0] in only):
+            agent = 'claude' if ccm_detection.find_claude_pid(pc[1], ps_lines) else external_agent_name(pc[3])
+            ccm_roles.reconcile(pc[2], pc[7], agent)
     own_pgid = str(os.getpgrp())
+    if not fast:
+        # The panes detection is about to capture, in one tmux process.
+        # Only a hint: a pane it leaves out is captured on its own, one
+        # it adds costs nothing but its text.
+        ccm_pane_state.prefetch_visible([
+            pc[2] for pc in panes_cache
+            if (only is None or pc[0] in only)
+            and (not _pane_is_ignored(pc)
+                and pc[3] not in SHELL_FOREGROUND_COMMANDS
+                and ccm_detection.find_claude_pid(pc[1], ps_lines)
+                or external_agent_name(pc[3]) in SIDEKICK_SCREEN_READERS)])
+    codex_hooks = []  # filled on first need: [ {pane: state} ]
     # Sidekick attention markers: read once per build (a single
-    # readdir), lazily on the first row because the global
-    # @ccm-sidekick-attention toggle rides the bulk window query
-    # rather than costing its own show-option. {} on the fast path
-    # and when toggled off. Never allowed to break a build.
+    # readdir), lazily on the first row. {} on the fast path. Never
+    # allowed to break a build.
     attention_markers = None
 
     seen_dirs = set()
@@ -780,11 +1350,15 @@ def build_project_list(fast=False):
         row = _parse_window_line(line)
         if row is None:
             continue
-
-        resolved = canonical_dir(row["proj_dir"])
-        if resolved in seen_dirs:
+        if window_id is not None and row["window_id"] != window_id:
             continue
-        seen_dirs.add(resolved)
+
+        key = (row["window_id"] or row["win_target"]
+               if by_window or window_id is not None
+               else canonical_dir(row["proj_dir"]))
+        if key in seen_dirs:
+            continue
+        seen_dirs.add(key)
 
         completed_at = _safe_int(row["completed_at_str"])
         win_activity = _safe_int(row["win_activity_str"])
@@ -812,21 +1386,22 @@ def build_project_list(fast=False):
             # discarded when off.
             if not fast:
                 try:
-                    markers = _read_attention_markers(panes_cache, ps_lines)
-                    if row["attention_toggle"] != "off":
-                        attention_markers = markers
+                    attention_markers = _read_attention_markers(
+                        panes_cache, ps_lines)
                 except Exception:
                     log_caught_exception("attention_markers")
-        # Names among this window's agent panes whose marker says
-        # `waiting` — join by pane id against the bulk cache, so a
-        # window with two kimi panes colours only the waiting one's
-        # name into the set.
-        attention_agents = tuple(sorted({
-            m.get("agent") or pc[3]
-            for pc in panes_cache
-            if pc[0] == row["win_target"]
-            for m in (attention_markers.get(pc[2]),) if m
-        })) if attention_markers else ()
+        # The sidekicks are observed whatever the attention toggle
+        # says; off only keeps their state off the badge (the `▸ name`
+        # presence stays).
+        observations = (observe_sidekicks(
+            panes_cache, row["win_target"], attention_markers, codex_hooks,
+            ps_lines) if not fast else [])
+        pane_states = (sidekick_pane_states(observations)
+                       if row["attention_toggle"] != "off" else {})
+        attention_agents = tuple(sorted(
+            {name for name, st in pane_states.values() if st == "PERMIT"}))
+        busy_agents = tuple(sorted(
+            {name for name, st in pane_states.values() if st == "BUSY"}))
 
         # Permission-mode badge (slow path, live sessions only). The
         # events tail was just read by detection for this same cycle,
@@ -857,9 +1432,15 @@ def build_project_list(fast=False):
             cached_session_id=row["cached_session_id"],
             external_agents=external_agents,
             attention_agents=attention_agents,
+            busy_agents=busy_agents,
+            window_id=row["window_id"],
+            completed_raw=completed_at or None,
+            sidekicks=tuple(observations),
         ))
 
     projects.sort(key=lambda p: p.sort_key)
+    if not fast:
+        ccm_pane_state.clear_prefetched()
     return projects
 
 
@@ -870,16 +1451,98 @@ def build_project_list(fast=False):
 # whether to surface "hooks not installed" warnings.
 
 def hooks_configured():
-    """Return True iff all 7 ccm hook scripts are referenced in the
-    user's `~/.claude/settings.json`. Used as a "hooks installed?"
-    probe — does not validate the script paths or contents."""
-    settings_file = os.path.expanduser("~/.claude/settings.json")
-    try:
-        with open(settings_file, encoding="utf-8") as f:
-            content = f.read()
-        return all(script in content for script in HOOK_SCRIPTS)
-    except OSError:
-        return False
+    """True for complete registrations, False for incomplete, None for
+    unreadable settings. Does not validate hook ownership or paths."""
+    from ccm_hook_owner import registration_complete
+    return registration_complete(_read_user_settings())
+
+
+#: Per-hook timeout, in seconds, above which ccm's own hook entries are
+#: named by `ccm doctor`. ccm's hooks are meant to finish in a few
+#: seconds and ccm writes 5; this is a warning threshold of ccm's
+#: choosing, not a limit Claude Code imposes.
+HOOK_TIMEOUT_WARN_ABOVE = 120
+
+
+def _read_user_settings():
+    """~/.claude/settings.json parsed, or None when it cannot be read."""
+    return read_settings(os.path.expanduser("~/.claude/settings.json"))
+
+
+def _hook_entries_by_owner():
+    """(owned, lookalikes) as lists of the hook entries in the user's
+    settings — one item per registration, so a command registered under
+    two events appears twice — or None when the settings cannot be read.
+    Ownership is `ccm_hook_owner.classify`'s."""
+    settings = _read_user_settings()
+    if settings is None:
+        return None
+    import ccm_hook_owner
+    owned, lookalikes = ccm_hook_owner.classify(settings, os.path.join(CCM_ROOT, "hooks"))
+    owned, lookalikes = set(owned), set(lookalikes)
+    hooks = list(ccm_hook_owner._hooks(settings))
+    return ([h for h in hooks if h["command"] in owned],
+            [h for h in hooks if h["command"] in lookalikes])
+
+
+def own_hook_entry_count():
+    """How many hook entries in the user's settings are this ccm's, or
+    None when the settings cannot be read."""
+    entries = _hook_entries_by_owner()
+    return None if entries is None else len(entries[0])
+
+
+def hook_timeout_warning():
+    """A warning when ccm's installed hook entries carry a timeout far
+    above what ccm writes, or "" when they do not — or when the
+    settings cannot be read or are not in the expected shape.
+
+    The field is in seconds. Earlier versions of ccm wrote 5000 into it
+    meaning milliseconds, and Claude Code read that as 5000 seconds.
+    Which hooks count as ccm's is decided by `ccm_hook_owner.classify`,
+    the same definition `ccm setup-hooks` edits by, so every hook named
+    here is one that command will update — and update alone. An explicit
+    `CCM_HOOK_CMD_TIMEOUT` is written as given, so one set in
+    milliseconds has to be changed first."""
+    entries = _hook_entries_by_owner()
+    if entries is None:
+        return ""
+    worst = 0
+    for hook in entries[0]:
+        timeout = hook.get("timeout")
+        if isinstance(timeout, (int, float)) and timeout > worst:
+            worst = timeout
+    if worst <= HOOK_TIMEOUT_WARN_ABOVE:
+        return ""
+    return (f"ccm's hooks carry a {worst:g}s timeout; the field is in seconds, "
+            f"and earlier ccm versions wrote milliseconds into it. Run "
+            f"`ccm setup-hooks` to update it (if CCM_HOOK_CMD_TIMEOUT is set, "
+            f"give it in seconds or unset it first)")
+
+
+def hook_lookalike_warning():
+    """A warning naming the directories of hooks that are named like
+    ccm's scripts but are outside this ccm's hooks directory, or "" when
+    there are none or the settings cannot be read.
+
+    ccm never edits those (see `ccm_hook_owner`): they may be left over
+    from a ccm that was moved or removed, or belong to another tool that
+    names its scripts the same way, and only the user can tell which.
+    Each directory is shown as the settings spell it, with the number of
+    hook entries registered there — what removing them by hand involves."""
+    entries = _hook_entries_by_owner()
+    if not entries or not entries[1]:
+        return ""
+    counts = {}
+    for hook in entries[1]:
+        directory = hook["command"].rsplit("/", 1)[0]
+        counts[directory] = counts.get(directory, 0) + 1
+    where = ", ".join(f"{d} ({n} {'entry' if n == 1 else 'entries'})"
+                      for d, n in sorted(counts.items()))
+    return (f"hooks named like ccm's outside its hooks directory, left untouched: "
+            f"{where}. They may be another tool's; delete from "
+            f"~/.claude/settings.json only those you know are left over "
+            f"from a ccm that was moved or removed")
 
 
 def save_tmux_conf_setting(setting):
@@ -939,6 +1602,10 @@ _C_RED = "\033[0;31m"
 _C_GREEN = "\033[0;32m"
 _C_YELLOW = "\033[1;33m"
 
+# An error message longer than this many lines ends with its first line
+# again (see ccm_die).
+_DIE_HEADLINE_REPEAT_LINES = 3
+
 
 class CCMError(Exception):
     """Raised by ccm_die when raise_on_die() context is active.
@@ -974,7 +1641,14 @@ def ccm_die(msg):
     """
     if getattr(_die_mode, "raise_errors", False):
         raise CCMError(msg)
-    print(f"{_C_RED}Error: {msg}{_C_RESET}", file=sys.stderr)
+    text = f"Error: {msg}"
+    # Callers often keep only the end of the output (`| tail -5`), which
+    # for a long message is a hint or a pane excerpt that reads like a
+    # success. Repeat the headline last so the verdict survives.
+    lines = msg.split("\n")
+    if len(lines) > _DIE_HEADLINE_REPEAT_LINES:
+        text += f"\nError: {lines[0].strip()}"
+    print(f"{_C_RED}{text}{_C_RESET}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -985,7 +1659,7 @@ def ccm_warn(msg):
 
 def ccm_info(msg):
     """Print info message."""
-    print(f"{_C_GREEN}{msg}{_C_RESET}")
+    print(f"{_C_GREEN}{msg}{_C_RESET}", flush=True)
 
 
 def validate_name(name):
@@ -1059,6 +1733,9 @@ def clipboard_copy(text):
 
 def init_dirs():
     """Create runtime directories."""
+    if not secure_tmp_root(CCM_TMP_DIR):
+        raise SystemExit(f"ccm: refusing to use {CCM_TMP_DIR}: it must be a "
+                         "directory owned by you and closed to others")
     for d in [CCM_SNAPSHOT_DIR, CCM_TMP_DIR, CCM_HOOK_DIR,
               CCM_GIT_CACHE_DIR, CCM_PORT_CACHE_DIR,
               os.path.join(os.path.expanduser("~/.local/share/ccm"), "state")]:
@@ -1087,8 +1764,10 @@ def fzf_select(items, prompt="Select: "):
 import ccm_canaries  # noqa: E402, F401
 import ccm_commands  # noqa: E402, F401
 import ccm_detection  # noqa: E402, F401
+import ccm_json  # noqa: E402, F401
 import ccm_jsonl  # noqa: E402, F401
 import ccm_notify  # noqa: E402, F401
+import ccm_pane_state  # noqa: E402, F401
 import ccm_render  # noqa: E402, F401
 import ccm_rules  # noqa: E402, F401
 import ccm_runtime  # noqa: E402, F401
@@ -1131,7 +1810,8 @@ def _debug_handler(args):
         print(f"Unknown debug subcommand: {args.subcommand!r}", file=sys.stderr)
         print("Available: trace", file=sys.stderr)
         sys.exit(2)
-    ccm_commands.cmd_debug_trace(args.target, interval=args.interval)
+    ccm_commands.cmd_debug_trace(args.target, interval=args.interval,
+                                 max_time=args.max_time)
 
 
 def _add_debug_args(p):
@@ -1143,6 +1823,22 @@ def _add_debug_args(p):
                         "session ccm does not manage")
     p.add_argument("interval", nargs="?", type=float, default=0.3,
                    help="Polling interval in seconds (default: 0.3)")
+    p.add_argument("--max-time", type=_non_negative_int,
+                   default=ccm_commands.TRACE_MAX_TIME_DEFAULT,
+                   help="Stop after this many seconds; 0 for no limit "
+                        "(default: 43200, 12 hours). The trace also stops "
+                        "when the traced window closes")
+
+
+def _non_negative_int(text):
+    import argparse
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}")
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return value
 
 
 def _add_name_arg(p, *, optional=True):
@@ -1224,8 +1920,8 @@ def _passthrough_argparse_config(p):
 # Use `_passthrough_argparse_config` as the configurer to opt a
 # subcommand into raw-argv passthrough (handler parses its own flags).
 _SUBCOMMANDS = (
-    ("status", lambda p: None,
-     lambda a: ccm_render.print_status()),
+    ("status", _passthrough_argparse_config,
+     lambda a: ccm_json.cmd_status(a.rest)),
     ("ports", lambda p: None,
      lambda a: ccm_render.print_ports()),
     ("tree", lambda p: None,
@@ -1250,6 +1946,8 @@ _SUBCOMMANDS = (
     ("capture",
      _passthrough_argparse_config,
      lambda a: ccm_commands.cmd_capture(a.rest)),
+    ("exit", _passthrough_argparse_config,
+     lambda a: ccm_commands.cmd_exit(a.rest)),
     ("stop",
      _passthrough_argparse_config,
      _handle_stop),
@@ -1262,6 +1960,12 @@ _SUBCOMMANDS = (
     ("spool",
      _passthrough_argparse_config,
      lambda a: ccm_spool.cmd_spool(a.rest)),
+    ("roles", _passthrough_argparse_config,
+     lambda a: __import__("ccm_roles").cmd_roles(a.rest)),
+    ("prepare-logout", _passthrough_argparse_config,
+     lambda a: ccm_snapshot.cmd_prepare_logout(a.rest)),
+    ("finish-restore", _passthrough_argparse_config,
+     lambda a: ccm_snapshot.cmd_finish_restore(a.rest)),
     ("snapshot-save", _add_name_arg,
      lambda a: ccm_snapshot.cmd_snapshot_save(a.name)),
     ("snapshot-load", _add_name_arg,
@@ -1281,8 +1985,8 @@ _SUBCOMMANDS = (
     ("errors",
      _passthrough_argparse_config,
      lambda a: ccm_commands.cmd_errors(a.rest)),
-    ("doctor", lambda p: None,
-     lambda a: ccm_commands.cmd_doctor()),
+    ("doctor", lambda p: p.add_argument("--verbose", action="store_true"),
+     lambda a: ccm_commands.cmd_doctor(verbose=a.verbose)),
     ("setup-sidekick-hooks", _add_name_arg,
      lambda a: ccm_commands.cmd_setup_sidekick_hooks(a.name)),
     ("remove-sidekick-hooks", _add_name_arg,

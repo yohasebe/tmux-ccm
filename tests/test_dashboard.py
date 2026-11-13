@@ -7,21 +7,23 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import dashboard  # noqa: E402 — verify module imports cleanly
+import dashboard_actions  # noqa: E402
+import dashboard_refresh  # noqa: E402
 from dashboard import Dashboard
 
 
 # ─── Module imports ───
 
 class TestDashboardImports:
-    """Smoke test: dashboard.py must import all the canary helpers
-    it surfaces in the footer. Catches typos in the `from ccm_core
-    import ...` block."""
+    """Smoke test: the dashboard must import all the canary helpers
+    it surfaces in the footer. Catches typos in the import blocks."""
 
     def test_canary_helpers_imported(self):
-        assert hasattr(dashboard, "hooks_log_warning")
-        assert hasattr(dashboard, "disable_all_hooks_warning")
-        assert hasattr(dashboard, "managed_hooks_only_warning")
-        assert hasattr(dashboard, "shell_cluster_warnings")
+        import dashboard_render
+        assert hasattr(dashboard_render, "hooks_log_warning")
+        assert hasattr(dashboard_render, "disable_all_hooks_warning")
+        assert hasattr(dashboard_render, "managed_hooks_only_warning")
+        assert hasattr(dashboard_render, "shell_cluster_warnings")
         assert hasattr(dashboard, "hooks_configured")
 
 
@@ -33,34 +35,78 @@ class TestDashboardImports:
 # render() executes to completion without raising on a few realistic
 # project-list shapes. Catches the class of bug where a code edit
 # references a local variable before it is bound (UnboundLocalError),
-# which the old test suite never exercised because dashboard.py was
-# untested at the function-body level.
+# which only running the function bodies can catch.
+
+def _dashboard_modules():
+    """dashboard and the modules its Dashboard is assembled from."""
+    import glob, importlib, os
+    lib = os.path.dirname(dashboard.__file__)
+    names = ["dashboard"] + sorted(
+        os.path.basename(p)[:-3]
+        for p in glob.glob(os.path.join(lib, "dashboard_*.py")))
+    return [importlib.import_module(n) for n in names]
+
+
+def _patch_dashboard(monkeypatch, name, value):
+    """Patch `name` in every dashboard module that binds it: a method
+    moved to a mixin looks its names up in its own module."""
+    modules = [m for m in _dashboard_modules() if hasattr(m, name)]
+    assert modules, f"no dashboard module binds {name}"
+    for module in modules:
+        monkeypatch.setattr(module, name, value)
+
 
 def _stub_dashboard_environment(monkeypatch):
     """Mute every external call dashboard.render() reaches into so
     Dashboard() can be constructed and render() can run in a pytest
     process without curses, without tmux, and without filesystem
     side effects."""
+    monkeypatch.setattr(Dashboard, '_lifecycle_banner', lambda *a: '')
     import curses as _curses
 
-    monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
-    monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
-    monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
-    monkeypatch.setattr("dashboard.disable_all_hooks_warning", lambda *a, **kw: "")
-    monkeypatch.setattr("dashboard.managed_hooks_only_warning", lambda *a, **kw: "")
-    monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
-    monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
-    monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
-    monkeypatch.setattr("dashboard.get_session", lambda: "0")
-    monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-    monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
-    monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
-    monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
+    _patch_dashboard(monkeypatch, "tmux_cmd", lambda *a, **k: "")
+    _patch_dashboard(monkeypatch, "hooks_configured", lambda: True)
+    _patch_dashboard(monkeypatch, "hooks_log_warning", lambda: "")
+    _patch_dashboard(monkeypatch, "disable_all_hooks_warning", lambda *a, **kw: "")
+    _patch_dashboard(monkeypatch, "managed_hooks_only_warning", lambda *a, **kw: "")
+    _patch_dashboard(monkeypatch, "shell_cluster_warnings", lambda p: [])
+    _patch_dashboard(monkeypatch, "hook_silence_warnings", lambda p: [])
+    monkeypatch.setattr("ccm_agentview.continue_blocker_warnings",
+                        lambda p, bg_sessions=None: [])
+    _patch_dashboard(monkeypatch, "errors_log_burst_warning", lambda: "")
+    _patch_dashboard(monkeypatch, "get_session", lambda: "0")
+    _patch_dashboard(monkeypatch, "touch_popup_session", lambda: None)
+    _patch_dashboard(monkeypatch, "format_elapsed", lambda ts: "")
+    _patch_dashboard(monkeypatch, "format_dir", lambda d, col, w: d)
     # signal_age_suffix (via ccm_render) reads the per-project hook
     # signal, which resolves @ccm_session_id through live tmux.
     import ccm_signals
     monkeypatch.setattr(ccm_signals, "read_hook_signal", lambda d, session_id=None: None)
     monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
+
+
+def _screen_text(stdscr):
+    """The drawn text, one line per screen row. Pieces drawn separately
+    on a row (a label and its colored value) join at their columns, so
+    assertions read rows as a person sees them. It accumulates every
+    call: erase() and overdrawn cells are not modelled, so text drawn in
+    an earlier frame still appears. Use it for one frame's content."""
+    from ccm_render import display_width
+    rows = {}
+    for call in stdscr.addstr.call_args_list:
+        y, x, text = call.args[:3]
+        rows.setdefault(y, []).append((x, str(text)))
+    lines = []
+    for y in sorted(rows):
+        line, col = "", 0
+        for x, text in sorted(rows[y], key=lambda item: item[0]):
+            if x > col:
+                line += " " * (x - col)
+                col = x
+            line += text
+            col += display_width(text)
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _make_mock_stdscr(width=200, height=40):
@@ -88,8 +134,7 @@ class TestRenderSmoke:
         the clobbered cells are still correct and never repaints
         them — the garbage sticks. redrawwin() marks the window
         corrupted so the following refresh re-emits every cell,
-        self-healing within one render tick (observed live
-, dashboard over a streaming CJK response)."""
+        self-healing within one render tick."""
         _stub_dashboard_environment(monkeypatch)
         for mode in ("dashboard", "tree", "menu"):
             d = Dashboard(initial_mode=mode)
@@ -130,7 +175,7 @@ class TestRenderSmoke:
 
         calls = {"format_elapsed": []}
         monkeypatch.setattr(
-            "dashboard.format_elapsed",
+            "dashboard_render.format_elapsed",
             lambda ts: (calls["format_elapsed"].append(ts), "5s")[1],
         )
 
@@ -159,11 +204,8 @@ class TestRenderSmoke:
 
     def test_elapsed_marker_does_not_perturb_path_column(self, monkeypatch):
         """Whether or not a project has the `* elapsed` marker, every
-        path must render at the same X column. Before this change,
-        elapsed lived inside the inline annotation cluster between
-        name and path, which pushed COL_DIR right (and every project
-        row's path with it) whenever the marker was shown. With
-        elapsed relocated to a right-anchored slot, the path column
+        path must render at the same X column. With elapsed in a
+        right-anchored slot, the path column
         stays put across refresh ticks.
 
         We render the SAME project list twice — once with no recent
@@ -183,12 +225,12 @@ class TestRenderSmoke:
         def recording_format_dir(directory, prefix_len, cols):
             active_log.append((prefix_len, directory))
             return directory  # identity is fine for the assertion
-        monkeypatch.setattr("dashboard.format_dir", recording_format_dir)
+        monkeypatch.setattr("dashboard_render.format_dir", recording_format_dir)
 
         # format_elapsed must return a non-empty 3-char string for
         # the "with elapsed" render so the right-anchored slot is
         # actually exercised.
-        monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "10s" if ts else "")
+        monkeypatch.setattr("dashboard_render.format_elapsed", lambda ts: "10s" if ts else "")
 
         import ccm_core
         now = __import__("time").time()
@@ -218,6 +260,347 @@ class TestRenderSmoke:
             f"path column X drifted when elapsed appeared: "
             f"no_elapsed={x_no_elapsed}, with_elapsed={x_with_elapsed}"
         )
+
+    def _drawn_strings(self, stdscr):
+        return [str(c.args[2]) for c in stdscr.addstr.call_args_list if len(c.args) >= 3]
+
+    def test_header_notices_come_from_the_refresh_pass(self, monkeypatch):
+        """With the refresh thread's header gathered, a frame asks
+        neither tmux nor the canaries: moving the selection only
+        redraws."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        calls = []
+        _patch_dashboard(monkeypatch, "get_session", lambda: calls.append("session") or "live")
+        _patch_dashboard(monkeypatch, "shell_cluster_warnings",
+                         lambda p: calls.append("cluster") or [])
+        _patch_dashboard(monkeypatch, "hooks_log_warning", lambda: calls.append("log") or "")
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.initial_load = False
+        d.projects = [ccm_core.Project("0:1", "1", "p1", "/w/p1", "IDLE")]
+        d._header_cache = ("work", ["cached notice"])
+        stdscr = _make_mock_stdscr()
+        d.render(stdscr)
+        drawn = self._drawn_strings(stdscr)
+        assert calls == []
+        assert "work — 1 project(s)" in drawn
+        assert "⚠ cached notice" in drawn
+
+    def test_header_notices_are_gathered_before_the_first_pass(self, monkeypatch):
+        _stub_dashboard_environment(monkeypatch)
+        _patch_dashboard(monkeypatch, "shell_cluster_warnings", lambda p: ["cluster"])
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        stdscr = _make_mock_stdscr()
+        d.render(stdscr)
+        assert "⚠ cluster" in self._drawn_strings(stdscr)
+
+    def test_bg_section_is_drawn_when_projects_outnumber_the_rows(self, monkeypatch):
+        """More projects than the popup has rows: the project list
+        must give up rows to the background block instead of taking
+        them all and leaving `b` with nothing to show."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_agentview
+
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = [ccm_core.Project(f"0:{i}", str(i), f"p{i:02d}", f"/w/p{i}", "IDLE")
+                      for i in range(40)]
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/w/proj",
+                name="agent demo", state="NEEDS", raw_state="needs_input",
+                tempo="active", cli_version="2.1.139",
+                session_id="00000000-0000-0000-0000-000000000000",
+                created_at=1.0, updated_at=2.0, source="slash",
+            )
+        ]
+        stdscr = _make_mock_stdscr(height=20)
+        d.render(stdscr)
+        drawn = self._drawn_strings(stdscr)
+        assert any(t.startswith("Background sessions (1)") for t in drawn)
+        assert any(t == "abcd1234" for t in drawn)
+        assert any(t == "p00" for t in drawn), "project rows still render above the block"
+
+    def test_selected_project_stays_visible_below_warning_banners(self, monkeypatch):
+        """Warning banners above the list take rows the scroll window
+        must account for; with banners, a background block, and a
+        short popup, the selected project must still be drawn."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_agentview
+        monkeypatch.setattr("dashboard_render.hooks_log_warning", lambda: "hooks.log is large")
+        monkeypatch.setattr("dashboard_render.disable_all_hooks_warning", lambda: "hooks disabled")
+        monkeypatch.setattr("dashboard_render.managed_hooks_only_warning", lambda: "managed only")
+
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = [ccm_core.Project(f"0:{i}", str(i), f"p{i:02d}", f"/w/p{i}", "IDLE")
+                      for i in range(40)]
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/w/proj",
+                name="agent demo", state="NEEDS", raw_state="needs_input",
+                tempo="active", cli_version="2.1.139",
+                session_id="00000000-0000-0000-0000-000000000000",
+                created_at=1.0, updated_at=2.0, source="slash",
+            )
+        ]
+        for selected in (0, 12, 39):
+            d.selected = selected
+            stdscr = _make_mock_stdscr(height=20)
+            d.render(stdscr)
+            drawn = self._drawn_strings(stdscr)
+            assert any(t == f"p{selected:02d}" for t in drawn), selected
+            assert any(t.startswith("Background sessions (1)") for t in drawn), selected
+
+    def test_bg_row_shows_a_long_ask_cut_by_width(self, monkeypatch):
+        """A blocked row shows its ask in the directory slot; a wide
+        (CJK) ask is cut by display width, so the ellipsis survives
+        the drawing and nothing overruns the row."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = []
+        d.bg_visible = True
+        d.bg_sessions = [ccm_agentview.BgSession(
+            short="abcd1234", pid=100, cwd="/w/proj", name="job", state="NEEDS",
+            raw_state="blocked", tempo="blocked", cli_version="2.1.270",
+            session_id="00000000-0000-0000-0000-000000000000",
+            created_at=1.0, updated_at=2.0, source="slash",
+            needs="確認してください " * 20)]
+        stdscr = _make_mock_stdscr(width=80, height=20)
+        d.render(stdscr)
+        drawn = self._drawn_strings(stdscr)
+        ask = next(t for t in drawn if t.startswith("確認"))
+        assert ask.endswith("…")
+        from ccm_render import display_width
+        assert display_width(ask) < 80
+        assert not any(t.startswith("/w/proj") or t.startswith("~/") for t in drawn)
+
+    def test_bg_section_reservation_leaves_project_rows(self):
+        """The block asks for spacer + header + one row per session
+        out of the rows available, but never more than leaves the
+        minimum project rows."""
+        d = Dashboard.__new__(Dashboard)
+        assert d._bg_section_rows([], 15) == 3
+        assert d._bg_section_rows([object()] * 4, 15) == 6
+        assert d._bg_section_rows([object()] * 40, 15) == 15 - Dashboard._BG_MIN_PROJECT_ROWS
+        # Room for one or two rows shows nothing, so nothing is taken.
+        assert d._bg_section_rows([], 6) == 3
+        assert d._bg_section_rows([], 5) == 0
+        assert d._bg_section_rows([object()] * 40, 4) == 0
+        assert d._bg_section_rows([object()] * 40, 3) == 0
+        assert d._bg_section_rows([object()] * 40, 0) == 0
+
+    NOW = 1_000_000
+
+    def _bg_board(self, monkeypatch, tasks_by_dir, position="right",
+                  width=120, height=30):
+        """Render four IDLE rows: `/w/a` and `/w/b` with `(bg)` and the
+        tasks `tasks_by_dir` gives them, `/w/c` with `(bg)` and no task
+        list, `/w/d` without background work. Returns the drawn calls
+        as (y, x, text)."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_signals
+        import dashboard_render
+        monkeypatch.setattr(dashboard_render.time, "time", lambda: self.NOW)
+        monkeypatch.setattr(
+            ccm_signals, "read_stop_background_tasks",
+            lambda d, session_id=None: list(tasks_by_dir.get(d, [])))
+        monkeypatch.setattr(Dashboard, "_resolve_preview_pane", lambda self, w: w)
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = True
+        d.preview_position = position
+        d.projects = [
+            ccm_core.Project(f"0:{n}", str(i), n, f"/w/{n}", "IDLE",
+                             bg_active=n != "d")
+            for i, n in enumerate("abcd")]
+        stdscr = _make_mock_stdscr(width=width, height=height)
+        d.render(stdscr)
+        return [tuple(c.args[:3]) for c in stdscr.addstr.call_args_list]
+
+    def _task(self, kind, label, age):
+        return {"kind": kind, "label": label, "since": self.NOW - age}
+
+    def test_a_bg_row_shows_how_long_its_oldest_task_has_run(self, monkeypatch):
+        drawn = self._bg_board(monkeypatch, {
+            "/w/a": [self._task("shell", "x", 600), self._task("cron", "y", 9 * 3600 + 5)],
+            "/w/b": [self._task("subagent", "z", 30)]})
+        row_of = {}
+        for y, _, t in drawn:
+            if t in ("a", "b", "c", "d"):
+                row_of.setdefault(t, y)
+        assert sorted(row_of.values()) == list(range(row_of["a"], row_of["a"] + 4))
+        notes = {}
+        for y, _, t in drawn:
+            if str(t).startswith("(bg"):
+                notes.setdefault(y, []).append(t)
+        assert notes == {row_of["a"]: ["(bg 9h)"], row_of["b"]: ["(bg)"],
+                         row_of["c"]: ["(bg)"]}
+
+    @pytest.mark.parametrize("position", ["right", "bottom"])
+    def test_the_preview_names_the_selected_rows_tasks(self, monkeypatch, position):
+        drawn = self._bg_board(monkeypatch, {"/w/a": [
+            self._task("shell", "until done; do sleep 120; done", 9 * 3600),
+            self._task("subagent", "Review the diff", 20)]}, position=position)
+        heads = [(y, x, t) for y, x, t in drawn if str(t).startswith("bg: ")]
+        assert [t for _, _, t in heads] == ["bg: shell 9h", "bg: subagent <1m"]
+        (y0, x0, _), (y1, x1, _) = heads
+        assert (y1, x1) == (y0 + 1, x0)
+        assert (y0, x0 + len("bg: shell 9h") + 2,
+                "until done; do sleep 120; done") in drawn
+        assert (y1, x0 + len("bg: subagent <1m") + 2, "Review the diff") in drawn
+        if position == "right":
+            assert (y0, x0) == (0, 120 - 60 - 1 + 2)
+        else:
+            assert drawn.index((y0 - 1, 0, "─" * 119)) < drawn.index(heads[0])
+
+    def test_more_tasks_than_lines_end_in_a_count(self, monkeypatch):
+        drawn = self._bg_board(monkeypatch, {"/w/a": [
+            self._task("shell", f"job {i}", 600) for i in range(5)]})
+        heads = [t for _, _, t in drawn if str(t).startswith("bg: ")]
+        assert heads == ["bg: shell 10m", "bg: shell 10m", "bg: +3 more"]
+
+    def test_a_row_without_a_task_list_adds_no_preview_lines(self, monkeypatch):
+        drawn = self._bg_board(monkeypatch, {"/w/b": [self._task("shell", "x", 600)]})
+        assert not [t for _, _, t in drawn if str(t).startswith("bg: ")]
+
+    def _full_list(self, monkeypatch, width, height, bg=False):
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_agentview
+        import ccm_core
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = [ccm_core.Project(f"0:{i}", str(i), f"p{i:02d}", f"/w/p{i}", "IDLE")
+                      for i in range(50)]
+        d.bg_visible = bg
+        d.bg_sessions = [ccm_agentview.BgSession(
+            short="abcd1234", pid=100, cwd="/w/proj", name="job", state="IDLE",
+            raw_state="idle", tempo="idle", cli_version="2.1.270",
+            session_id="00000000-0000-0000-0000-000000000000",
+            created_at=1.0, updated_at=2.0, source="slash")] if bg else []
+        stdscr = _make_mock_stdscr(width=width, height=height)
+        d.render(stdscr)
+        rows = {}
+        for call in stdscr.addstr.call_args_list:
+            y, x, text = call.args[:3]
+            rows.setdefault(y, []).append((x, str(text)))
+        return {y: "".join(t for _, t in sorted(parts)) for y, parts in rows.items()}
+
+    @pytest.mark.parametrize("bg", [False, True])
+    def test_a_full_list_leaves_the_help_lines_their_rows(self, monkeypatch, bg):
+        """More projects than rows: the list stops above a blank row,
+        the help lines and the footer."""
+        rows = self._full_list(monkeypatch, 120, 30, bg=bg)
+        help_rows = [y for y, line in rows.items() if "[Enter] attach" in line]
+        tail_rows = [y for y, line in rows.items() if "[?/m] actions & settings" in line]
+        assert help_rows
+        assert tail_rows == [28]
+        assert min(help_rows) - 1 not in rows
+        assert "Hooks:" in rows[29]
+        assert "p00" in "".join(rows.values())
+
+    def test_a_short_popup_keeps_the_line_naming_the_menu(
+            self, monkeypatch):
+        """The help gives way from the top so the list keeps its
+        minimum rows; the line naming `?` is the one that stays."""
+        rows = self._full_list(monkeypatch, 60, 10)
+        assert rows[8] == "[?/m] actions & settings  [q] quit"
+        assert not any("[w]atch sidekicks" in line for line in rows.values())
+        shown = [line for line in rows.values() if "/w/p" in line]
+        assert len(shown) == Dashboard._HELP_MIN_BODY_ROWS
+
+    def test_help_lines_give_way_from_the_top(self):
+        items = ["[a] aaaa", "[b] bbbb", "[c] cccc", "[d] dddd"]
+        tail = "[?/m] actions & settings"
+        assert Dashboard._help_lines(items, 200, 5) == [
+            f"[a] aaaa  [b] bbbb  [c] cccc  [d] dddd  {tail}  [q] quit"]
+        assert Dashboard._help_lines(items, 40, 1) == [f"{tail}  [q] quit"]
+        assert Dashboard._help_lines(items, 30, 4) == [
+            "[a] aaaa  [b] bbbb  [c] cccc", "[d] dddd", tail, "[q] quit"]
+        assert Dashboard._help_lines(items, 30, 3) == [
+            "[a] aaaa  [b] bbbb  [c] cccc", tail, "[q] quit"]
+        for room in (1, 0, -4):
+            assert Dashboard._help_lines(items, 30, room) == [tail]
+
+    def test_many_banners_keep_the_selected_project_and_the_block(self, monkeypatch):
+        """Banners take rows out of the same budget as the list and
+        the block. With enough of them that a height-only reservation
+        would overrun, the selected project is still drawn and the
+        block still appears while the minimum project rows fit."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_agentview
+        monkeypatch.setattr("dashboard_render.hooks_log_warning", lambda: "hooks.log is large")
+        monkeypatch.setattr("dashboard_render.disable_all_hooks_warning", lambda: "hooks disabled")
+        monkeypatch.setattr("dashboard_render.managed_hooks_only_warning", lambda: "managed only")
+        monkeypatch.setattr("dashboard_render.shell_cluster_warnings",
+                            lambda p: [f"cluster {i}" for i in range(4)])
+
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = [ccm_core.Project(f"0:{i}", str(i), f"p{i:02d}", f"/w/p{i}", "IDLE")
+                      for i in range(40)]
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/w/proj",
+                name="agent demo", state="NEEDS", raw_state="needs_input",
+                tempo="active", cli_version="2.1.139",
+                session_id="00000000-0000-0000-0000-000000000000",
+                created_at=1.0, updated_at=2.0, source="slash",
+            )
+        ]
+        # 7 banners + header on a 20-row popup leave 8 rows for list
+        # and block: 3 project rows minimum, then the block's 3.
+        for selected in (0, 12, 39):
+            d.selected = selected
+            stdscr = _make_mock_stdscr(height=20)
+            d.render(stdscr)
+            drawn = self._drawn_strings(stdscr)
+            assert any(t == f"p{selected:02d}" for t in drawn), selected
+            assert any(t.startswith("Background sessions (1)") for t in drawn), selected
+
+    def test_a_popup_too_short_for_the_block_keeps_the_project_rows(self, monkeypatch):
+        """When banners leave fewer rows than the minimum project rows
+        plus the block, the block yields entirely and the selected
+        project is still drawn; nothing is scrolled off into a
+        non-existent row."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_agentview
+        monkeypatch.setattr("dashboard_render.shell_cluster_warnings",
+                            lambda p: [f"cluster {i}" for i in range(13)])
+
+        d = Dashboard(initial_mode="dashboard")
+        d.preview_enabled = False
+        d.projects = [ccm_core.Project(f"0:{i}", str(i), f"p{i:02d}", f"/w/p{i}", "IDLE")
+                      for i in range(40)]
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/w/proj",
+                name="agent demo", state="NEEDS", raw_state="needs_input",
+                tempo="active", cli_version="2.1.139",
+                session_id="00000000-0000-0000-0000-000000000000",
+                created_at=1.0, updated_at=2.0, source="slash",
+            )
+        ]
+        # 13 banners + header on a 20-row popup leave 2 rows: fewer
+        # than the minimum project rows, so the block gets none.
+        d.selected = 25
+        stdscr = _make_mock_stdscr(height=20)
+        d.render(stdscr)  # must not raise
+        drawn = self._drawn_strings(stdscr)
+        assert any(t == "p25" for t in drawn)
+        assert not any(t.startswith("Background sessions") for t in drawn)
 
     def test_render_with_bg_section_visible(self, monkeypatch):
         """`b` key reveals the background-sessions block below the
@@ -256,6 +639,150 @@ class TestRenderSmoke:
         monkeypatch.setattr("ccm_agentview.daemon_running", lambda: False)
         d.render(_make_mock_stdscr())  # must not raise
 
+    def _bg_dashboard(self, monkeypatch, captured, listing, panes_by_target=None,
+                      ps="100 1 100 zsh 00:05\n", queries=None):
+        """A dashboard with one bg row selected, tmux stubbed. `listing`
+        is what `list-windows` answers (None = failure) — but only to a
+        query whose format reads the real user option, so a format that
+        drops the `@` gets an empty listing, as tmux would give.
+        `panes_by_target` maps a window target to the PaneInfo list the
+        liveness check sees there (missing = listing failure)."""
+        _stub_dashboard_environment(monkeypatch)
+        from ccm_pane_state import PaneInfo
+
+        def fake_tmux(*args, **kwargs):
+            captured.append(args)
+            if args and args[0] == "new-window":
+                return "0:9"
+            return ""
+
+        def fake_query(*args):
+            if queries is not None:
+                queries.append(args)
+            if args[0] == "list-windows" and "#{@ccm_bg_short}" not in args[-1]:
+                return ""
+            return listing
+        _patch_dashboard(monkeypatch, "tmux_cmd", fake_tmux)
+        _patch_dashboard(monkeypatch, "tmux_query", fake_query)
+        _patch_dashboard(monkeypatch, "get_session", lambda: "0")
+        _patch_dashboard(monkeypatch, "ps_snapshot", lambda: ps)
+        _patch_dashboard(
+            monkeypatch, "enumerate_window_panes",
+            lambda target, ps_lines: (panes_by_target or {}).get(target, []))
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+
+        import ccm_agentview
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = []
+        d.bg_visible = True
+        d.bg_sessions = [
+            ccm_agentview.BgSession(
+                short="abcd1234", pid=100, cwd="/w/proj",
+                name="my agent", state="WORKING", raw_state="working",
+                tempo="active", cli_version="2.1.139",
+                session_id="x", created_at=1.0, updated_at=2.0,
+                source="slash",
+            ),
+        ]
+        d.selected = 0
+        return d, PaneInfo
+
+    @staticmethod
+    def _live(PaneInfo):
+        return [PaneInfo("%7", "300", True, "claude", False, 301)]
+
+    @staticmethod
+    def _shell(PaneInfo):
+        return [PaneInfo("%7", "300", True, "zsh", False, None)]
+
+    def test_bg_attach_tags_the_window_it_opens(self, monkeypatch):
+        """The new window carries the session's short as a window
+        option, so a later Enter on the same row can find it by tag
+        rather than by its (renameable) name."""
+        captured = []
+        d, _ = self._bg_dashboard(monkeypatch, captured, listing="")
+        assert d._handle_key(13, _make_mock_stdscr()) == "attached"
+        assert ("set-option", "-wt", "0:9", dashboard_actions.BG_ATTACH_TAG, "abcd1234") in captured
+
+    def test_bg_attach_switches_to_the_existing_window(self, monkeypatch):
+        """Enter on a row whose attach window is open and still hosts
+        claude switches to that window; no second `claude attach` is
+        typed, since every extra client draws the same conversation.
+        The listing is asked for the user option by its full name."""
+        from ccm_pane_state import PaneInfo
+        captured, queries = [], []
+        d, _ = self._bg_dashboard(
+            monkeypatch, captured, queries=queries,
+            listing="0:3\tabcd1234\n0:4\t",
+            panes_by_target={"0:3": self._live(PaneInfo)})
+        assert d._handle_key(13, _make_mock_stdscr()) == "attached"
+        names = [c[0] for c in captured if c]
+        assert "new-window" not in names and "send-keys" not in names
+        assert ("select-window", "-t", "0:3") in captured
+        assert any(q[0] == "list-windows" and "#{@ccm_bg_short}" in q[-1] for q in queries)
+
+    def test_bg_attach_opens_anew_when_the_tagged_window_lost_claude(self, monkeypatch):
+        """A tagged window whose attach has ended is a plain shell; a
+        fresh attach goes into a new window rather than into it."""
+        from ccm_pane_state import PaneInfo
+        captured = []
+        d, _ = self._bg_dashboard(
+            monkeypatch, captured, listing="0:3\tabcd1234",
+            panes_by_target={"0:3": self._shell(PaneInfo)})
+        assert d._handle_key(13, _make_mock_stdscr()) == "attached"
+        assert "new-window" in [c[0] for c in captured if c]
+
+    def test_bg_attach_reuses_the_live_window_beside_a_finished_one(self, monkeypatch):
+        """A finished attach leaves its tagged shell window behind; it
+        must not make the one live attach window ambiguous — liveness
+        is settled before counting, so the live one is switched to."""
+        from ccm_pane_state import PaneInfo
+        captured = []
+        d, _ = self._bg_dashboard(
+            monkeypatch, captured, listing="0:3\tabcd1234\n0:5\tabcd1234",
+            panes_by_target={"0:3": self._shell(PaneInfo), "0:5": self._live(PaneInfo)})
+        assert d._handle_key(13, _make_mock_stdscr()) == "attached"
+        names = [c[0] for c in captured if c]
+        assert "new-window" not in names
+        assert ("select-window", "-t", "0:5") in captured
+
+    def test_bg_attach_names_the_windows_when_two_are_live(self, monkeypatch):
+        """Two live attach windows already draw the conversation; a
+        third is not opened, and the message names the two."""
+        from ccm_pane_state import PaneInfo
+        captured = []
+        d, _ = self._bg_dashboard(
+            monkeypatch, captured, listing="0:3\tabcd1234\n0:5\tabcd1234",
+            panes_by_target={"0:3": self._live(PaneInfo), "0:5": self._live(PaneInfo)})
+        shown = []
+        monkeypatch.setattr(d, "_show_message", lambda st, msg, *a: shown.append(msg))
+        assert d._handle_key(13, _make_mock_stdscr()) == ""
+        names = [c[0] for c in captured if c]
+        assert "new-window" not in names and "send-keys" not in names
+        assert shown and "0:3" in shown[-1] and "0:5" in shown[-1]
+
+    @pytest.mark.parametrize("case", ["listing", "ps", "panes"])
+    def test_bg_attach_opens_nothing_when_it_cannot_tell(self, monkeypatch, case):
+        """When the listing, the process snapshot, or a tagged window's
+        panes cannot be read, whether an attach window is open is
+        unknown; no window is opened and the person is told."""
+        from ccm_pane_state import PaneInfo
+        captured = []
+        kw = dict(listing="0:3\tabcd1234", panes_by_target={"0:3": self._live(PaneInfo)})
+        if case == "listing":
+            kw["listing"] = None
+        elif case == "ps":
+            kw["ps"] = ""
+        else:
+            kw["panes_by_target"] = {}
+        d, _ = self._bg_dashboard(monkeypatch, captured, **kw)
+        shown = []
+        monkeypatch.setattr(d, "_show_message", lambda st, msg, *a: shown.append(msg))
+        assert d._handle_key(13, _make_mock_stdscr()) == ""
+        names = [c[0] for c in captured if c]
+        assert "new-window" not in names and "send-keys" not in names
+        assert shown and "not opening another" in shown[-1]
+
     def test_bg_row_enter_opens_new_window_and_attaches(self, monkeypatch):
         """Enter on a bg row must create a non-ccm tmux window and
         dispatch `claude attach <short>` to it. We capture every
@@ -264,7 +791,7 @@ class TestRenderSmoke:
 
         The new-window invocation must keep `-t <session>:` adjacent
         (any flag inserted between them makes tmux read the flag name
-        as the target — a regression we hit once already)."""
+        as the target)."""
         _stub_dashboard_environment(monkeypatch)
 
         captured = []
@@ -274,8 +801,9 @@ class TestRenderSmoke:
                 return "0:5"
             return ""
 
-        monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        _patch_dashboard(monkeypatch, "tmux_cmd", fake_tmux)
+        _patch_dashboard(monkeypatch, "tmux_query", lambda *a: "")
+        _patch_dashboard(monkeypatch, "get_session", lambda: "0")
         monkeypatch.setattr("os.path.isdir", lambda p: True)
 
         import ccm_agentview
@@ -304,9 +832,8 @@ class TestRenderSmoke:
         send_keys_call = next(c for c in captured if c and c[0] == "send-keys")
         assert "claude attach abcd1234" in send_keys_call
 
-        # -t must be immediately followed by the session target.
-        # Inserting `-c <cwd>` between them broke new-window silently
-        # (tmux parsed `-c` as the target value and exited non-zero).
+        # -t must be immediately followed by the session target;
+        # anything between them is parsed by tmux as the target value.
         new_window_call = next(c for c in captured if c and c[0] == "new-window")
         t_idx = new_window_call.index("-t")
         assert new_window_call[t_idx + 1] == "0:", (
@@ -327,8 +854,9 @@ class TestRenderSmoke:
             if args and args[0] == "new-window":
                 return "0:5"
             return ""
-        monkeypatch.setattr("dashboard.tmux_cmd", fake_tmux)
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        _patch_dashboard(monkeypatch, "tmux_cmd", fake_tmux)
+        _patch_dashboard(monkeypatch, "tmux_query", lambda *a: "")
+        _patch_dashboard(monkeypatch, "get_session", lambda: "0")
         monkeypatch.setattr("os.path.isdir", lambda p: True)
 
         import ccm_agentview
@@ -361,12 +889,14 @@ class TestRenderSmoke:
         _stub_dashboard_environment(monkeypatch)
 
         captured = []
-        monkeypatch.setattr("dashboard.tmux_cmd",
-                            lambda *a, **k: captured.append(a) or "")
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
+        _patch_dashboard(monkeypatch, "tmux_cmd",
+                         lambda *a, **k: captured.append(a) or "")
+        _patch_dashboard(monkeypatch, "get_session", lambda: "0")
 
         import ccm_agentview
         d = Dashboard(initial_mode="dashboard")
+        # Past the check nothing else would stop the attach.
+        monkeypatch.setattr(d, "_find_bg_attach_windows", lambda *a: ("none", []))
         d.projects = []
         d.bg_visible = True
         d.bg_sessions = [
@@ -474,13 +1004,13 @@ class TestRenderSmoke:
         """
         _stub_dashboard_environment(monkeypatch)
         # Re-stub three of the canaries to return non-empty messages
-        monkeypatch.setattr("dashboard.hooks_log_warning",
+        monkeypatch.setattr("dashboard_render.hooks_log_warning",
                             lambda: "hooks.log too big — clear it")
-        monkeypatch.setattr("dashboard.disable_all_hooks_warning",
+        monkeypatch.setattr("dashboard_render.disable_all_hooks_warning",
                             lambda *a, **kw: "disableAllHooks set")
-        monkeypatch.setattr("dashboard.managed_hooks_only_warning",
+        monkeypatch.setattr("dashboard_render.managed_hooks_only_warning",
                             lambda *a, **kw: "managed hooks only")
-        monkeypatch.setattr("dashboard.shell_cluster_warnings",
+        monkeypatch.setattr("dashboard_render.shell_cluster_warnings",
                             lambda p: ["alpha: silent exit cluster"])
 
         import ccm_core
@@ -584,7 +1114,7 @@ class TestFastTick:
             ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
             ccm_core.Project("0:2", "2", "beta", "/tmp/b", "BUSY"),
         ]
-        monkeypatch.setattr("dashboard.tmux_cmd",
+        monkeypatch.setattr("dashboard_refresh.tmux_cmd",
                             lambda *a, **k: listing[0])
         return d
 
@@ -638,8 +1168,11 @@ class TestFastTick:
 
         def _boom(*a, **k):
             raise RuntimeError("tmux gone")
-        monkeypatch.setattr("dashboard.tmux_cmd", _boom)
+        logged = []
+        monkeypatch.setattr("dashboard_refresh.tmux_cmd", _boom)
+        monkeypatch.setattr("dashboard_refresh.log_caught_exception", logged.append)
         d._fast_tick()  # must not raise
+        assert logged == ["dashboard._fast_tick"]
         assert d.projects[0].state == "IDLE"
 
 
@@ -740,8 +1273,8 @@ class TestResolvePreviewPane:
     def _dash(self, monkeypatch, panes):
         _stub_dashboard_environment(monkeypatch)
         d = Dashboard(initial_mode="dashboard")
-        monkeypatch.setattr("dashboard.ps_snapshot", lambda: "")
-        monkeypatch.setattr("dashboard.enumerate_window_panes",
+        monkeypatch.setattr("dashboard_render.ps_snapshot", lambda: "")
+        monkeypatch.setattr("dashboard_render.enumerate_window_panes",
                             lambda win, ps: panes)
         return d
 
@@ -778,6 +1311,34 @@ class TestResolvePreviewPane:
     def test_no_panes_falls_back_to_window(self, monkeypatch):
         d = self._dash(monkeypatch, [])
         assert d._resolve_preview_pane("0:5") == "0:5"
+
+    def test_pane_from_the_refresh_pass_is_used(self, monkeypatch):
+        d = self._dash(monkeypatch, [])
+        looked = []
+        monkeypatch.setattr("dashboard_render.enumerate_window_panes",
+                            lambda win, ps: looked.append(win) or [])
+        d._preview_pane_cache = {"0:5": "%9"}
+        assert d._resolve_preview_pane("0:5") == "%9"
+        assert looked == []
+
+    def test_window_the_pass_missed_is_looked_up_once(self, monkeypatch):
+        d = self._dash(monkeypatch, [])
+        looked = []
+        monkeypatch.setattr(
+            "dashboard_render.enumerate_window_panes",
+            lambda win, ps: looked.append(win) or [self._pane("%3", "300", claude=True)])
+        d._preview_pane_cache = {}
+        assert d._resolve_preview_pane("0:7") == "%3"
+        assert d._resolve_preview_pane("0:7") == "%3"
+        assert looked == ["0:7"]
+
+    def test_refresh_pass_resolves_every_window(self, monkeypatch):
+        d = self._dash(monkeypatch, [])
+        monkeypatch.setattr("dashboard_render.enumerate_all_window_panes", lambda ps: {
+            "0:1": [self._pane("%0", "100", active=True), self._pane("%1", "200", claude=True)],
+            "0:2": [self._pane("%2", "300", active=True, ignored=True, claude=True)],
+        })
+        assert d._collect_preview_panes() == {"0:1": "%1", "0:2": "0:2"}
 
 
 # ─── Project-key selection guard (bg rows) ───
@@ -874,18 +1435,31 @@ class TestDoExitAllTargetsClaudePane:
         d.projects = [
             ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "IDLE"),
         ]
-        monkeypatch.setattr("dashboard.ps_snapshot", lambda: "")
-        monkeypatch.setattr("dashboard.enumerate_window_panes",
-                            lambda win, ps: panes)
-        monkeypatch.setattr(Dashboard, "_prompt",
-                            lambda self, s, text: answer)
-        monkeypatch.setattr(Dashboard, "_show_message",
-                            lambda self, s, msg, duration=1: None)
-        monkeypatch.setattr(Dashboard, "_trigger_rebuild",
-                            lambda self: None)
+        import ccm_exit
+        import ccm_roles
+        import ccm_pane_state
+        monkeypatch.setattr(ccm_core, "build_project_list", lambda **kw: d.projects)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_pane_state, "enumerate_window_panes", lambda *a: panes)
+        monkeypatch.setattr(ccm_roles, "pending", lambda *a: False)
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
+        monkeypatch.setattr(ccm_exit.time, "sleep", lambda n: None)
+        monkeypatch.setattr(d, "_prompt", lambda *a: answer)
+        monkeypatch.setattr(d, "_spool_text", lambda *a: None)
+        monkeypatch.setattr(d, "_show_message", lambda *a: None)
+        monkeypatch.setattr(d, "_trigger_rebuild", lambda: None)
+        def run(screen, title, function, *args):
+            with ccm_core.raise_on_die():
+                try:
+                    function(*args)
+                except ccm_core.CCMError:
+                    return False
+        monkeypatch.setattr(d, "_run_terminal_command", run)
         captured = []
-        monkeypatch.setattr("dashboard.tmux_cmd",
-                            lambda *a, **k: captured.append(a) or "")
+        def tmux(*args):
+            captured.append(args)
+            return 'zsh' if args[0] == 'display-message' else 'conversation prompt'
+        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux)
         return d, captured
 
     def test_exit_goes_to_claude_pane_not_active_shell(self,
@@ -954,13 +1528,13 @@ class TestDoAttachAutoStart:
         ]
         d.selected = 0
         started = []
-        monkeypatch.setattr("dashboard.auto_start_claude",
+        monkeypatch.setattr("dashboard_actions.auto_start_claude",
                             lambda wt: started.append(wt))
-        monkeypatch.setattr("dashboard.reset_window_after_attach",
+        monkeypatch.setattr("dashboard_actions.reset_window_after_attach",
                             lambda wt: None)
         monkeypatch.setattr("os.path.isdir", lambda p: True)
         captured = []
-        monkeypatch.setattr("dashboard.tmux_cmd",
+        monkeypatch.setattr("dashboard_actions.tmux_cmd",
                             lambda *a, **k: captured.append(a) or "")
 
         action = d._do_attach(_make_mock_stdscr())
@@ -973,6 +1547,46 @@ class TestDoAttachAutoStart:
             c and c[0] == "send-keys" and any("claude" in str(a) for a in c)
             for c in captured
         ), f"launch command bypassed auto_start_claude: {captured}"
+
+
+    def test_unlaunched_attach_is_announced_on_the_message_line(self, monkeypatch):
+        """The popup is gone by the time the user would notice an
+        empty shell, so the outcome that needs their hand — nothing
+        could be launched — is put on the tmux message line."""
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_window
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "SHELL")]
+        d.selected = 0
+        monkeypatch.setattr("dashboard_actions.auto_start_claude",
+                            lambda wt: ccm_window.LaunchResult(ccm_window.UNAVAILABLE))
+        monkeypatch.setattr("dashboard_actions.reset_window_after_attach", lambda wt: None)
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+        captured = []
+        for where in ("dashboard_actions.tmux_cmd", "dashboard_shared.tmux_cmd"):
+            monkeypatch.setattr(where, lambda *a, **k: captured.append(a) or "")
+        d._do_attach(_make_mock_stdscr())
+        msgs = [c for c in captured if c and c[0] == "display-message"]
+        assert len(msgs) == 1 and "not auto-started" in msgs[0][-1]
+
+    @pytest.mark.parametrize("outcome", ["launched", "already-running", "disabled"])
+    def test_other_launch_outcomes_are_silent(self, monkeypatch, outcome):
+        _stub_dashboard_environment(monkeypatch)
+        import ccm_core
+        import ccm_window
+        d = Dashboard(initial_mode="dashboard")
+        d.projects = [ccm_core.Project("0:1", "1", "alpha", "/tmp/a", "SHELL")]
+        d.selected = 0
+        monkeypatch.setattr("dashboard_actions.auto_start_claude",
+                            lambda wt: ccm_window.LaunchResult(outcome))
+        monkeypatch.setattr("dashboard_actions.reset_window_after_attach", lambda wt: None)
+        monkeypatch.setattr("os.path.isdir", lambda p: True)
+        captured = []
+        for where in ("dashboard_actions.tmux_cmd", "dashboard_shared.tmux_cmd"):
+            monkeypatch.setattr(where, lambda *a, **k: captured.append(a) or "")
+        d._do_attach(_make_mock_stdscr())
+        assert not any(c and c[0] == "display-message" for c in captured)
 
 
 # ─── Interactive handlers: rename / remove / ignore / add / register / search ───
@@ -1010,8 +1624,8 @@ def _interaction_dash(monkeypatch, projects, prompt_answers=()):
         Dashboard, "_trigger_rebuild",
         lambda self: rebuilds.append("rebuild"))
     tmux_calls = []
-    monkeypatch.setattr("dashboard.tmux_cmd",
-                        lambda *a, **k: tmux_calls.append(a) or "")
+    _patch_dashboard(monkeypatch, "tmux_cmd",
+                     lambda *a, **k: tmux_calls.append(a) or "")
     return d, messages, rebuilds, tmux_calls
 
 
@@ -1046,10 +1660,10 @@ class TestDoRemove:
     def _cmds(self, monkeypatch):
         calls = {"unregister": [], "remove": []}
         monkeypatch.setattr(
-            "dashboard.cmd_unregister",
+            "dashboard_actions.cmd_unregister",
             lambda name: calls["unregister"].append(name))
         monkeypatch.setattr(
-            "dashboard.cmd_remove",
+            "dashboard_actions.cmd_remove",
             lambda name: calls["remove"].append(name))
         return calls
 
@@ -1064,9 +1678,8 @@ class TestDoRemove:
 
     def test_delete_choice_confirms_then_removes(self, monkeypatch):
         """Delete closes a window and ends its session, so it costs
-        one more keypress than unregister — the menu route already
-        confirmed, and the single-key route being the harsher of the
-        two was the wrong way around."""
+        one more keypress than unregister, on the single-key route as
+        on the menu route."""
         calls = self._cmds(monkeypatch)
         d, messages, rebuilds, _ = _interaction_dash(
             monkeypatch, [_one_project()], prompt_answers=["d", "y"])
@@ -1114,8 +1727,8 @@ class TestDoRemove:
 
         def _boom(name):
             raise ccm_core.CCMError("no such project")
-        monkeypatch.setattr("dashboard.cmd_unregister", _boom)
-        monkeypatch.setattr("dashboard.cmd_remove", lambda name: None)
+        monkeypatch.setattr("dashboard_actions.cmd_unregister", _boom)
+        monkeypatch.setattr("dashboard_actions.cmd_remove", lambda name: None)
 
         d, messages, rebuilds, _ = _interaction_dash(
             monkeypatch, [_one_project()], prompt_answers=["u"])
@@ -1125,29 +1738,59 @@ class TestDoRemove:
         assert rebuilds == []
 
 
+@pytest.mark.parametrize("route", ["key", "menu"])
 class TestDoIgnoreToggle:
+    def _invoke(self, dashboard, route):
+        if route == "key":
+            dashboard._handle_key(ord("i"), _make_mock_stdscr())
+        else:
+            dashboard._do_menu_removal(_make_mock_stdscr(), "ignore")
+
     def _cmds(self, monkeypatch):
         calls = {"ignore": [], "unignore": []}
-        monkeypatch.setattr("dashboard.cmd_ignore",
+        monkeypatch.setattr("dashboard_actions.cmd_ignore",
                             lambda name: calls["ignore"].append(name))
-        monkeypatch.setattr("dashboard.cmd_unignore",
+        monkeypatch.setattr("dashboard_actions.cmd_unignore",
                             lambda name: calls["unignore"].append(name))
         return calls
 
-    def test_plain_project_gets_ignored(self, monkeypatch):
+    @pytest.mark.parametrize("answer", ["y", "Y"])
+    def test_plain_project_gets_ignored(self, monkeypatch, answer, route):
         calls = self._cmds(monkeypatch)
         d, _, rebuilds, _ = _interaction_dash(
-            monkeypatch, [_one_project(ignored_panes=0)])
-        d._do_ignore_toggle(_make_mock_stdscr())
+            monkeypatch, [_one_project(ignored_panes=0)],
+            prompt_answers=[answer] if route == "key" else ["", answer])
+        self._invoke(d, route)
 
         assert calls == {"ignore": ["alpha"], "unignore": []}
         assert rebuilds == ["rebuild"]
 
-    def test_ignored_project_gets_unignored(self, monkeypatch):
+    @pytest.mark.parametrize("answer", ["", "n", None, "yes", "x"],
+                             ids=["enter", "n", "escape", "yes", "other"])
+    def test_ignore_cancelled(self, monkeypatch, answer, route):
+        calls = self._cmds(monkeypatch)
+        d, messages, rebuilds, _ = _interaction_dash(
+            monkeypatch, [_one_project(ignored_panes=0)],
+            prompt_answers=[answer] if route == "key" else ["", answer])
+        self._invoke(d, route)
+        assert calls == {"ignore": [], "unignore": []}
+        assert rebuilds == []
+        assert messages == ["Ignore cancelled."]
+
+    def test_ignored_project_gets_unignored(self, monkeypatch, route):
         calls = self._cmds(monkeypatch)
         d, _, rebuilds, _ = _interaction_dash(
             monkeypatch, [_one_project(ignored_panes=1)])
-        d._do_ignore_toggle(_make_mock_stdscr())
+        prompts = []
+
+        def prompt(stdscr, text):
+            prompts.append(text)
+            assert route == "menu" and len(prompts) == 1
+            assert text.startswith("Ignore or unignore which project")
+            return ""
+
+        monkeypatch.setattr(d, "_prompt", prompt)
+        self._invoke(d, route)
 
         assert calls == {"ignore": [], "unignore": ["alpha"]}
         assert rebuilds == ["rebuild"]
@@ -1157,7 +1800,7 @@ class TestDoAdd:
     def _cmd_add(self, monkeypatch):
         calls = []
         monkeypatch.setattr(
-            "dashboard.cmd_add",
+            "dashboard_actions.cmd_add",
             lambda directory, name, create_dir=False:
                 calls.append((directory, name, create_dir)))
         return calls
@@ -1197,12 +1840,12 @@ class TestDoRegister:
     def test_register_untagged_window(self, monkeypatch):
         calls = []
         monkeypatch.setattr(
-            "dashboard.cmd_register",
+            "dashboard_actions.cmd_register",
             lambda win, name: calls.append((win, name)))
         d, _, rebuilds, _ = _interaction_dash(
             monkeypatch, [], prompt_answers=["free", ""])  # empty name → win
         monkeypatch.setattr(
-            "dashboard.tmux_cmd",
+            "dashboard_actions.tmux_cmd",
             lambda *a, **k: ("0:1\talpha\tproj\n0:2\tfree\t"
                              if a[0] == "list-windows" else ""))
         d._do_register(_make_mock_stdscr())
@@ -1212,11 +1855,11 @@ class TestDoRegister:
 
     def test_no_untagged_windows(self, monkeypatch):
         calls = []
-        monkeypatch.setattr("dashboard.cmd_register",
+        monkeypatch.setattr("dashboard_actions.cmd_register",
                             lambda win, name: calls.append((win, name)))
         d, messages, rebuilds, _ = _interaction_dash(monkeypatch, [])
         monkeypatch.setattr(
-            "dashboard.tmux_cmd",
+            "dashboard_actions.tmux_cmd",
             lambda *a, **k: ("0:1\talpha\tproj"
                              if a[0] == "list-windows" else ""))
         d._do_register(_make_mock_stdscr())
@@ -1257,6 +1900,40 @@ class TestDoSearch:
         assert attached == [2]
         assert d.selected == 2
 
+    def test_typing_in_the_search_keeps_the_dashboard_out_of_idle(self, monkeypatch):
+        """Keys read by the search's own loop count as use: typing for 40 s
+        (past IDLE_AFTER_SEC) and leaving with Escape keeps the normal pace."""
+        import dashboard
+        d, attached = self._dash(monkeypatch)
+        clock = {"t": 100.0}
+        monkeypatch.setattr(dashboard.time, "monotonic", lambda: clock["t"])
+        d._last_input = clock["t"]
+        keys = iter(["b", "e", "t", "a", "\x1b"])
+
+        def type_slowly(*args):
+            clock["t"] += 10
+            return next(keys)
+        stdscr = _make_mock_stdscr()
+        stdscr.get_wch.side_effect = type_slowly
+        d._do_search(dashboard._InputClock(stdscr, d._note_input))
+        assert clock["t"] - 100.0 > dashboard_refresh.IDLE_AFTER_SEC
+        assert d._last_input == clock["t"]
+        assert not d._idle()
+
+    def test_the_input_clock_notes_keys_only(self):
+        import dashboard
+        noted = []
+        screen = _make_mock_stdscr()
+        screen.getch.side_effect = [-1, 65]
+        screen.get_wch.side_effect = [dashboard.curses.error("no input"), "x"]
+        clock = dashboard._InputClock(screen, lambda: noted.append(1))
+        assert clock.getch() == -1 and noted == []
+        assert clock.getch() == 65 and noted == [1]
+        with pytest.raises(dashboard.curses.error):
+            clock.get_wch()
+        assert noted == [1]
+        assert clock.get_wch() == "x" and noted == [1, 1]
+
     def test_enter_with_empty_query_attaches_first(self, monkeypatch):
         d, attached = self._dash(monkeypatch)
         action = d._do_search(self._stdscr(["\n"]))
@@ -1283,18 +1960,21 @@ class TestDoSearch:
 
 
 def _dashboard_source():
-    import inspect
-    return inspect.getsource(dashboard)
+    """dashboard.py and the modules its Dashboard is assembled from."""
+    import glob, inspect, os
+    lib = os.path.dirname(inspect.getsourcefile(dashboard))
+    paths = [os.path.join(lib, "dashboard.py")] + sorted(
+        glob.glob(os.path.join(lib, "dashboard_*.py")))
+    return "\n".join(open(p, encoding="utf-8").read() for p in paths)
 
 
 def _method_source(name):
-    import ast, inspect
-    src = inspect.getsource(dashboard)
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return ast.get_source_segment(src, node)
-    raise AssertionError(f"{name} not found")
+    """A Dashboard method's source, from whichever module defines it."""
+    import inspect
+    method = getattr(Dashboard, name, None)
+    if method is None:
+        raise AssertionError(f"{name} not found")
+    return inspect.getsource(method)
 
 
 def _list_literal(name, closing_indent):
@@ -1302,7 +1982,7 @@ def _list_literal(name, closing_indent):
 
     Matched to the bracket at a known indent rather than the first
     `]` — the first one belongs to `"[↑↓/jk] select"`, and stopping
-    there made this check report every key as missing.
+    there would make this check report every key as missing.
     """
     import re
     m = re.search(rf"{name} = \[(.*?)\n{closing_indent}\]",
@@ -1320,13 +2000,13 @@ class TestDoMenuRemoval:
     def _cmds(self, monkeypatch):
         calls = {"unregister": [], "remove": [], "ignore": []}
         monkeypatch.setattr(
-            "dashboard.cmd_unregister",
+            "dashboard_menu.cmd_unregister",
             lambda name: calls["unregister"].append(name))
         monkeypatch.setattr(
-            "dashboard.cmd_remove",
+            "dashboard_menu.cmd_remove",
             lambda name: calls["remove"].append(name))
         monkeypatch.setattr(
-            "dashboard.cmd_ignore",
+            "dashboard_actions.cmd_ignore",
             lambda name: calls["ignore"].append(name))
         return calls
 
@@ -1382,10 +2062,9 @@ class TestEveryKeyAndOperationIsFindable:
     """What the dashboard can do has to be visible before you press
     anything.
 
-    Unregistering a project was reachable only behind `r`, which the
-    footer rendered as "remove" and the menu did not mention at all,
-    so the operation read as unsupported. The instance is easy to fix;
-    these tests are here so the class of oversight cannot come back.
+    An operation reachable only behind a key the menu does not mention
+    reads as unsupported, so every handled key and operation must be
+    offered.
     """
 
     def test_every_handled_letter_key_is_offered_in_the_help_line(self):
@@ -1396,6 +2075,8 @@ class TestEveryKeyAndOperationIsFindable:
         import re
         handled = set(re.findall(r'ord\("([a-z])"\)',
                                  _method_source("_handle_key")))
+        import ccm_menu_help
+        handled.update(ccm_menu_help.MENU_KEYS.values())
         # The extraction itself has a failure mode: refactor the key
         # handling into a dispatch table and findall returns nothing,
         # leaving an empty `missing` and a test that checks nothing
@@ -1405,9 +2086,10 @@ class TestEveryKeyAndOperationIsFindable:
             f"_handle_key — the ord(...) pattern no longer matches how "
             f"keys are handled, so this test has stopped seeing them; "
             f"update the extraction to the new dispatch shape")
-        block = _list_literal("help_items", " " * 12)
+        block = (_list_literal("help_items", " " * 12)
+                 + "  ".join(Dashboard._HELP_TAIL))
         # A key counts as offered only when a bracket names it: `[r]`
-        # alone, a `/`-separated alternative (`[m/?]`), or a two-letter
+        # alone, a `/`-separated alternative (`[?/m]`), or a two-letter
         # vi pair (`jk` in `[↑↓/jk]`). Substring matching would let
         # `[Enter]` vouch for e, n, t and r; key names longer than a
         # pair stay excluded for the same reason.
@@ -1418,6 +2100,10 @@ class TestEveryKeyAndOperationIsFindable:
                     offered.add(alt)
                 elif len(alt) == 2 and alt.isalpha() and alt.islower():
                     offered.update(alt)
+        # The undelivered list is discoverable in the on-demand menu;
+        # keep the permanent help line at its existing size.
+        assert '("Undelivered messages", "spool")' in _method_source("_build_menu")
+        offered.add("u")
         missing = handled - offered
         assert not missing, (
             f"keys handled by the dashboard but absent from the help "
@@ -1427,8 +2113,9 @@ class TestEveryKeyAndOperationIsFindable:
     def test_the_non_letter_keys_are_offered_too(self):
         """The letter scan above cannot see these; name them one by
         one so the help line cannot quietly drop them."""
-        block = _list_literal("help_items", " " * 12)
-        for token in ("[↑↓/jk]", "[Enter]", "[/]", "[m/?]"):
+        block = (_list_literal("help_items", " " * 12)
+                 + "  ".join(Dashboard._HELP_TAIL))
+        for token in ("[↑↓/jk]", "[Enter]", "[/]", "[?/m]"):
             assert token in block, (
                 f"help line no longer offers {token}")
 
@@ -1448,3 +2135,94 @@ class TestEveryKeyAndOperationIsFindable:
             assert action in actions, (
                 f"the menu does not offer '{action}' — the menu is where "
                 f"a reader learns what ccm can do")
+
+
+class TestInitialProjectSelection:
+    def _open(self, monkeypatch, index="2", projects=True, failure=None, bg=True):
+        from types import SimpleNamespace
+        import ccm_core
+
+        _stub_dashboard_environment(monkeypatch)
+        d = Dashboard()
+        d.running = False
+        d.bg_visible = bg
+        rows = [ccm_core.Project("other:2", "2", "alpha", "/tmp/a", "PERMIT"),
+                ccm_core.Project("popup:2", "2", "beta", "/tmp/b", "IDLE")]
+        _patch_dashboard(monkeypatch, "build_project_list",
+                         lambda fast=False: rows if projects else [])
+        _patch_dashboard(monkeypatch, "get_session", lambda: "popup")
+
+        def tmux(*args):
+            assert args == ("display-message", "-p", "#{window_index}")
+            if failure:
+                raise RuntimeError("window query unavailable")
+            return index
+
+        _patch_dashboard(monkeypatch, "tmux_cmd", tmux)
+        _patch_dashboard(monkeypatch, "log_caught_exception", lambda *a: None)
+        for name in ("curs_set", "use_default_colors", "set_escdelay"):
+            monkeypatch.setattr(dashboard.curses, name, lambda *a: None)
+        monkeypatch.setattr(d, "_init_colors", lambda: None)
+        monkeypatch.setattr(dashboard.threading, "Thread",
+                            lambda **kw: SimpleNamespace(start=lambda: None))
+        monkeypatch.setattr(d, "_fetch_bg_sessions", lambda: [SimpleNamespace()])
+        painted = []
+        monkeypatch.setattr(d, "_render_current", lambda s: painted.append(d.selected))
+        d.run(_make_mock_stdscr())
+        return d, painted
+
+    def test_first_paint_selects_opening_project_in_popup(self, monkeypatch):
+        d, painted = self._open(monkeypatch)
+        assert painted == [1]
+        assert d.projects[d.selected].win_target == "popup:2"
+        assert d._display_order == ["other:2", "popup:2"]
+        assert d._selected_bg_index() is None
+
+    @pytest.mark.parametrize("kwargs", [
+        {"index": "9"}, {"index": ""}, {"projects": False}, {"failure": True},
+    ])
+    def test_unlisted_or_unreadable_window_falls_back_to_zero(self, monkeypatch, kwargs):
+        d, painted = self._open(monkeypatch, **kwargs)
+        assert painted == [0]
+        assert d.selected == 0
+
+    def test_refresh_keeps_user_selection_and_background_indices(self, monkeypatch):
+        d, _ = self._open(monkeypatch)
+        d.selected = 0
+        d._set_projects_stable(list(reversed(d.projects)))
+        assert d.selected == 0
+        assert d.projects[d.selected].win_target == "other:2"
+        d.selected = len(d.projects)
+        d._set_projects_stable(list(reversed(d.projects)))
+        assert d._selected_bg_index() == 0
+
+
+class TestIdlePace:
+    """A dashboard left open and unused refreshes at a slower pace; the
+    first key restores the normal one."""
+
+    def _board(self, monkeypatch, now):
+        clock = {"t": now}
+        monkeypatch.setattr(dashboard_refresh.time, "monotonic", lambda: clock["t"])
+        board = object.__new__(Dashboard)
+        board._last_input = now
+        return dashboard_refresh, board, clock
+
+    def test_normal_pace_while_in_use(self, monkeypatch):
+        refresh, board, clock = self._board(monkeypatch, 1000.0)
+        clock["t"] += refresh.IDLE_AFTER_SEC - 1
+        assert board._refresh_pace() == (refresh.FAST_TICK_INTERVAL, refresh.REFRESH_INTERVAL)
+        assert not board._idle()
+
+    def test_slower_pace_once_unused(self, monkeypatch):
+        refresh, board, clock = self._board(monkeypatch, 1000.0)
+        clock["t"] += refresh.IDLE_AFTER_SEC + 1
+        assert board._refresh_pace() == (refresh.IDLE_FAST_TICK_INTERVAL,
+                                         refresh.IDLE_REFRESH_INTERVAL)
+        board._last_input = clock["t"]                   # a key
+        assert board._refresh_pace() == (refresh.FAST_TICK_INTERVAL, refresh.REFRESH_INTERVAL)
+
+    def test_the_slow_pace_is_still_quick_to_show_a_pushed_state(self):
+        import dashboard
+        assert dashboard_refresh.IDLE_FAST_TICK_INTERVAL <= 1.0
+        assert dashboard.IDLE_KEY_WAIT_MS <= 500

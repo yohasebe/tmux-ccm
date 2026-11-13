@@ -11,6 +11,14 @@ detection pipeline to consume:
     append-only JSONL `{"ts": int, "type": str}` per hook
     invocation. `read_events_tail` returns the most recent N
     records as the input to `derive_state_from_events`.
+  - **Subagent files** — `$HOOK_DIR/<sessionId>.agent-activity`
+    (the time of a subagent's newest hook event) and one
+    `.agent-permit.<agentId>` per subagent with a permission request
+    waiting (its signal line). A subagent's events stay out of the
+    event log and the signal file, which describe the main
+    conversation. `read_agent_activity` / `read_agent_permit` return
+    them; `read_hook_signal` reports a waiting subagent request as
+    PERMIT.
   - **Pending sentinel** — `$HOOK_DIR/<sessionId>.pending` —
     write-only sentinel for the multi-turn Stop grace-period; ccm
     only deletes it as part of project cleanup.
@@ -42,6 +50,7 @@ keeping test mocks routed via `ccm_core` reachable.
 
 import json
 import os
+import re
 from collections import OrderedDict
 from typing import Optional, Tuple
 
@@ -114,9 +123,31 @@ def _hook_signal_path(project_dir, session_id: Optional[str] = None):
     """
     if session_id is None:
         session_id = _session_id_from_tmux(project_dir)
-    if not session_id:
+    if not ccm_core.is_safe_session_id(session_id):
         return None
     return os.path.join(ccm_core.CCM_HOOK_DIR, session_id)
+
+
+def _read_main_signal(project_dir, session_id: Optional[str] = None):
+    """The main conversation's own signal file as `(timestamp, state,
+    detail)` or None, and the session id it was resolved under, which
+    is None when no session is known."""
+    hook_file = _hook_signal_path(project_dir, session_id=session_id)
+    if not hook_file:
+        return None, None
+    if session_id is None:
+        session_id = os.path.basename(hook_file)
+    signal = None
+    try:
+        with open(hook_file, encoding="utf-8") as f:
+            content = f.read().strip()
+        parts = content.split(None, 2)  # split into at most 3 parts
+        if len(parts) >= 2 and parts[1] in VALID_HOOK_STATES:
+            detail = parts[2] if len(parts) >= 3 else ""
+            signal = (int(parts[0]), parts[1], detail)
+    except (OSError, ValueError):
+        pass
+    return signal, session_id
 
 
 def read_hook_signal(project_dir, session_id: Optional[str] = None):
@@ -128,20 +159,38 @@ def read_hook_signal(project_dir, session_id: Optional[str] = None):
     tmux option set by the most recent slow path. Returns None when
     no session_id is yet known for this project — fresh sessions
     before the first hook fire fall through to legacy detection.
+
+    A subagent's waiting permission request (`read_agent_permit`) is
+    returned as PERMIT unless the main conversation's own signal is a
+    PERMIT.
     """
-    hook_file = _hook_signal_path(project_dir, session_id=session_id)
-    if not hook_file:
+    signal, session_id = _read_main_signal(project_dir, session_id)
+    if session_id is None:
         return None
-    try:
-        with open(hook_file, encoding="utf-8") as f:
-            content = f.read().strip()
-        parts = content.split(None, 2)  # split into at most 3 parts
-        if len(parts) >= 2 and parts[1] in VALID_HOOK_STATES:
-            detail = parts[2] if len(parts) >= 3 else ""
-            return int(parts[0]), parts[1], detail
-    except (OSError, ValueError):
-        pass
-    return None
+    # A subagent's request waiting for an answer is the user's to
+    # act on whatever the main conversation is doing: a background
+    # agent's request is not answered by the main conversation moving
+    # on. The main conversation's own PERMIT keeps its detail.
+    agent = read_agent_permit(project_dir, session_id=session_id)
+    if agent is not None and (signal is None or signal[1] != "PERMIT"):
+        return agent[0], "PERMIT", agent[1]
+    return signal
+
+
+def permit_is_subagent_only(project_dir, session_id: Optional[str] = None) -> bool:
+    """True when a subagent's request waiting for an answer is the
+    only PERMIT the hooks report: the main conversation's own signal
+    is not a PERMIT. Its input box is then the main conversation's,
+    free or busy as its screen says, so a message to it is gated on
+    that screen rather than refused as if a dialog covered it. The
+    screen is still read before typing: a dialog on it is a PERMIT
+    whatever this says."""
+    if not project_dir:
+        return False
+    signal, session_id = _read_main_signal(project_dir, session_id)
+    if session_id is None or (signal is not None and signal[1] == "PERMIT"):
+        return False
+    return read_agent_permit(project_dir, session_id=session_id) is not None
 
 
 # ─── Notify marker ───
@@ -210,7 +259,7 @@ def _events_log_path(project_dir: str,
     """
     if session_id is None:
         session_id = _session_id_from_tmux(project_dir)
-    if not session_id:
+    if not ccm_core.is_safe_session_id(session_id):
         return None
     return os.path.join(ccm_core.CCM_HOOK_DIR, session_id + ".events.jsonl")
 
@@ -306,12 +355,201 @@ def read_events_tail(project_dir: str, limit: int = 20,
         mode = rec.get("mode")
         if isinstance(mode, str) and mode:
             out_rec["mode"] = mode
+        # Background work a Stop reported outstanding, for the `(bg)`
+        # note (`ccm_activity.background_work_reported`); likewise
+        # ignored by the state decision.
+        bg = rec.get("bg")
+        if isinstance(bg, int) and not isinstance(bg, bool) and bg > 0:
+            out_rec["bg"] = bg
         events_newest_first.append(out_rec)
 
     events_newest_first.reverse()
     result = tuple(events_newest_first)
     _cache_events(path, key, result)
     return result[-limit:] if limit and len(result) > limit else result
+
+
+def _agent_file(project_dir: str, session_id: Optional[str],
+                suffix: str) -> Optional[str]:
+    path = _events_log_path(project_dir, session_id=session_id)
+    if not path:
+        return None
+    return path[:-len(".events.jsonl")] + suffix
+
+
+def read_agent_activity(project_dir: str,
+                        session_id: Optional[str] = None) -> int:
+    """Return the time of a subagent's newest hook event, or 0.
+
+    `session_id` semantics match `read_events_tail`. A missing,
+    empty or unparseable file reads as 0 ("no subagent activity
+    known"); the file is overwritten in place, so a read can land
+    between the truncate and the write."""
+    if not project_dir:
+        return 0
+    path = _agent_file(project_dir, session_id, ".agent-activity")
+    if not path:
+        return 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            return max(0, int(f.read().strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def read_stop_background(project_dir: str,
+                         session_id: Optional[str] = None) -> int:
+    """Return the background work count the session's newest Stop
+    reported, or 0. Kept by `on-stop.sh` beside the event log and
+    removed at the end of the session. A missing, empty or unparseable
+    file reads as 0."""
+    if not project_dir:
+        return 0
+    path = _agent_file(project_dir, session_id, ".stop-bg")
+    if not path:
+        return 0
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read().strip()
+    except OSError:
+        return 0
+    return int(text) if text.isdigit() and len(text) <= 6 else 0
+
+
+#: Most background tasks `read_stop_background_tasks` returns; the
+#: hook keeps no more than this either.
+STOP_BG_TASKS_MAX = 20
+
+
+def _printable_text(value) -> str:
+    """`value` as one line of printable text: anything not printable
+    (control characters, escapes) becomes a space and runs of spaces
+    one. "" when it is not a string."""
+    if not isinstance(value, str):
+        return ""
+    return " ".join("".join(c if c.isprintable() else " " for c in value).split())
+
+
+def read_stop_background_tasks(project_dir: str,
+                               session_id: Optional[str] = None) -> list:
+    """Return what the newest Stop's background work count is made
+    of, as `[{"kind", "label", "since"}, ...]` in the order Claude
+    Code listed it, or [].
+
+    Written by `on-stop.sh` beside `.stop-bg` while that count is
+    positive, and removed when it is not. `since` is the time a Stop
+    first reported the task. Display-only: the `(bg)` note itself is
+    decided from the count (`background_work_reported`). A missing
+    or unreadable file, or an entry of the wrong shape, reads as
+    nothing."""
+    if not project_dir:
+        return []
+    path = _agent_file(project_dir, session_id, ".stop-bg-tasks")
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.loads(f.read(65536))
+    except (OSError, ValueError):
+        return []
+    tasks = data.get("tasks") if isinstance(data, dict) else None
+    if not isinstance(tasks, list):
+        return []
+    out = []
+    for t in tasks[:STOP_BG_TASKS_MAX]:
+        if not isinstance(t, dict):
+            continue
+        kind, label, since = t.get("kind"), t.get("label"), t.get("since")
+        if (not isinstance(since, int) or isinstance(since, bool)
+                or since <= 0):
+            continue
+        kind = _printable_text(kind)
+        label = _printable_text(label)
+        out.append({"kind": kind[:40] or "unknown", "label": label[:200],
+                    "since": since})
+    return out
+
+
+#: The most subagent request files one read opens, newest first. Each
+#: is removed at its agent's next event, so more than a few at once is
+#: not expected; the bound keeps a directory that somehow filled up
+#: from costing every detection cycle. Every request file is still
+#: listed and dated, so the newest is never skipped.
+AGENT_PERMIT_MAX_READS = 64
+
+AGENT_PERMIT_SUFFIX = ".agent-permit."
+
+#: A request file's agent part, as the hooks write it
+#: (`_ccm_agent_file_id`). A name with anything after it, such as the
+#: `.<pid>` of a file still being written, is not a request.
+_AGENT_FILE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+
+
+def _agent_permit_files(project_dir: str, session_id: Optional[str] = None,
+                        written_only: bool = True) -> list:
+    """Paths of the session's per-subagent request files. With
+    `written_only`, only finished request files (an agent part and
+    nothing after it); without, also the temporary files a write
+    leaves behind, for cleanup. `session_id` semantics match
+    `read_events_tail`."""
+    path = _agent_file(project_dir, session_id, AGENT_PERMIT_SUFFIX)
+    if not path:
+        return []
+    directory, prefix = os.path.split(path)
+    out = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                name = entry.name
+                if not name.startswith(prefix) or len(name) == len(prefix):
+                    continue
+                if written_only and not _AGENT_FILE_ID.match(name, len(prefix)):
+                    continue
+                out.append(entry.path)
+    except OSError:
+        return []
+    return out
+
+
+def read_agent_permit(project_dir: str,
+                      session_id: Optional[str] = None):
+    """Return `(timestamp, detail)` for the newest subagent permission
+    request still waiting for an answer, or None.
+
+    Each subagent with a request waiting has a file of its own,
+    `<sessionId>.agent-permit.<agentId>`, holding the request's
+    signal line. The hooks remove it at that agent's next event (the
+    tool ran or failed, the agent went on after a denial, or it
+    ended) and at the session's end, so a file that is there is a
+    request nobody has answered. The main conversation's events, and
+    other agents', do not answer it: a background agent waits on its
+    own while the main conversation goes on. The files are read
+    newest first (by modification time), at most
+    `AGENT_PERMIT_MAX_READS`, so old leftovers neither hide a new
+    request nor cost a read each. `session_id` semantics match
+    `read_events_tail`."""
+    if not project_dir:
+        return None
+    dated = []
+    for path in _agent_permit_files(project_dir, session_id):
+        try:
+            dated.append((os.stat(path).st_mtime_ns, path))
+        except OSError:
+            continue
+    dated.sort(reverse=True)
+    newest = None
+    for _mtime, path in dated[:AGENT_PERMIT_MAX_READS]:
+        try:
+            with open(path, encoding="utf-8") as f:
+                parts = f.read(4096).strip().split(None, 2)
+            if len(parts) < 2 or parts[1] != "PERMIT":
+                continue
+            found = (int(parts[0]), parts[2] if len(parts) >= 3 else "")
+        except (OSError, ValueError):
+            continue
+        if found[0] > 0 and (newest is None or found[0] > newest[0]):
+            newest = found
+    return newest
 
 
 def read_latest_permission_mode(project_dir: str,
@@ -344,16 +582,16 @@ def cleanup_project_runtime_files(project_dir):
     distinct keying schemes:
 
     1. Hook artefacts keyed on Claude Code session_id
-       (`$HOOK_DIR/<sessionId>`, `.events.jsonl`, `.busy`, `.pending`).
+       (`$HOOK_DIR/<sessionId>`, `.events.jsonl`, `.busy`, `.pending`,
+       `.agent-activity`, `.agent-permit`, `.agent-permit.<agentId>`).
        Discovered via the cached `@ccm_session_id` tmux option for
        this project's window. Stale past-session files persist until
        macOS `$TMPDIR` auto-cleanup; this is acceptable since the
        resolver only matches the live session.
 
     2. Caches keyed on `md5(project_dir)` (git-cache, port-cache,
-       notify-marker). These were already cwd-keyed on the ccm
-       side and stay that way — they identify the project window,
-       not the session.
+       notify-marker). These are cwd-keyed because they identify
+       the project window, not the session.
 
     Each removal is independent and guarded against OSError so a
     missing file (normal case for inactive projects) is a silent
@@ -366,12 +604,19 @@ def cleanup_project_runtime_files(project_dir):
 
     session_ids = set()
     cached_sid = _session_id_from_tmux(project_dir)
-    if cached_sid:
+    if ccm_core.is_safe_session_id(cached_sid):
         session_ids.add(cached_sid)
 
     for sid in session_ids:
-        for suffix in ("", ".busy", ".pending", ".events.jsonl"):
+        for suffix in ("", ".busy", ".pending", ".events.jsonl",
+                       ".agent-activity", ".agent-permit", ".stop-bg",
+                       ".stop-bg-tasks"):
             path = os.path.join(ccm_core.CCM_HOOK_DIR, sid + suffix)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        for path in _agent_permit_files(project_dir, sid, written_only=False):
             try:
                 os.unlink(path)
             except OSError:

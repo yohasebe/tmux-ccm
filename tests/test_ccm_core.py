@@ -8,6 +8,8 @@ import time
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock, call
 
+import subprocess
+
 import pytest
 
 # Add lib to path
@@ -127,9 +129,9 @@ class TestFindProcessAge:
 
 
 class TestHooksConfigured:
-    @patch("builtins.open", side_effect=FileNotFoundError)
-    def test_false_when_no_settings(self, mock_open):
-        assert ccm_core.hooks_configured() is False
+    def test_unknown_when_no_settings(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "missing"))
+        assert ccm_core.hooks_configured() is None
 
 
 # ─── tmux_batch ───
@@ -323,7 +325,7 @@ class TestBuildProjectListSubprocessCount:
         windows_out = self._windows_raw(n_projects)
         calls = []
         def fake_tmux(*args, **kwargs):
-            calls.append(args[0] if args else "")
+            calls.append(args)
             if args and args[0] == "list-windows":
                 return windows_out
             return ""
@@ -334,10 +336,9 @@ class TestBuildProjectListSubprocessCount:
 
         ccm_core.build_project_list(fast=True)
 
-        # The N+1 bug would have produced 10 list-windows calls
-        # (one per project via _session_id_from_tmux). The fix
-        # makes it exactly 1.
-        list_windows_calls = [c for c in calls if c == "list-windows"]
+        # One list-windows call for every project, not one per
+        # project via _session_id_from_tmux.
+        list_windows_calls = [c for c in calls if c and c[0] == "list-windows"]
         assert len(list_windows_calls) == 1, (
             f"fast path issued {len(list_windows_calls)} list-windows "
             f"calls for {n_projects} projects — N+1 regression"
@@ -352,7 +353,10 @@ class TestBuildProjectListSubprocessCount:
         windows_out = self._windows_raw(n_projects)
         calls = []
         def fake_tmux(*args, **kwargs):
-            calls.append(args[:3] if len(args) >= 3 else args)
+            # The whole argv: the option name is the last argument,
+            # so a per-project `show-option -w -t <target> -qv
+            # @ccm_session_id` is visible only in the full record.
+            calls.append(args)
             if args and args[0] == "list-windows":
                 return windows_out
             return ""
@@ -371,14 +375,113 @@ class TestBuildProjectListSubprocessCount:
         # bounded; we count only @ccm_session_id specifically.
         sid_show_options = [
             c for c in calls
-            if len(c) >= 3 and c[0] == "show-option"
-            and "@ccm_session_id" in str(c)
+            if c and c[0] == "show-option" and "@ccm_session_id" in c
         ]
         assert len(sid_show_options) == 0, (
             f"slow path issued {len(sid_show_options)} show-option "
             f"@ccm_session_id calls for {n_projects} projects — "
             "cached_session_id wasn't threaded through"
         )
+
+    def _isolate_runtime(self, monkeypatch, tmp_path):
+        """Point every on-disk source the slow path reads (session
+        registry, transcripts, hook signals / events, git and port
+        caches, attention markers) at empty directories under
+        `tmp_path`. Without this the fixture's fake pids can hit real
+        records on the machine running the suite — a matching
+        registry record adds a session-id write and the count
+        changes with the host, not the code."""
+        import ccm_jsonl
+        for mod, name in (
+            (ccm_jsonl, "CLAUDE_SESSIONS_DIR"), (ccm_jsonl, "CLAUDE_PROJECTS_DIR"),
+            (ccm_core, "CCM_HOOK_DIR"), (ccm_core, "CCM_GIT_CACHE_DIR"),
+            (ccm_core, "CCM_PORT_CACHE_DIR"), (ccm_core, "CCM_ATTENTION_DIR"),
+        ):
+            d = tmp_path / "runtime" / name.lower()
+            d.mkdir(parents=True, exist_ok=True)
+            monkeypatch.setattr(mod, name, str(d))
+        ccm_jsonl._jsonl_path_cache.clear()
+
+    def _run_real_detection(self, monkeypatch, tmp_path, n_projects):
+        """Drive `build_project_list(fast=False)` through the real
+        detection pipeline with only the external answers faked:
+        `n_projects` single-pane windows, each pane's foreground is
+        claude (a child of the pane's shell), the prompt is visible,
+        no hooks, no transcripts (see `_isolate_runtime`), and the
+        windows' cached columns (session id, work clock) are empty
+        and stay so — a steady state, so no per-window option writes
+        are provoked. Returns the recorded tmux argv list."""
+        self._isolate_runtime(monkeypatch, tmp_path)
+        windows_out = "\n".join(
+            f"0:{i+1}\tproj-{i}\t/p/{i}\tIDLE\t0\t1234567890\t\t\t\t\t"
+            for i in range(n_projects))
+        panes_out = "\n".join(
+            f"0:{i+1}\t{1000+i}\t%{i}\tclaude\t1\t40\t" for i in range(n_projects))
+        ps_out = "\n".join(
+            f"{1000+i} 1 {1000+i} zsh 00:10:00\n{2000+i} {1000+i} {2000+i} claude 00:05:00"
+            for i in range(n_projects)) + "\n"
+        calls = []
+        def fake_tmux(*args, **kwargs):
+            calls.append(args)
+            if args and args[0] == "list-windows":
+                return windows_out
+            if args and args[0] == "list-panes":
+                return panes_out
+            if args and args[0] == "capture-pane":
+                return "some text\n\u276f \n"
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: ps_out)
+        ccm_core.build_project_list(fast=False)
+        return calls
+
+    def test_slow_path_real_detection_stays_linear_in_panes(self, monkeypatch, tmp_path):
+        """The dispatch tests above stub detection; this one runs it.
+        The bulk queries (`list-windows`, `list-panes -a`) are issued
+        once regardless of N; what grows with N is the per-pane
+        `capture-pane` reads (a bounded number per pane). Any other
+        per-project tmux call — the N+1 class this guards against —
+        shows up as growth beyond that."""
+        one = self._run_real_detection(monkeypatch, tmp_path, 1)
+        ten = self._run_real_detection(monkeypatch, tmp_path, 10)
+
+        def count(calls, name):
+            return sum(1 for c in calls if c and c[0] == name)
+        for calls in (one, ten):
+            assert count(calls, "list-windows") == 1
+            assert count(calls, "list-panes") == 1
+            assert not any(c and c[0] == "show-option" and "@ccm_session_id" in c
+                           for c in calls)
+        per_pane_captures = count(ten, "capture-pane") - count(one, "capture-pane")
+        assert per_pane_captures <= 9 * 3, per_pane_captures  # ≤ 3 reads per extra pane
+        others_one = [c for c in one if c and c[0] not in ("capture-pane",)]
+        others_ten = [c for c in ten if c and c[0] not in ("capture-pane",)]
+        # In a steady state nothing but the per-pane captures grows
+        # with N. (A state transition costs a few option writes per
+        # window; the fixture provokes none.)
+        assert len(others_ten) == len(others_one), (
+            f"non-capture tmux calls grew from {len(others_one)} to "
+            f"{len(others_ten)} for 1 → 10 projects:\n"
+            + "\n".join(str(c) for c in others_ten))
+
+    def test_real_detection_fixture_ignores_the_host_registry(self, monkeypatch, tmp_path):
+        """A record on the host for one of the fixture's fake pids
+        must not reach the measurement: the helper reads only its
+        own empty directories. (Simulated by pointing the registry
+        at a directory holding such a record before the helper runs.)"""
+        import json, time
+        import ccm_jsonl
+        host = tmp_path / "host-sessions"
+        host.mkdir()
+        (host / "2001.json").write_text(json.dumps({
+            "pid": 2001, "sessionId": "live-test-session", "kind": "interactive",
+            "cwd": "/p/1", "startedAt": int(time.time() * 1000) - 300_000}))
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR", str(host))
+        one = self._run_real_detection(monkeypatch, tmp_path, 1)
+        ten = self._run_real_detection(monkeypatch, tmp_path, 10)
+        non_capture = lambda calls: [c for c in calls if c and c[0] != "capture-pane"]
+        assert len(non_capture(ten)) == len(non_capture(one))
+        assert not any(c and c[0] == "set-option" and "@ccm_session_id" in c for c in ten)
 
 
 # ─── validate_name ───
@@ -475,6 +578,36 @@ class TestListWindowsRaw:
 # ─── snapshot save/list (with mocked tmux) ───
 
 
+class TestDieHeadline:
+    """A caller that keeps only the tail of the output must still see the
+    verdict: a long message ends with its first line again."""
+
+    @staticmethod
+    def _stderr_lines(capsys, msg):
+        with pytest.raises(SystemExit):
+            ccm_core.ccm_die(msg)
+        err = capsys.readouterr().err
+        return [l for l in re.sub(r"\x1b\[[0-9;]*m", "", err).split("\n") if l]
+
+    def test_long_message_ends_with_its_headline(self, capsys):
+        msg = "demo did not start; nothing was typed.\n  hint\n  Pane tail:\n    ❯ \n    status"
+        lines = self._stderr_lines(capsys, msg)
+        assert lines[0] == "Error: demo did not start; nothing was typed."
+        assert lines[-1] == "Error: demo did not start; nothing was typed."
+        assert len(lines) == 6
+
+    def test_short_message_is_not_repeated(self, capsys):
+        lines = self._stderr_lines(capsys, "boom\n  hint\n  more")
+        assert lines == ["Error: boom", "  hint", "  more"]
+
+    def test_raised_error_carries_the_message_unchanged(self):
+        msg = "a\nb\nc\nd\ne"
+        with ccm_core.raise_on_die():
+            with pytest.raises(ccm_core.CCMError) as caught:
+                ccm_core.ccm_die(msg)
+        assert str(caught.value) == msg
+
+
 class TestRaiseOnDie:
     def test_ccm_die_exits_by_default(self):
         with pytest.raises(SystemExit):
@@ -525,8 +658,8 @@ class TestRaiseOnDie:
 # ─── _handle_add (CLI dispatch wrapper for `ccm add`) ───
 # These exercise the tty-gated prompt that brings the dashboard's
 # "create-on-missing-dir" affordance to CLI users. The hard
-# contract: non-tty (script / CI) MUST behave exactly like before
-# — no prompt, no surprise mkdir. The tty case prompts the user.
+# contract: non-tty (script / CI) gets no prompt and no surprise
+# mkdir. The tty case prompts the user.
 
 class TestHandleAdd:
     def _args(self, directory, name=""):
@@ -705,3 +838,256 @@ class TestSaveTmuxConfSetting:
         text = conf.read_text(encoding="utf-8")
         assert "@ccm-notify permit" in text
         assert "status-interval 1" in text
+
+class TestHookTimeoutWarning:
+    """The hook `timeout` field is in seconds — Claude Code multiplies
+    it by 1000 — and earlier ccm versions wrote milliseconds into it.
+    An install still carrying that value is named, with a remedy that
+    actually rewrites it."""
+
+    def _settings(self, tmp_path, monkeypatch, settings):
+        import json
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(settings))
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: str(path) if p.endswith("settings.json") else p)
+        return ccm_core.hook_timeout_warning()
+
+    @staticmethod
+    def _ccm_hook(timeout, script=None):
+        import os
+        script = script or ccm_core.HOOK_SCRIPTS[0]
+        return {"type": "command",
+                "command": os.path.join(ccm_core.CCM_ROOT, "hooks", script),
+                "timeout": timeout}
+
+    def _hooks(self, *hook_dicts):
+        return {"hooks": {"Stop": [{"hooks": list(hook_dicts)}]}}
+
+    def test_the_millisecond_value_is_named_with_a_remedy_that_works(self, tmp_path, monkeypatch):
+        """The remedy is `ccm setup-hooks`, which on an existing install
+        sets ccm's own timeouts and nothing else. A remove-then-setup
+        would also work, but is more than the fix needs."""
+        msg = self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook(5000)))
+        assert "5000s" in msg
+        assert "`ccm setup-hooks`" in msg
+        assert "remove-hooks" not in msg
+
+    def test_the_second_value_is_quiet(self, tmp_path, monkeypatch):
+        assert self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook(5))) == ""
+
+    @pytest.mark.parametrize("timeout,warns", [(120, False), (121, True)])
+    def test_the_threshold_boundary(self, tmp_path, monkeypatch, timeout, warns):
+        msg = self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook(timeout)))
+        assert bool(msg) is warns
+        assert ccm_core.HOOK_TIMEOUT_WARN_ABOVE == 120
+
+    def test_the_largest_timeout_decides_regardless_of_order(self, tmp_path, monkeypatch):
+        """A large value followed by a small one must still warn: the scan
+        keeps the maximum, not the last value seen."""
+        msg = self._settings(tmp_path, monkeypatch,
+                             self._hooks(self._ccm_hook(5000), self._ccm_hook(5)))
+        assert "5000s" in msg
+
+    def test_another_tool_s_hook_is_not_ccm_s_business(self, tmp_path, monkeypatch):
+        """Only ccm's own entries are judged — a peer tool may have its
+        own reason for a long timeout, and `ccm setup-hooks` would not
+        rewrite it."""
+        peer = {"type": "command", "command": "/x/bin/peer hook", "timeout": 570000}
+        assert self._settings(tmp_path, monkeypatch, self._hooks(peer)) == ""
+
+    def test_a_peer_script_sharing_ccm_s_basename_is_not_ccm(self, tmp_path, monkeypatch):
+        """The script names are generic; the directory decides."""
+        script = ccm_core.HOOK_SCRIPTS[0]
+        peer = {"type": "command", "command": f"/peer/hooks/{script}", "timeout": 600}
+        assert self._settings(tmp_path, monkeypatch, self._hooks(peer)) == ""
+
+    @pytest.mark.parametrize("settings", [
+        [],                                              # root is a list
+        {"hooks": []},                                   # hooks is a list
+        {"hooks": {"Stop": 5}},                          # entries not iterable
+        {"hooks": {"Stop": None}},                       # entries not iterable
+        {"hooks": {"Stop": [None]}},                     # an entry that is not a dict
+        {"hooks": {"Stop": [{"hooks": {"a": 1}}]}},      # inner hooks a dict
+        {"hooks": {"Stop": [{"hooks": 5}]}},             # inner hooks not iterable
+        {"hooks": {"Stop": [{"hooks": True}]}},          # inner hooks a boolean
+        {"hooks": {"Stop": [{"hooks": [5]}]}},           # a hook that is not a dict
+    ], ids=["root-list", "hooks-list", "entries-int", "entries-none", "entry-none",
+            "inner-dict", "inner-int", "inner-bool", "hook-not-dict"])
+    def test_malformed_settings_stay_quiet(self, tmp_path, monkeypatch, settings):
+        """Each shape reaches a different guard, and each is its own case,
+        so the first shape to trip a missing guard cannot hide the rest."""
+        assert self._settings(tmp_path, monkeypatch, settings) == ""
+
+    def test_a_non_numeric_timeout_is_quiet(self, tmp_path, monkeypatch):
+        assert self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook("5000"))) == ""
+
+    def test_missing_settings_file_stays_quiet(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: str(tmp_path / "nope.json"))
+        assert ccm_core.hook_timeout_warning() == ""
+
+
+class TestHookLookalikeWarning:
+    """Hooks named like ccm's outside this ccm's hooks directory are
+    never edited; doctor names where they are so the user can decide."""
+
+    def _warn(self, tmp_path, monkeypatch, settings):
+        import json
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(settings))
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: str(path) if p.endswith("settings.json") else p)
+        return ccm_core.hook_lookalike_warning()
+
+    @staticmethod
+    def _stop(*commands):
+        return {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": c} for c in commands]}]}}
+
+    @staticmethod
+    def _entry(*commands, matcher=None):
+        entry = {"hooks": [{"type": "command", "command": c} for c in commands]}
+        if matcher is not None:
+            entry["matcher"] = matcher
+        return entry
+
+    def test_each_registration_is_counted_per_directory(self, tmp_path, monkeypatch):
+        """What the count means is the work of removing them by hand: a
+        command registered under two events, or twice in one matcher
+        entry, is two entries to delete."""
+        import os
+        s0, s1 = ccm_core.HOOK_SCRIPTS[0], ccm_core.HOOK_SCRIPTS[1]
+        old0, old1, peer = f"/old/ccm/hooks/{s0}", f"/old/ccm/hooks/{s1}", f"/peer/hooks/{s0}"
+        own = os.path.join(ccm_core.CCM_ROOT, "hooks", s0)
+        settings = {"hooks": {
+            "Stop": [self._entry(old0, old0, matcher="m"), self._entry(own, "/peer/independent.sh")],
+            "SubagentStop": [self._entry(old0), self._entry(old1, peer)],
+            "SessionEnd": [{"hooks": [{"command": ["not", "a", "string"]}, {"type": "command"}]}],
+        }}
+        msg = self._warn(tmp_path, monkeypatch, settings)
+        assert "/old/ccm/hooks (4 entries)" in msg
+        assert "/peer/hooks (1 entry)" in msg
+        assert "independent" not in msg and os.path.join(ccm_core.CCM_ROOT, "hooks") not in msg
+        assert msg.index("/old/ccm/hooks") < msg.index("/peer/hooks")
+        assert "by hand" not in msg and "only those you know" in msg
+
+    def test_this_ccm_s_hooks_and_unrelated_hooks_are_quiet(self, tmp_path, monkeypatch):
+        import os
+        own = os.path.join(ccm_core.CCM_ROOT, "hooks", ccm_core.HOOK_SCRIPTS[0])
+        assert self._warn(tmp_path, monkeypatch, self._stop(own, "/peer/independent.sh")) == ""
+
+    def test_missing_settings_file_stays_quiet(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "nope.json"))
+        assert ccm_core.hook_lookalike_warning() == ""
+
+
+class TestOwnHookEntryCount:
+
+    def _count(self, tmp_path, monkeypatch, settings):
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps(settings))
+        monkeypatch.setattr("os.path.expanduser",
+                            lambda p: str(path) if p.endswith("settings.json") else p)
+        return ccm_core.own_hook_entry_count()
+
+    def test_counts_registrations_of_this_ccm_s_hooks_only(self, tmp_path, monkeypatch):
+        own = os.path.join(ccm_core.CCM_ROOT, "hooks", ccm_core.HOOK_SCRIPTS[0])
+        other = f"/old/ccm/hooks/{ccm_core.HOOK_SCRIPTS[0]}"
+        hook = lambda c: {"hooks": [{"type": "command", "command": c}]}
+        settings = {"hooks": {"Stop": [hook(own), hook(other)], "SubagentStop": [hook(own)]}}
+        assert self._count(tmp_path, monkeypatch, settings) == 2
+
+    def test_only_another_ccm_s_hooks_count_zero(self, tmp_path, monkeypatch):
+        other = f"/old/ccm/hooks/{ccm_core.HOOK_SCRIPTS[0]}"
+        settings = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": other}]}]}}
+        assert self._count(tmp_path, monkeypatch, settings) == 0
+
+    def test_unreadable_settings_are_unknown_not_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "nope.json"))
+        assert ccm_core.own_hook_entry_count() is None
+
+
+# ─── Global options read once per pass ───
+
+class TestPrefetchGlobalOptions:
+    SEP = ccm_core._OPTION_SEP
+
+    def _answer(self, monkeypatch, stdout, returncode=0):
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args)
+            batched = args[1] == "show-option" and ";" in args
+            out = stdout if batched else "LIVE"
+            code = returncode if batched else 0
+            return subprocess.CompletedProcess(args, code, out.encode(), b"")
+        monkeypatch.setattr(ccm_core.subprocess, "run", run)
+        monkeypatch.setattr(ccm_core, "_GLOBAL_OPTIONS", None)
+        return calls
+
+    def test_one_process_reads_them_all_and_unset_ones_are_empty(self, monkeypatch):
+        calls = self._answer(monkeypatch, f"red\n{self.SEP}\n{self.SEP}\nline1\nline2\n")
+        ccm_core.prefetch_global_options(["@a", "@unset", "@multi"])
+        assert len(calls) == 1
+        assert ccm_core._GLOBAL_OPTIONS == {"@a": "red", "@unset": "", "@multi": "line1\nline2"}
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@a") == "red"
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@unset") == ""
+        assert len(calls) == 1                                  # served from memory
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@other") == "LIVE"
+
+    @pytest.mark.parametrize("stdout,code", [("a\n", 1), (f"a\n{SEP}\nb\n{SEP}\nc\n", 0)])
+    def test_a_failure_or_a_count_mismatch_keeps_nothing(self, monkeypatch, stdout, code):
+        self._answer(monkeypatch, stdout, returncode=code)
+        ccm_core.prefetch_global_options(["@a", "@b"])
+        assert ccm_core._GLOBAL_OPTIONS is None
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@a") == "LIVE"
+
+    def test_a_write_drops_the_option_so_it_is_read_live(self, monkeypatch):
+        self._answer(monkeypatch, f"x\n{self.SEP}\ny\n{self.SEP}\nz\n")
+        ccm_core.prefetch_global_options(["@a", "@b", "@c"])
+        ccm_core.tmux_cmd("set-option", "-g", "@a", "new")
+        ccm_core.tmux_batch(("set", "-g", "@b", "new"), ("set", "-wt", "s:1", "@c", "v"))
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@a") == "LIVE"
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@b") == "LIVE"
+        # A window write (`-wt s:1`, whose target is not the option)
+        # leaves the global value, so the prefetched one still answers.
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@c") == "z"
+        # A global write whose target comes first still names `@c`.
+        ccm_core.tmux_cmd("set", "-t", "main", "-g", "@c", "new")
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "@c") == "LIVE"
+
+    def test_window_and_pane_reads_are_never_served_from_the_global_cache(self, monkeypatch):
+        self._answer(monkeypatch, "x\n")
+        ccm_core.prefetch_global_options(["@a"])
+        assert ccm_core.tmux_cmd("show-option", "-wqv", "@a") == "LIVE"
+        assert ccm_core.tmux_cmd("show-option", "-gqv", "-t", "s:1", "@a") == "LIVE"
+
+
+class TestSessionIdIsAPlainToken:
+    @pytest.mark.parametrize("sid", ["../x", "a/b", "", None, ".", "..", "a b", "x\n",
+                                     123, True, ["x"], {"id": "x"}])
+    def test_anything_but_a_plain_token_names_no_file(self, sid, tmp_path, monkeypatch):
+        import ccm_signals, ccm_jsonl
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(tmp_path))
+        assert not ccm_core.is_safe_session_id(sid)
+        if sid is not None:
+            assert ccm_signals._hook_signal_path("/p", session_id=sid) is None
+            assert ccm_signals._events_log_path("/p", session_id=sid) is None
+            assert ccm_jsonl.jsonl_path_for_session("/p", sid) is None
+
+    def test_a_uuid_is_used(self, tmp_path, monkeypatch):
+        import ccm_signals
+        monkeypatch.setattr(ccm_core, "CCM_HOOK_DIR", str(tmp_path))
+        sid = "0123abcd-0000-0000-0000-000000000000"
+        assert ccm_signals._hook_signal_path("/p", session_id=sid) == str(tmp_path / sid)
+
+
+@pytest.mark.parametrize("bad", [123, True, ["x"], {"id": "x"}])
+def test_a_malformed_registry_session_id_resolves_to_no_session(bad, monkeypatch):
+    import ccm_commands, ccm_jsonl, ccm_pane_state
+    monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **k: "4242")
+    monkeypatch.setattr(ccm_pane_state, "find_claude_pid", lambda pid, ps: "4243")
+    monkeypatch.setattr(ccm_jsonl, "read_session_info",
+                        lambda pid, ps=None: {"sessionId": bad, "cwd": "/missing"})
+    assert ccm_commands._pane_session_id("%1", []) is None
+    assert ccm_jsonl.jsonl_path_for_session("/missing", bad) is None

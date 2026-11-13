@@ -30,6 +30,7 @@ import ccm_spool
 #: `ps_snapshot`, `ccm_notify.notify`, ...).
 BLOCKED_SUBPROCESS_COMMANDS = frozenset({
     "tmux",
+    "claude",
     "ps",
     "jq",
     "osascript",
@@ -82,8 +83,11 @@ def isolate_runtime_state(tmp_path, monkeypatch):
     happen to need it, so a test written later cannot pollute the
     user's data by forgetting to ask.
     """
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setenv("CCM_AUTO_EXIT_LOG",
                        str(tmp_path / "state" / "auto-exit.log"))
+    monkeypatch.setenv("CCM_AUTO_EXIT_DECLINED_LOG",
+                       str(tmp_path / "state" / "auto-exit-declined.log"))
     # `SPOOL_ROOT` is resolved at import, so the env var alone would
     # not move it — patch the resolved value.
     monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", str(tmp_path / "spool"))
@@ -112,8 +116,7 @@ def block_live_subprocess(request, monkeypatch):
     # Tests about the resolution itself stub `tmux_cmd` and call
     # `_resolve_ambiguous_width` directly.
     import ccm_render
-    monkeypatch.setattr(ccm_render, "_AMBIGUOUS_STATE", (1, False),
-                        raising=False)
+    monkeypatch.setattr(ccm_render, "_AMBIGUOUS_STATE", (1, False))
 
     import subprocess
     real_run = subprocess.run
@@ -157,6 +160,27 @@ def block_live_subprocess(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_agentview_home(tmp_path, monkeypatch):
+    """Point ccm_agentview's daemon / jobs paths at an empty tmp tree
+    so no test reads the developer's real `~/.claude` roster. A test
+    that wants a roster writes one under this tree (see the
+    `fake_claude_home` fixture in test_agentview.py, which re-points
+    the same constants)."""
+    import ccm_agentview
+    home = tmp_path / "agentview-home" / ".claude"
+    (home / "daemon").mkdir(parents=True)
+    (home / "jobs").mkdir(parents=True)
+    monkeypatch.setattr(ccm_agentview, "DAEMON_DIR", str(home / "daemon"))
+    monkeypatch.setattr(ccm_agentview, "DAEMON_ROSTER_PATH",
+                        str(home / "daemon" / "roster.json"))
+    monkeypatch.setattr(ccm_agentview, "DAEMON_STATUS_PATH",
+                        str(home / "daemon.status.json"))
+    monkeypatch.setattr(ccm_agentview, "JOBS_DIR", str(home / "jobs"))
+    monkeypatch.setattr(ccm_agentview, "_claim_cache", ccm_agentview._BoundedCache(ccm_agentview._CACHE_LIMIT))
+    monkeypatch.setattr(ccm_agentview, "_handoff_cache", ccm_agentview._BoundedCache(ccm_agentview._CACHE_LIMIT))
+
+
+@pytest.fixture(autouse=True)
 def isolate_errors_log(tmp_path, monkeypatch):
     """Redirect the silent-exception log away from the user's real
     `$TMPDIR/ccm-$UID/errors.log` for every test.
@@ -166,11 +190,7 @@ def isolate_errors_log(tmp_path, monkeypatch):
     error log — any test that exercises a silent-catch path (or has
     a bug in its scaffolding) would append garbage entries to the
     real log that `ccm errors` then shows the user as if they were
-    production failures. This actually happened: a stale
-    `Dashboard.__new__` scaffold in test_silent_exceptions.py was
-    missing the `bg_visible` attribute, and the resulting
-    AttributeError was logged to the real errors.log on every test
-    run, masquerading as a production dashboard bug.
+    production failures.
     """
     import ccm_core
     monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG",
@@ -186,10 +206,8 @@ def isolate_hook_silence_log(tmp_path, monkeypatch):
     `.markers/` rate-limit dir) away from the user's real data dir
     for every test.
 
-    The firing log is the *evidence dataset* for the canary's
-    default-on promotion — a test-generated record would masquerade
-    as a real-session firing and poison exactly the data the
-    observe-first phase exists to collect. `hook_silence_log_path()`
+    A test-generated record would masquerade as a real-session firing
+    in the user's firing log. `hook_silence_log_path()`
     reads the env var at call time, so setenv is sufficient."""
     monkeypatch.setenv("CCM_HOOK_SILENCE_LOG",
                        str(tmp_path / "hook-silence.log"))
@@ -266,3 +284,59 @@ def make_ctx(**overrides):
     )
     defaults.update(overrides)
     return ccm_rules.DetectionContext(**defaults)
+
+
+# ─── The user's own settings come out of the run as they went in ───
+#
+# A test that writes the real ~/.claude/settings.json, ~/.tmux.conf or
+# the Codex config fails the run, naming the file. Only checksums are
+# taken. Read once at session start, before any test can repoint HOME.
+
+_REAL_SETTINGS = [os.path.join(os.path.expanduser("~"), f) for f in (
+    ".claude/settings.json", ".claude/settings.local.json", ".tmux.conf",
+    ".codex/hooks.json", ".codex/config.toml")]
+
+
+def _settings_sums():
+    import hashlib
+    sums = {}
+    for path in _REAL_SETTINGS:
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            sums[path] = None
+            continue
+        if "/.claude/" in path:
+            # Claude Code rewrites other keys of its settings while it
+            # runs. Compared: the hooks (what ccm writes there), and in
+            # the user settings also permissions and env (which only the
+            # user edits; the local file's permissions change with each
+            # approval).
+            keys = (("hooks", "permissions", "env")
+                    if path.endswith("/settings.json") else ("hooks",))
+            try:
+                parsed = json.loads(data)
+                data = json.dumps({k: parsed.get(k) for k in keys}, sort_keys=True).encode()
+            except (ValueError, AttributeError):
+                pass
+        sums[path] = hashlib.sha256(data).hexdigest()
+    return sums
+
+
+def pytest_sessionstart(session):
+    session.config._ccm_settings_before = _settings_sums()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    before = getattr(session.config, "_ccm_settings_before", None)
+    if before is None:
+        return
+    changed = [p for p, digest in _settings_sums().items() if digest != before.get(p)]
+    if changed:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter:
+            reporter.write_line("The user's own settings changed during the test run "
+                                "(a test wrote them, or they were edited meanwhile): "
+                                + ", ".join(changed), red=True)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
