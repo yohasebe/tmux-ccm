@@ -314,7 +314,7 @@ class TestSnapshotLoad:
 class TestSnapshotHomeShortening:
     """Snapshot save shortens a leading $HOME to `~` for portability,
     but ONLY at the path head. A plain `str.replace(home, "~")`
-    would rewrite every occurrence: with HOME=/Users/x the directory
+    would rewrite every occurrence: with `HOME=/Users/x` the directory
     `/Users/x2/work` would be stored as `~2/work`, which expanduser
     cannot turn back (user `2` lookup fails / literal path), so
     `cmd_snapshot_load` would skip it with "Directory not found"."""

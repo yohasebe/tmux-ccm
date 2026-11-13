@@ -650,7 +650,7 @@ class TestSignalAgeSuffixSessionId:
 class TestShortenHome:
     """`ccm_core.shorten_home` replaces only a LEADING $HOME component.
     A naive str.replace rewrites every occurrence, corrupting paths
-    like `/Users/x2/work` (HOME=/Users/x → `~2/work`, which no longer
+    like `/Users/x2/work` (`HOME=/Users/x` → `~2/work`, which no longer
     expands to a real directory) and mid-path repeats."""
 
     def test_leading_home_replaced(self, monkeypatch):

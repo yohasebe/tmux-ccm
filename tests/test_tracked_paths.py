@@ -119,9 +119,9 @@ def test_missing_list_or_files_refuse(repo, tmp_path_factory):
 ZERO = '0' * 40
 
 
-def pushed(repo, stdin):
+def pushed(repo, stdin, *args):
     shutil.copy(SCRIPTS / 'check_pushed_commits.py', repo / 'scripts')
-    run = subprocess.run([sys.executable, str(repo / 'scripts' / 'check_pushed_commits.py')],
+    run = subprocess.run([sys.executable, str(repo / 'scripts' / 'check_pushed_commits.py'), *args],
                          input=stdin, capture_output=True, text=True, cwd=repo)
     return run.returncode, run.stdout
 
@@ -179,7 +179,32 @@ def test_a_commit_without_a_list_passes_only_when_already_published(published):
     assert code == 1 and 'has no scripts/tracked_paths.allow' in out
     git(repo, 'push', '-q', '--no-verify', 'pub', 'bare')
     git(repo, 'fetch', '-q', 'pub')
-    assert pushed(repo, f'refs/heads/other {unpublished} refs/heads/other {base}\n')[0] == 0
+    stdin = f'refs/heads/other {unpublished} refs/heads/other {base}\n'
+    assert pushed(repo, stdin, '--known-remote', 'pub')[0] == 0
+    # Without a remote known to describe the destination, nothing is excused.
+    assert pushed(repo, stdin)[0] == 1
+
+
+def test_a_new_ref_is_checked_past_another_remotes_branches(published, tmp_path_factory):
+    """A commit only another remote has is not public at the destination."""
+    repo, base = published
+    other = tmp_path_factory.mktemp('other')
+    git(other, 'init', '-q', '--bare')
+    git(repo, 'remote', 'add', 'other', str(other))
+    middle = commit_file(repo, 'debug.log', 'add')
+    git(repo, 'push', '-q', '--no-verify', 'other', 'HEAD:refs/heads/held')
+    git(repo, 'fetch', '-q', 'other')
+    tip = commit_file(repo, 'debug.log', 'remove', remove=True)
+    stdin = f'refs/heads/new {tip} refs/heads/new {ZERO}\n'
+    code, out = pushed(repo, stdin, '--known-remote', 'pub')
+    assert code == 1 and middle[:12] in out
+    assert pushed(repo, stdin, '--known-remote', 'other')[0] == 0
+
+
+@pytest.mark.parametrize('args', [['--known-remote'], ['--known-remote', ''], ['--other', 'pub']])
+def test_bad_arguments_refuse(published, args):
+    repo, base = published
+    assert pushed(repo, f'refs/heads/main {base} refs/heads/main {ZERO}\n', *args)[0] != 0
 
 
 @pytest.mark.parametrize('kind', ['tree', 'blob', 'annotated-tree'])
