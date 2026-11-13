@@ -407,7 +407,7 @@ ccm setup-claude-md               ~/.claude/CLAUDE.mdにccmセクションを追
 ccm remove-claude-md              ~/.claude/CLAUDE.mdからccmセクションを削除
 ccm statusline                    1行ステータス出力（tmuxステータスバー用）
 ccm inject-status                 tmuxステータスバー更新（内部使用）
-ccm debug trace <target> [interval] 状態検出のライブトレース。対象はプロジェクトまたは tmux ペイン/ウィンドウ（読み取り専用）
+ccm debug trace <target> [interval] 状態検出のライブトレース。対象はプロジェクト、tmux ペイン/ウィンドウ、または session:index（読み取り専用）
 ccm errors [--clear]              silent-exception ログの表示／クリア
 ccm reset <name>                  プロジェクトの runtime 状態をリセット (最終手段の復旧)
 ccm ignore [project]              ペイン(既定:現在)またはプロジェクトをccmから隠す
