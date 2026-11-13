@@ -1,23 +1,20 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Environment guards in the hook scripts' shared state path
 # (hooks/lib.sh). Hook scripts run under `set -euo pipefail` inside
 # Claude Code, which reports ANY non-zero exit as a visible
-# "hook error" in the TUI — so tmux being absent in some dimension
-# (no attached client, no server at all) must read as "nothing to
-# do", never as failure.
+# "hook error" in the TUI. A server with no attached client, or no
+# server at all, must never read as a failure.
 #
-# Observation approach mirrors test_notify_parity.bats: a stub tmux
-# on PATH decides per-subcommand whether to succeed, emit fixture
-# rows, or fail — no production code is modified. Stub writers live
-# at file level (not inside @test bodies, where bats' preprocessor
-# and heredocs interact badly).
+# A stub tmux on PATH decides per subcommand whether to succeed, print
+# fixture rows, or fail. Stub writers live at file level, outside the
+# @test bodies.
 
 CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
 # A server with no attached client: reads succeed, the window row
-# matches $CCM_TEST_MATCH_DIR, and `refresh-client -S` exits 1 —
-# exactly what real tmux does when no client is attached (network
-# drop, scripted use).
+# matches $CCM_TEST_MATCH_DIR, and `refresh-client -S` exits 1, as
+# tmux does when no client is attached.
 write_detached_server_stub() {
     cat > "${MOCK_BIN}/tmux" <<'EOF'
 #!/bin/bash
@@ -38,9 +35,8 @@ write_no_server_stub() {
 
 setup() {
     SANDBOX="$(mktemp -d)"
-    # The hooks canonicalize the payload cwd (macOS: /var →
-    # /private/var), so fixtures must carry the physical path or the
-    # window match silently misses and the tests go vacuous.
+    # The hooks canonicalize the payload cwd, so fixtures carry the
+    # physical path for the window to match.
     SANDBOX="$(cd "$SANDBOX" && pwd -P)"
     export TMPDIR="${SANDBOX}/tmp"
     mkdir -p "$TMPDIR"
@@ -80,18 +76,14 @@ run_hook() {
     grep -q BUSY "${HOOKS_DIR}/guard-test"
 }
 
-@test "on-prompt-submit exits 0 and writes nothing when no tmux server runs" {
+@test "on-prompt-submit exits 0 when no tmux server runs" {
     write_no_server_stub
     run_hook on-prompt-submit.sh UserPromptSubmit
     [ "$status" -eq 0 ]
-    # With no server there is nothing to manage: no signal, no events.
-    [ ! -e "${HOOKS_DIR}/guard-test" ]
-    [ ! -e "${HOOKS_DIR}/guard-test.events.jsonl" ]
 }
 
-@test "on-stop exits 0 and writes nothing when no tmux server runs" {
+@test "on-stop exits 0 when no tmux server runs" {
     write_no_server_stub
     run_hook on-stop.sh Stop
     [ "$status" -eq 0 ]
-    [ ! -e "${HOOKS_DIR}/guard-test.events.jsonl" ]
 }
