@@ -249,13 +249,9 @@ def launch_claude(win_target, honour_setting=True, exclude_pane=None) -> LaunchR
     ccm_core.tmux_cmd("send-keys", "-t", pane, "-X", "cancel")
     ccm_core.tmux_cmd("send-keys", "-t", pane, CLAUDE_CMD, "Enter")
     if notice:
-        # `display-message` expands tmux formats in its argument:
-        # `#{...}` substitutes and `#(...)` runs a shell command. The
-        # notice carries a project name, which is not required to be
-        # free of `#`, so every `#` is doubled — the format escape —
-        # before it is shown.
+        # The notice carries a project name, which may hold `#`.
         ccm_core.tmux_cmd("display-message", "-d", str(CONTINUE_NOTICE_MS),
-                          "ccm: " + notice.replace("#", "##"))
+                          "ccm: " + ccm_core.tmux_literal(notice))
     return LaunchResult(LAUNCHED, notice, pane)
 
 

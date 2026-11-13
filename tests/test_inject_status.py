@@ -65,6 +65,21 @@ class TestCurrentProjectBackground:
         assert " |#[bg=#123456] #[bg=#123456]two" in out
         assert "two #[bg=#000000,nobold,fg=#999999]| three" in out
 
+    def test_shown_text_reads_a_doubled_hash_as_one(self):
+        """`##` draws one `#`, so `##[...]` is text, not a style."""
+        assert inject_status.shown_text("a##[b]#[fg=red]c##") == "a#[b]c#"
+
+    def test_the_background_leaves_text_after_a_doubled_hash_alone(self):
+        out = inject_status._as_current_pill("a##[fg=red]b", "#123456")
+        assert out == "#[bg=#123456]a##[fg=red]b"
+
+    def test_a_name_with_a_hash_is_measured_as_drawn(self):
+        p = make_project("0:1", "1", "a#b", "IDLE")
+        for current in ("0:1", "0:9"):
+            entry = inject_status.build_detail_entries(
+                [p], current_win_target=current)[0]
+            assert inject_status.shown_text(entry).startswith("a#b:")
+
     def test_no_entries_keeps_the_separators(self):
         assert inject_status._join_entries([], [" ", "  "], "#1", "#2", "#3") == "   "
 

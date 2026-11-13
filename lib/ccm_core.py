@@ -161,6 +161,14 @@ def _forget_written_option(args):
             return
 
 
+def tmux_literal(text):
+    """`text` as tmux reads it literally where it expands formats
+    (`new-window -c`, `split-window -c`, `display-message`): `#{...}`
+    would substitute and `#(...)` would run a shell command, so every
+    `#` is doubled."""
+    return str(text).replace("#", "##")
+
+
 def tmux_cmd(*args, timeout=5, strip=True):
     """Run tmux command, return stdout (stripped; with `strip=False` only
     the trailing newlines go, so the first line keeps its indent).

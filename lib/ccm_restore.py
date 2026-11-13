@@ -42,11 +42,6 @@ def canonical(path):
     return os.path.realpath(os.path.expanduser(path))
 
 
-def escaped(path):
-    # -c expands tmux formats even when passed as a single argv value.
-    return str(path).replace('#', '##')
-
-
 def job_path():
     return store.directory() / JOB
 
@@ -438,7 +433,7 @@ def _create(session, project, index, job):
     # Name and marker are set in one server command queue. A lost reply can be
     # recovered by the marker; no old pane/window ID is used to claim ownership.
     result = run('new-window', '-d', '-P', '-F', '#{window_id}', '-t', session + ':',
-                 '-n', name, '-c', escaped(canonical(cwd)), *job['shell'],
+                 '-n', name, '-c', ccm_core.tmux_literal(canonical(cwd)), *job['shell'],
                  ';', 'set-option', '-w', '-t', session + ':=' + name, '@ccm_restore_job', token,
                  ';', 'set-option', '-w', '-t', session + ':=' + name, roles.PENDING_OPTION, '1',
                  ';', 'set-option', '-w', '-t', session + ':=' + name, roles.MANAGED_OPTION, '1')
@@ -569,7 +564,7 @@ def _split(state, op, job):
     if current == before:
         run('split-window', '-d', '-P', '-F', '#{pane_id}', '-t', target,
             '-h' if op['axis'] == '{' else '-v', '-l', str(op['size']),
-            '-c', escaped(op['cwd']), *job['shell'])
+            '-c', ccm_core.tmux_literal(op['cwd']), *job['shell'])
         rows = stable_panes(window)
         current = geometry(rows)
         new = set(current) - set(before)

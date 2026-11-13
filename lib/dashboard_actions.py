@@ -26,6 +26,7 @@ from ccm_core import (
     ps_snapshot,
     raise_on_die,
     tmux_cmd,
+    tmux_literal,
     tmux_query,
 )
 from ccm_pane_state import enumerate_window_panes
@@ -273,8 +274,7 @@ class ActionsMixin:
         # absolute path starting with "/", so this only rejects
         # upstream-malformed values.
         if cwd and not cwd.startswith("-") and os.path.isdir(cwd):
-            # `-c` expands tmux formats: double `#` so it stays literal.
-            args.extend(["-c", cwd.replace("#", "##")])
+            args.extend(["-c", tmux_literal(cwd)])
         new_target = tmux_cmd(*args)
         if not new_target:
             self._show_message(stdscr, "Failed to open attach window", 2)

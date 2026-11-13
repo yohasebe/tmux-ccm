@@ -288,6 +288,35 @@ def test_a_new_background_attach_window_is_created_unselected(monkeypatch):
     assert order.index('new-window') < order.index('mark')
 
 
+def test_a_background_attach_window_opens_its_directory_literally(monkeypatch, tmp_path):
+    """`new-window -c` expands tmux formats, so the directory goes
+    through `tmux_literal`: every `#` doubled."""
+    import dashboard
+    import dashboard_actions
+    from test_dashboard import _patch_dashboard, _stub_dashboard_environment
+    _stub_dashboard_environment(monkeypatch)
+    d = dashboard.Dashboard(initial_mode='dashboard', docked=True)
+    cwd = tmp_path / 'proj #(true) #{pane_id}'
+    cwd.mkdir()
+    created = []
+
+    def tmux_cmd(*args, **kwargs):
+        if args[0] == 'new-window':
+            created.append(args)
+            return 'w:3'
+        return ''
+    _patch_dashboard(monkeypatch, 'tmux_cmd', tmux_cmd)
+    monkeypatch.setattr(dock, 'mark_leaving', lambda *a, **k: None)
+    monkeypatch.setattr(d, '_find_bg_attach_windows', lambda *a: ('none', []))
+    from types import SimpleNamespace
+    d.bg_sessions = [SimpleNamespace(short='a1b2c3d4', cwd=str(cwd), state='working')]
+    d.projects = []
+    monkeypatch.setattr(dashboard_actions, 'get_session', lambda: 'w')
+    d._do_attach_bg(None, 0)
+    args = created[0]
+    assert args[args.index('-c') + 1] == str(cwd).replace('#', '##')
+
+
 # --- the dock is not a project pane ----------------------------------------
 
 def test_bulk_pane_cache_drops_the_dock(monkeypatch):

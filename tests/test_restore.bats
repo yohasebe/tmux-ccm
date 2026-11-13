@@ -220,3 +220,36 @@ STUB
     mode=$(stat -c '%a' "$log" 2>/dev/null || stat -f '%Lp' "$log")
     [[ "$mode" == 600 ]]
 }
+
+@test "auto-restore at tmux start skips when a managed window exists" {
+    [[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"
+    export CCM_TEST_SOCKET
+    CCM_TEST_SOCKET=$(ccm_test_new_socket)
+    cat > "$BATS_TEST_TMPDIR/bin/tmux" <<SHIM
+#!/usr/bin/env bash
+exec "$CCM_TEST_GUARD_DIR/bin/tmux" -L "\$CCM_TEST_SOCKET" -f /dev/null "\$@"
+SHIM
+    chmod +x "$BATS_TEST_TMPDIR/bin/tmux"
+    local dep
+    for dep in claude fzf; do
+        cat > "$BATS_TEST_TMPDIR/bin/$dep" <<STUB
+#!/bin/sh
+[ "\$1" = --version ] && [ "$dep" = claude ] && { echo '9.9.9 (Claude Code)'; exit 0; }
+exit 99
+STUB
+        chmod +x "$BATS_TEST_TMPDIR/bin/$dep"
+    done
+    mkdir -p "$CCM_SNAPSHOT_DIR"
+    printf 'not json' > "$CCM_SNAPSHOT_DIR/_autosave.json"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    tmux new-session -d -s test -x 100 -y 30 /bin/sh
+    # The managed window is not the current one.
+    tmux new-window -d -t test /bin/sh
+    tmux set-option -w -t test:1 @ccm_project demo
+    tmux set-option -g @ccm-auto-restore on
+    run bash "$CCM_ROOT/ccm.tmux"
+    # The restore check runs two seconds after loading.
+    sleep 4
+    tmux kill-server
+    [ ! -e "$CCM_DATA_DIR/state/auto-restore.log" ]
+}
