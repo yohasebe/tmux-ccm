@@ -20,10 +20,15 @@ setup() {
         case "$1" in
             show-option)      [[ "$*" == *"@ccm-pane-labels"* ]] && echo "$LABELS" ;;
             list-clients)     printf '%s\n' "${CLIENTS[@]}" ;;
+            list-windows)     printf 'w:1\t/cwd\tproj\t\t\n' ;;
         esac
         return 0
     }
     source "${CCM_ROOT}/hooks/lib.sh"
+    # Whether the firing Claude runs in $TMUX_PANE; tested on real
+    # processes in test_event_log.bats.
+    OWN_PANE=yes
+    _ccm_hook_from_pane() { [[ "$OWN_PANE" == yes ]]; }
 }
 
 _set_calls() { grep -c "^set-option -p -t %7 @ccm_unread " "$CALLS" || true; }
@@ -160,11 +165,17 @@ _wait_for_gate() {
     grep -q "^set-option -pu -t %7 @ccm_unread$" "$CALLS"
 }
 
+@test "a prompt from a Claude outside the pane leaves its mark" {
+    OWN_PANE=no
+    _ccm_clear_unread
+    ! grep -q "@ccm_unread" "$CALLS"
+}
+
 # ─── Wiring: the helpers above are reached from the real entry points ───
 
 @test "the completion grace path marks the pane" {
     _ccm_instant_notify() { :; }
-    _ccm_schedule_completed_notify "${BATS_TEST_TMPDIR}" "key" "/cwd" "proj" 0
+    _ccm_schedule_completed_notify "${BATS_TEST_TMPDIR}" "key" "/cwd" "proj" "w:1" 0
     local i; for i in 1 2 3 4 5 6 7 8 9 10; do
         [[ "$(_set_calls)" -eq 1 ]] && break; sleep 0.2
     done
@@ -176,7 +187,7 @@ _wait_for_gate() {
     # The notify stub leaves a file when the grace job reaches its end,
     # cancelled or not... it does not: a cancelled job skips it. So the
     # job's own end is what is waited for, not a guessed interval.
-    _ccm_schedule_completed_notify "${BATS_TEST_TMPDIR}" "key" "/cwd" "proj" 1
+    _ccm_schedule_completed_notify "${BATS_TEST_TMPDIR}" "key" "/cwd" "proj" "w:1" 1
     local job=$!
     _ccm_cancel_pending_completion "${BATS_TEST_TMPDIR}" "key"
     local i; for i in $(seq 1 50); do kill -0 "$job" 2>/dev/null || break; sleep 0.1; done
@@ -184,16 +195,32 @@ _wait_for_gate() {
     [[ "$(_set_calls)" -eq 0 ]]
 }
 
-@test "on-prompt-submit.sh, run as the hook, clears the mark on its pane" {
+# The hook runs under a `claude` (bash under that name) started from a
+# "pane" process, whose pid the tmux stub reports for the pane.
+_run_prompt_hook_in_pane() {
+    local runner="$1"
     local home="${BATS_TEST_TMPDIR}/home" bin="${BATS_TEST_TMPDIR}/hookbin"
-    local log="${BATS_TEST_TMPDIR}/hook-tmux.log"
-    mkdir -p "$home" "$bin"; : > "$log"
-    printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexit 0\n' "$log" > "$bin/tmux"
+    LOG="${BATS_TEST_TMPDIR}/hook-tmux.log"
+    local pidfile="${BATS_TEST_TMPDIR}/pane.pid"
+    mkdir -p "$home" "$bin"; : > "$LOG"
+    printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncase "$*" in\n  *@ccm-pane-labels*) echo on ;;\n  *pane_pid*) cat "%s" ;;\nesac\nexit 0\n' \
+        "$LOG" "$pidfile" > "$bin/tmux"
     chmod +x "$bin/tmux"
+    ln -sf "$(command -v bash)" "$bin/claude"
     PATH="$bin:$PATH" TMPDIR="$home" HOME="$home" TMUX_PANE="%7" \
-        bash -c "cd '${CCM_ROOT}' && mkdir -p \"\$TMPDIR/ccm-\$UID/hooks\" && \
-                 echo '{\"cwd\":\"/work\",\"session_id\":\"sid-labels\"}' | hooks/on-prompt-submit.sh"
-    grep -q "^set-option -pu -t %7 @ccm_unread$" "$log"
+        bash -c 'echo $$ > "$1"; cd "$2" && mkdir -p "$TMPDIR/ccm-$UID/hooks" && \
+                 echo "{\"cwd\":\"/work\",\"session_id\":\"sid-labels\"}" | $3 hooks/on-prompt-submit.sh; true' \
+        _ "$pidfile" "$CCM_ROOT" "$runner"
+}
+
+@test "on-prompt-submit.sh, run as the pane's Claude's hook, clears the mark on its pane" {
+    _run_prompt_hook_in_pane "${BATS_TEST_TMPDIR}/hookbin/claude"
+    grep -q "^set-option -pu -t %7 @ccm_unread$" "$LOG"
+}
+
+@test "on-prompt-submit.sh, run by a process that only inherited the pane, leaves its mark" {
+    _run_prompt_hook_in_pane bash
+    ! grep -q "@ccm_unread" "$LOG"
 }
 
 @test "ccm.tmux registers the border format and the focus hook once, only when asked" {

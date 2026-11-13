@@ -746,8 +746,8 @@ _assert_untouched() {   # $1 = content expected in settings.json
 
 @test "on-stop.sh: writes .pending sentinel instead of immediate notify" {
     # on-stop.sh queries tmux to resolve the project name; shim a
-    # minimal tmux so that list-windows returns a line for our
-    # synthetic cwd. Without this, on-stop.sh finds no project and
+    # minimal tmux whose window has our synthetic cwd and knows the
+    # firing session. Without it, on-stop.sh finds no project and
     # skips the schedule step entirely.
     local tmp_home="${MOCK_DIR}/stop-home"
     local shim_dir="${MOCK_DIR}/stop-shim"
@@ -757,7 +757,7 @@ _assert_untouched() {   # $1 = content expected in settings.json
     cat > "${shim_dir}/tmux" << EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "list-windows" ]]; then
-    printf '%s\t%s\t%s\n' 'main:1' '$cwd' 'stop-proj-a'
+    printf '%s\t%s\t%s\t\t%s\n' 'main:1' '$cwd' 'stop-proj-a' '$sid'
 fi
 exit 0
 EOF
@@ -777,7 +777,8 @@ EOF
 }
 
 # Helper for the bg-pending-suppression tests: runs on-stop.sh with a
-# minimal tmux shim that lets project resolution succeed, and returns
+# minimal tmux shim whose window knows the firing session, so project
+# resolution succeeds, and returns
 # whether the .pending sentinel was written. Caller passes the JSON
 # payload fragment that follows `cwd`/`session_id` (i.e. extra fields).
 _run_stop_with_payload_extras() {
@@ -787,7 +788,7 @@ _run_stop_with_payload_extras() {
     cat > "${shim_dir}/tmux" << EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "list-windows" ]]; then
-    printf '%s\t%s\t%s\n' 'main:1' '$cwd' 'proj-bg'
+    printf '%s\t%s\t%s\t\t%s\n' 'main:1' '$cwd' 'proj-bg' '$sid'
 fi
 exit 0
 EOF

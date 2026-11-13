@@ -107,10 +107,23 @@ case "$cmd" in
     show-option)    _mock_show_option "$@" ;;
     set-option|set) _mock_set_option "$@" ;;
     display-message)
+        # `-t <pane> -p '#{session_name}:#{window_index} #{pane_pid}'`
+        # answers from the "panes" file ("<pane>\t<session>:<index>\t<pid>"
+        # lines) when it exists. A pane it does not list prints ": " and
+        # succeeds, as tmux does for a pane that is gone.
+        dm_target=""
         while [[ $# -gt 0 ]]; do
             case "$1" in
-                -t) shift 2 ;;
-                -p) shift; echo "${1:-}"; shift ;;
+                -t) dm_target="$2"; shift 2 ;;
+                -p) shift
+                    if [[ "$dm_target" == %* && "${1:-}" == '#{session_name}:#{window_index} #{pane_pid}' \
+                          && -f "${MOCK_STATE_DIR}/panes" ]]; then
+                        awk -F'\t' -v p="$dm_target" '$1==p {print $2 " " $3; f=1} END {if (!f) print ": "}' \
+                            "${MOCK_STATE_DIR}/panes"
+                    else
+                        echo "${1:-}"
+                    fi
+                    shift ;;
                 *) shift ;;
             esac
         done

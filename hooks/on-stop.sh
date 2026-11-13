@@ -50,9 +50,9 @@ rm -f "$HOOK_DIR/$KEY" "$HOOK_DIR/$KEY.busy"
 # older Claude Code versions the fields are absent and `// []`
 # defaults the length to 0, preserving the legacy behaviour.
 if [[ "$bg_remaining" == "0" ]]; then
-    project=$(ccm_hook_resolve_project "$CWD")
+    IFS=$'\t' read -r target project _ <<< "$(ccm_hook_window "$CWD" "$KEY")" || true
     if [[ -n "$project" ]]; then
-        _ccm_schedule_completed_notify "$HOOK_DIR" "$KEY" "$CWD" "$project"
+        _ccm_schedule_completed_notify "$HOOK_DIR" "$KEY" "$CWD" "$project" "$target"
     fi
 fi
 

@@ -438,20 +438,64 @@ ccm_hook_format_tool_detail() {
     fi
 }
 
-# Look up the ccm project name for a given cwd by scanning tmux
-# windows with `@ccm_dir` set. Writes the project name to stdout
-# (empty if no matching window). on-stop.sh and on-notification.sh
-# share this so they can feed a meaningful name into the desktop
-# notification ("ccm ✔ my-project" rather than "ccm ✔ ").
-# Args: $1=CWD to match against `@ccm_dir`.
-# A failed listing (no server, no connection) prints nothing and
-# returns 0: the caller has already recorded the state, and an
-# unknown project only means no notification.
-ccm_hook_resolve_project() {
-    local cwd="$1" windows
-    windows=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}' 2>/dev/null) \
+# True when the Claude that fired this hook runs in the pane whose
+# process is $1: the hook's nearest `claude` ancestor is that process or
+# its child. A process that only inherited `$TMUX_PANE` (an IDE or a
+# daemon started from the pane, or a `claude -p` run inside the pane's
+# Claude) has another nearest Claude, or none. One `ps` call.
+_ccm_hook_from_pane() {
+    local pane_pid="$1"
+    [[ "$pane_pid" =~ ^[0-9]+$ ]] || return 1
+    ps -A -o pid=,ppid=,comm= 2>/dev/null | awk -v p="$$" -v pane="$pane_pid" '
+        { name = $3; for (i = 4; i <= NF; i++) name = name " " $i
+          n = split(name, part, "/"); name = part[n]; sub(/^-/, "", name)
+          parent[$1] = $2; comm[$1] = name }
+        END {
+            while (p != "" && p > 1 && !(p in seen)) {
+                seen[p] = 1
+                if (comm[p] == "claude") exit !(p == pane || parent[p] == pane)
+                p = parent[p]
+            }
+            exit 1
+        }'
+}
+
+# The pid of the process in `$TMUX_PANE`, or nothing.
+_ccm_hook_pane_pid() {
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    tmux display-message -t "$TMUX_PANE" -p '#{pane_pid}' 2>/dev/null || true
+}
+
+# The window the firing session belongs to, as
+# "<target>\t<project>\t<prev_state>", or nothing.
+# Args: $1=CWD, $2=KEY (the firing session's id).
+#
+# A matching `@ccm_dir` does not prove it: hooks are user-scope, so a
+# Claude Desktop, IDE or other-terminal session opened on the same
+# directory fires them too. A window that knows its session
+# (`@ccm_session_id`) takes only that session. One that does not yet
+# takes only the Claude running in one of its own panes: `$TMUX_PANE`
+# names a pane of that window and that pane's Claude fired this hook
+# (`_ccm_hook_from_pane`). Anything else reaches no window; the caller
+# has already written the session's own signal and events. A failed
+# tmux call leaves the window unknown.
+ccm_hook_window() {
+    local cwd="$1" key="$2" windows pane_info pane_window
+    windows=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_session_id}' 2>/dev/null) \
         || return 0
-    awk -F'\t' -v d="$cwd" '$2==d {print $3; exit}' <<< "$windows"
+    if [[ -n "$key" ]] && awk -F'\t' -v d="$cwd" -v k="$key" \
+            '$2==d && $5==k {print $1"\t"$3"\t"$4; found=1; exit} END {exit !found}' <<< "$windows"; then
+        return 0
+    fi
+    [[ -n "${TMUX_PANE:-}" ]] || return 0
+    # A pane that is gone prints ": " rather than failing.
+    pane_info=$(tmux display-message -t "$TMUX_PANE" -p '#{session_name}:#{window_index} #{pane_pid}' 2>/dev/null) \
+        || return 0
+    pane_window=${pane_info% *}
+    [[ "$pane_window" == ?*:?* ]] || return 0
+    _ccm_hook_from_pane "${pane_info##* }" || return 0
+    awk -F'\t' -v d="$cwd" -v w="$pane_window" \
+        '$2==d && $5=="" && $1==w {print $1"\t"$3"\t"$4; exit}' <<< "$windows"
 }
 
 # Write signal to hook file AND directly update tmux window option
@@ -476,31 +520,15 @@ ccm_write_signal() {
         printf '%s' "$line" > "${hook_dir}/${key}"
     fi
 
-    # Direct tmux update for instant status bar reflection
-    # Find the window whose @ccm_dir matches this cwd. The listing
-    # also carries @ccm_prev_state so the push below can fire only on
-    # a real transition — same subprocess, no extra cost.
-    local win_target project prev_state cached_sid
-    local windows win_info
-    # A failed listing leaves the window unknown: the signal is
-    # written, and only the instant tmux update is skipped.
-    windows=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_session_id}' 2>/dev/null) \
-        || return 0
-    win_info=$(awk -F'\t' -v d="$cwd" '$2==d {print $1"\t"$3"\t"$4"\t"$5; exit}' <<< "$windows")
+    # Direct tmux update for instant status bar reflection, in the
+    # window this session belongs to (`ccm_hook_window`). Its
+    # @ccm_prev_state lets the push below fire only on a real
+    # transition. With no such window the signal is still written;
+    # only the instant update is skipped.
+    local win_target project prev_state win_info
+    win_info=$(ccm_hook_window "$cwd" "$key")
     if [[ -n "$win_info" ]]; then
-        IFS=$'\t' read -r win_target project prev_state cached_sid <<< "$win_info"
-        # cwd alone does not prove the event came from this window's
-        # own claude: hooks are user-scope, so a Claude Desktop or
-        # VS Code session opened on the same directory fires them
-        # too, and would paint the tmux window PERMIT for a prompt
-        # that is not in it. The cached session id is the
-        # discriminator; empty means a fresh session not yet
-        # resolved, which must still get its update. The signal
-        # file above is already written — keyed by the firing
-        # session, so no tmux reader ever resolves to it.
-        if [[ -n "$cached_sid" && -n "$key" && "$cached_sid" != "$key" ]]; then
-            return 0
-        fi
+        IFS=$'\t' read -r win_target project prev_state <<< "$win_info"
         # Update state option. These tmux calls are best-effort: the
         # signal file is already written, and a failure must not end
         # the hook under `set -e` (`refresh-client` exits 1 when no
@@ -588,11 +616,18 @@ _ccm_instant_permit_icon() {
 #
 # Args: $1=HOOK_DIR, $2=KEY (session_id, for the .pending sentinel),
 #       $3=CWD (for notification dedup keying), $4=PROJECT_NAME,
-#       $5=GRACE_SEC (default: CCM_COMPLETION_GRACE_SEC env, or 3)
+#       $5=TARGET (the window, checked again before sending),
+#       $6=GRACE_SEC (default: CCM_COMPLETION_GRACE_SEC env, or 3)
 _ccm_schedule_completed_notify() {
-    local hook_dir="$1" key="$2" cwd="$3" project="$4"
-    local grace="${5:-${CCM_COMPLETION_GRACE_SEC:-3}}"
+    local hook_dir="$1" key="$2" cwd="$3" project="$4" target="$5"
+    local grace="${6:-${CCM_COMPLETION_GRACE_SEC:-3}}"
     local pending="${hook_dir}/${key}.pending"
+    # The pane can be marked unread only when this session runs in it;
+    # that is known now, while the hook is still the Claude's child.
+    local mark=""
+    if _ccm_pane_labels_on && _ccm_hook_from_pane "$(_ccm_hook_pane_pid)"; then
+        mark=1
+    fi
 
     printf '%s' "${EPOCHSECONDS:-$(date +%s)}" > "$pending" 2>/dev/null
 
@@ -603,11 +638,25 @@ _ccm_schedule_completed_notify() {
         sleep "$grace"
         if [[ -f "$pending" ]]; then
             rm -f "$pending" 2>/dev/null
-            _ccm_mark_unread
-            _ccm_instant_notify "COMPLETED" "$project" "" "$cwd"
+            # The window may have taken another session meanwhile.
+            if _ccm_window_still_takes "$target" "$cwd" "$key"; then
+                [[ -n "$mark" ]] && _ccm_mark_unread
+                _ccm_instant_notify "COMPLETED" "$project" "" "$cwd"
+            fi
         fi
     ) </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null || true
+}
+
+# True while window $1 still has directory $2 and knows session $3 or
+# none: what the completion notification is checked against when it is
+# finally sent.
+_ccm_window_still_takes() {
+    local target="$1" cwd="$2" key="$3" windows
+    windows=$(tmux list-windows -a -F '#{session_name}:#{window_index}	#{@ccm_dir}	#{@ccm_project}	#{@ccm_prev_state}	#{@ccm_session_id}' 2>/dev/null) \
+        || return 1
+    awk -F'\t' -v t="$target" -v d="$cwd" -v k="$key" \
+        '$1==t && $2==d && ($5=="" || $5==k) {found=1; exit} END {exit !found}' <<< "$windows"
 }
 
 # ─── Unread replies (opt-in: `@ccm-pane-labels on`) ───
@@ -667,6 +716,9 @@ _ccm_mark_unread() {
 
 _ccm_clear_unread() {
     [[ -n "${TMUX_PANE:-}" ]] || return 0
+    _ccm_pane_labels_on || return 0
+    # Only a prompt to the pane's own Claude answers its mark.
+    _ccm_hook_from_pane "$(_ccm_hook_pane_pid)" || return 0
     tmux set-option -pu -t "$TMUX_PANE" @ccm_unread 2>/dev/null || true
     tmux set-option -pu -t "$TMUX_PANE" @ccm_unread_look 2>/dev/null || true
 }

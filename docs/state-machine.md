@@ -88,6 +88,16 @@ and initially resolves to BUSY for a running pane, with visible PERMIT taking
 precedence. SHELL/DOWN/IGNORED retain their process or visibility meaning.
 No CLI command or daemon mutation is needed.
 
+Hooks update a window directly (its state option, name, PERMIT and
+completion notifications) only for the window the firing session belongs
+to: the window whose session cache holds that session or, while the cache
+is empty, the window holding the hook's own pane (`TMUX_PANE`) when that
+pane's Claude is the hook's nearest `claude` ancestor. A completion
+notification is checked again when it is sent, and a pane's unread mark is
+set or cleared only for that pane's Claude. A session elsewhere on the same
+directory (another terminal, an IDE, Claude Desktop) still writes its own
+signal and events, which no window reads.
+
 For unresolved sessions, `@ccm_unresolved_idle` stores the display process and
 registration identity, first/latest observation times, work clock, and credited
 idle seconds. Let W be `BUSY_STALE_RELEASE_SEC` (default 60), R the nonnegative

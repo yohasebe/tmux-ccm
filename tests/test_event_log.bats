@@ -220,7 +220,7 @@ _wait_for_stub_log() {
 
 @test "write_signal: state transition spawns inject-status push" {
     _setup_push_stub
-    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t%s\n' "$KEY" \
         > "${MOCK_STATE_DIR}/windows"
     ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
     _wait_for_stub_log
@@ -229,7 +229,7 @@ _wait_for_stub_log() {
 
 @test "write_signal: same-state repeat does not spawn push" {
     _setup_push_stub
-    printf 'sess:1\t/x/test-project\ttest-project\tBUSY\n' \
+    printf 'sess:1\t/x/test-project\ttest-project\tBUSY\t%s\n' "$KEY" \
         > "${MOCK_STATE_DIR}/windows"
     ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
     sleep 0.5
@@ -271,10 +271,138 @@ _wait_for_stub_log() {
     grep -q -- "inject-status --fast" "$CCM_STUB_LOG"
 }
 
+# ─── which window a session's events reach ───
+# A window that knows its session takes only that session; one that does
+# not yet takes only the Claude running in one of its own panes. Which
+# pane process the firing Claude runs under is stubbed here as
+# OWN_PANE_PID; `_ccm_hook_from_pane` itself is tested below on real
+# processes.
+
+_own_pane() { _ccm_hook_from_pane() { [[ "$1" == "${OWN_PANE_PID:-}" ]]; }; }
+
+@test "write_signal: an unresolved window takes a session in its own pane" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t\n' > "${MOCK_STATE_DIR}/windows"
+    printf '%%5\tsess:1\t500\n' > "${MOCK_STATE_DIR}/panes"
+    _own_pane; OWN_PANE_PID=500
+    TMUX_PANE=%5 ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    _wait_for_stub_log
+    run mock_get_option "sess:1" "@ccm_prev_state"
+    [[ "$output" == "BUSY" ]]
+}
+
+@test "write_signal: a process that only inherited the window's pane reaches no window" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t\n' > "${MOCK_STATE_DIR}/windows"
+    printf '%%5\tsess:1\t500\n' > "${MOCK_STATE_DIR}/panes"
+    _own_pane; OWN_PANE_PID=777
+    TMUX_PANE=%5 ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "/x/test-project"
+    sleep 0.5
+    run mock_get_option "sess:1" "@ccm_prev_state"
+    [[ -z "$output" ]]
+}
+
+@test "write_signal: an unresolved window ignores a session outside tmux" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t\n' > "${MOCK_STATE_DIR}/windows"
+    printf '%%5\tsess:1\t500\n' > "${MOCK_STATE_DIR}/panes"
+    ( unset TMUX_PANE; ccm_write_signal "$HOOK_DIR" "$KEY" "PERMIT" "/x/test-project" )
+    sleep 0.5
+    [[ ! -s "$CCM_STUB_LOG" ]]
+    run mock_get_option "sess:1" "@ccm_prev_state"
+    [[ -z "$output" ]]
+    [[ -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "write_signal: an unresolved window ignores a session in another window's pane" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t\n' > "${MOCK_STATE_DIR}/windows"
+    printf '%%9\tsess:2\t900\n' > "${MOCK_STATE_DIR}/panes"
+    _own_pane; OWN_PANE_PID=900
+    TMUX_PANE=%9 ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    sleep 0.5
+    run mock_get_option "sess:1" "@ccm_prev_state"
+    [[ -z "$output" ]]
+}
+
+@test "write_signal: of two windows on one directory, the session's own is updated" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\tfirst\tIDLE\tother-session-uuid\nsess:2\t/x/test-project\tsecond\tIDLE\t%s\n' "$KEY" \
+        > "${MOCK_STATE_DIR}/windows"
+    ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    _wait_for_stub_log
+    run mock_get_option "sess:2" "@ccm_prev_state"
+    [[ "$output" == "BUSY" ]]
+    run mock_get_option "sess:1" "@ccm_prev_state"
+    [[ -z "$output" ]]
+}
+
+@test "write_signal: a gone pane reaches no window" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t\n' > "${MOCK_STATE_DIR}/windows"
+    printf '%%5\tsess:1\t500\n' > "${MOCK_STATE_DIR}/panes"
+    _own_pane; OWN_PANE_PID=900
+    TMUX_PANE=%77 ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    sleep 0.5
+    run mock_get_option "sess:1" "@ccm_prev_state"
+    [[ -z "$output" ]]
+}
+
+@test "hook_window: a window that knows another session is not this session's" {
+    printf 'sess:1\t/x/test-project\ttest-project\t\tother-session-uuid\n' > "${MOCK_STATE_DIR}/windows"
+    run ccm_hook_window "/x/test-project" "$KEY"
+    [[ -z "$output" ]]
+    run ccm_hook_window "/x/test-project" "other-session-uuid"
+    [[ "$output" == $'sess:1\ttest-project\t' ]]
+}
+
+@test "on-stop.sh: no completion for a session outside the window" {
+    printf 'sess:1\t/x/test-project\ttest-project\t\tother-session-uuid\n' > "${MOCK_STATE_DIR}/windows"
+    run _run_hook on-stop.sh '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    [[ "$status" -eq 0 ]]
+    [[ ! -e "${HOOK_DIR}/${KEY}.pending" ]]
+}
+
+@test "hook_from_pane: on real processes, only the pane's own Claude counts" {
+    # `claude` here is bash under that name, started from a "pane"
+    # process whose pid is recorded; the check runs inside it.
+    local fake="${BATS_TEST_TMPDIR}/fake" pid="${BATS_TEST_TMPDIR}/pane.pid"
+    mkdir -p "$fake"
+    ln -s "$(command -v bash)" "$fake/claude"
+    local check='source "$1/hooks/lib.sh"; _ccm_hook_from_pane "$(cat "$2")" && echo yes || echo no'
+    run bash -c 'echo $$ > "$2"; "$3/claude" -c "$4" _ "$1" "$2"; true' _ "$CCM_ROOT" "$pid" "$fake" "$check"
+    [[ "$output" == "yes" ]]
+    # A Claude started by the pane's Claude is not the pane's Claude
+    # (`; true` keeps each bash from replacing itself with its command).
+    run bash -c 'echo $$ > "$2"; "$3/claude" -c "\"$3/claude\" -c \"\$1\" _ \"\$2\" \"\$3\"; true" _ "$4" "$1" "$2"; true' \
+        _ "$CCM_ROOT" "$pid" "$fake" "$check"
+    [[ "$output" == "no" ]]
+    # Another pane's process is not this Claude's pane.
+    run bash -c 'echo 1 > "$2"; "$3/claude" -c "$4" _ "$1" "$2"; true' _ "$CCM_ROOT" "$pid" "$fake" "$check"
+    [[ "$output" == "no" ]]
+}
+
+@test "completion: checked again when sent, against the window's session" {
+    local sent="${BATS_TEST_TMPDIR}/sent"
+    _ccm_instant_notify() { touch "$sent"; }
+    printf 'sess:1\t/x/test-project\ttest-project\t\t%s\n' "$KEY" > "${MOCK_STATE_DIR}/windows"
+    _ccm_schedule_completed_notify "$HOOK_DIR" "$KEY" "/x/test-project" "test-project" "sess:1" 1
+    local job=$!
+    # The window takes a new session before the notification goes out.
+    printf 'sess:1\t/x/test-project\ttest-project\t\tnew-session\n' > "${MOCK_STATE_DIR}/windows"
+    local i; for i in $(seq 1 50); do kill -0 "$job" 2>/dev/null || break; sleep 0.1; done
+    [[ ! -e "$sent" ]]
+    # Unchanged, it goes out.
+    printf 'sess:1\t/x/test-project\ttest-project\t\t%s\n' "$KEY" > "${MOCK_STATE_DIR}/windows"
+    _ccm_schedule_completed_notify "$HOOK_DIR" "$KEY" "/x/test-project" "test-project" "sess:1" 0
+    for i in $(seq 1 50); do [[ -e "$sent" ]] && break; sleep 0.1; done
+    [[ -e "$sent" ]]
+}
+
 @test "on-pre-tool-use.sh: tmux calls that fail do not fail the hook" {
     # Real tmux: `refresh-client` exits 1 with no client attached.
     _setup_push_stub
-    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t%s\n' "$KEY" \
         > "${MOCK_STATE_DIR}/windows"
     printf 'refresh-client\nset-option\nrename-window\n' > "${MOCK_STATE_DIR}/fail"
     run _run_hook on-pre-tool-use.sh \
@@ -286,7 +414,7 @@ _wait_for_stub_log() {
 
 @test "write_signal: a PERMIT with failing tmux calls still returns 0" {
     _setup_push_stub
-    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t%s\n' "$KEY" \
         > "${MOCK_STATE_DIR}/windows"
     printf 'refresh-client\nset-option\nset\nrename-window\n' > "${MOCK_STATE_DIR}/fail"
     run bash -c 'set -euo pipefail; source "$1/hooks/lib.sh"; _ccm_instant_notify() { :; }; ccm_write_signal "$2" "$3" PERMIT /x/test-project "Bash: ls"; wait; echo done' \
@@ -323,7 +451,7 @@ _wait_for_stub_log() {
 
 @test "write_signal: a listing that fails after printing updates no window" {
     _setup_push_stub
-    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\t%s\n' "$KEY" \
         > "${MOCK_STATE_DIR}/windows"
     : > "${MOCK_STATE_DIR}/windows-then-fail"
     ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
@@ -333,11 +461,11 @@ _wait_for_stub_log() {
     [[ -z "$output" ]]
 }
 
-@test "resolve_project: a listing that fails after printing gives no project" {
-    printf 'sess:1\t/x/test-project\ttest-project\n' \
+@test "hook_window: a listing that fails after printing gives no window" {
+    printf 'sess:1\t/x/test-project\ttest-project\t\t%s\n' "$KEY" \
         > "${MOCK_STATE_DIR}/windows"
     : > "${MOCK_STATE_DIR}/windows-then-fail"
-    run ccm_hook_resolve_project "/x/test-project"
+    run ccm_hook_window "/x/test-project" "$KEY"
     [[ "$status" -eq 0 ]]
     [[ -z "$output" ]]
 }
