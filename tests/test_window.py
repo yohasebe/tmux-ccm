@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import os
 import pytest
+import sys
 
 import ccm_core
 import ccm_window
@@ -439,8 +440,12 @@ class TestLaunchCommandChoice:
 
     @pytest.fixture(autouse=True)
     def _default_cli_home(self, monkeypatch):
+        import ccm_jsonl
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_PROJECT_DIR_NAME", raising=False)
+        # The temporary directory's length must not decide a verdict;
+        # the test of a slug past the limit sets its own.
+        monkeypatch.setattr(ccm_jsonl, "PROJECT_SLUG_MAX", sys.maxsize)
         # tmux environments that set nothing relevant, unless a test
         # replaces them.
         monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "PATH=/usr/bin\n-UNSET_ONE" if a[0] == "show-environment" else "")
@@ -578,7 +583,9 @@ class TestLaunchCommandChoice:
     def test_a_slug_the_cli_would_hash_means_resume(self, tmp_path, monkeypatch):
         import ccm_jsonl
         self._projects_dir(tmp_path, monkeypatch)
-        deep = tmp_path / ("d" * (ccm_jsonl.PROJECT_SLUG_MAX + 1)); deep.mkdir()
+        deep = tmp_path / "deep"; deep.mkdir()
+        monkeypatch.setattr(ccm_jsonl, "PROJECT_SLUG_MAX",
+                            len(ccm_jsonl._project_slug(str(deep))) - 1)
         assert ccm_window.conversation_history(str(deep), "main") == ccm_window.UNKNOWN
         assert ccm_window.launch_command(str(deep), "main") == ccm_window.CLAUDE_CMD
 
