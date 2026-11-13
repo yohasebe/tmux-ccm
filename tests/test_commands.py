@@ -18,8 +18,11 @@ import pytest
 
 import ccm_core
 import ccm_activity
+import ccm_agentview
 import ccm_canaries
 import ccm_commands
+import ccm_presentation
+import ccm_constants
 import ccm_detection
 import ccm_jsonl
 import ccm_notify
@@ -119,12 +122,26 @@ class TestCmdDoctor:
                     hooks=True, hooks_log_warning="",
                     disable_warning="", managed_warning="",
                     cluster_warnings=(), projects=(),
-                    errors_log_lines=0, ps_text="", panes_cache=()):
+                    errors_log_lines=0, ps_text="", panes_cache=(),
+                    focus_events="on", timeout_warning="",
+                    lookalike_warning="", own_hook_entries=16,
+                    real_hook_helpers=False):
         """Stub every external dependency cmd_doctor reads, returning
         controlled values so each test exercises a specific branch
-        without standing up real tmux / claude state."""
-        monkeypatch.setattr(ccm_core, "hooks_configured",
-                            lambda: hooks)
+        without standing up real tmux / claude state.
+
+        HOME points at an empty directory under tmp_path, so nothing
+        doctor reads from the home directory is the real user's. With
+        `real_hook_helpers` the settings-reading hook helpers run for
+        real against that HOME instead of being stubbed."""
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        if not real_hook_helpers:
+            monkeypatch.setattr(ccm_core, "hooks_configured", lambda: hooks)
+            monkeypatch.setattr(ccm_core, "hook_timeout_warning", lambda: timeout_warning)
+            monkeypatch.setattr(ccm_core, "hook_lookalike_warning", lambda: lookalike_warning)
+            monkeypatch.setattr(ccm_core, "own_hook_entry_count", lambda: own_hook_entries)
         monkeypatch.setattr(ccm_canaries, "hooks_log_warning",
                             lambda: hooks_log_warning)
         monkeypatch.setattr(ccm_canaries, "hooks_log_size",
@@ -133,13 +150,20 @@ class TestCmdDoctor:
                             lambda *a, **kw: disable_warning)
         monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning",
                             lambda *a, **kw: managed_warning)
+        monkeypatch.setattr(ccm_agentview, "continue_blocker_warnings",
+                            lambda projects, bg_sessions=None: [])
         monkeypatch.setattr(ccm_canaries, "shell_cluster_warnings",
                             lambda p: list(cluster_warnings))
         monkeypatch.setattr(ccm_core, "build_project_list",
                             lambda fast=False: list(projects))
         # tmux_cmd is called for show-option @ccm_session_id per
         # project; return empty for all of them.
-        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a, **kw: "")
+        def fake_tmux(*a, **kw):
+            if "focus-events" in a:
+                return focus_events
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "tmux_query", fake_tmux)
         # The multi-claude row reads the bulk panes cache plus a ps
         # snapshot. Both would trip conftest's live-subprocess guard,
         # and the scan swallows that failure — so without these stubs
@@ -170,15 +194,49 @@ class TestCmdDoctor:
             return MagicMock(returncode=0, stdout="")
         monkeypatch.setattr("subprocess.run", fake_run)
 
+    def test_expired_spool_points_to_review(self, monkeypatch, capsys, tmp_path):
+        import ccm_spool
+        self._stub_world(monkeypatch, tmp_path)
+        monkeypatch.setattr(ccm_spool, "SPOOL_TTL_SEC", 3600)
+        root = tmp_path / "spool"
+        monkeypatch.setattr(ccm_spool, "SPOOL_ROOT", str(root))
+        record = root / "demo" / "expired" / "1000-origin.msg"
+        record.parent.mkdir(parents=True)
+        record.write_text("Review request")
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "1 " + ccm_presentation.record_spec("expired").label in out
+        assert "`ccm spool list`" in out
+        assert record.read_text() == "Review request"
+
     def test_clean_environment_renders_all_sections(self, tmp_path,
                                                     monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path)
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         for section in ("Environment", "Setup", "Runtime canaries",
                         "Active projects", "Silent-exception log",
                         "Configuration"):
             assert section in out, f"missing section: {section}"
+
+    def test_focus_events_off_is_flagged(self, tmp_path, monkeypatch,
+                                         capsys):
+        """Claude Code asks tmux for focus-events in a startup banner
+        that scrolls away. ccm is what put the session in tmux, so
+        the setting belongs in the report that does not scroll."""
+        self._stub_world(monkeypatch, tmp_path, focus_events="off")
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "focus-events" in out
+        assert "set -g focus-events on" in out
+
+    def test_focus_events_on_is_not_flagged(self, tmp_path, monkeypatch,
+                                            capsys):
+        self._stub_world(monkeypatch, tmp_path, focus_events="on")
+        ccm_commands.cmd_doctor(verbose=True)
+        out = capsys.readouterr().out
+        assert "focus-events" in out
+        assert "set -g focus-events on" not in out
 
     def test_warns_when_hooks_not_installed(self, tmp_path,
                                             monkeypatch, capsys):
@@ -187,6 +245,158 @@ class TestCmdDoctor:
         out = capsys.readouterr().out
         assert "Hooks not installed" in out
         assert "ccm setup-hooks" in out  # actionable guidance
+
+    @pytest.mark.parametrize("hooks", [True, False], ids=["installed", "not-installed"])
+    @pytest.mark.parametrize("which", ["timeout", "lookalike"])
+    def test_hook_warnings_show_whether_or_not_hooks_are_installed(
+            self, tmp_path, monkeypatch, capsys, hooks, which):
+        """Each warning's helper decides whether it has something to say;
+        a partial install, or only another ccm's hooks, must not hide it."""
+        texts = {"timeout": "TIMEOUT-BODY-7", "lookalike": "LOOKALIKE-BODY-3"}
+        labels = {"timeout": "Hook timeout", "lookalike": "Other hooks"}
+        self._stub_world(monkeypatch, tmp_path, hooks=hooks,
+                         **{f"{which}_warning": texts[which]})
+        ccm_commands.cmd_doctor(verbose=True)
+        out = capsys.readouterr().out
+        other = "lookalike" if which == "timeout" else "timeout"
+        line = next(l for l in out.splitlines() if labels[which] in l)
+        assert texts[which] in line
+        assert labels[other] not in out and texts[other] not in out
+
+    @pytest.mark.parametrize("hooks", [True, False], ids=["installed", "not-installed"])
+    def test_both_hook_warnings_show_together(self, tmp_path, monkeypatch, capsys, hooks):
+        """ccm's own stale timeout and another directory's hooks are
+        independent facts; one must not hide the other."""
+        self._stub_world(monkeypatch, tmp_path, hooks=hooks,
+                         timeout_warning="TIMEOUT-BODY-7", lookalike_warning="LOOKALIKE-BODY-3")
+        ccm_commands.cmd_doctor(verbose=True)
+        lines = capsys.readouterr().out.splitlines()
+        assert any("Hook timeout" in l and "TIMEOUT-BODY-7" in l for l in lines)
+        assert any("Other hooks" in l and "LOOKALIKE-BODY-3" in l for l in lines)
+
+    @pytest.mark.parametrize("hooks", [True, False], ids=["installed", "not-installed"])
+    def test_hook_warnings_are_absent_when_their_helpers_are_quiet(
+            self, tmp_path, monkeypatch, capsys, hooks):
+        self._stub_world(monkeypatch, tmp_path, hooks=hooks)
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Hook timeout" not in out and "Other hooks" not in out
+
+    def test_hooks_found_but_none_from_this_ccm_are_not_called_installed(
+            self, tmp_path, monkeypatch, capsys):
+        self._stub_world(monkeypatch, tmp_path, hooks=True, own_hook_entries=0)
+        ccm_commands.cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Hooks not from this ccm" in out and "Hooks installed" not in out
+
+    @pytest.mark.parametrize("own_hook_entries", [16, None], ids=["some", "unreadable"])
+    def test_hooks_with_entries_of_this_ccm_are_installed(
+            self, tmp_path, monkeypatch, capsys, own_hook_entries):
+        self._stub_world(monkeypatch, tmp_path, hooks=True, own_hook_entries=own_hook_entries)
+        ccm_commands.cmd_doctor(verbose=True)
+        out = capsys.readouterr().out
+        if own_hook_entries is None:
+            assert "could not inspect hook ownership" in out and "Hooks installed" not in out
+        else:
+            assert "Hooks installed" in out and "Hooks not from this ccm" not in out
+
+    @pytest.mark.parametrize("scripts", ["all", "one"])
+    def test_another_ccm_s_hooks_through_the_real_helpers(
+            self, tmp_path, monkeypatch, capsys, scripts):
+        """The settings hold only hooks at a previous ccm path — every
+        script, or a single one left over. Doctor, reading them for real,
+        does not call that this ccm's install, names the directory with
+        its entries, and has no timeout warning for hooks that are not
+        its own."""
+        root = tmp_path / "ccm-now"
+        (root / "hooks").mkdir(parents=True)
+        monkeypatch.setattr(ccm_core, "CCM_ROOT", str(root))
+        self._stub_world(monkeypatch, tmp_path, real_hook_helpers=True)
+        names = list(ccm_core.HOOK_SCRIPTS) if scripts == "all" else ["on-stop.sh"]
+        settings = {"hooks": {"Stop": [{"hooks": [
+            {"type": "command", "command": f"/old/ccm/hooks/{n}", "timeout": 5000}
+            for n in names]}]}}
+        if scripts == "all":
+            # A complete registration at a different installation remains
+            # distinct from a partial registration and from ownership.
+            fixture = os.path.join(os.path.dirname(__file__), "fixtures", "hooks-complete.json")
+            with open(fixture) as stream:
+                settings = json.load(stream)
+            for entries in settings["hooks"].values():
+                for entry in entries:
+                    for hook in entry["hooks"]:
+                        hook["command"] = hook["command"].replace("/plugin/", "/old/ccm/")
+                        hook["timeout"] = 5000
+        claude_dir = tmp_path / "home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        (claude_dir / "settings.json").write_text(json.dumps(settings))
+        ccm_commands.cmd_doctor(verbose=True)
+        out = capsys.readouterr().out
+        if scripts == "all":
+            assert "Hooks not from this ccm" in out
+        else:
+            assert "Hooks not installed" in out
+        assert "Hooks installed" not in out
+        other = next(l for l in out.splitlines() if "Other hooks" in l)
+        n = sum(len(entry["hooks"]) for entries in settings["hooks"].values() for entry in entries)
+        assert f"/old/ccm/hooks ({n} {'entry' if n == 1 else 'entries'})" in other
+        assert "Hook timeout" not in out
+
+    def test_an_unreadable_settings_file_is_unknown_not_unset(
+            self, tmp_path, monkeypatch, capsys):
+        """A file cut off mid-object says nothing this side can read,
+        so neither "hooks not installed" nor "flag not set" is a
+        statement doctor can make about it. Runs the real canary
+        reader against a throwaway HOME."""
+        self._stub_world(monkeypatch, tmp_path, real_hook_helpers=True)
+        claude_dir = tmp_path / "home" / ".claude"
+        claude_dir.mkdir(parents=True)
+        settings = claude_dir / "settings.json"
+        settings.write_text('{"hooks": {"Stop": [')
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(settings))
+        ccm_commands.cmd_doctor()
+        lines = capsys.readouterr().out.splitlines()
+        flag = next(l for l in lines if "disableAllHooks" in l)
+        assert "unknown" in flag and "user settings" in flag
+        assert "not set" not in flag
+        assert any("cannot be read as JSON" in l for l in lines)
+        assert not any("Hooks not installed" in l or "Hooks installed" in l
+                       for l in lines)
+
+    @pytest.mark.parametrize("flag,expected", [
+        ("allowManagedHooksOnly", "user-scope hooks"),
+        ("disableAllHooks", "ignored"),
+    ])
+    def test_managed_nonboolean_is_not_a_tick(
+            self, tmp_path, monkeypatch, capsys, flag, expected):
+        real_disable = ccm_canaries.disable_all_hooks_warning
+        real_managed = ccm_canaries.managed_hooks_only_warning
+        self._stub_world(monkeypatch, tmp_path)
+        monkeypatch.setattr(ccm_canaries, "disable_all_hooks_warning", real_disable)
+        monkeypatch.setattr(ccm_canaries, "managed_hooks_only_warning", real_managed)
+        path = tmp_path / "managed.json"
+        path.write_text(json.dumps({flag: "true"}))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES", {})
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(path))
+        ccm_commands.cmd_doctor()
+        row = next(line for line in capsys.readouterr().out.splitlines() if flag in line)
+        assert "non-boolean" in row and "managed-settings.json" in row
+        assert expected in row
+        assert "✓" not in row and "not set" not in row
+
+    def test_an_absent_settings_file_is_simply_unset(
+            self, tmp_path, monkeypatch, capsys):
+        """Absent is an answer: nothing is set there."""
+        self._stub_world(monkeypatch, tmp_path, hooks=False)
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE",
+                            str(tmp_path / "home" / ".claude" / "settings.json"))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_FILES", {})
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT",
+                            str(tmp_path / "no-managed.json"))
+        ccm_commands.cmd_doctor(verbose=True)
+        flag = next(l for l in capsys.readouterr().out.splitlines()
+                    if "disableAllHooks" in l)
+        assert "not set" in flag and "unknown" not in flag
 
     def test_warns_on_hooks_log_bloat(self, tmp_path, monkeypatch, capsys):
         self._stub_world(
@@ -217,7 +427,7 @@ class TestCmdDoctor:
         )
         self._stub_world(monkeypatch, tmp_path,
                          projects=(proj_a, proj_b))
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "alpha" in out and "BUSY" in out
         assert "beta" in out and "IDLE" in out
@@ -255,7 +465,7 @@ class TestCmdDoctor:
             ps_text=self._PS_TWO_CLAUDE,
             panes_cache=self._PANES_TWO_CLAUDE,
         )
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "multi-claude windows" in out
         assert "alpha (2)" in out
@@ -313,7 +523,7 @@ class TestCmdDoctor:
         self, tmp_path, monkeypatch, capsys
     ):
         """`"".split("\\n")` is `[""]`, which is truthy — so an empty ps
-        snapshot used to wave the guard through with no data.
+        snapshot must not wave the guard through with no data.
 
         Asserting only "no row appears" would pass either way, since a
         scan over `[""]` resolves no claude and prints nothing anyway.
@@ -338,7 +548,7 @@ class TestCmdDoctor:
 
     def test_reports_empty_errors_log(self, tmp_path, monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path)
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "errors.log" in out
         assert "empty" in out
@@ -346,7 +556,7 @@ class TestCmdDoctor:
     def test_reports_errors_log_record_count(self, tmp_path,
                                              monkeypatch, capsys):
         self._stub_world(monkeypatch, tmp_path, errors_log_lines=7)
-        ccm_commands.cmd_doctor()
+        ccm_commands.cmd_doctor(verbose=True)
         out = capsys.readouterr().out
         assert "7 record(s)" in out
         assert "ccm errors" in out  # actionable guidance
@@ -383,11 +593,17 @@ class TestCmdDoctor:
 # ─── cmd_add ───
 
 class TestCmdAdd:
+    @pytest.fixture(autouse=True)
+    def _no_tmux_environment(self, monkeypatch):
+        """The launch-command verdict reads tmux's environment through
+        `tmux_query`; answer "nothing set" unless a test says otherwise."""
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "")
+
     @patch("ccm_commands._autosave_trigger")
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_creates_window(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         """cmd_add creates a new tmux window with correct metadata tags."""
         proj_dir = tmp_path / "my-project"
@@ -412,6 +628,86 @@ class TestCmdAdd:
         assert "@ccm_project" in tag_names
         assert "@ccm_dir" in tag_names
 
+    @patch("ccm_commands._autosave_trigger")
+    @patch("ccm_core.hooks_configured", return_value=True)
+    @patch("ccm_core.tmux_batch")
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.require_session", return_value="main")
+    def test_add_passes_the_directory_to_new_window_as_a_literal(
+            self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
+        """`new-window -c` expands tmux formats, so a `#(...)` in a
+        directory name would run as a shell command when the window
+        opens. Every `#` is doubled for `-c`; the stored `@ccm_dir`
+        (set-option does not expand) keeps the real path."""
+        proj_dir = tmp_path / "proj #(true) #{pane_id}"
+        proj_dir.mkdir()
+        real = os.path.realpath(str(proj_dir))
+
+        def tmux_side_effect(*args, **kwargs):
+            if args[0] == "new-window":
+                return "3"
+            if args[0] == "display-message":
+                return "proj"
+            return ""
+        mock_tmux.side_effect = tmux_side_effect
+
+        ccm_commands.cmd_add(str(proj_dir), "proj")
+
+        new_window = next(c.args for c in mock_tmux.call_args_list
+                          if c.args[0] == "new-window")
+        cwd = new_window[new_window.index("-c") + 1]
+        assert cwd == real.replace("#", "##")
+        assert cwd.replace("##", "#") == real
+        stored = {a[3]: a[4] for a in mock_batch.call_args[0] if len(a) > 4}
+        assert stored["@ccm_dir"] == real
+
+    @pytest.mark.parametrize("has_history", [True, False])
+    @patch("ccm_commands._autosave_trigger")
+    @patch("ccm_core.hooks_configured", return_value=True)
+    @patch("ccm_core.tmux_batch")
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.require_session", return_value="main")
+    def test_add_types_the_command_for_the_new_windows_history(
+            self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto,
+            tmp_path, monkeypatch, has_history):
+        """A new project starts fresh; a directory with a conversation
+        resumes. The verdict reads the tmux environment the new
+        window's shell inherits, for the session the window is in."""
+        import ccm_jsonl
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_PROJECT_DIR_NAME", raising=False)
+        projects = tmp_path / "projects"; projects.mkdir()
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        proj_dir = tmp_path / "my-project"; proj_dir.mkdir()
+        # Only the history decides here, however long the temporary
+        # directory is; a slug past the limit has its own test.
+        monkeypatch.setattr(ccm_jsonl, "PROJECT_SLUG_MAX", max(
+            len(ccm_jsonl._project_slug(str(p))) for p in (proj_dir, proj_dir.resolve())))
+        if has_history:
+            slug = projects / ccm_jsonl._project_slug(str(proj_dir)); slug.mkdir()
+            (slug / "s.jsonl").write_text("{}\n")
+        typed = []
+
+        def tmux_side_effect(*args, **kwargs):
+            if args[0] == "new-window":
+                return "3"
+            if args[0] == "send-keys":
+                typed.append(args)
+            return ""
+        mock_tmux.side_effect = tmux_side_effect
+        queried = []
+
+        def fake_query(*args):
+            queried.append(args)
+            return "PATH=/usr/bin"
+        monkeypatch.setattr(ccm_core, "tmux_query", fake_query)
+
+        ccm_commands.cmd_add(str(proj_dir), "my-project")
+
+        expected = ccm_constants.CLAUDE_CMD if has_history else ccm_constants.CLAUDE_CMD_FRESH
+        assert typed == [("send-keys", "-t", "main:3", expected, "Enter")]
+        assert ("show-environment", "-t", "main") in queried
+
     def test_add_missing_dir_exits(self):
         with pytest.raises(SystemExit):
             ccm_commands.cmd_add("/nonexistent/directory/xyz")
@@ -421,7 +717,7 @@ class TestCmdAdd:
             ccm_commands.cmd_add("")
 
     @patch("ccm_core.find_window", return_value="1")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_duplicate_name_exits(self, mock_session, mock_find, tmp_path):
         proj_dir = tmp_path / "dup"
         proj_dir.mkdir()
@@ -432,7 +728,7 @@ class TestCmdAdd:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_defaults_name_to_basename(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         proj_dir = tmp_path / "cool-project"
         proj_dir.mkdir()
@@ -458,7 +754,7 @@ class TestCmdAdd:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_create_dir_creates_missing_leaf(
         self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path
     ):
@@ -517,7 +813,7 @@ class TestCmdAdd:
     @patch("ccm_core.hooks_configured", return_value=True)
     @patch("ccm_core.tmux_batch")
     @patch("ccm_core.tmux_cmd")
-    @patch("ccm_core.get_session", return_value="main")
+    @patch("ccm_core.require_session", return_value="main")
     def test_add_loading_skips_autosave(self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
         proj_dir = tmp_path / "loading-test"
         proj_dir.mkdir()
@@ -827,9 +1123,8 @@ class TestDispatcherPassthrough:
 
     @patch("ccm_commands.cmd_capture")
     def test_capture_with_leading_copy_flag(self, mock_capture):
-        # `ccm capture --copy demo` — flag BEFORE positional. The
-        # original bug: argparse rejected `--copy` because it was
-        # not a defined subparser flag.
+        # `ccm capture --copy demo` — a flag BEFORE the positional
+        # reaches the handler too.
         ccm_core.dispatch(["capture", "--copy", "demo"])
         mock_capture.assert_called_once_with(["--copy", "demo"])
 
@@ -840,10 +1135,8 @@ class TestDispatcherPassthrough:
 
     @patch("ccm_commands.cmd_stop")
     def test_stop_all_reaches_handler(self, mock_stop):
-        # `ccm stop --all` — argparse used to reject `--all` as an
-        # unknown option (exit 2) before cmd_stop ever saw it, so the
-        # documented autosave-on-stop path was unreachable from the
-        # CLI. The stop subcommand now uses the same raw-argv
+        # `ccm stop --all` must reach cmd_stop, not stop at argparse as
+        # an unknown option: the stop subcommand uses the same raw-argv
         # passthrough as capture/send.
         ccm_core.dispatch(["stop", "--all"])
         mock_stop.assert_called_once_with("--all")
@@ -856,7 +1149,7 @@ class TestDispatcherPassthrough:
 
     @patch("ccm_commands.cmd_stop")
     def test_stop_without_args_reaches_handler(self, mock_stop):
-        # No arg → cmd_stop prints usage and dies (as before).
+        # No arg → cmd_stop prints usage and dies.
         ccm_core.dispatch(["stop"])
         mock_stop.assert_called_once_with("")
 
@@ -936,7 +1229,7 @@ class TestCmdAttach:
                      windows=None, window_names=""):
         """Stub the tmux/ps world cmd_attach reads. Returns the
         (auto_start, reset, tmux_cmd) mocks for assertion."""
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "main")
         monkeypatch.setattr(ccm_core, "find_window",
                             lambda s, n: find_window)
         monkeypatch.setattr(ccm_core, "list_windows_raw",
@@ -970,72 +1263,34 @@ class TestCmdAttach:
         monkeypatch.setattr(ccm_window, "reset_window_after_attach", reset)
         return auto_start, reset, tmux_mock
 
-    def test_claude_in_second_pane_skips_autostart(self, monkeypatch):
-        """Regression: pane 1 is a shell, claude runs in pane 2. The
-        old code checked only the first list-panes line and wrongly
-        auto-started a duplicate claude."""
-        auto_start, _, tmux_mock = self._stub_attach(
-            monkeypatch,
-            pane_pids="1001\n1002",
-            ps_stdout=b"  PPID COMM\n  1001 zsh\n  1002 claude\n",
-        )
+    def test_attach_goes_through_the_shared_launch_path(self, monkeypatch):
+        """`cmd_attach` does not inspect processes itself: whether
+        a pane already hosts claude is decided by `launch_claude`,
+        from a fresh snapshot of every pane, the same way the
+        dashboard and `ccm send --start` decide it."""
+        auto_start, reset, tmux_mock = self._stub_attach(monkeypatch)
         ccm_commands.cmd_attach("proj")
-        auto_start.assert_not_called()
-        # Still switches to the window.
+        auto_start.assert_called_once_with("main:2")
+        reset.assert_called_once_with("main:2")
         select_calls = [c for c in tmux_mock.call_args_list
                         if c.args[:1] == ("select-window",)]
         assert len(select_calls) == 1
         assert "main:2" in select_calls[0].args
 
-    def test_no_claude_in_any_pane_autostarts(self, monkeypatch):
-        auto_start, reset, _ = self._stub_attach(
-            monkeypatch,
-            pane_pids="1001\n1002",
-            ps_stdout=b"  PPID COMM\n  1001 zsh\n  1002 vim\n",
-        )
+    def test_attach_reports_when_nothing_could_be_launched(self, monkeypatch, capsys):
+        auto_start, _, _ = self._stub_attach(monkeypatch)
+        auto_start.return_value = ccm_window.LaunchResult(ccm_window.UNAVAILABLE)
         ccm_commands.cmd_attach("proj")
-        auto_start.assert_called_once_with("main:2")
-        reset.assert_called_once_with("main:2")
+        out = capsys.readouterr()
+        assert "not auto-started" in (out.out + out.err)
 
-    def test_ps_timeout_assumes_running(self, monkeypatch):
-        """Safe side: a ps exception must not trigger auto-start."""
-        auto_start, _, _ = self._stub_attach(
-            monkeypatch,
-            ps_exc=subprocess.TimeoutExpired("ps", 5),
-        )
+    def test_attach_prints_the_handoff_notice_after_a_launch(self, monkeypatch, capsys):
+        auto_start, _, _ = self._stub_attach(monkeypatch)
+        auto_start.return_value = ccm_window.LaunchResult(
+            ccm_window.LAUNCHED, "proj: hand-off notice", "%0")
         ccm_commands.cmd_attach("proj")
-        auto_start.assert_not_called()
-
-    def test_ps_oserror_assumes_running(self, monkeypatch):
-        auto_start, _, _ = self._stub_attach(
-            monkeypatch,
-            ps_exc=OSError("ps blew up"),
-        )
-        ccm_commands.cmd_attach("proj")
-        auto_start.assert_not_called()
-
-    def test_ps_nonzero_rc_assumes_running(self, monkeypatch):
-        """Regression: ps exiting non-zero with empty stdout used to
-        fall through to has_claude=False and wrongly auto-start."""
-        auto_start, _, _ = self._stub_attach(
-            monkeypatch,
-            ps_stdout=b"",
-            ps_returncode=1,
-        )
-        ccm_commands.cmd_attach("proj")
-        auto_start.assert_not_called()
-
-    def test_already_in_window_returns_early(self, monkeypatch, capsys):
-        auto_start, _, tmux_mock = self._stub_attach(
-            monkeypatch, current_idx="2",
-        )
-        ccm_commands.cmd_attach("proj")
-        out = capsys.readouterr().out
-        assert "Already in this window" in out
-        auto_start.assert_not_called()
-        select_calls = [c for c in tmux_mock.call_args_list
-                        if c.args[:1] == ("select-window",)]
-        assert not select_calls
+        out = capsys.readouterr()
+        assert "hand-off notice" in (out.out + out.err)
 
     def test_attach_by_window_index(self, monkeypatch):
         auto_start, _, tmux_mock = self._stub_attach(
@@ -1044,7 +1299,7 @@ class TestCmdAttach:
             ps_stdout=b"  PPID COMM\n  1001 claude\n",
         )
         ccm_commands.cmd_attach("2")
-        auto_start.assert_not_called()
+        auto_start.assert_called_once()
         select_calls = [c for c in tmux_mock.call_args_list
                         if c.args[:1] == ("select-window",)]
         assert len(select_calls) == 1
@@ -1077,6 +1332,7 @@ class TestCmdAttach:
 
     def test_no_session_exits(self, monkeypatch):
         monkeypatch.setattr(ccm_core, "get_session", lambda: None)
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: None)
         with pytest.raises(SystemExit):
             ccm_commands.cmd_attach("proj")
 
@@ -1118,6 +1374,24 @@ class TestCmdCapture:
         assert "=== ccm capture: proj ===" in out
         assert "line1" in out and "line2" in out
         assert "=== end ===" in out
+
+    def test_capture_says_so_when_it_read_nothing(self, monkeypatch,
+                                                  capsys):
+        """A read that came back with nothing must not look like a
+        window that shows nothing. This output is what an agent reads
+        to decide whether a message landed or whether a peer is still
+        working, and a pane hosting a session is never blank."""
+        self._stub_capture(monkeypatch, captured="")
+        ccm_commands.cmd_capture(["proj"])
+        out = capsys.readouterr().out
+        assert "nothing captured" in out
+        assert "=== end ===" in out
+
+    def test_capture_of_whitespace_only_is_also_reported(self, monkeypatch,
+                                                         capsys):
+        self._stub_capture(monkeypatch, captured="   \n\n")
+        ccm_commands.cmd_capture(["proj"])
+        assert "nothing captured" in capsys.readouterr().out
 
     def test_capture_by_window_index(self, monkeypatch, capsys):
         self._stub_capture(
@@ -1166,13 +1440,9 @@ class TestCmdCapture:
 
 class TestCmdCaptureSplitWindow:
     """`capture-pane -t <window>` delivers only the window's ACTIVE
-    pane, so a split window used to return one pane and silently drop
-    the rest — from inside the window that is the caller's own pane,
-    and from outside it is whichever pane held focus. (The same
-    window-vs-pane flaw the dashboard preview had before
-    `_resolve_preview_pane`.) capture now enumerates the panes and
-    labels each section, so a split window is fully visible and the
-    result no longer depends on focus."""
+    pane. capture enumerates the panes and labels each section, so a
+    split window is fully visible and the result does not depend on
+    focus."""
 
     def _stub(self, monkeypatch, panes, bodies, ignore_map=None):
         """Stub a window whose `list-panes` yields `panes`
@@ -1256,8 +1526,7 @@ class TestCmdCaptureSplitWindow:
         self._stub(
             monkeypatch,
             panes=[("%1", "100", True, "zsh")],
-            # The single-pane path captures the WINDOW target, the
-            # same call the pre-fix code made.
+            # The single-pane path captures the WINDOW target.
             bodies={"main:2": "solo"},
         )
         monkeypatch.setattr(ccm_core, "ps_snapshot", boom)
@@ -1268,8 +1537,8 @@ class TestCmdCaptureSplitWindow:
 
     def test_enumeration_failure_falls_back_to_window(self, monkeypatch,
                                                      capsys):
-        """tmux hiccup → empty enumeration → old window-target
-        capture rather than an empty result."""
+        """tmux hiccup → empty enumeration → window-target capture
+        rather than an empty result."""
         monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
         monkeypatch.setattr(ccm_core, "find_window", lambda s, n: "2")
         monkeypatch.setattr(ccm_core, "list_windows_raw", lambda s: [])
@@ -1313,6 +1582,9 @@ class TestCmdDebugTrace:
                 return rows
             if args[0] == "list-panes":
                 return ""
+            if args[0] == "display-message":
+                return (f"{args[3]}\t@1\t100" if ":" in args[3]
+                        else "main:1\t@1\t100")
             return ""  # show-option etc.
         monkeypatch.setattr(ccm_core, "tmux_cmd", tmux_side_effect)
         monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
@@ -1386,6 +1658,148 @@ class TestCmdDebugTrace:
             ccm_commands.cmd_debug_trace("alpha")
 
 
+class TestDebugTraceStopsByItself:
+    """A trace started in the background outlives whatever started it,
+    so it has to end on its own: when the window it watches is gone
+    (or its server was replaced), and after a time limit."""
+
+    LIVE = "main:1\t@1\t100"
+
+    def _run(self, monkeypatch, capsys, *, windows, max_time=0,
+             interval=1.0, ticks=50):
+        """windows: display-message replies, one per loop pass (the
+        first is the lookup at start); the last one repeats. A fake
+        clock advances by `interval` per sleep. Returns (stderr,
+        session:index targets scanned, display-message targets,
+        clock at exit)."""
+        clock = {"now": 1000.0}
+        replies = list(windows)
+        scanned_targets = []
+        looked_up = []
+        monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
+        monkeypatch.setattr(ccm_commands, "_resolve_trace_target",
+                            lambda _: ("main:1", "alpha", "/dir/alpha"))
+
+        def tmux(*args, **kw):
+            if args[0] == "display-message":
+                looked_up.append(args[args.index("-t") + 1])
+                return replies.pop(0) if len(replies) > 1 else replies[0]
+            if args[0] == "show-option":
+                scanned_targets.append(args[args.index("-t") + 1])
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_detection, "build_detection_context",
+                            lambda *a, **kw: make_ctx(raw="IDLE"))
+        rule = ccm_rules.Rule(name="default", phase="idle")
+        monkeypatch.setattr(ccm_detection, "resolve_state_from_context",
+                            lambda ctx, d: ("IDLE", rule, None))
+        monkeypatch.setattr("signal.signal", lambda *a, **kw: None)
+        monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) > ticks:
+                raise _StopTrace
+            clock["now"] += interval
+        monkeypatch.setattr("time.sleep", sleep)
+        ccm_commands.cmd_debug_trace("alpha", interval=interval,
+                                     max_time=max_time)
+        return (capsys.readouterr().err, scanned_targets, looked_up,
+                clock["now"] - 1000.0)
+
+    def test_stops_when_window_is_gone_past_the_grace(self, monkeypatch,
+                                                      capsys):
+        # Seen at t=0 and t=1, gone from t=2 (":\t\t" is what tmux
+        # returns for a closed window; a dead server gives "").
+        err, scanned, _, elapsed = self._run(
+            monkeypatch, capsys,
+            windows=[self.LIVE, self.LIVE, self.LIVE, ":\t\t"])
+        assert "window @1 is gone" in err
+        assert len(scanned) == 2
+        # Missing since t=2, so it stops at t=2+5.
+        assert elapsed == 2 + ccm_commands.TRACE_TARGET_GONE_GRACE
+
+    def test_grace_is_five_seconds(self):
+        assert ccm_commands.TRACE_TARGET_GONE_GRACE == 5.0
+
+    def test_missing_just_under_the_grace_does_not_stop(self, monkeypatch,
+                                                       capsys):
+        # Missing at t=1..t=5 (4 s since first miss at t=1 when last
+        # checked), then back: no stop until the time limit.
+        err, scanned, _, _ = self._run(
+            monkeypatch, capsys, max_time=12,
+            windows=[self.LIVE, self.LIVE, "", "", "", "", "", self.LIVE])
+        assert "is gone" not in err
+        assert "reached the 12s limit" in err
+        assert len(scanned) == 7
+
+    def test_looks_up_the_pinned_window_id(self, monkeypatch, capsys):
+        _, _, looked_up, _ = self._run(monkeypatch, capsys, max_time=3,
+                                       windows=[self.LIVE])
+        assert looked_up[0] == "main:1"
+        assert set(looked_up[1:]) == {"@1"}
+
+    def test_restarted_server_stops_the_trace(self, monkeypatch, capsys):
+        # Same window id and position, different server pid: a window
+        # of a new server, not the one traced.
+        err, scanned, _, elapsed = self._run(
+            monkeypatch, capsys, max_time=10,
+            windows=[self.LIVE, self.LIVE, "main:1\t@1\t200"])
+        assert "tmux server restarted" in err
+        assert len(scanned) == 1
+        assert elapsed == 1
+
+    def test_stops_at_the_time_limit(self, monkeypatch, capsys):
+        err, scanned, _, _ = self._run(monkeypatch, capsys, max_time=3,
+                                       windows=[self.LIVE])
+        assert "reached the 3s limit" in err
+        assert len(scanned) == 3
+
+    def test_zero_means_no_limit(self, monkeypatch, capsys):
+        with pytest.raises(_StopTrace):
+            self._run(monkeypatch, capsys, max_time=0, ticks=200,
+                      windows=[self.LIVE])
+
+    def test_follows_a_moved_window(self, monkeypatch, capsys):
+        _, scanned, _, _ = self._run(monkeypatch, capsys, max_time=3, windows=[
+            self.LIVE, self.LIVE, "main:7\t@1\t100"])
+        assert scanned == ["main:1", "main:7", "main:7"]
+
+    def test_header_states_how_it_stops(self, monkeypatch, capsys):
+        with pytest.raises(_StopTrace):
+            self._run(monkeypatch, capsys, max_time=43200,
+                      windows=[self.LIVE], ticks=0)
+        err = capsys.readouterr().err
+        assert "stops by itself when the window closes or after 12h" in err
+
+    def test_unidentifiable_window_exits(self, monkeypatch, capsys):
+        with pytest.raises(SystemExit):
+            self._run(monkeypatch, capsys, windows=[":\t\t"])
+
+
+class TestDebugTraceMaxTimeArgument:
+    def _parse(self, *extra):
+        parser, _ = ccm_core._build_parser()
+        return parser.parse_args(
+            ["debug", "trace", "alpha", *extra])
+
+    def test_default_is_twelve_hours(self):
+        assert self._parse().max_time == 12 * 3600
+
+    def test_zero_is_accepted(self):
+        assert self._parse("--max-time", "0").max_time == 0
+
+    def test_negative_is_rejected(self):
+        with pytest.raises(SystemExit):
+            self._parse("--max-time", "-1")
+
+    def test_non_number_is_rejected(self):
+        with pytest.raises(SystemExit):
+            self._parse("--max-time", "1h")
+
+
 class TestResolveTraceTarget:
     """`debug trace` accepts an unregistered tmux target so a probe
     session — the kind spun up for an experiment and never registered
@@ -1430,11 +1844,9 @@ class TestResolveTraceTarget:
         assert (win, d) == ("probe:3", "/tmp/w")
 
     def test_unknown_target_returns_none(self, monkeypatch):
-        # Measured tmux behaviour: `display-message -t %9999` exits 0
-        # and substitutes empty fields, so the reply is the bare ":"
-        # separator rather than "". Anchored on the real response —
-        # an earlier mock returned "" here and let every typo resolve
-        # to a phantom window in live use.
+        # tmux behaviour: `display-message -t %9999` exits 0 and
+        # substitutes empty fields, so the reply is the bare ":"
+        # separator rather than "". The stub returns that response.
         monkeypatch.setattr(ccm_core, "tmux_cmd", self._tmux(display=":"))
         assert ccm_commands._resolve_trace_target("ghost") is None
 
@@ -1451,8 +1863,7 @@ class TestResolveTraceTarget:
     def test_blank_target_returns_none(self, monkeypatch, blank):
         """An empty needle is a substring of every name, so the pass-1
         substring loop would return whichever project is listed first
-        and trace a window the caller never named. Measured before the
-        guard: `ccm debug trace ""` followed the first project."""
+        and trace a window the caller never named."""
         monkeypatch.setattr(
             ccm_core, "tmux_cmd", self._tmux(display="probe:0\t/tmp/p"))
         assert ccm_commands._resolve_trace_target(blank) is None
@@ -1471,3 +1882,32 @@ class TestResolveTraceTarget:
             ccm_core, "tmux_cmd",
             self._tmux(windows="", display="probe:0\t/tmp/p"))
         assert ccm_commands._resolve_trace_target("%1")[0] == "probe:0"
+
+
+
+# ─── cmd_open ───
+
+class TestCmdOpen:
+    @pytest.mark.parametrize("has_history", [True, False])
+    def test_open_always_resumes(self, tmp_path, monkeypatch, has_history):
+        """The command runs after a `cd` in the caller's shell, where a
+        directory-change hook can move the CLI's transcript location
+        before it starts; ccm never claims there is nothing to
+        resume, so `ccm open` types `--continue` with no fallback."""
+        import ccm_jsonl
+        projects = tmp_path / "projects"; projects.mkdir()
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        proj_dir = tmp_path / "my-project"; proj_dir.mkdir()
+        if has_history:
+            slug = projects / ccm_jsonl._project_slug(str(proj_dir.resolve())); slug.mkdir()
+            (slug / "s.jsonl").write_text("{}\n")
+        typed = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a: typed.append(a) or "")
+        monkeypatch.setattr(ccm_core, "tmux_query",
+                            lambda *a: pytest.fail("ccm open consulted the tmux environment"))
+
+        ccm_commands.cmd_open(str(proj_dir))
+
+        assert len(typed) == 1 and typed[0][0] == "send-keys"
+        assert typed[0][1].endswith(f" && {ccm_constants.CLAUDE_CMD}")
+        assert "||" not in typed[0][1] and "2>" not in typed[0][1]

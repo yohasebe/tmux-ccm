@@ -12,8 +12,8 @@ cd tmux-ccm
 Test prerequisites:
 
 ```bash
-# Python — pytest is the only runtime dep
-pip install pytest
+# Python test dependencies (hypothesis runs the state-invariant tests)
+python3 -m pip install pytest hypothesis
 
 # bash — bats-core for shell-side tests
 brew install bats-core   # or: apt-get install bats
@@ -25,22 +25,60 @@ The repository carries the tool, its tests and its documentation. Paths, address
 
 Local git hooks enforce this; they are not part of the repository, so install them once per clone from your own copy. Nothing about your environment is written down here.
 
+Every tracked file must also match a line of `scripts/tracked_paths.allow`, and every line there must match a tracked file. TPM installs ccm by cloning the repository, so whatever is tracked is shipped. CI checks this first:
+
+```bash
+python3 scripts/check_tracked_paths.py              # the index (next commit)
+python3 scripts/check_tracked_paths.py --tree REV   # a commit
+```
+
+When a new file belongs in the repository, add the narrowest line that describes its place and kind, and stage the list with it.
+
 ## Running tests
 
 ```bash
-# Python (detection logic, dashboard, status bar — 600+ cases)
+# Python (detection logic, dashboard, status bar)
 python3 -m pytest tests/ -v
 
 # bash (hook setup + notify parity)
 bats tests/
 ```
 
-The full suite runs in under a second on modern hardware. PRs must keep both green.
+PRs must keep both suites green; tests require local sockets and process inspection.
+
+Every Bats file loads `helpers/tmux_guard.bash` before its setup. Mocks may
+precede its PATH spy; real tmux calls must use `-L` with a socket allocated by
+`ccm_test_new_socket`. Before allocating a real server, the test itself must
+use `[[ -n "$CCM_TEST_REAL_TMUX" ]] || skip "tmux not installed"` outside
+command substitution. The allocator only allocates a name; it does not skip.
+The helper uses an empty tmux configuration and a temporary
+socket directory, cleans up allocated servers at file teardown, and fails the
+file if any rejected call was recorded, even if its caller ignored exit 99.
+Do not bypass the spy with an absolute tmux path or reset PATH around it.
+The helper owns `setup_file` and `teardown_file`; per-test setup and teardown
+remain available. Other Bats files and helpers must not define these two file
+hooks. The static wiring check conservatively rejects literal definitions,
+including indented, inline and `function` forms (even inside quoted examples);
+do not define file hooks indirectly through `eval` or generated names.
+Pytest's `block_live_subprocess` guards Python subprocess
+calls separately; neither mechanism is an OS sandbox.
+
+Store nested Bats test source in `tests/fixtures/` with a non-`.bats`
+extension, then copy it into the temporary test directory. Do not embed test
+declarations in heredocs in a `.bats` file. Run child fixtures with
+`"$BATS_ROOT/bin/bats"` so they use the parent's Bats version.
+
+Concurrency tests use explicit gates to control event order. Gate timeouts
+must fail the test, and teardown must release waiting jobs. Keep actual elapsed
+time checks separate from ordering checks.
 
 ## Code organisation
 
 - `ccm` — bash dispatcher CLI
-- `lib/ccm_core.py` — constants, tmux/ps helpers, data model, dispatch, JSONL/hook signal I/O
+- `lib/ccm_core.py` — tmux/ps helpers, data model, dispatch
+- `lib/ccm_constants.py` — constants, terminal patterns, modal classification
+- `lib/ccm_settings.py` — shared regular-file settings reader
+- `lib/ccm_jsonl.py`, `lib/ccm_signals.py` — transcript and hook signal I/O
 - `lib/ccm_detection.py` — state-detection engine (event-log path + minimal legacy fallback)
 - `lib/ccm_commands.py` — `cmd_*` subcommand handlers
 - `lib/ccm_render.py` — terminal-output formatters (`print_*`, ANSI colours)
@@ -63,9 +101,24 @@ The full suite runs in under a second on modern hardware. PRs must keep both gre
 Each new Claude Code release can shift detection assumptions (modal footer wording, hook payload shape, JSONL record schema). When you update Claude Code locally:
 
 1. Pull the verbatim CHANGELOG bullets for the new version (do not rely on a summary — footer wording changes are easy to miss in summaries).
-2. Sample-check the most common modals — `/skills`, `/model`, `/hooks`, the permission prompt — with `tmux capture-pane -p` and verify they still classify correctly.
-3. If a modal's footer wording changed, update `PATTERN_PERMIT_FOOTER` in `lib/ccm_core.py` and the corresponding fixture in `tests/test_ccm_core.py`.
-4. If a JSONL housekeeping record type was added, no code change is required — the activity-type whitelist (`JSONL_ACTIVITY_TYPES`) in `lib/ccm_core.py` rejects unknown types by default.
+2. Sample-check `/skills`, `/model`, `/hooks`, `/effort`, `/autocompact`,
+   `/fast`, and the permission prompt with `tmux capture-pane -p`. Use a
+   separate test session. Record unavailable account-dependent views as unverified.
+3. If a modal's footer changed, update `PATTERN_PERMIT_FOOTER` in
+   `lib/ccm_constants.py`, its classifier tests in `tests/test_constants.py`,
+   and raw-state regressions in `tests/test_pane_state.py`. Test both live
+   footer shapes and similar prose/navigation hints that must not match.
+   Leading hints are an explicit list of verified confirmation forms:
+   capture a new confirmation dialog with hints before Enter before adding
+   its prefix.
+   Preserve navigation exclusions, including `/permissions` with Enter
+   in its navigation footer; structure alone does not classify the panel.
+4. Unknown JSONL housekeeping record types are rejected by the activity
+   whitelist in `lib/ccm_jsonl.py`; check new records against that contract
+   before extending it.
+
+See [the state-machine reference](docs/state-machine.md) for supported
+footer forms and detection limits.
 
 ## Dev-only flags
 

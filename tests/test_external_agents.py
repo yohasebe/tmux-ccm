@@ -1,7 +1,7 @@
 """Tests for the Tier-1 external-agent presence badge.
 
 A pane whose foreground command (`pane_current_command`) matches
-EXTERNAL_AGENT_COMMANDS surfaces a dim `⚙<name>` badge on the
+EXTERNAL_AGENT_COMMANDS surfaces a dim `▸<name>` badge on the
 dashboard / `ccm status` / status-bar mode 2, plus a `(name)` note
 on SHELL rows (window has no claude — SHELL keeps its meaning of
 "no claude here" and the note says what IS running). Display-only:
@@ -83,21 +83,21 @@ class TestExternalAgentLabel:
         # Backward compat: positional/kwarg-less construction (every
         # pre-existing test) must yield no badge.
         assert _make_project("alpha", "IDLE").external_agents == ()
-        assert ccm_render.external_agent_label(
+        assert ccm_render.external_agent_badge(
             _make_project("alpha", "IDLE")) == ""
 
     def test_single(self):
         p = _make_project("a", "IDLE", external_agents=("kimi",))
-        assert ccm_render.external_agent_label(p) == "kimi"
+        assert ccm_render.external_agent_badge(p) == "▸ kimi"
 
     def test_duplicate_gets_count_suffix(self):
         p = _make_project("a", "IDLE", external_agents=("kimi", "kimi"))
-        assert ccm_render.external_agent_label(p) == "kimi×2"
+        assert ccm_render.external_agent_badge(p) == "▸ kimi×2"
 
     def test_distinct_names_joined(self):
         p = _make_project("a", "IDLE",
                           external_agents=("kimi", "kimi-code"))
-        assert ccm_render.external_agent_label(p) == "kimi,kimi-code"
+        assert ccm_render.external_agent_badge(p) == "▸ kimi,kimi-code"
 
 
 class TestPrintStatusExternalAgent:
@@ -122,21 +122,65 @@ class TestPrintStatusExternalAgent:
         ccm_render.print_status()
         return capsys.readouterr().out
 
+    def test_bg_in_status_column_in_busy_colour(self, monkeypatch, capsys):
+        projects = [_make_project("pair", "IDLE", pane_count=2,
+                                  external_agents=("codex",),
+                                  bg_active=True)]
+        out = self._run(projects, monkeypatch, capsys)
+        row = next(l for l in out.splitlines() if "pair" in l)
+        assert "\033[38;5;209m (bg)" in row
+        plain = _strip_ansi(row)
+        assert plain.index("(bg)") < plain.index("▸")
+        # The column stays 12 wide: the name starts where it would
+        # without the note.
+        assert plain.index("pair") == 13
+
+    def test_two_sidekicks_each_coloured(self, monkeypatch, capsys):
+        projects = [_make_project("pair", "IDLE", pane_count=3,
+                                  external_agents=("codex", "agy"),
+                                  attention_agents=("agy",),
+                                  busy_agents=("codex",))]
+        out = self._run(projects, monkeypatch, capsys)
+        row = next(l for l in out.splitlines() if "▸" in l)
+        assert f"{ccm_render.C_STATE['BUSY']}codex ◉" in row
+        assert f"{ccm_render.C_STATE['PERMIT']}agy ⚠" in row
+
+    def test_long_badges_widen_the_project_column_for_every_row(
+            self, monkeypatch, capsys):
+        projects = [
+            ccm_core.Project(win_target="0:1", win_idx="1", name="first-project",
+                             directory="/example/a", state="IDLE", pane_count=3,
+                             external_agents=("codex", "agy"),
+                             attention_agents=("agy",), busy_agents=("codex",)),
+            ccm_core.Project(win_target="0:2", win_idx="2", name="second",
+                             directory="/example/b", state="IDLE"),
+        ]
+        out = self._run(projects, monkeypatch, capsys)
+        lines = [_strip_ansi(l) for l in out.splitlines()]
+        header = next(l for l in lines if l.startswith("STATUS"))
+        first = next(l for l in lines if "/example/a" in l)
+        second = next(l for l in lines if "/example/b" in l)
+        assert "first-projec" in first
+        assert "[3] ▸ codex ◉,agy ⚠" in first
+        mode = header.index("MODE")
+        assert first[mode] == "-"
+        assert second[mode] == "-"
+        assert first.index("/example/a") == second.index("/example/b")
+
     def test_badge_after_project_name(self, monkeypatch, capsys):
         projects = [_make_project("sidekick", "IDLE",
                                   pane_count=2,
                                   external_agents=("kimi",))]
         out = self._run(projects, monkeypatch, capsys)
         row = next(l for l in out.splitlines() if "sidekick" in l)
-        assert "⚙kimi" in _strip_ansi(row)
-        assert _strip_ansi(row).index("⚙kimi") > row.index("sidekick")
+        assert "▸ kimi" in _strip_ansi(row)
+        assert _strip_ansi(row).index("▸ kimi") > row.index("sidekick")
 
     def test_shell_row_stays_shell_and_is_marked_once(
             self, monkeypatch, capsys):
         """A kimi-only window is SHELL (no claude) — the state is not
-        faked — and the `⚙kimi` badge beside the name is the ONE place
-        the agent is named. A `(kimi)` note in the STATUS cell used to
-        say it a second time on the same row."""
+        faked — and the `▸ kimi` badge beside the name is the ONE place
+        the agent is named; the STATUS cell does not repeat it."""
         projects = [_make_project("kimionly", "SHELL",
                                   pane_count=1,
                                   external_agents=("kimi",))]
@@ -144,7 +188,7 @@ class TestPrintStatusExternalAgent:
         row = next(l for l in out.splitlines() if "kimionly" in l)
         plain = _strip_ansi(row)
         assert "SHELL" in plain
-        assert "⚙kimi" in plain
+        assert "▸ kimi" in plain
         assert "(kimi)" not in plain
 
     def test_note_widens_status_column_consistently(
@@ -165,11 +209,11 @@ class TestPrintStatusExternalAgent:
             f"PROJECT column must stay aligned, got {name_cols}")
 
     def test_no_badge_no_note_for_claude_only(self, monkeypatch, capsys):
-        """Non-regression: a claude-only window renders exactly as
-        before — no badge, no note, STATUS column stays 12 wide."""
+        """A claude-only window has no badge and no note, and the
+        STATUS column stays 12 wide."""
         projects = [_make_project("plain", "IDLE")]
         out = self._run(projects, monkeypatch, capsys)
-        assert "⚙" not in out
+        assert "▸" not in out
         header = next(l for l in out.splitlines() if "STATUS" in l)
         # "STATUS" padded to 12 then one space before PROJECT.
         assert _strip_ansi(header).startswith("STATUS" + " " * 7)
@@ -188,25 +232,69 @@ class TestBuildDetailEntriesExternalAgent:
     def test_mode2_badge_present(self, monkeypatch):
         p = _make_project("sidekick", "IDLE", external_agents=("kimi",))
         entries = self._entries([p], True, monkeypatch)
-        assert "⚙kimi" in entries[0]
+        assert "#[fg=#666666]▸ #[fg=#666666]kimi" in entries[0]
 
     def test_mode2_shell_row_is_marked_once(self, monkeypatch):
         p = _make_project("kimionly", "SHELL", external_agents=("kimi",))
         entries = self._entries([p], True, monkeypatch)
         assert "■" in entries[0]
-        assert "⚙kimi" in entries[0]
+        assert "▸ #[fg=#666666]kimi" in entries[0]
         assert "(kimi)" not in entries[0]
 
     def test_mode1_unchanged(self, monkeypatch):
         p = _make_project("sidekick", "IDLE", external_agents=("kimi",))
         entries = self._entries([p], False, monkeypatch)
-        assert "⚙" not in entries[0]
+        assert "▸" not in entries[0]
         assert "(kimi)" not in entries[0]
 
     def test_no_badge_without_external_agents(self, monkeypatch):
         p = _make_project("plain", "IDLE")
         entries = self._entries([p], True, monkeypatch)
-        assert "⚙" not in entries[0]
+        assert "▸" not in entries[0]
+
+    def test_mode2_working_codex_badge(self, monkeypatch):
+        p = _make_project("pair", "IDLE", external_agents=("codex",),
+                          busy_agents=("codex",))
+        entries = self._entries([p], True, monkeypatch)
+        assert (f"#[fg=#666666]▸ #[fg={inject_status.TMUX_COLORS['BUSY']}]codex ◉"
+                in entries[0])
+
+    def test_mode2_waiting_codex_badge(self, monkeypatch):
+        p = _make_project("pair", "IDLE", external_agents=("codex",),
+                          attention_agents=("codex",), busy_agents=("codex",))
+        entries = self._entries([p], True, monkeypatch)
+        assert "#[fg=#666666]▸ #[fg=yellow,bold]codex ⚠" in entries[0]
+
+    def test_mode2_two_sidekicks_each_coloured(self, monkeypatch):
+        p = _make_project("pair", "IDLE", external_agents=("codex", "agy"),
+                          attention_agents=("agy",), busy_agents=("codex",))
+        entry = self._entries([p], True, monkeypatch)[0]
+        busy = inject_status.TMUX_COLORS["BUSY"]
+        assert (f"#[fg=#666666]▸ #[fg={busy}]codex ◉#[nobold]"
+                f"#[fg=#666666],#[nobold]#[fg=yellow,bold]agy ⚠#[nobold]") in entry
+
+    def test_mode2_bg_follows_claudes_icon_before_the_badge(
+            self, monkeypatch):
+        """Claude's icon and `(bg)` come before the sidekick badge, so
+        neither reads as the sidekick's; `(bg)` in BUSY's colour."""
+        p = _make_project("pair", "IDLE", external_agents=("codex",),
+                          bg_active=True)
+        entry = self._entries([p], True, monkeypatch)[0]
+        busy = inject_status.TMUX_COLORS["BUSY"]
+        assert f"#[fg={busy}](bg)" in entry
+        assert entry.index("(bg)") < entry.index("▸")
+        assert entry.index("●") < entry.index("▸")
+
+    def test_mode1_bg_in_busy_colour(self, monkeypatch):
+        p = _make_project("solo", "IDLE", bg_active=True)
+        entry = self._entries([p], False, monkeypatch)[0]
+        busy = inject_status.TMUX_COLORS["BUSY"]
+        assert f"#[fg={busy}](bg)" in entry
+
+    def test_mode2_idle_codex_badge_is_dim(self, monkeypatch):
+        p = _make_project("pair", "IDLE", external_agents=("codex",))
+        entries = self._entries([p], True, monkeypatch)
+        assert "#[fg=#666666]▸ #[fg=#666666]codex#[" in entries[0]
 
 
 class TestDashboardExternalAgent:
@@ -217,25 +305,8 @@ class TestDashboardExternalAgent:
         from unittest.mock import MagicMock
         from dashboard import Dashboard
 
-        monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
-        monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
-        monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
-        monkeypatch.setattr("dashboard.disable_all_hooks_warning",
-                            lambda *a, **kw: "")
-        monkeypatch.setattr("dashboard.managed_hooks_only_warning",
-                            lambda *a, **kw: "")
-        monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
-        monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
-        monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
-        monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-        monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
-        monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
-        monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
-        monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d, session_id=None: None)
-        import curses as _curses
-        monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
+        from test_dashboard import _stub_dashboard_environment
+        _stub_dashboard_environment(monkeypatch)
 
         texts = []
         monkeypatch.setattr(
@@ -253,7 +324,8 @@ class TestDashboardExternalAgent:
         projects = [_make_project("sidekick", "IDLE", pane_count=2,
                                   external_agents=("kimi",))]
         texts = self._render_texts(monkeypatch, projects)
-        assert "⚙kimi" in texts
+        assert "▸ " in texts
+        assert "kimi" in texts
 
     def test_shell_row_is_marked_once(self, monkeypatch):
         projects = [_make_project("kimionly", "SHELL",
@@ -261,7 +333,8 @@ class TestDashboardExternalAgent:
         texts = self._render_texts(monkeypatch, projects)
         # The badge names the agent; the state cell stays plain SHELL
         # (not faked) and does not repeat the name.
-        assert any("⚙kimi" in t for t in texts)
+        assert "▸ " in texts
+        assert "kimi" in texts
         assert " (kimi)" not in texts
         assert any("SHELL" in t for t in texts)
 
@@ -271,25 +344,8 @@ class TestDashboardExternalAgent:
         from unittest.mock import MagicMock
         from dashboard import Dashboard
         calls = []
-        monkeypatch.setattr("dashboard.tmux_cmd", lambda *a, **k: "")
-        monkeypatch.setattr("dashboard.hooks_configured", lambda: True)
-        monkeypatch.setattr("dashboard.hooks_log_warning", lambda: "")
-        monkeypatch.setattr("dashboard.disable_all_hooks_warning",
-                            lambda *a, **kw: "")
-        monkeypatch.setattr("dashboard.managed_hooks_only_warning",
-                            lambda *a, **kw: "")
-        monkeypatch.setattr("dashboard.shell_cluster_warnings", lambda p: [])
-        monkeypatch.setattr("dashboard.hook_silence_warnings", lambda p: [])
-        monkeypatch.setattr("dashboard.errors_log_burst_warning", lambda: "")
-        monkeypatch.setattr("dashboard.get_session", lambda: "0")
-        monkeypatch.setattr("dashboard.touch_popup_session", lambda: None)
-        monkeypatch.setattr("dashboard.read_cache_file", lambda *a, **k: "")
-        monkeypatch.setattr("dashboard.format_elapsed", lambda ts: "")
-        monkeypatch.setattr("dashboard.format_dir", lambda d, col, w: d)
-        monkeypatch.setattr(ccm_signals, "read_hook_signal",
-                            lambda d, session_id=None: None)
-        import curses as _curses
-        monkeypatch.setattr(_curses, "color_pair", lambda n: 0)
+        from test_dashboard import _stub_dashboard_environment
+        _stub_dashboard_environment(monkeypatch)
         monkeypatch.setattr(
             Dashboard, "_addstr",
             lambda self, stdscr, y, x, text, attr=0, max_col=0:
@@ -304,9 +360,8 @@ class TestDashboardExternalAgent:
     def test_columns_do_not_move_when_an_agent_is_discovered(
             self, monkeypatch):
         """The first paint happens before the full detection pass has
-        found external agents; the note used to arrive with that pass,
-        widen the state column, and shove every name sideways in front
-        of the user. Column positions must not depend on what agents
+        found external agents, and an agent found by that pass must not
+        widen the state column. Column positions must not depend on what agents
         are present."""
         def name_x(projects):
             calls = self._render_calls(monkeypatch, projects)
@@ -320,10 +375,69 @@ class TestDashboardExternalAgent:
             f"when an external agent appeared — the layout jumps in "
             f"front of the user as detection catches up")
 
+    def _draws(self, monkeypatch, **kw):
+        import curses as _curses
+        import dashboard
+        calls = []
+
+        def capture(self_, stdscr, y, x, text, attr=0, max_col=0):
+            calls.append((text, attr))
+        from unittest.mock import MagicMock
+        from test_dashboard import _stub_dashboard_environment
+        _stub_dashboard_environment(monkeypatch)
+        monkeypatch.setattr(_curses, "color_pair", lambda n: n)
+        monkeypatch.setattr(dashboard.Dashboard, "_addstr", capture)
+        d = dashboard.Dashboard(initial_mode="dashboard")
+        kw.setdefault("external_agents", ("codex",))
+        d.projects = [_make_project("pair", "IDLE", **kw)]
+        stdscr = MagicMock()
+        stdscr.getmaxyx.return_value = (40, 200)
+        d.render(stdscr)
+        return calls
+
+    def test_working_codex_badge(self, monkeypatch):
+        import dashboard
+        draws = self._draws(monkeypatch, busy_agents=("codex",))
+        assert ("▸ ", dashboard.C_DIM) in draws
+        assert ("codex ◉", dashboard.C_BUSY) in draws
+
+    def test_waiting_codex_badge(self, monkeypatch):
+        import curses as _curses
+        import dashboard
+        draws = self._draws(monkeypatch, attention_agents=("codex",),
+                            busy_agents=("codex",))
+        assert ("▸ ", dashboard.C_DIM) in draws
+        assert ("codex ⚠", dashboard.C_PERMIT | _curses.A_BOLD) in draws
+
+    def test_two_sidekicks_each_coloured(self, monkeypatch):
+        import curses as _curses
+        import dashboard
+        draws = self._draws(monkeypatch, external_agents=("codex", "agy"),
+                            attention_agents=("agy",), busy_agents=("codex",))
+        assert ("codex ◉", dashboard.C_BUSY) in draws
+        assert (",", dashboard.C_DIM) in draws
+        assert ("agy ⚠", dashboard.C_PERMIT | _curses.A_BOLD) in draws
+
+    def test_idle_codex_badge_is_dim(self, monkeypatch):
+        import dashboard
+        draws = self._draws(monkeypatch)
+        assert ("▸ ", dashboard.C_DIM) in draws
+        assert ("codex", dashboard.C_DIM) in draws
+
+    def test_bg_is_claudes_and_drawn_before_the_badge(self, monkeypatch):
+        """`(bg)` describes the row's Claude. Drawn after the sidekick
+        badge it read as the sidekick's; it sits by the name, in
+        BUSY's colour (something Claude started is still running)."""
+        import dashboard
+        draws = self._draws(monkeypatch, bg_active=True)
+        texts = [t for t, _ in draws]
+        assert ("(bg)", dashboard.C_BUSY) in draws
+        assert texts.index("(bg)") < texts.index("▸ ")
+
     def test_no_badge_for_claude_only(self, monkeypatch):
         projects = [_make_project("plain", "IDLE")]
         texts = self._render_texts(monkeypatch, projects)
-        assert not any("⚙" in t for t in texts)
+        assert not any("▸" in t for t in texts)
         assert not any("(kimi)" in t for t in texts)
 
 
@@ -367,9 +481,9 @@ class TestPlatformSuffixedBinaries:
     """A launcher symlink can resolve to a platform-suffixed binary,
     and tmux reports the RESOLVED (truncated) name — Grok Build's
     `grok` arrives as `grok-macos-aarc` (measured,
-    grok 0.2.118). Enumerating every platform/arch spelling, and
-    guessing tmux's truncation width, is the fixed-shape mistake this
-    project keeps paying for; a prefix stands in for the family."""
+    grok 0.2.118). Enumerating every platform/arch spelling would also
+    mean guessing tmux's truncation width; a prefix stands in for the
+    family."""
 
     @pytest.mark.parametrize("command,expected", [
         ("grok-macos-aarc", "grok"),      # measured, truncated by tmux
@@ -377,6 +491,7 @@ class TestPlatformSuffixedBinaries:
         ("grok-linux-x86_64", "grok"),    # another platform
         ("grok", "grok"),                 # plain launcher, still fine
         ("kimi", "kimi"),                 # exact-match set unaffected
+        ("agy", "agy"),                   # measured, Antigravity CLI 1.3.3
     ])
     def test_known_agents_resolve_to_a_short_name(self, command, expected):
         assert ccm_constants.external_agent_name(command) == expected
@@ -394,7 +509,7 @@ class TestPlatformSuffixedBinaries:
         assert ccm_constants.external_agent_name("claude") == ""
 
     def test_badge_label_uses_the_short_name(self):
-        """`⚙grok-macos-aarc` is neither readable nor stable across
+        """`▸ grok-macos-aarc` is neither readable nor stable across
         machines; the badge carries the canonical name."""
         panes = [("0:2", "1", "%1", "grok-macos-aarc", "0", "40", "")]
         assert ccm_core._resolve_external_agent_panes(panes, "0:2") == ("grok",)

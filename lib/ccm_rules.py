@@ -26,6 +26,7 @@ evaluator still scans rules in priority order — but it makes
 about scope.
 """
 
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -39,7 +40,7 @@ from typing import Optional, Tuple
 # has finished loading, so the deferred import is free in steady
 # state and only matters for fresh standalone imports.
 from ccm_constants import (
-    BUSY_HOOK_JSONL_WINDOW,
+    BUSY_STALE_RELEASE_SEC,
     HOOK_FRESH_THRESHOLD,
     JSONL_HOOK_GAP_TOLERANCE,
     JSONL_USER_PENDING,
@@ -68,7 +69,8 @@ class DetectionContext:
     All fields are derived before any rule is evaluated, so rule
     matching is a pure function of this context.
     """
-    raw: str              # detect_window_raw result: DOWN/SHELL/BUSY/IDLE
+    raw: str              # detect_window_raw result:
+                          # DOWN/SHELL/BUSY/IDLE/PERMIT/IGNORED
     hook_state: str       # hook signal state: BUSY/PERMIT/SHELL/""
     hook_ts: int          # hook signal timestamp (0 if no signal)
     hook_age: int         # now - hook_ts (-1 if no signal)
@@ -96,13 +98,41 @@ class DetectionContext:
     # `~/.claude/sessions/<pid>.json`. None when no live claude is
     # running, or when session_info has not been written yet.
     session_id: Optional[str] = None
+    # A parked display client whose activity session cannot be identified.
+    session_unresolved: bool = False
+    # Consecutive idle-screen observations for an unresolved display client.
+    unresolved_idle_since: int = 0
+    unresolved_idle_seconds: int = 0
+    unresolved_idle_max_gap: int = 0
+    unresolved_idle_record: str = ""
+    prev_unresolved_idle_record: str = ""
+    # The work clock this window's panes show now (first
+    # clock-showing pane's, e.g. "(7s · ↓ 380 tokens)" or
+    # "Retrying in 3s"), or None when no pane shows one. Detection
+    # only observes it; `apply_actions` persists it so the next
+    # detection process can judge whether it ticks.
+    work_clock: Optional[str] = None
+    # The window's persisted `(clock_string, unix_ts)` from the
+    # previous detection pass, or None when nothing is stored.
+    # Compared against `work_clock` by the tick check.
+    prev_work_clock: Optional[Tuple[str, int]] = None
+    # Time of a subagent's newest hook event, or 0. Keeps an
+    # unfinished main call fresh when the transcript is unreadable.
+    agent_ts: int = 0
+    # Time of a subagent's open permission request, or 0.
+    agent_permit_ts: int = 0
+    # The main conversation's latest Stop reported background work
+    # still outstanding (a background agent or command, or a
+    # scheduled cron). Never decides the state: it adds the `(bg)`
+    # suffix beside IDLE and keeps auto-exit away from the window.
+    background_work: bool = False
 
 
 class Action(Enum):
     """Side effect to execute when a rule matches.
 
     DEFAULT         — set @ccm_prev_state to resolved state
-    HOLD_NO_WRITE   — do not touch tmux state (preserve prior state)
+    HOLD_NO_WRITE   — preserve committed state; observation history may change
     """
     DEFAULT = "default"
     HOLD_NO_WRITE = "hold_no_write"
@@ -210,15 +240,30 @@ class Rule:
 # Priority-ordered rule table. First match wins.
 #
 # Priority rationale:
-#   1-2  process tree authoritative for SHELL/DOWN
-#   3    fresh BUSY hook beats stale pipeline (rare race
+#   1    visibility verdict authoritative for IGNORED (the window's
+#        claude is deliberately unseen — no ladder claim may stand)
+#   2-3  process tree authoritative for SHELL/DOWN
+#   4    fresh BUSY hook beats stale pipeline (rare race
 #        where event-log is empty but hook just fired)
-#   4    startup transient: demote raw=BUSY during MCP loading
+#   5    startup transient: demote raw=BUSY during MCP loading
 #        (pid-age based, monotonic discriminator)
-#   5-6  raw BUSY/PERMIT passthrough (process-tree fallback for
+#   6-7  raw BUSY/PERMIT passthrough (process-tree fallback for
 #        hook-less detection)
-#   7    default: trust raw state
+#   8    default: trust raw state
 DETECTION_RULES: Tuple[Rule, ...] = (
+    Rule(
+        # IGNORED is not a rung of the PERMIT>BUSY>IDLE>SHELL ladder
+        # but a visibility verdict from `detect_window_raw`: at least
+        # one ignored pane hosts claude and no visible pane does, so
+        # SHELL/DOWN would assert "claude is not running" on evidence
+        # ccm chose not to look at. Passthrough, like the two rules
+        # below. First so no hook/jsonl evidence from sessions ccm is
+        # deliberately not watching can resurrect an activity claim.
+        name="process_ignored",
+        raw_in=("IGNORED",),
+        result="IGNORED",
+        phase="shell",
+    ),
     Rule(name="process_down", raw_in=("DOWN",), result="DOWN", phase="shell"),
     Rule(name="process_shell", raw_in=("SHELL",), result="SHELL", phase="shell"),
     Rule(
@@ -271,14 +316,17 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         # window as IDLE for the entire thinking phase. Hooks that
         # would normally cover this (PreToolUse, etc.) may not have
         # fired yet — claude is still thinking, not yet calling tools.
-        # Bounded by the long-tool window so a session that has
-        # genuinely stalled (no JSONL activity for 10+ minutes)
-        # falls through to the default rule rather than showing
-        # BUSY indefinitely.
+        # Bounded by the same window the event-log path gives itself
+        # before it stops claiming a turn is running: an Esc that lands
+        # before the answer begins writes no terminal record for
+        # either path to see. The shorter window is safe because a
+        # childless working turn reads raw=BUSY on its own: thinking,
+        # generation, and retry backoffs all show a ticking work
+        # clock, and a ticking clock never reaches this rule.
         name="jsonl_user_prompt_pending",
         raw_in=("IDLE",),
         jsonl_last_stop_reason_in=(JSONL_USER_PENDING,),
-        jsonl_age_lt=BUSY_HOOK_JSONL_WINDOW,
+        jsonl_age_lt=BUSY_STALE_RELEASE_SEC,
         result="BUSY",
         phase="midturn",
     ),
@@ -325,6 +373,7 @@ _FAST_PREV_TO_RAW = {
     "BUSY": "BUSY",
     "PERMIT": "PERMIT",
     "IDLE": "IDLE",
+    "IGNORED": "IGNORED",
     "": "IDLE",
 }
 
@@ -335,11 +384,20 @@ def build_fast_context(prev_state, project_dir,
     """Build a DetectionContext for the read-only statusline path.
 
     Does not call ps/capture-pane/tmux queries for process tree info.
-    Derives `raw` from prev_state and reads the hook signal only.
+    Derives `raw` from prev_state and reads the hook signal and the
+    transcript tail.
 
     `session_id` may be passed in (cached value from the same tmux
     query that built the project list) to avoid an O(N) tmux
-    subprocess per fast-path refresh.
+    subprocess per fast-path refresh. It also names the transcript:
+    with it, the session's own file is read directly (one stat and
+    one bounded tail scan), and the hook signal and the transcript describe
+    the same session. A missing named file stays unknown. With None,
+    the newest transcript in the
+    directory is used — a scan whose cost grows with the number of
+    past conversations there, and which can pick another session's
+    file when several share the directory. An explicit empty string
+    disables discovery, matching the hook reader's no-identity contract.
     """
     import ccm_jsonl   # deferred — see top-of-file note
     import ccm_signals
@@ -361,10 +419,13 @@ def build_fast_context(prev_state, project_dir,
             else:
                 hook_age = now - hook_ts
 
+    jsonl_age, jsonl_last_stop_reason = -1, None
     if project_dir:
-        jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(project_dir)
-    else:
-        jsonl_age, jsonl_last_stop_reason = -1, None
+        if session_id:
+            jsonl_age, jsonl_last_stop_reason = (
+                ccm_jsonl.read_jsonl_tail_info_for_session(project_dir, session_id))
+        elif session_id is None:
+            jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(project_dir)
 
     return DetectionContext(
         raw=raw,

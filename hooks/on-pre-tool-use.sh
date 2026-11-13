@@ -4,10 +4,21 @@
 # Installed by: ccm setup-hooks
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ccm_src="${BASH_SOURCE[0]}"; [[ "$_ccm_src" == */* ]] || _ccm_src="./$_ccm_src"
+SCRIPT_DIR="$(cd "${_ccm_src%/*}" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 ccm_hook_init || exit 0
+
+# A subagent's events are kept apart from the main conversation's
+# and write no BUSY signal: a background agent runs on after the main
+# turn has ended, and the conversation is then waiting for the user.
+# For the same reason they leave a scheduled COMPLETED notification
+# alone.
+if ccm_hook_in_subagent; then
+    ccm_agent_event "$HOOK_DIR" "$KEY"
+    exit 0
+fi
 
 # Cancel any COMPLETED notification scheduled by a recent Stop at a
 # turn boundary — a new tool call means Claude is still working.
@@ -17,6 +28,7 @@ _ccm_cancel_pending_completion "$HOOK_DIR" "$KEY"
 # type from hook_event_name (authoritative upstream signal) so the
 # event log captures the actual upstream event rather than a single
 # blended "pretool" bucket.
+
 _event_name=$(ccm_hook_event_name)
 case "$_event_name" in
     PreToolUse)                       _event_type="pretool"  ;;

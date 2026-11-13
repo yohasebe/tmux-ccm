@@ -55,9 +55,9 @@ class TestFindClaudePid:
 
     def test_finds_claude_when_pane_process_is_claude(self):
         """`tmux new-window "claude …"` gives the pane no shell, so the
-        pane pid IS claude. Measured with Claude Code
-        2.1.226: the child-only walk returned None here and the pane
-        read as SHELL while a permission dialog was on screen."""
+        pane pid IS claude (Claude Code 2.1.226). A child-only walk
+        would return None here and read the pane as SHELL while a
+        permission dialog is on screen."""
         ps = make_ps_lines((100, 50, 100, "claude"))
         assert ccm_pane_state.find_claude_pid(100, ps) == "100"
 
@@ -106,6 +106,20 @@ class TestHasChildren:
 # ─── JSONL session log freshness ───
 
 class TestDetectPaneState:
+    @pytest.mark.parametrize("footer", [
+        "←/→ to adjust · Enter to apply · Esc to cancel",
+        "←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel",
+        "Space to toggle · Enter to confirm · Esc to cancel",
+    ])
+    @pytest.mark.parametrize("with_child", [False, True])
+    def test_adjustment_modal_overrides_idle_and_busy(self, monkeypatch, footer, with_child):
+        entries = [(200, 100, 100, "claude")]
+        if with_child:
+            entries.append((300, 200, 200, "node"))
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a: "Settings\n  " + footer)
+        assert ccm_pane_state.detect_pane_state(
+            "100", "%0", make_ps_lines(*entries), "99999") == "PERMIT"
+
     @patch("ccm_core.tmux_cmd")
     def test_shell_when_no_claude(self, mock_tmux):
         ps = make_ps_lines((100, 1, 100, "bash"))
@@ -129,10 +143,8 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_permit_when_pane_process_is_claude(self, mock_tmux):
-        """The shape that exposed the bug: a direct-launch pane sitting
-        on a permission dialog read as SHELL because the claude lookup
-        found nothing. Verified live with Claude Code
-        2.1.226."""
+        """A direct-launch pane sitting on a permission dialog is not
+        SHELL: the claude lookup finds the pane process itself."""
         ps = make_ps_lines((100, 50, 100, "claude"), (300, 100, 100, "node"))
         mock_tmux.return_value = (
             "Do you want to proceed?\n"
@@ -216,14 +228,12 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_busy_when_spinner_present_despite_visible_prompt(self, mock_tmux):
-        """Accept-edits long-tool fix: in accept-edits
-        mode the `❯` composer stays on screen WHILE a tool runs, so a
-        visible prompt alone is not idleness. When the active-work
-        spinner footer (`… (elapsed · arrow Nk tokens)`) is also
-        visible, the pane is BUSY. Without this, an approved
-        permission left as the latest hook event produced a stuck
-        PERMIT on the dashboard for an actively-executing session.
-        Verbatim shape from a real pane."""
+        """In accept-edits mode the `❯` composer stays on screen WHILE
+        a tool runs, so a visible prompt alone is not idleness. When the
+        active-work spinner footer (`… (elapsed · arrow Nk tokens)`) is
+        also visible, the pane is BUSY; otherwise an approved permission
+        left as the latest hook event would hold PERMIT for an
+        actively-executing session."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "ruby")
         )
@@ -231,7 +241,7 @@ class TestDetectPaneState:
             "⏺ Reading 1 file, running 3 shell commands…\n"
             "✻ 処理中… (27m 26s · ↓ 28.5k tokens)\n"
             "❯ \n"
-            "  ~/code/tcse  main  Fable 5  ████░ 46%\n"
+            "  ~/code/my-project  main  Fable 5  ████░ 46%\n"
             "  ⏵⏵ accept edits on (shift+tab to cycle)"
         )
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
@@ -240,11 +250,8 @@ class TestDetectPaneState:
     def test_busy_spinner_with_sub_1k_token_count(self, mock_tmux):
         """Below 1000 tokens the spinner renders a bare count with NO
         `k` suffix — "(1m 39s · ↓ 557 tokens)". A mandatory `k` in
-        the pattern made every young turn's spinner invisible, so an
-        accept-edits pane sat at false IDLE until the count crossed
-        1000 (observed, a project: a fresh turn streaming
-        under session-long upstream hook silence had no other signal
-        left to promote it). Verbatim shape from that incident."""
+        the pattern would hide every young turn's spinner, leaving an
+        accept-edits pane at false IDLE until the count crosses 1000."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
         )
@@ -257,16 +264,86 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
 
     @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_before_any_tokens(self, mock_tmux):
+        """Early in a turn the footer carries no token count at all —
+        "(2s · thinking with max effort)". It is BUSY too: an
+        accept-edits pane keeps `❯` on screen throughout, so this
+        footer is the one piece of on-screen evidence that Claude is
+        working."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "bats")
+        )
+        mock_tmux.return_value = (
+            "✽ Slithering… (2s · thinking with max effort)\n"
+            "❯ \n"
+            "  ~/code/ccm  main  Opus 5  ctx ███░ 27%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_with_a_trailing_segment(self, mock_tmux):
+        """Mid-turn the footer gains a segment after the tokens —
+        "(5s · ↓ 25 tokens · thought for 3s)". A pattern that required
+        the parenthesis to close right after `tokens` stopped matching
+        there. What separates a running turn from the finished line
+        beside it is the parenthesised elapsed time, not what follows
+        it."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "bats")
+        )
+        mock_tmux.return_value = (
+            "✳ Slithering… (5s · ↓ 25 tokens · thought for 3s)\n"
+            "❯ \n"
+            "  ~/code/ccm  main  Opus 5  ctx ███░ 27%\n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_finished_marker_is_not_a_running_turn(self, mock_tmux):
+        """The line left behind when a turn ends carries the same
+        glyph and verb but no parenthesised elapsed — "Crunched for
+        8s". Widening the footer must not make the aftermath read as
+        work in progress."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude")
+        )
+        mock_tmux.return_value = (
+            "✻ Crunched for 8s\n"
+            "❯ \n"
+            "  ~/code/ccm  main  Opus 5  ctx ███░ 27%"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_busy_spinner_clipped_by_pane_width(self, mock_tmux):
+        """A narrow pane clips the footer at its right edge before the
+        closing parenthesis — `✳ Slithering… (5s · ↓ 25 tok` — and
+        a sidekick layout splits windows into panes narrow enough
+        to do that. End of line closes the match; the
+        finished line (`Crunched for 8s`) still fails, having no
+        opening paren at all."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "bats")
+        )
+        mock_tmux.return_value = (
+            "✳ Slithering… (5s · ↓ 25 tok\n"
+            "❯ \n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)"
+        )
+        assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
     def test_busy_spinner_with_hour_component(self, mock_tmux):
         """Past the hour mark the elapsed gains an `h` unit —
-        "(3h 11m 16s · ↓ 8.8k tokens)". The minutes-only pattern stopped
+        "(3h 11m 16s · ↓ 8.8k tokens)". A minutes-only pattern would stop
         matching there, and since an accept-edits pane keeps `❯` on
-        screen while a tool runs, raw fell to IDLE — taking with it the
+        screen while a tool runs, raw would fall to IDLE — taking with it the
         only promotion that rescues a resolved-but-unreported
-        permission (`raw == "BUSY"` in ccm_activity). Observed
- a permission approved within ~6 s left
-        the dashboard showing `⚠ PERMIT` for the remaining ~110 s of a
-        `bats` run. Verbatim shape from that incident."""
+        permission (`raw == "BUSY"` in ccm_activity)."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "bats")
         )
@@ -321,8 +398,7 @@ class TestDetectPaneState:
         (NOT the permit footer), and there is no spinner (Claude has
         stopped generating to ask). detect_pane_state must return
         IDLE — the event-log permit event is what correctly surfaces
-        it as PERMIT, NOT a false BUSY from the spinner path.
-        Measured live: menu waits show no spinner."""
+        it as PERMIT, NOT a false BUSY from the spinner path."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "python")
         )
@@ -340,10 +416,8 @@ class TestDetectPaneState:
         """With the cursor on the deny option, the line begins with
         `❯` — which PATTERN_INPUT_PROMPT also matches. The footer
         check runs first on the pane tail, so the open dialog must
-        win over the idle-prompt reading. Before the cursor prefix
-        was allowed, this exact screen read as IDLE while a
-        permission dialog was open (and `ccm send` would type into
-        it)."""
+        win over the idle-prompt reading: read as IDLE, the screen would
+        let `ccm send` type into the open dialog."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude")
         )
@@ -449,11 +523,10 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_permit_from_model_picker_v2_1_153_footer(self, mock_tmux):
-        """v2.1.153 reworded the `/model` footer:
+        """The `/model` footer since v2.1.153:
             `Enter to set as default · s to use this session only · Esc to cancel`
-        The Enter verb is no longer literally `confirm`. The
-        pre-v2.1.153 regex required `Enter to confirm` and would
-        miss this entirely, leaving `/model` showing as IDLE while
+        The Enter verb is not literally `confirm`. A regex that
+        requires `Enter to confirm` would miss this entirely, leaving `/model` showing as IDLE while
         the user is actually blocked at the picker. The relaxed
         `Enter to \\S[^\\n]*? · ... · Esc to <verb>` shape catches
         this without regressing free-nav slash menus.
@@ -614,6 +687,476 @@ class TestDetectPaneState:
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "IDLE"
 
 
+# ─── Work-clock staleness (no-child spinner reading) ───
+
+class TestWorkClock:
+    """No child process: the pane's clock — the spinner's elapsed-time
+    footer — is the only evidence a turn is running. It is believed
+    only while it ticks: raw=BUSY has no release path, so a static
+    footer (a frozen frame after a hang, or a transcript quoting a
+    footer) must age out on its own.
+
+    The history lives OUTSIDE the process (the `@ccm_work_clock`
+    window option), because tmux spawns the periodic detection path
+    fresh every status-interval — so each test supplies the stored
+    `(clock, ts)` a fresh process would read."""
+
+    def _ps(self):
+        return make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"))
+
+    def _state(self, mock_tmux, text, at, stored=None, ps=None):
+        """One detection pass as a short-lived process sees it: no
+        in-process history, only the stored (clock, ts) from the
+        window option."""
+        mock_tmux.return_value = text
+        with patch.object(ccm_pane_state, "_now", lambda: at):
+            return ccm_pane_state.detect_pane_state(
+                "100", "%0", ps or self._ps(), "99999",
+                stored_clock=stored)
+
+    @patch("ccm_core.tmux_cmd")
+    def test_a_reduced_motion_footer_ages_out_like_any_static_clock(
+            self, mock_tmux):
+        """Known limit, measured against 2.1.278: with Claude Code's
+        reduced-motion setting the footer is left as drawn, so its
+        elapsed time can stand still while the turn runs. ccm cannot
+        tell that from a frozen frame, and releases it on the same
+        window — which is why hooks, not this fallback, are what
+        carry such a session. Pinned so the release stays deliberate.
+        """
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        screen = self._frame("(2s · ↓ 40 tokens)", glyph="●")
+        stored = ("(2s · ↓ 40 tokens)", 1000)
+        assert self._state(mock_tmux, screen, at=1000) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w,
+                           stored=stored) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w + 1,
+                           stored=stored) == "IDLE"
+
+    @staticmethod
+    def _frame(footer, glyph="✳"):
+        return (f"{glyph} Slithering… {footer}\n"
+                "❯ \n"
+                "  ~/code/ccm  main  Opus 5  ctx ███░ 27%")
+
+    @patch("ccm_core.tmux_cmd")
+    def test_ticking_spinner_reads_busy_without_a_child(self, mock_tmux):
+        """A turn spends its thinking and generation with nothing
+        spawned, and the footer is on screen the whole while. First
+        sighting (nothing stored) is believed — fail-open, because
+        BUSY is the safe direction. Mutation target: dropping the
+        no-child branch reads this IDLE."""
+        assert self._state(
+            mock_tmux, self._frame("(7s · ↓ 380 tokens)"), at=1000) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_static_clock_stops_claiming_after_the_window(self, mock_tmux):
+        """The stored value unchanged across passes: a frozen frame
+        or a quoted footer is static, and a static clock stops
+        holding the window busy past SPINNER_STALE_RELEASE_SEC.
+        Mutation target: without the tick check this holds BUSY
+        forever."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        screen = self._frame("(7s · ↓ 380 tokens)")
+        stored = ("(7s · ↓ 380 tokens)", 1000)
+        assert self._state(mock_tmux, screen, at=1000) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w,
+                           stored=stored) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w + 1,
+                           stored=stored) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_a_clock_that_advances_keeps_its_claim(self, mock_tmux):
+        """A live spinner shows a new value every pass, and a value
+        that differs from the stored one is believed on sight. Long
+        after a static frame would have been released, an ADVANCED
+        clock still claims — the release must not latch."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        stored = ("(7s · ↓ 380 tokens)", 1000)
+        assert self._state(
+            mock_tmux, self._frame("(9s · ↓ 402 tokens)"),
+            at=1000 + 10 * w, stored=stored) == "BUSY"
+
+    @staticmethod
+    def _narrow(glyph, hint):
+        """A 36-column pane in a long thinking phase: the footer keeps
+        its hint and drops the elapsed time (Claude Code 2.1.271, the
+        hint has precedence when both do not fit)."""
+        return (f"{glyph} Thinking… ({hint})\n"
+                "❯ \n"
+                "  ~/…/ccm  main  Fable 5.1")
+
+    def _state_frames(self, mock_tmux, frames, at=1000, stored=None):
+        """A detection pass whose successive pane captures return
+        `frames` in order (the last one repeats); the resample wait
+        is skipped.
+
+        `_sleep` is patched with `create=True` so the harness sets up
+        even where the attribute is missing: a test that cannot set up
+        fails with AttributeError, which says nothing about the
+        behaviour it claims to pin."""
+        it = iter(frames)
+        last = [frames[0]]
+
+        def capture(*args, **kwargs):
+            # Only the visible-area capture advances the frames; the
+            # PERMIT footer's bottom capture sees the current one.
+            if args == ("capture-pane", "-t", "%0", "-p"):
+                try:
+                    last[0] = next(it)
+                except StopIteration:
+                    pass
+            return last[0]
+        mock_tmux.side_effect = capture
+        with patch.object(ccm_pane_state, "_now", lambda: at), \
+             patch.object(ccm_pane_state, "_sleep", lambda s: None, create=True):
+            return ccm_pane_state.detect_pane_state(
+                "100", "%0", self._ps(), "99999", stored_clock=stored)
+
+    @patch("ccm_core.tmux_cmd")
+    def test_footer_without_elapsed_time_is_busy_when_the_glyph_moves(self, mock_tmux):
+        """The elapsed time squeezed out, the glyph is what moves — and
+        it is looked for within the pass: the poll interval can sit on
+        the animation's two-second period, so the stored history may
+        show the same glyph on every pass of a live spinner. Here the
+        first capture matches the stored glyph exactly; the resample
+        half a second later differs, and that is the evidence."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        stored = ("· (deep in thought", 1000)
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("·", "deep in thought"), self._narrow("✽", "deep in thought")],
+            at=1000 + 10 * w, stored=stored) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_footer_without_elapsed_time_is_idle_when_nothing_moves(self, mock_tmux):
+        """A frozen frame, and the fixed glyph of reduced motion, show
+        the same footer on every capture; neither is evidence of a
+        running turn, from the first sighting — there is no history
+        to age, because nothing is persisted for this form."""
+        frozen = self._narrow("✻", "deep in thought")
+        assert self._state_frames(mock_tmux, [frozen, frozen, frozen]) == "IDLE"
+        reduced = self._narrow("●", "deep in thought")
+        assert self._state_frames(mock_tmux, [reduced, reduced, reduced]) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_timer_alone_is_a_clock(self, mock_tmux):
+        """The footer fits its parts one at a time and drops what does
+        not fit, so the timer can stand alone: a narrow pane with the
+        hint squeezed out, or a wide one in a tool phase that has
+        produced no tokens yet. A timer alone is a clock."""
+        assert self._state(
+            mock_tmux, self._frame("(2s)"), at=1000) == "BUSY"
+        assert self._state(
+            mock_tmux, self._frame("(17s)"), at=1000) == "BUSY"
+        assert self._state(
+            mock_tmux, self._frame("(3h 11m 16s)"), at=1000) == "BUSY"
+        # Still ages out: one stored value, unchanged, past the window.
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        assert self._state(mock_tmux, self._frame("(2s)"), at=1000 + w + 1,
+                           stored=("(2s)", 1000)) == "IDLE"
+
+    @pytest.mark.parametrize("line,clock", [
+        ("✻ Thinking… (2s)", "(2s)"),
+        ("✻ Thinking... (2s)", "(2s)"),
+        ("✻ Thinking… (2s", "(2s)"),                 # clipped by a narrow pane
+        ("✻ Thinking… (3h 11m 16s)", "(3h 11m 16s)"),
+    ])
+    def test_timer_alone_on_a_spinner_line_is_a_clock(self, line, clock):
+        """On the spinner's own line the lone time is the clock, clipped
+        or not, whichever ellipsis the verb ends in."""
+        assert ccm_pane_state._work_clock(line) == clock
+
+    @pytest.mark.parametrize("line", [
+        "the first run took (2s)",
+        "(45s)",
+        "✻ Thinking… (2 seconds later)",
+        "✻ Thinking… (2s, 3s)",
+        "✻ Crunched for 8s",
+    ])
+    def test_timer_alone_off_a_spinner_line_is_not_a_clock(self, line):
+        """A bare `(2s)` is ordinary in prose and this form has nothing
+        else to tell it apart, so off the spinner's line it counts for
+        nothing; on it, the seconds must be followed by the closing
+        paren or the line's end. Kept apart from the acceptance cases
+        so a loosened pattern fails here on its own, not hidden behind
+        an earlier acceptance assertion."""
+        assert ccm_pane_state._work_clock(line) is None
+
+    @patch("ccm_core.tmux_cmd")
+    def test_two_bracketed_spans_in_prose_stay_idle(self, mock_tmux):
+        """The window stores one clock and compares every match against
+        it, so two DIFFERENT static clocks never age out. That is
+        tolerable for the footer's distinctive shape; it would not be
+        for prose, which is why the lone timer needs a spinner line."""
+        screen = ("the first run took (2s)\n"
+                  "the second took (45s)\n"
+                  "❯ \n"
+                  "  ~/…/ccm  main  Fable 5.1")
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        assert self._state(mock_tmux, screen, at=1000) == "IDLE"
+        assert self._state(mock_tmux, screen, at=1000 + 100 * w,
+                           stored=("(2s)", 1000)) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_an_ascii_ellipsis_footer_is_read_the_same(self, mock_tmux):
+        """Claude Code appends `…` only to a verb that does not already
+        end in an ellipsis, and counts ASCII `...` as one — a verb can
+        end that way, from `spinnerVerbs` or a task's own wording. The
+        hint form must be recognised either way, or such a pane reads
+        idle for the whole thinking phase."""
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("✻", "deep in thought").replace("…", "..."),
+             self._narrow("✽", "deep in thought").replace("…", "...")]) == "BUSY"
+        frozen = self._narrow("✻", "deep in thought").replace("…", "...")
+        assert self._state_frames(mock_tmux, [frozen, frozen, frozen]) == "IDLE"
+        assert ccm_pane_state._hint_frames(["✻ Thinking... (deep in thought)"]) == \
+            [("deep in thought", "✻")]
+
+    @patch("ccm_core.tmux_cmd")
+    def test_the_still_glyph_still_has_a_clock_when_the_time_shows(self, mock_tmux):
+        """Under reduced motion the glyph is a fixed `●`. The hint form
+        needs an animating glyph, because there the glyph is the
+        evidence — but the timer form does not, because the time is.
+        A reduced-motion pane showing its time is read like any
+        other, and only the hint-without-time footer stays
+        unreadable."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        assert self._state(mock_tmux, self._narrow("●", "2s"), at=1000) == "BUSY"
+        assert self._state(mock_tmux, self._narrow("●", "2s"), at=1000 + w + 1,
+                           stored=("(2s)", 1000)) == "IDLE"
+        # The hint form is still not read there, and still is elsewhere.
+        assert ccm_pane_state._hint_frames(["● Thinking… (deep in thought)"]) == []
+        assert ccm_pane_state._hint_frames(["✻ Thinking… (deep in thought)"]) != []
+
+    @patch("ccm_core.tmux_cmd")
+    def test_resample_waits_between_captures(self, mock_tmux):
+        """The resample is only evidence because time passes between the
+        captures: without the wait, two captures land on the same
+        animation frame and a live spinner reads as still.
+
+        Patched WITHOUT `create=True` on purpose. The harness above
+        creates the attribute so it can run against code that predates
+        it; this test must instead fail if `_sleep` is renamed (the
+        patch would silently miss and a real sleep would run) or if the
+        call is dropped (the captures would no longer be apart)."""
+        frames = iter([self._narrow("·", "deep in thought"),
+                       self._narrow("·", "deep in thought"),
+                       self._narrow("·", "deep in thought")])
+        last = [None]
+        events = []
+
+        def capture(*args, **kwargs):
+            if args == ("capture-pane", "-t", "%0", "-p"):
+                events.append("capture")
+                last[0] = next(frames, last[0])
+            return last[0]
+        mock_tmux.side_effect = capture
+        with patch.object(ccm_pane_state, "_now", lambda: 1000), \
+             patch.object(ccm_pane_state, "_sleep",
+                          lambda s: events.append(("wait", s))):
+            ccm_pane_state.detect_pane_state("100", "%0", self._ps(), "99999")
+        # Every recapture follows a wait: the evidence is two captures
+        # apart in time, not two captures after the waits are done.
+        wait = ("wait", ccm_pane_state.THINKING_HINT_RESAMPLE_SEC)
+        assert events == ["capture"] + [wait, "capture"] * ccm_pane_state.THINKING_HINT_RESAMPLES
+
+    @patch("ccm_core.tmux_cmd")
+    def test_two_static_lines_with_the_same_hint_are_not_movement(self, mock_tmux):
+        """A transcript can hold two quoted footers with the same hint
+        and different glyphs. Captured twice, the screen is identical;
+        comparing line by line, nothing moved. (Matching by hint alone
+        would pair the first line with the second and call it
+        movement on every pass, with no release.)"""
+        two = ("✻ Thinking… (deep in thought)\n"
+               "✽ Thinking… (deep in thought)\n"
+               "❯ \n"
+               "  ~/…/ccm  main  Fable 5.1")
+        assert self._state_frames(mock_tmux, [two, two, two]) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_elapsed_time_returning_on_the_recapture_is_busy(self, mock_tmux):
+        """Between the captures the footer may regain its elapsed time
+        (the pane widened, the hint changed); the recapture is read
+        for the ordinary clock first, so that evidence counts."""
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("✻", "deep in thought"),
+             self._frame("(46s · deep in thought)")]) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_a_hint_that_changed_is_judged_from_the_next_pair(self, mock_tmux):
+        """A capture whose hints differ from the previous one's (the
+        hint crossed a threshold, the screen scrolled) pairs no lines
+        with it; each capture is compared with the one before, so the
+        following pair can still show movement."""
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("✻", "thinking more"),
+             self._narrow("✽", "thinking some more"),
+             self._narrow("·", "thinking some more")]) == "BUSY"
+        assert self._state_frames(
+            mock_tmux,
+            [self._narrow("✻", "thinking"),
+             self._narrow("✽", "thinking more"),
+             self._narrow("·", "thinking some more")]) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_footer_with_elapsed_time_is_not_resampled(self, mock_tmux):
+        """The resample is for the elapsed-less form only; with a
+        clock on screen the single capture decides."""
+        screen = self._frame("(7s · ↓ 380 tokens)")
+        mock_tmux.return_value = screen
+        visible_calls = []
+        real = ccm_pane_state.capture_pane_visible
+
+        def counting(pane_target):
+            visible_calls.append(pane_target); return real(pane_target)
+        with patch.object(ccm_pane_state, "_now", lambda: 1000), \
+             patch.object(ccm_pane_state, "_sleep", lambda s: None, create=True), \
+             patch.object(ccm_pane_state, "capture_pane_visible", counting):
+            assert ccm_pane_state.detect_pane_state(
+                "100", "%0", self._ps(), "99999") == "BUSY"
+        assert len(visible_calls) == 1
+
+    def test_work_clock_forms(self):
+        """The elapsed form is the clock (glyph excluded, as a
+        mid-animation frame must not look alive); the hint form is
+        not a clock at all; a finished line and prose are neither."""
+        wc = ccm_pane_state._work_clock
+        assert wc("✳ Slithering… (45s · deep in thought)") == "(45s · deep in thought)"
+        assert wc("✻ Thinking… (deep in thought)") is None
+        assert wc("✻ Crunched for 8s") is None
+        hf = ccm_pane_state._hint_frames
+        assert hf(["✻ Thinking… (deep in thought)"]) == [("deep in thought", "✻")]
+        assert hf(["· Thinking… (picking the thought back up (2 of 3))"]) == \
+            [("picking the thought back up (2 of 3", "·")]
+        assert hf(["  ✻ Thinking… (still thinking"]) == [("still thinking", "✻")]
+        assert hf(["⏺ Note… (see below)", "● Thinking… (deep in thought)"]) == []
+
+    @patch("ccm_core.tmux_cmd")
+    def test_two_static_clocks_fail_safe(self, mock_tmux):
+        """One stored slot per window: a second footer string on
+        screen differs from the stored one and reads as movement, so
+        two static clocks hold BUSY past the window. Accepted — that
+        direction only delays auto-exit, while aging each string
+        separately would misread a retry countdown's recycled values
+        and call a live storm idle, which is the direction auto-exit
+        acts on."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        both = ("✳ Slithering… (7s · ↓ 380 tokens)\n"
+                "reply text quoting (12s · ↓ 1.2k tokens) verbatim\n"
+                "❯ \n")
+        stored = ("(7s · ↓ 380 tokens)", 1000)
+        assert self._state(mock_tmux, both, at=1000) == "BUSY"
+        assert self._state(mock_tmux, both, at=1000 + w + 1,
+                           stored=stored) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_retry_backoff_reads_busy_without_a_child(self, mock_tmux):
+        """A connection / rate-limit retry replaces the spinner
+        footer, spawns no child, and writes no JSONL — so
+        nothing else marks the session as working while it waits."""
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 "blocking it (ConnectionRefused) · Retrying in 3s · "
+                 "attempt 8/10\n"
+                 "❯ \n")
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_retry_backoff_clipped_tail_still_reads_busy(self, mock_tmux):
+        """The retry line's tail clips in a narrow pane (at
+        100 columns it can end `attemp…`), so the match must not depend
+        on anything past the countdown."""
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 "blocking it (ConnectionRefused) · Retrying in 3s · attemp…\n"
+                 "❯ \n")
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_retry_backoff_in_minutes_reads_busy(self, mock_tmux):
+        """Backoff grows with every attempt, so a seconds-only
+        pattern stops matching exactly the long backoffs this exists
+        for. The countdown takes the same unit-optional shape as the
+        spinner's elapsed. (`1m 5s` is unobserved as yet — the risk
+        is in the shape; the duration formatter is shared with the
+        footer, which does render minutes.)"""
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 "blocking it (ConnectionRefused) · Retrying in 1m 5s · "
+                 "attempt 9/10\n"
+                 "❯ \n")
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+
+    def test_retry_backoff_units_required_shape(self):
+        """Decimal seconds and bare minutes are not matched:
+        unobserved upstream, and the footer's own elapsed is integer
+        seconds — the pattern must not grow past what is known."""
+        p = ccm_pane_state.PATTERN_RETRY_BACKOFF
+        assert p.search("Retrying in 45s")
+        assert p.search("Retrying in 1m 5s")
+        assert not p.search("Retrying in 1.5s")
+        assert not p.search("Retrying in 2m")
+
+    @patch("ccm_core.tmux_cmd")
+    def test_leftover_child_plus_static_clock_releases(self, mock_tmux):
+        """The accept-edits disambiguation asks the same question
+        the childless branch asks — "is claude working?", not "is
+        anything alive?" — so a spinner-shaped string alone is not yes.
+        A leftover long-lived child (a dev server claude no longer
+        owns — the `(bg)` case) keeps that branch reachable after the
+        turn ends, and a static footer on screen must not pin raw=BUSY,
+        which has no release path. Same gate, both branches."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "node"))   # leftover dev server
+        screen = ("✳ Slithering… (7s · ↓ 380 tokens)\n"
+                  "❯ \n"
+                  "  ⏵⏵ accept edits on (shift+tab to cycle)")
+        stored = ("(7s · ↓ 380 tokens)", 1000)
+        assert self._state(mock_tmux, screen, at=1000, ps=ps) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w,
+                           stored=stored, ps=ps) == "BUSY"
+        assert self._state(mock_tmux, screen, at=1000 + w + 1,
+                           stored=stored, ps=ps) == "IDLE"
+
+    @patch("ccm_core.tmux_cmd")
+    def test_clock_reported_from_the_child_branch_too(self, mock_tmux):
+        """The persistence hand-off must see clocks from both
+        branches — a clock only ever observed through the child
+        branch would never reach the window option, and the next
+        detection process would judge it with no history."""
+        ps = make_ps_lines(
+            (100, 1, 100, "bash"), (200, 100, 100, "claude"),
+            (300, 200, 200, "node"))
+        mock_tmux.return_value = (
+            "✳ Slithering… (7s · ↓ 380 tokens)\n"
+            "❯ \n"
+            "  ⏵⏵ accept edits on (shift+tab to cycle)")
+        out = []
+        state = ccm_pane_state.detect_pane_state(
+            "100", "%0", ps, "99999", clock_out=out)
+        assert state == "BUSY"
+        assert out == ["(7s · ↓ 380 tokens)"]
+
+    @patch("ccm_core.tmux_cmd")
+    def test_exhausted_retry_line_ages_out(self, mock_tmux):
+        """When retries give up, the last line stays on screen with
+        nothing left to tick. It must release like any static clock —
+        otherwise a failed session pins the window busy forever."""
+        w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 "blocking it (ConnectionRefused) · Retrying in 3s · "
+                 "attempt 8/10\n"
+                 "❯ \n")
+        stored = ("Retrying in 3s", 1000)
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+        assert self._state(mock_tmux, retry, at=1000 + w + 1,
+                           stored=stored) == "IDLE"
+
+
 # ─── detect_window_raw ───
 
 class TestDetectWindowRaw:
@@ -661,8 +1204,7 @@ class TestDetectWindowRaw:
     def test_sliver_pane_excluded_from_aggregation(self, mock_tmux):
         """Sliver-pane scenario:
         a 1-row sliver pane held a long-idle claude and false-read
-        BUSY (children present, capture-pane empty so no `❯`). Pre-
-        fix that BUSY infected the whole window; post-fix the
+        BUSY (children present, capture-pane empty so no `❯`). The
         sliver is filtered out and the visible shell pane drives
         the result → SHELL."""
         ps = make_ps_lines(
@@ -748,3 +1290,56 @@ class TestEnumerateWindowPanes:
         p = ccm_pane_state.enumerate_window_panes("0:5", [])[0]
         assert (p.pane_id, p.pane_pid, p.active, p.current_command,
                 p.ignored) == ("%0", "100", False, "", False)
+
+
+# ─── Panes captured ahead in one tmux process ───
+
+class TestPrefetchVisible:
+    def _tmux(self, monkeypatch, reply):
+        calls = []
+
+        def tmux_cmd(*args, **kwargs):
+            calls.append(args)
+            if ";" in args:
+                sep = args[args.index("display-message") + 2]
+                return reply(sep) if callable(reply) else reply
+            return "LIVE ❯"
+        monkeypatch.setattr(ccm_core, "tmux_cmd", tmux_cmd)
+        ccm_pane_state.clear_prefetched()
+        return calls
+
+    def test_each_pane_is_served_once_then_read_live(self, monkeypatch):
+        calls = self._tmux(monkeypatch, lambda sep: f"A1\nA2\n{sep}\nB1\n")
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        assert ccm_pane_state.capture_pane_visible("%1") == ["A1", "A2"]
+        assert ccm_pane_state.capture_pane_visible("%2") == ["B1"]
+        assert ccm_pane_state.capture_pane_visible("%1") == ["LIVE ❯"]   # a second look
+        assert sum(1 for c in calls if ";" in c) == 1
+
+    @pytest.mark.parametrize("reply", [
+        "",                                              # tmux failed
+        lambda sep: f"A\n{sep}\nB\n{sep}\nC\n",          # a screen held the separator
+        lambda sep: "A only\n",                          # separators lost
+    ])
+    def test_anything_but_one_screen_per_pane_keeps_nothing(self, monkeypatch, reply):
+        self._tmux(monkeypatch, reply)
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        assert ccm_pane_state.capture_pane_visible("%1") == ["LIVE ❯"]
+
+    def test_an_empty_screen_takes_the_existing_fallback(self, monkeypatch):
+        self._tmux(monkeypatch, lambda sep: f"\n{sep}\nB\n")
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        assert ccm_pane_state.capture_pane_visible("%1") == ["LIVE ❯"]
+
+    def test_screens_left_by_an_unfinished_pass_expire(self, monkeypatch):
+        self._tmux(monkeypatch, lambda sep: f"A\n{sep}\nB\n")
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        monkeypatch.setattr(ccm_pane_state, "_prefetched_until", 0.0)
+        assert ccm_pane_state.capture_pane_visible("%1") == ["LIVE ❯"]
+
+    def test_the_separator_is_new_each_pass(self, monkeypatch):
+        seen = []
+        self._tmux(monkeypatch, lambda sep: seen.append(sep) or "")
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        ccm_pane_state.prefetch_visible(["%1", "%2"])
+        assert len(set(seen)) == 2

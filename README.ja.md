@@ -6,7 +6,7 @@
 <br clear="left">
 <br>
 
-[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.233-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
+[![tested](https://img.shields.io/badge/tested-Claude%20Code%20v2.1.323-brightgreen)](https://docs.anthropic.com/en/docs/claude-code)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![tmux](https://img.shields.io/badge/tmux-3.2%2B-blue)](https://github.com/tmux/tmux)
 
@@ -14,7 +14,7 @@ ccm は、[Claude Code](https://docs.anthropic.com/en/docs/claude-code) を複�
 
 実質的に **アテンション・マネージャ** として動きます。各プロジェクトに状態 (BUSY / IDLE / 許可待ち) を付与し、ダッシュボードはそれを優先度順に並べ、キー 1 つで「次に対応すべきウィンドウ」に移動できます。
 
-ポップアップダッシュボードで全プロジェクトの状態 (busy / idle / 許可待ち)、git ブランチ、リスニングポートを一目で確認できます。スナップショットで tmux 再起動後のレイアウトを復元し、デスクトップ通知で対応が必要なプロジェクトだけを知らせます。
+ポップアップダッシュボードで全プロジェクトの状態 (busy / idle / 許可待ち)、git ブランチ、リスニングポートを一目で確認できます。スナップショットで tmux 再起動後のプロジェクト窓を復元し、デスクトップ通知で対応が必要なプロジェクトだけを知らせます。
 
 ccm の価値は並行度に応じて伸びます。2–3 プロジェクトでも有用、4 つ以上を並行で動かすと日常のインフラになります。Max プランで複数プロジェクトに agent を並行で走らせている層に最もフィットします。
 
@@ -35,7 +35,7 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 - **ツリービュー** — セッション / ウィンドウ / ペインの階層表示とナビゲーション
 - **Git 連携** — プロジェクトごとに git ブランチと dirty 状態を表示
 - **ポート検出** — プロジェクトごとのリスニングポートを表示
-- **スナップショット** — プロジェクトレイアウトの保存と復元
+- **スナップショット** — プロジェクトの保存と窓の復元
 - **プロジェクト間メッセージング** — `ccm send <project> <message>` で他プロジェクトの Claude にプロンプト送信、状態に応じた安全な制御 (PERMIT は拒否)。相手が取り込み中なら store-and-forward キューで後送
 - **Permission mode の可視化** — 各プロジェクトの Claude Code permission mode (manual / accept / plan / auto / bypass) を `ccm status` とダッシュボードに表示。「このプロジェクトは許可を求めてこない」理由が一目で分かる
 - **サイドキック対応** — 分割ペインで Claude の隣に2つ目のエージェント CLI を動かせます。ccm はそれを自身の追跡から外したうえで、存在していることを示します。[別モデルをサイドキックとして使う](docs/guide.ja.md#別モデルをサイドキックとして使うccm_ignore)、[他のエージェント CLI との往復リレー](docs/guide.ja.md#他のエージェント-cli-との往復リレー)を参照
@@ -47,12 +47,12 @@ ccm の価値は並行度に応じて伸びます。2–3 プロジェクトで�
 ## 動作要件
 
 - tmux 3.2+
-- Python 3.9+
+- Python 3.9+（`PATH` 上の `python3`。ccm はその実体のパスを実行時ディレクトリの `${TMPDIR:-/tmp}/ccm-<uid>/python` に覚え、起動のたびにバージョン管理ツールの shim を通らないようにします。別の Python に切り替えるときはこのファイルを削除してください）
 - [TPM](https://github.com/tmux-plugins/tpm)（手動インストールも可）
 - jq
 - fzf
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) **v2.1.107 以上**
-  （v2.1.233 で動作確認済み — ページ冒頭のバッジを参照）
+  （v2.1.323 で動作確認済み — ページ冒頭のバッジを参照）
 
 ## インストール
 
@@ -154,6 +154,17 @@ set -g @ccm-key-search "/"       # 任意: prefix + / でダッシュボード�
 > ```
 >
 > `F1` で開き、もう一度 `F1` で閉じます。popup タイトルの色付き ccm ロゴもそのまま表示されます (自前で `bind-key -n F1 display-popup …` を書くこともできますが、`-T` の format 文字列を完全にコピーしないとロゴは出ません)。
+
+> [!TIP]
+> 作業しながらダッシュボードを表示し続けたい場合は、ポップアップの代わりにペインとして固定できます:
+>
+> ```tmux
+> set -g @ccm-dashboard-dock top        # bottom も可。off（既定）はポップアップのまま
+> set -g @ccm-dashboard-dock-size 40    # 窓の高さに対する割合（%、既定 40）
+> set -g @ccm-dashboard-dock-close-on-open on   # 任意: プロジェクトを開いたら閉じる
+> ```
+>
+> `prefix + Tab` で、現在の窓に横幅いっぱいのダッシュボードのペインを開閉します。窓を切り替えると付いてきて、ダッシュボードからプロジェクトを開いても開いたままです。離れた窓は元の配置に戻ります。詳しくは[ガイド](docs/guide.ja.md#ダッシュボードの固定表示)を参照してください。
 
 ### デスクトップ通知
 
@@ -314,12 +325,25 @@ set -g @ccm-status-bg         "#262626"   # エントリ行の背景色
 set -g @ccm-status-gutter-bg  "#1a1a1a"   # メインバーとエントリ行の間のガター（1行分）
 set -g @ccm-status-fg         "#9E9E9E"   # デフォルト前景色
 set -g @ccm-status-fg-dim     "#5a5a5a"   # 区切り記号やヒント表示
+set -g @ccm-status-current-bg "#505050"   # 現在のプロジェクトの背景色（モード1・2）
 ```
+
+モード1・2では、現在のプロジェクトを左右1文字分の空白も含めて別の背景色で表示します。エントリの幅を変えずに、現在のプロジェクトを見つけやすくします。
 
 受理される値: 16 進カラー (`#RGB` / `#RRGGBB`)、`colour123` 形式のパレットインデックス、または名前付きカラー (`red` / `blue` / `default` 等)。無効な値はデフォルトにフォールバックします。
 
 > [!NOTE]
 > モード2は追加の `status-format` スロット（1行のガター + レイアウト1行ごとに1スロット、最大 16）を使用します。他のプラグインがこれらのインデックスを使用している場合、衝突が発生する可能性があります。
+
+### Codex サイドキックの通知
+
+全窓の既定値は `~/.tmux.conf` に書き、設定を再読み込みします。Codex hook の導入と信頼は別途必要です。窓の上書き、`set -gw`、`set -g` の順で優先し、未設定時の通知は off です。窓だけの例外は保存点に残りません。配達・承認の扱いは[ガイド](docs/guide.ja.md#sidekick-completion-v1)を参照してください。
+
+```tmux
+set -g @ccm-sidekick-notify on
+set -g @ccm-sidekick-notify-limit 20
+set -g @ccm-sidekick-notify-excerpt on
+```
 
 ### ダッシュボード操作
 
@@ -334,13 +358,16 @@ set -g @ccm-status-fg-dim     "#5a5a5a"   # 区切り記号やヒント表示
 | `g` | 既存ウィンドウを登録 |
 | `r` | 削除 — [u]nregister（ウィンドウ残す）か [d]elete（閉じる。y/N 確認あり）を選択。メニューにも項目あり |
 | `i` | 無視トグル — プロジェクトを隠す/戻す（[別モデルをサイドキックとして使う](docs/guide.ja.md#別モデルをサイドキックとして使うccm_ignore)参照） |
-| `x` | アイドル状態のClaude Codeを一括終了 |
+| `x` | 名前・状態を確認して Claude を一括終了（画面の安全確認付き。窓は保持） |
 | `/` | プロジェクト名で検索 |
 | `t` | ツリービューに切替 |
 | `w` | サイドキックの注意喚起を切替 — あなたを待っているサイドキックを強調表示（[サイドキックの注意喚起](docs/guide.ja.md#サイドキックの注意喚起-いつあなたを必要としているかを知る)参照） |
 | `b` | [バックグラウンドセッションセクション](#バックグラウンドセッションセクションagent-view共存) を切替 |
-| `m` | メニューに切替 |
+| `?` / `m` | 操作と設定のメニュー。ログアウト準備・復元の続行・保存点の選択／削除・reset・Claude 終了 |
 | `q` / `Esc` / `F1` | 閉じる |
+
+`ccm exit <name>` は窓を残して Claude を終了し、`ccm exit <name> [-y]             Claude を終了（窓とサイドキックは保持）
+ccm stop <name>` は窓を閉じます。exit は BUSY／PERMIT を既定で拒否し、`-y` で許可します。PERMIT では Escape が保留中のツール呼び出しを拒否します。メニュー操作は確認と結果の閲覧に対応します。詳しくは[ガイド](docs/guide.ja.md#ログアウト復元復旧)を参照してください。
 
 ### CLIコマンド
 
@@ -355,6 +382,7 @@ ccm remove <name>                 プロジェクトウィンドウ削除（ウ�
 ccm attach <name|number>          プロジェクトウィンドウに切替
 ccm list                          管理中プロジェクト一覧
 ccm status                        全プロジェクト状態表示（permission mode・ブランチ・ポート含む）
+ccm status --json [name|self]     窓と相棒の状態を JSON で出力（エージェント・スクリプト向け）
 ccm tree                          セッション/ウィンドウ/ペインの階層表示
 ccm ports                         プロジェクトごとのリスニングポート表示
 ccm capture [--copy] <name|#id>   ペイン内容をキャプチャ（--copy: クリップボード）
@@ -362,12 +390,15 @@ ccm dashboard [--search]          インタラクティブダッシュボード�
 ccm search                        ダッシュボードをライブフィルタ検索モードで開く
 ccm menu                          インタラクティブメニュー
 ccm snapshot save|load|list|delete  スナップショット管理
+ccm roles [target] [--clear]      復元したペインの役割を表示・解除
+ccm prepare-logout [-y|--cancel]   保存点の保存・保護・解除
+ccm finish-restore [-y]            未完了の復元を、戻った分で終える
 ccm start <snapshot>              スナップショットから復元
 ccm stop [--all|name]             プロジェクト停止（--all時は_autosave自動保存）
 ccm send <name> <msg> [flags]     他プロジェクトのClaude Codeセッションにプロンプト送信
                                   flags: --file --stdin --no-enter --now --force --start -y --
 ccm sidekick-send <msg> [flags]   このウィンドウ内のサイドキック（別エージェントCLI）にプロンプト送信
-ccm spool list|cancel …           キュー済み（store-and-forward）メッセージの確認 / 取り下げ
+ccm spool list|cancel|clear-expired|clear-held  キュー済み（store-and-forward）メッセージの確認 / 取り下げ / 未達・保持中の了解
 ccm bg list                       外部の Claude Code agent-view セッション一覧（読み取り専用）
 ccm init                          対話型セットアップウィザード（フック・復元・ステータスバー）
 ccm setup-hooks                   Claude Codeフックをインストール（検出精度向上）
@@ -381,7 +412,7 @@ ccm errors [--clear]              silent-exception ログの表示／クリア
 ccm reset <name>                  プロジェクトの runtime 状態をリセット (最終手段の復旧)
 ccm ignore [project]              ペイン(既定:現在)またはプロジェクトをccmから隠す
 ccm unignore [project]            隠したペイン/プロジェクトをccmに戻す
-ccm doctor                        セルフチェック (依存・フック・カナリア・プロジェクト・エラー)
+ccm doctor [--verbose]            問題を表示。--verbose で診断の詳細をすべて表示
 ccm clear-notifications           macOS 通知センターから ccm 通知を削除
 ```
 
@@ -396,11 +427,13 @@ ccm clear-notifications           macOS 通知センターから ccm 通知を�
 | ◉ | BUSY | Claude処理中 |
 | ● | IDLE | 入力待ち |
 | `* <elapsed>` | IDLE（最近完了） | BUSY/PERMIT → IDLE 遷移後 30 秒間表示される一時マーカー（アスタリスク緑、時間 dim） |
+| `(bg)` | IDLE | Claude は入力待ちだが、Claude が始めた作業がまだ動いている（バックグラウンドのエージェントやコマンド、定期実行のループ、残っているプロセス）。BUSY と同じ色で Claude の状態の隣、サイドキックのバッジより前に表示。自動終了はこのウィンドウに手を出さない。ダッシュボードでは `(bg 9h)` のように一番古い作業の経過時間を示し、プレビューに作業ごとの内訳を出す |
 | `[N]` | （任意の状態、マルチペインウィンドウ） | ペイン数マーカー（角括弧 dim、数字 cyan）。ウィンドウに 2 ペイン以上ある場合に表示 |
 | `⊘` | （全状態） | 非表示ペインのマーカー（dim）: `CCM_IGNORE` で ccm から除外されたペインがウィンドウ内にある |
-| `⚙<name>` | （全状態） | presence マーカー（dim）: ウィンドウ内のペインで外部エージェント CLI が動作中。存在は示すが状態は追跡しない |
+| `▸ <name>` | （全状態） | サイドキックの印: ウィンドウ内のペインで外部エージェント CLI が動作中。居るだけなら dim、あなたを待っている間は黄色の `▸ <name> ⚠`（サイドキック hook を入れた場合。Codex と Antigravity の `agy` は画面から読む）、この 2 つは作業中も BUSY の色の `▸ <name> ◉`。サイドキックが複数なら名前ごとにその状態を示す（`▸ codex ◉,agy ⚠`）。ウィンドウ自体の状態には影響しない |
 | ■ | SHELL | シェルのみ（Claude未起動） |
 | ○ | DOWN | ウィンドウ利用不可 |
+| ⊘ | IGNORED | ウィンドウ内の全 Claude ペインが `CCM_IGNORE` で非表示 — ccm は意図的にその Claude を見ていないため、状態を主張しない。`ccm send` は拒否され、`ccm unignore` を案内 |
 
 ### Claude Codeフック（推奨）
 
@@ -421,19 +454,21 @@ ccm setup-hooks
 - **SessionEnd** → セッション終了時にSHELL（/exit、Ctrl+D等）
 - **PermissionDenied** → autoモードで拒否時にPERMIT（`/permissions`で再試行）
 
+サブエージェントの権限要求も、裏で動くものを含めて PERMIT と表示します。要求はそのエージェントが先へ進む（ツールが実行される・失敗する、エージェントが終わる）まで残り、本体の会話を続けている間も消えません。要求はまだ答えを待っているからです。ただし、要求から 10 分を超え、そのとき画面が待機中なら、その要求は答えが届かなかった場合に備えて数えなくなります。権限要求に端末の外で答える別のツールの hook を入れている場合は、ダイアログが画面に出ないことがあります。そのツールが尋ねる場所で答えてください。
+
 ccm はフック非依存のフォールバックを備えており、Claude Code がセッション途中でフック発火を停止しても検出が継続します:
 
 - **JSONL セッションログ心拍**: プロジェクトの最新 `~/.claude/projects/.../jsonl` に user/assistant レコードがあればセッション稼働中の証拠（housekeeping レコードは除外）
 - **許可ダイアログのフッター検出**: 許可フッター（`Esc to cancel · Tab to amend`）をペインから直接検出
-- **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えると silent fail の原因になるため警告表示。修復: `: > ~/.claude/hooks.log`
+- **`~/.claude/hooks.log` 肥大化カナリア**: このファイルが 100MB を超えると silent fail の原因になるため警告表示。先にコピーを保存してから `: > ~/.claude/hooks.log` で空にします
 
-フックの状態はダッシュボードのフッターと `ccm status` の出力に表示されます（Hooks: ON/OFF）。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
+フックの状態はダッシュボードのフッターに表示されます（Hooks: ON/OFF）。`ccm status` はフックが利用できない場合の Hooks: OFF と診断上の警告を表示し、正常時の Hooks: ON 行は省きます。既にインストール済みの場合、`ccm setup-hooks` は再インストールをスキップします。ccmを別のパスに再インストールした場合は、フックのパスが自動的に更新されます。
 
 削除するには: `ccm remove-hooks`
 
 ### スナップショット
 
-ワークスペースのレイアウトを保存して後から復元：
+プロジェクトを保存し、後から窓をロード：
 
 ```bash
 ccm snapshot save my-workspace
@@ -441,7 +476,7 @@ ccm snapshot list
 ccm start my-workspace
 ```
 
-`_autosave` スナップショットはプロジェクトがアクティブな間、2分間隔で自動更新されます。`ccm stop --all` 実行時にも保存：
+`_autosave` は 2 分ごととプロジェクト操作時に更新されます。同内容や保護中は上書きしません。`ccm prepare-logout` で保存点を保存・保護し、`ccm prepare-logout --cancel` で解除します。単一の管理セッションに対応します。v2 は分割・cwd・役割を利用者のログインシェルで復元し、シェルの起動ファイルも通常どおり実行します。ログアウト前に `ccm prepare-logout`、ログイン後に `ccm start _autosave` を実行し、必要な窓を開いて、予約した主ペイン、または役割を正常に読めて主ペインの予約がない場合は候補のシェルで Claude を再開します。サイドキックは `ccm roles` の案内に従って手で再開します。同じ環境に tmux-resurrect の復元を重ねないでください。
 
 ```bash
 ccm start _autosave   # 前回のセッションを復元
@@ -472,13 +507,14 @@ set -g @ccm-idle-timeout "10"    # 分（デフォルト: 10、0で無効化）
 ```tmux
 set -g @ccm-preview "on"              # デフォルト: off
 set -g @ccm-preview-position "right"  # または "bottom"
+set -g @ccm-lang "en"               # en / ja
 ```
 
 カーソル移動で即座に更新され、自動リフレッシュもされます。ANSIカラー（256色、RGB）に対応。端末幅80列以上（右配置）または高さ20行以上（下配置）が必要です。ダッシュボードメニュー（`m`）からもトグル可能。
 
 ### Claude Code自動起動
 
-SHELL状態（Claude Codeが終了済み）のプロジェクトウィンドウに切り替えると、ccmが自動的に `--continue` 付きでClaude Codeを再起動し、会話を再開します。
+SHELL状態（Claude Codeが終了済み）のプロジェクトウィンドウに切り替えると、ccmが自動的に `--continue` 付きでClaude Codeを再起動し、会話を再開します（既にあるシェルへは常に `--continue`。素の `claude` を打つのは `ccm add` だけで、それもそのディレクトリにまだ会話が無いと ccm が確認できたときに限ります。`--continue` の後ろにフォールバックは繋がないので、再開に失敗したときは黙って新しい会話を始めるのではなく、その理由が画面に残ります）。コマンドを打つ直前にウィンドウを読み直し、その時点で既にClaude Codeを載せたペインがある場合（アップデートによるその場での再起動など）や、シェルプロンプトと確認できるペインが無い場合は何も打ちません。
 
 ```tmux
 set -g @ccm-auto-start "on"     # デフォルト: on（"off"で無効化）
@@ -494,7 +530,7 @@ Claude Code 2.1.139 で導入された agent view（`claude agents` / `claude --
 set -g @ccm-bg-section "always"   # デフォルト: off
 ```
 
-デフォルトはオフ（「window = project」運用には影響なし）。ダッシュボードで `b` を押すと一時的にトグル（設定は永続化しない）、`always` にすると常時表示されます（ダッシュボードメニュー `m` からも切替可能）。bg 行で `Enter` を押すと新規 tmux ウィンドウ（ccm 管理外）が開き `claude attach <short>` が自動実行されます — ccm 管理外のウィンドウを使うことで auto-start による attach 横取り（Issue 6）を構造的に回避します。ccm は daemon の `roster.json` と各セッションの `state.json` を観察するだけで、dispatch / stop などのライフサイクル操作は `claude` CLI の責務のまま残しています。ダッシュボード外では `ccm bg list` で同じ情報を取得できます。
+デフォルトはオフ（「window = project」運用には影響なし）。ダッシュボードで `b` を押すと一時的にトグル（設定は永続化しない）、`always` にすると常時表示されます（ダッシュボードメニュー `m` からも切替可能）。bg 行で `Enter` を押すと新規 tmux ウィンドウ（ccm 管理外）が開き `claude attach <short>` が自動実行されます — ccm 管理外のウィンドウを使うことで auto-start による attach 横取り（Issue 6）を構造的に回避します。ccm は daemon の `roster.json` と各セッションの `state.json` を観察するだけで、dispatch / stop などのライフサイクル操作は `claude` CLI の責務のまま残しています。ダッシュボード外では `ccm bg list` で同じ情報を取得できます。プロジェクトの最新の会話が `/bg` でバックグラウンドセッションに引き継がれ、CLI がそのセッションをまだ生きていると判断する間は、`claude --continue` はそこで新規セッションを始めます。ccm はそれをダッシュボード・`ccm status` / `ccm doctor`・attach 時に起動コマンドを打った直後に知らせ、`claude attach` / `claude stop` という出口を示します。
 
 ### アンチフリッカー
 
@@ -536,7 +572,7 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
 ```
 
 > [!TIP]
-> スナップショットとの併用も効果的です。各セッションで `ccm snapshot save` / `ccm start` を使えば、プロジェクトレイアウトの保存・復元をセッション単位で独立して行えます。
+> スナップショットとの併用も効果的です。スナップショット保存は単一の管理セッションに対応し、管理プロジェクトが複数セッションにある場合は拒否します。
 
 ## 仕組み
 
@@ -557,6 +593,7 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
    # サイドキック attention フックを導入していた場合のみ（ガイドの機能）:
    ccm remove-sidekick-hooks kimi
    ccm remove-sidekick-hooks grok
+   ccm remove-sidekick-hooks codex
    ```
    フックはプラグインディレクトリへの絶対パスで登録されるため、残したままにすると Claude Code が存在しないスクリプトを毎イベント実行しようとし続けます。`CLAUDE.md` のセクションも、削除済みのコマンドを使うよう各セッションに指示し続けることになります。
 
@@ -588,7 +625,8 @@ tmux switch-client -t oss      # tmux標準のセッション切り替え
 
 ## ドキュメント
 
-- [ユーザーガイド](docs/guide.ja.md)
+- [ユーザーガイド](docs/guide.ja.md) — 導入、日常の操作、送信と通知への対処
+- [診断参照](docs/diagnostics.ja.md) — 状態検出、環境変数、ログ、詳しい調査手順
 - [English README](README.md) / [User Guide](docs/guide.md)
 
 ## ライセンス

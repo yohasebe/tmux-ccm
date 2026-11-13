@@ -41,13 +41,11 @@ Delivery-pane resolution: the project state is a WINDOW-level
 aggregation across panes (PERMIT > BUSY > IDLE > SHELL), but
 `send-keys -t <session>:<idx>` delivers to the window's ACTIVE
 pane — which in a split window may be a plain shell sitting next
-to the Claude pane. incident: a two-pane window
-(Claude idle in pane A, active zsh in pane B) aggregated to IDLE,
-so a `ccm send --start` decided no launch was needed and typed the
-whole message into zsh. `_resolve_delivery_pane` closes the gap by
-locating the pane that actually hosts the claude process and
-targeting keystrokes (and captures) at that pane id instead of the
-window.
+to the Claude pane. A two-pane window (Claude idle in pane A, active
+zsh in pane B) aggregates to IDLE, and keys sent to the window would
+go to zsh. `_resolve_delivery_pane` locates the pane that actually
+hosts the claude process and targets keystrokes (and captures) at
+that pane id instead of the window.
 
 The companion `ccm sidekick-send` (bottom of this file) delivers to a
 NON-Claude sidekick pane of the caller's own window instead. There is
@@ -59,18 +57,25 @@ capture. Both commands share the typing helpers (`_type_body`,
 """
 
 import os
+import re
 import sys
 import time
 
+import ccm_agentview
+import ccm_window
+import ccm_roles
 import ccm_core  # late-bound for tmux_cmd / build_project_list / die / etc.
+import ccm_signals
 import ccm_spool  # store-and-forward queue for undeliverable sends
-from ccm_constants import (
-    CLAUDE_CMD,
-    PATTERN_COMPOSER_DRAFT,
-    SHELL_FOREGROUND_COMMANDS,
-    external_agent_name,
+from ccm_composer import (
+    composer_draft_fragment, composer_visible, composer_has_message_prefix,
+    prompt_held_notice,
 )
-from ccm_pane_state import detect_pane_state, enumerate_window_panes
+from ccm_constants import external_agent_name
+from ccm_pane_state import (
+    capture_composer_snapshot, detect_pane_state, enumerate_window_panes,
+    read_work_clock,
+)
 
 
 # ─── Opt-in send trace ───
@@ -103,7 +108,7 @@ def _trace_record(win_target, label, keys):
         pass  # diagnostic logging must never block the send
 
 
-def _send_keys(win_target, *keys, label=""):
+def _send_keys(win_target, *keys, label="", checked=False):
     """tmux send-keys wrapper with optional CCM_SEND_TRACE logging.
     When trace is disabled (the default), this is equivalent to a
     direct `ccm_core.tmux_cmd("send-keys", ...)` call with one extra
@@ -111,7 +116,11 @@ def _send_keys(win_target, *keys, label=""):
     delegated to tmux normally."""
     if _trace_enabled():
         _trace_record(win_target, label, keys)
-    ccm_core.tmux_cmd("send-keys", "-t", win_target, *keys)
+    if checked:
+        if ccm_core.tmux_query("send-keys", "-t", win_target, *keys) is None:
+            raise OSError("tmux did not confirm send-keys")
+    else:
+        ccm_core.tmux_cmd("send-keys", "-t", win_target, *keys)
 
 
 # Maximum seconds to wait for a `--start`-launched target to
@@ -134,20 +143,28 @@ START_WAIT_SEC = int(os.environ.get("CCM_START_WAIT_SEC", "10"))
 _WAIT_PROGRESS_TICK_SEC = 1.0
 
 
+def _start_composer_ready(pane_target):
+    plain, attributed = capture_composer_snapshot(pane_target)
+    return (composer_visible(plain)
+            and composer_draft_fragment(plain, attributed) is None
+            and not ccm_core.is_agents_tui(plain))
+
+
 def _wait_for_target_idle(project_name, timeout_sec=None,
-                          progress=False):
+                          progress=False, pane_target=None):
     """Poll the named project until its detected state is IDLE,
     or return the last observed non-IDLE state at timeout.
 
     Used by the `--start` path so the message-send only proceeds
-    once the target is genuinely at the input prompt — not still
-    initialising MCP servers, not in an auto-`/compact`, not on a
-    session-resume picker. Polls every 0.5 s up to `timeout_sec`
+    once IDLE and an empty, visible composer in the pinned pane have
+    persisted for one second. A state label alone is not readiness.
+    Polls every 0.5 s up to `timeout_sec`
     (default `START_WAIT_SEC`).
 
     Returns either the string `"IDLE"` (success), or the last
     non-IDLE state seen (one of `BUSY` / `PERMIT` / `SHELL` /
-    `DOWN`). PERMIT and DOWN short-circuit the wait — they will
+    `DOWN`, or `STARTING` when the input box is not ready).
+    PERMIT and DOWN short-circuit the wait — they will
     not transition to IDLE without operator action, so further
     polling is wasted time and delays the refusal message that
     the operator needs.
@@ -163,6 +180,7 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
     deadline = started + timeout_sec
     last_state = None
     last_progress = started
+    ready_since = None
     while time.time() < deadline:
         time.sleep(0.5)
         projects = ccm_core.build_project_list(fast=False)
@@ -170,8 +188,19 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
         if target is None:
             return "DOWN"
         last_state = target.state
-        if last_state in ("IDLE", "PERMIT", "DOWN"):
+        if last_state in ("PERMIT", "DOWN"):
             return last_state
+        if last_state == "IDLE":
+            if _start_composer_ready(pane_target or target.win_target):
+                if ready_since is None:
+                    ready_since = time.time()
+                if time.time() - ready_since >= 1.0:
+                    return "IDLE"
+            else:
+                ready_since = None
+            last_state = "STARTING"
+        else:
+            ready_since = None
         now = time.time()
         if progress and now - last_progress >= _WAIT_PROGRESS_TICK_SEC:
             elapsed = now - started
@@ -182,27 +211,84 @@ def _wait_for_target_idle(project_name, timeout_sec=None,
     return last_state or "BUSY"
 
 
-# ─── Post-launch delivery verification (--start path) ───
-# `--start` launches `claude --continue` into a SHELL pane, then
-# waits for IDLE before sending. But the `❯` composer becomes
-# visible (so detection reads IDLE) a moment BEFORE Claude's input
-# handler actually accepts keystrokes — during that window a
-# send-keys is silently eaten, the body never lands, yet ccm
-# printed "Sent". Confirmed (a project project):
-# target SHELL → --start → "Sent" shown but the input box held only
-# its placeholder, body zero; re-sending after IDLE settled
-# delivered the full text.
+# A visible empty composer is not proof that the input handler accepts keys.
+# After launch, verify the visible body before Enter; never clear or retype it.
+# Allow a short render lag without extending the startup readiness wait.
+# Match the existing submit observation budget; 100 ms keeps a ready send fast.
+_START_BODY_TIMEOUT_SEC = 2.0
+_START_BODY_POLL_SEC = 0.1
+
+
+# How many rows of a body Claude Code's input box shows: half the pane
+# height less five (Claude Code 2.1.289). A taller body shows only its last rows, with the prompt
+# glyph on the first of them, so the checks that read its start can
+# never see it.
+def composer_capacity(pane_target):
+    """`(width, rows)`: the pane's width and how many rows of a body its
+    input box shows. None when the pane size cannot be read."""
+    size = ccm_core.tmux_cmd("display-message", "-p", "-t", pane_target,
+                             "#{pane_width} #{pane_height}").split()
+    if len(size) != 2 or not all(v.isdigit() for v in size):
+        return None
+    width, height = int(size[0]), int(size[1])
+    if width < 3:
+        return None
+    return width, height // 2 - 5
+
+
+def body_rows(message, width):
+    """Rows `message` takes in an input box `width` columns wide. An
+    estimate, not a bound: emoji sequences count wider and tabs
+    narrower than drawn."""
+    from ccm_render import display_width
+    # A row holds at most `width` columns, and each line follows a
+    # 2-column prompt or indent.
+    return sum(-(-(display_width(line) + 2) // width)
+               for line in message.split("\n"))
+
+
+def _start_body_fits(pane_target, message):
+    """False when the body looks taller than the input box can show, so
+    typing it after a launch could not be confirmed. An estimate (see
+    `body_rows`): it can refuse a body that fits (nothing is typed) or
+    pass one that does not (the check after typing still stops it).
+    None when the pane size cannot be read."""
+    box = composer_capacity(pane_target)
+    if box is None:
+        return None
+    width, shown = box
+    return body_rows(message, width) <= shown
+
+
+def _wait_for_start_body(pane_target, message):
+    """Read only until the full body appears; retain the last failure evidence."""
+    deadline = time.time() + _START_BODY_TIMEOUT_SEC
+    while True:
+        plain, attributed = capture_composer_snapshot(pane_target)
+        if composer_has_message_prefix(plain, attributed, message, complete=True):
+            return True, plain, attributed
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return False, plain, attributed
+        time.sleep(min(_START_BODY_POLL_SEC, remaining))
+
+
+# ─── Submit acceptance ───
+# Pressing Enter is not the same as the message being taken. Claude
+# Code holds a prompt that carried characters it strips, showing it
+# rewritten for the sender to confirm with a second Enter, and says
+# so in a line above the composer that disappears after a few
+# seconds. Enter alone therefore proves nothing, and a send that
+# reports success on it reports a delivery that did not happen.
 #
-# Fix: after typing the body (but BEFORE the committing Enter),
-# verify a signature of the message actually appears in the pane.
-# If not, clear the composer and re-type, up to a few times with a
-# short settle. Only send Enter once the body is confirmed present,
-# so a premature-IDLE drop is caught and retried instead of
-# silently lost — and Enter-after-verify means a retry can never
-# double-submit. Scoped to the launch path; an already-IDLE target
-# (normal send) was genuinely ready and is left on the fast path.
-_DELIVERY_VERIFY_RETRIES = 2
-_DELIVERY_VERIFY_SETTLE_SEC = 1.0
+# Keep the explicit notice check for rewritten prompts: neither a
+# subsequence comparison nor a cap on removed characters identifies them.
+# Separately, an unchanged beginning that persists throughout the polling
+# window is evidence that Enter left our body in the input box. A cleared
+# composer ends the check immediately; no automatic second Enter is sent.
+# The timeout bounds polling, not tmux capture latency.
+_SUBMIT_ACCEPT_TIMEOUT_SEC = 2.0
+_SUBMIT_ACCEPT_POLL_SEC = 0.4
 # Minimum signature length to verify against. A very short message
 # (< this) cannot be matched in the pane without false positives,
 # so verification is skipped for it (rare for delegation messages).
@@ -217,12 +303,10 @@ def _message_signature(message):
     Returns a tuple, and a match on ANY of them counts, because a
     composer holding a long body shows only part of it. Claude's grows
     upward and keeps the leading row; a body that outgrows the pane
-    scrolls instead and keeps the trailing row (observed
-    against Kimi K3: a 30-line message rendered as `↑ 24 more` with the
-    head cut off). Checking one end only would report "did not land"
-    for a message sitting right there, which on the --start path means
-    re-typing a body that already arrived and then refusing the send.
-    So take a candidate from each end."""
+    scrolls instead and keeps the trailing row (a 30-line message
+    renders as `↑ 24 more` with the head cut off). Checking one end only would report "did not land"
+    for a message sitting right there. Take a candidate from each end.
+    Startup submission uses a separate full-composer check instead."""
     candidates = [ln.strip() for ln in message.split("\n") if ln.strip()]
     if not candidates:
         return None
@@ -248,10 +332,65 @@ def _body_landed(win_target, signatures):
         cap = ccm_core.tmux_cmd(
             "capture-pane", "-a", "-t", win_target, "-p"
         ) or ""
-    return any(sig in cap for sig in signatures)
+    # Compare with whitespace removed from both sides. A composer
+    # wraps the body to its own width, and the break lands wherever
+    # the width falls — mid-word, or mid-sentence in a language that
+    # writes without spaces. A signature that straddles the break is
+    # then absent as a substring while sitting there in plain view,
+    # and the send reports a failure that did not happen. A caller
+    # who is told "not delivered" about a delivered message either
+    # sends it twice or stops believing the check.
+    flat = "".join(cap.split())
+    return any("".join(sig.split()) in flat for sig in signatures)
 
 
-def _type_body(win_target, lines):
+def held_after_submit(pane_target, timeout=_SUBMIT_ACCEPT_TIMEOUT_SEC, *, message=None):
+    """Evidence of an unsent prompt, or None without such evidence.
+
+    Explicit notices cover rewritten prompts. With a message, also check
+    for its unchanged beginning persisting for the entire observation.
+    Shared by direct sends and spool delivery; neither retries Enter.
+    """
+    deadline = time.time() + timeout
+    unchanged = message is not None
+    while True:
+        plain, attributed = capture_composer_snapshot(pane_target)
+        notice = prompt_held_notice(plain, attributed)
+        if notice:
+            return notice
+        if composer_draft_fragment(plain, attributed) is None:
+            return None     # nothing waiting in the composer
+        unchanged = unchanged and composer_has_message_prefix(plain, attributed, message)
+        if time.time() >= deadline:
+            if unchanged:
+                return "The beginning of the submitted message remains in the input box."
+            return None
+        time.sleep(_SUBMIT_ACCEPT_POLL_SEC)
+
+
+# Characters a message body must never carry. `send-keys -l` types each
+# one as a key: `\r` submits, ESC interrupts, `^C` / `^U` / DEL edit or
+# quit, so a body holding them could submit extra prompts or reach the
+# shell behind the target's Claude. `\n` is the line separator and `\t`
+# is expanded by `clean_message`, so both are left out of the class.
+_CTRL_CHARS = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+
+
+def clean_message(message):
+    """Return `message` with CRLF folded to LF and tabs expanded to the
+    next multiple of four columns.
+    Raises ValueError when any other control character remains."""
+    message = message.replace("\r\n", "\n").expandtabs(4)
+    bad = _CTRL_CHARS.search(message)
+    if bad:
+        raise ValueError(
+            f"The message holds control character {bad.group()!r} at "
+            f"offset {bad.start()}, which would be typed as a key — "
+            "refusing before any key.")
+    return message
+
+
+def _type_body(win_target, lines, *, checked=False):
     """Type the message body into the target's composer: each
     non-empty line literally, with `M-Enter` (newline-without-submit)
     between lines. Does NOT send the committing Enter — the caller
@@ -260,22 +399,24 @@ def _type_body(win_target, lines):
     The `--` terminator before the line text is load-bearing: tmux's
     argument parser treats any argument starting with `-` as a flag
     cluster, so without it every line beginning with a dash — most
-    commonly a Markdown bullet (`- item`) — failed the whole
-    send-keys call with "invalid flag" and was SILENTLY DROPPED
+    commonly a Markdown bullet (`- item`) — fails the whole
+    send-keys call with "invalid flag" and is silently dropped
     (stderr is swallowed by tmux_cmd), while the surrounding
-    M-Enters still landed. The receiver saw the message with all
-    its bullet lines missing and a blank line where each had been.
-    This mangled three real cross-project briefs before being
-    diagnosed (design replies/11 arriving
-    with empty design/implementation sections; the contract brief
- arriving with an empty slug section) — the delivery
-    verification did not catch it because the signature it checks
-    survived in the non-bullet lines."""
+    M-Enters still land: the receiver sees a blank line where each
+    bullet was. The delivery check does not catch it when the
+    signature it looks for survives in the other lines."""
+    options = {"checked": True} if checked else {}
+    # Backstop for every caller: refuse before the first key, so a body
+    # is never half-typed. Callers clean or reject earlier with a
+    # clearer message; this raises rather than exiting so a delivery
+    # pass that reaches it fails one message, not the whole pass.
+    if any(clean_message(line) != line for line in lines):
+        raise ValueError("The message is not cleaned; refusing before any key.")
     for line_i, line in enumerate(lines):
         if line:
-            _send_keys(win_target, "-l", "--", line, label=f"line:{line_i}")
+            _send_keys(win_target, "-l", "--", line, label=f"line:{line_i}", **options)
         if line_i < len(lines) - 1:
-            _send_keys(win_target, "M-Enter", label=f"newline:{line_i}")
+            _send_keys(win_target, "M-Enter", label=f"newline:{line_i}", **options)
 
 
 # ─── Delivery-pane resolution ───
@@ -283,10 +424,37 @@ def _type_body(win_target, lines):
 # target lands in the ACTIVE pane. In a split window those can
 # disagree: Claude idle in a side pane makes the window IDLE while
 # the active pane is a bare zsh — and the message would be typed
-# into the shell (incident: `ccm send --start` saw
-# IDLE, skipped the launch, and flooded zsh with the body as shell
-# commands). Resolving the actual claude-hosting pane and targeting
-# it directly makes state and delivery refer to the same pane.
+# into the shell as commands. Resolving the actual claude-hosting
+# pane and targeting it directly makes state and delivery refer to
+# the same pane.
+
+def _resolve_claude_pane_strict(win_target):
+    """The pane that hosts claude in `win_target`, or None — with no
+    window-target fallback.
+
+    Used after `launch_claude` reported claude already running: the
+    message is about to be typed into that pane, so the pane must be
+    pinned as a specific id whose process is claude. "Could not list
+    the panes" or "no pane hosts claude" is None here, never the
+    window target (which would deliver to whatever pane is active,
+    past the self-delivery guard and the final state check that both
+    key on a pane id). The active pane wins when it hosts claude;
+    otherwise a single claude pane; two or more without an active one
+    is ambiguous — None."""
+    ps_raw = ccm_core.ps_snapshot().strip()
+    if not ps_raw:
+        return None
+    panes = enumerate_window_panes(win_target, ps_raw.split("\n"))
+    live = [p for p in panes if not p.ignored and p.claude_pid]
+    if not live:
+        return None
+    active = next((p for p in live if p.active), None)
+    if active:
+        return active.pane_id
+    if len(live) == 1:
+        return live[0].pane_id
+    return None
+
 
 def _resolve_delivery_pane(win_target):
     """Return `(pane_target, active_cmd)` for the pane that should
@@ -303,6 +471,8 @@ def _resolve_delivery_pane(win_target):
     by the --start path to verify it is really a shell before
     typing the launch command), or None when pane enumeration
     failed and we fell back to the window target."""
+    if ccm_roles.pending(win_target):
+        ccm_core.ccm_die("Restore incomplete; retry the same snapshot before sending")
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
     panes = enumerate_window_panes(win_target, ps_lines)
     if not panes:
@@ -362,8 +532,8 @@ def _recheck_delivery_state(win_target, pane_target):
     Returns the raw state, or None when the pane can no longer be
     enumerated (tmux hiccup — includes the case where delivery
     resolution already fell back to the window target). None fails
-    OPEN: refusing on a transient tmux error would break sends that
-    worked before this guard existed."""
+    OPEN: refusing on a transient tmux error would break ordinary
+    sends."""
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
     pane = next(
         (p for p in enumerate_window_panes(win_target, ps_lines)
@@ -375,6 +545,7 @@ def _recheck_delivery_state(win_target, pane_target):
     return detect_pane_state(
         pane.pane_pid, pane.pane_id, ps_lines, str(os.getpgrp()),
         current_command=pane.current_command,
+        stored_clock=read_work_clock(win_target),
     )
 
 
@@ -385,7 +556,7 @@ def _recheck_delivery_state(win_target, pane_target):
 # their draft, and the committing Enter submits the garbled mix.
 # The delivery path therefore reads the composer line itself and
 # refuses while a draft is present. This shrinks the mixing race from
-# "the whole IDLE period" to the capture→send-keys gap (~100 ms);
+# "the whole IDLE period" to the capture→send-keys gap;
 # that residual TOCTOU cannot be closed from outside the TUI and is
 # accepted. Fail-OPEN when no composer line is visible at all: a
 # transient capture error must not break sends that worked before
@@ -394,22 +565,11 @@ def _composer_draft_fragment(pane_target):
     """Return a one-line fragment of the draft in the target pane's
     composer, or None when the composer is bare (or unreadable).
 
-    A draft's first row is the one carrying the `❯` prompt, so a
-    per-line scan of the visible capture is enough even for a
-    multi-line draft. The fragment is capped so the refusal message
-    stays readable."""
-    cap = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p") or ""
-    if not cap.strip():
-        cap = ccm_core.tmux_cmd(
-            "capture-pane", "-a", "-t", pane_target, "-p"
-        ) or ""
-    for line in cap.split("\n"):
-        if PATTERN_COMPOSER_DRAFT.match(line):
-            fragment = line.strip()
-            if len(fragment) > 60:
-                fragment = fragment[:60] + "..."
-            return fragment
-    return None
+    Which line is the composer is the whole question — see
+    `composer_draft_fragment`, which both this and the spool's
+    delivery check call so they cannot answer it differently."""
+    plain, attributed = capture_composer_snapshot(pane_target)
+    return composer_draft_fragment(plain, pane_text_attributed=attributed)
 
 
 _SEND_USAGE = (
@@ -425,32 +585,17 @@ _SEND_USAGE = (
 
 # ─── Spool hand-off ───
 # A target that cannot take the message right now (BUSY / PERMIT /
-# SHELL / agents-TUI / a composer holding a draft) no longer fails
-# the send by default: the message is queued for the reconciler's
+# SHELL / agents-TUI / a composer holding a draft) does not fail the
+# send by default: the message is queued for the reconciler's
 # delivery pass (see ccm_spool) and the sender is told. `--now`
-# restores the old fail-fast behaviour for callers that would rather
+# refuses instead, for callers that would rather
 # retry themselves. Permanent errors — ambiguous target, self-send,
 # unregistered window — still refuse immediately: they do not heal
 # with time, so queueing them would only hide the mistake.
 
 def _sender_label():
-    """Best-effort identity of the calling window's project, for the
-    spool envelope's `from:` — which is also the receiver's reply
-    route, so the project name is the useful value."""
-    caller = os.environ.get("TMUX_PANE", "")
-    if not caller:
-        return "unknown"
-    win = (ccm_core.tmux_cmd(
-        "display-message", "-p", "-t", caller, "#{window_id}") or "").strip()
-    if not win:
-        return "unknown"
-    name = (ccm_core.tmux_cmd(
-        "show-option", "-w", "-t", win, "-qv", "@ccm_project") or "").strip()
-    if name:
-        return name
-    name = (ccm_core.tmux_cmd(
-        "display-message", "-p", "-t", win, "#{window_name}") or "").strip()
-    return name or "unknown"
+    """Use a verified project as the queued message's reply route."""
+    return ccm_core.caller_context()[0]
 
 
 def _queue_message(project_name, message, reason):
@@ -468,6 +613,40 @@ def _queue_message(project_name, message, reason):
     )
 
 
+def _agents_tui_blocks_send(pane_target, project_name, message, now):
+    """Refuse or queue delivery into an agents dispatch box."""
+    raw_tail = ccm_core.tmux_cmd(
+        "capture-pane", "-t", pane_target, "-p", "-S", "-10"
+    ) or ""
+    if not raw_tail.strip():
+        raw_tail = ccm_core.tmux_cmd(
+            "capture-pane", "-a", "-t", pane_target, "-p", "-S", "-10"
+        ) or ""
+    if ccm_core.is_agents_tui(raw_tail):
+        if not now:
+            _queue_message(
+                project_name, message,
+                "target is showing the `claude agents` TUI")
+            return True
+        tail_lines = [l for l in raw_tail.split("\n") if l.strip()][-8:]
+        lines = [
+            f"{project_name} is showing the `claude agents` TUI — send refused.",
+            "  Reason: keystrokes typed into the agents TUI dispatch a NEW",
+            "    agent-view session rather than landing in an existing",
+            "    Claude conversation.",
+            "  User action: switch to the target pane and use the TUI's",
+            "    own input (Enter to open a session, ? for shortcuts), or",
+            "    detach from `claude agents` before retrying.",
+        ]
+        if tail_lines:
+            lines.append("  Pane tail:")
+            lines.extend(f"    {l}" for l in tail_lines)
+        ccm_core.ccm_die("\n".join(lines))
+
+    return False
+
+
+@ccm_core.caller_process_scope()
 def cmd_send(args):
     """Send a prompt to a project's Claude Code session.
 
@@ -549,7 +728,8 @@ def cmd_send(args):
 
     if message_file:
         try:
-            with open(message_file, encoding="utf-8") as f:
+            # newline="": line endings reach `clean_message` as written.
+            with open(message_file, encoding="utf-8", newline="") as f:
                 message = f.read()
         except OSError as e:
             ccm_core.ccm_die(f"Failed to read message file: {e}")
@@ -564,17 +744,18 @@ def cmd_send(args):
     else:
         message = positional_message
 
+    try:
+        message = clean_message(message)
+    except ValueError as e:
+        ccm_core.ccm_die(str(e))
+
     if not message.strip() and not no_enter:
         ccm_core.ccm_die(
             "Empty message (use --no-enter to send only Enter suppression)"
         )
 
     # Resolve target window
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die(
-            "Not inside a tmux session — start one with `tmux new-session` first"
-        )
+    session = ccm_core.require_session()
 
     if target.startswith("#"):
         idx = target[1:]
@@ -600,9 +781,8 @@ def cmd_send(args):
     if matched is None:
         # A second window registered against the SAME directory is
         # dropped from `projects` by build_project_list's seen_dirs
-        # dedup, so the win_target lookup misses it and the send
-        # used to die with "not a registered ccm project" even
-        # though the window is a legitimate ccm project. Fall back
+        # dedup, so the win_target lookup misses it although the
+        # window is a legitimate ccm project. Fall back
         # to the same-directory sibling that IS tracked: delivery
         # still targets this window's own pane (resolved from
         # win_target below via _resolve_delivery_pane); only the
@@ -642,6 +822,18 @@ def cmd_send(args):
     # pane where --start will launch). See _resolve_delivery_pane.
     pane_target, active_cmd = _resolve_delivery_pane(win_target)
 
+    # A PERMIT made only by a subagent's waiting request leaves the
+    # main conversation's input box as its screen shows it: the
+    # request is answered elsewhere. Gate on that screen, which also
+    # catches a dialog; when it cannot be read, PERMIT stands.
+    subagent_permit = False
+    if state == "PERMIT" and ccm_signals.permit_is_subagent_only(
+            matched.dir, matched.cached_session_id or ""):
+        screen = _recheck_delivery_state(win_target, pane_target)
+        if screen in ("IDLE", "BUSY"):
+            state = screen
+            subagent_permit = True
+
     # Self-delivery guard. `ccm send` resolves delivery to the pane
     # hosting Claude, so a Claude session addressing its OWN project
     # resolves to the pane it is running in. Typing the body there
@@ -649,14 +841,15 @@ def cmd_send(args):
     # gate below would consult a state the caller itself is producing
     # — a session is BUSY precisely because it is running this
     # command, so the gate reports BUSY and blames the target. That
-    # self-reference reads as a spurious "the other agent is busy",
-    # which is how it was reported. Refuse explicitly
+    # self-reference reads as a spurious "the other agent is busy".
+    # Refuse explicitly
     # instead: the honest answer is not a state verdict at all.
     #
-    # `$TMUX_PANE` is set by tmux for any process started inside a
-    # pane, so it identifies the caller without a lookup. Absent
-    # (invoked outside tmux) the guard simply does not apply.
-    caller_pane = os.environ.get("TMUX_PANE", "")
+    # A pane hint is usable when its process is an ancestor or its
+    # registration matches our cwd; inherited hints may be stale.
+    # Without a matching hint, the physical caller pane is unknown;
+    # cwd-based project attribution must not invent a pane to exclude.
+    _, caller_pane = ccm_core.caller_context(resolve_project=False)
     if caller_pane and caller_pane == pane_target:
         ccm_core.ccm_die(
             f"{project_name}'s Claude pane IS this pane ({pane_target}) — "
@@ -702,6 +895,21 @@ def cmd_send(args):
             lines.extend(f"    {l}" for l in tail_lines)
         ccm_core.ccm_die("\n".join(lines))
 
+    # IGNORED: every claude pane in the window is excluded via
+    # `@ccm_ignore`, so ccm cannot see a delivery target at all.
+    # Refused unconditionally — never queued (the spool assumes a
+    # deliverable target exists) and never auto-started (`--start`
+    # would launch claude into a visible pane, e.g. a sidekick's).
+    # `ccm unignore` is the only exit from an invisible window.
+    if state == "IGNORED":
+        ccm_core.ccm_die(
+            f"{project_name} is in IGNORED state — every Claude pane in "
+            "its window is hidden via @ccm_ignore, so there is no "
+            "visible delivery target.\n"
+            f"  Run `ccm unignore {project_name}` to make the window "
+            "visible again, then retry."
+        )
+
     # True once we actually launched Claude this invocation (SHELL +
     # --start). Gates post-send delivery verification: only a
     # freshly-launched target can be in the premature-IDLE window
@@ -718,25 +926,57 @@ def cmd_send(args):
                 f"{project_name} is in SHELL state (Claude not running). "
                 "Use --start to auto-launch Claude before sending."
             )
-        # Guard the launch target. A SHELL window means "no claude
-        # in any pane", but the active pane's foreground could still
-        # be an editor / pager (per-pane detection maps a claude-less
-        # pane to SHELL regardless of what runs in it). Typing the
-        # launch command into vim would edit text, not start Claude —
-        # refuse instead. `active_cmd is None` (pane enumeration
-        # failed) skips the guard to preserve the defensive fallback.
-        if active_cmd is not None and active_cmd not in SHELL_FOREGROUND_COMMANDS:
+        # Launch through the shared path: it re-reads the window now,
+        # types nothing when a pane already hosts claude or no pane
+        # can be verified as a shell, and judges the hand-off notice
+        # before typing. The message body is never typed unless the
+        # launch happened or claude was found already running.
+        # The sender's own pane is excluded from the launch, and the
+        # self-delivery guard is applied again to whatever pane the
+        # message will now go to — the pane chosen here can differ
+        # from the one checked at the top.
+        result = ccm_window.launch_claude(
+            win_target, honour_setting=False,
+            exclude_pane=caller_pane or None)
+        if result.outcome == ccm_window.LAUNCHED:
+            ccm_core.ccm_info(f"Starting Claude in {project_name}...")
+            did_launch = True
+            pane_target = result.pane
+            if result.notice:
+                ccm_core.ccm_warn(result.notice)
+        elif result.outcome == ccm_window.ALREADY_RUNNING:
+            ccm_core.ccm_info(
+                f"Claude is already running in {project_name}; delivering "
+                "to it without launching.")
+            # Pin the pane the message will go to. No window-target
+            # fallback here: the self-delivery guard below and the
+            # final state check before typing both key on a pane id,
+            # and a window target would slip past both.
+            pane_target = _resolve_claude_pane_strict(win_target)
+            if pane_target is None:
+                ccm_core.ccm_die(
+                    f"Claude was found running in {project_name} a moment "
+                    "ago, but no pane can be pinned as its host now (the "
+                    "panes could not be read, or none hosts claude) — "
+                    "nothing sent. Retry."
+                )
+            if caller_pane and caller_pane == pane_target:
+                ccm_core.ccm_die(
+                    f"{project_name}'s Claude pane IS this pane "
+                    f"({pane_target}) — refusing to send a message to "
+                    "yourself."
+                )
+        else:
+            if result.reason:
+                ccm_core.ccm_die(f"{project_name}: {result.reason}. Nothing sent.")
             ccm_core.ccm_die(
-                f"{project_name} is in SHELL state but its active pane "
-                f"is running `{active_cmd}`, not a shell — refusing to "
-                "type the Claude launch command into it.\n"
+                f"{project_name} is in SHELL state but no pane could be "
+                "verified as a shell prompt (an editor or pager may be in "
+                "the foreground, or the panes could not be read) — "
+                "refusing to type the Claude launch command. Nothing sent.\n"
                 "  Switch to the target window, return the pane to a "
                 "shell prompt (or focus a shell pane), then retry."
             )
-        ccm_core.ccm_info(f"Starting Claude in {project_name}...")
-        ccm_core.tmux_cmd("send-keys", "-t", pane_target, "-X", "cancel")
-        ccm_core.tmux_cmd("send-keys", "-t", pane_target, CLAUDE_CMD, "Enter")
-        did_launch = True
         # Wait for the target to reach the input prompt. A fixed
         # sleep would mis-deliver the message when `claude
         # --continue` triggers a follow-on action — most commonly
@@ -748,7 +988,7 @@ def cmd_send(args):
         # see a frozen terminal during the wait.
         interactive_wait = sys.stdout.isatty()
         ready_state = _wait_for_target_idle(
-            project_name, progress=interactive_wait,
+            project_name, progress=interactive_wait, pane_target=pane_target,
         )
         if ready_state != "IDLE":
             tail = ccm_core.tmux_cmd(
@@ -757,15 +997,18 @@ def cmd_send(args):
             tail_lines = [l for l in tail.split("\n") if l.strip()]
             lines = [
                 f"{project_name} did not reach IDLE within "
-                f"{START_WAIT_SEC}s after `claude --continue`.",
+                f"{START_WAIT_SEC}s after the launch command; "
+                "nothing was typed.",
                 f"  Last observed state: {ready_state}",
-                "  Likely cause: Claude resumed into an auto-action",
+                "  Possible causes: Claude resumed into an auto-action",
                 "    (e.g. `/compact` on a long session, or a",
-                "    session-resume picker). The message would land",
-                "    in the middle of that action and be eaten,",
-                "    so the send is refused.",
-                "  Switch to the target window, let the action",
-                "    finish (or dismiss the modal), then retry.",
+                "    session-resume picker), or the launch did not",
+                "    reach the prompt at all (the pane tail below",
+                "    shows what the CLI said). The message would",
+                "    not land in a conversation, so the send is refused.",
+                "  Switch to the target window, let the action finish",
+                "    (or dismiss the modal, or start Claude by hand),",
+                "    then retry.",
             ]
             if tail_lines:
                 lines.append("  Pane tail:")
@@ -782,44 +1025,9 @@ def cmd_send(args):
             "if that is what you want."
         )
 
-    # `claude agents` TUI guard. The TUI shows an `❯` input prompt that
-    # ccm reads as IDLE, but typing into it dispatches a BRAND-NEW
-    # agent-view session rather than landing in an existing
-    # conversation — a `ccm send` would silently spawn a session the
-    # operator didn't ask for. Refused unconditionally (even with
-    # `--force`): the BUSY-style "queue it anyway" semantic does not
-    # map onto "dispatch a new agent". Check is gated on `state ==
-    # "IDLE"` because the PERMIT / BUSY / SHELL branches above already
-    # refuse or handle their own paths, so we don't pay the
-    # capture-pane cost twice.
-    if state == "IDLE":
-        raw_tail = ccm_core.tmux_cmd(
-            "capture-pane", "-t", pane_target, "-p", "-S", "-10"
-        ) or ""
-        if not raw_tail.strip():
-            raw_tail = ccm_core.tmux_cmd(
-                "capture-pane", "-a", "-t", pane_target, "-p", "-S", "-10"
-            ) or ""
-        if ccm_core.is_agents_tui(raw_tail):
-            if not now:
-                _queue_message(
-                    project_name, message,
-                    "target is showing the `claude agents` TUI")
-                return
-            tail_lines = [l for l in raw_tail.split("\n") if l.strip()][-8:]
-            lines = [
-                f"{project_name} is showing the `claude agents` TUI — send refused.",
-                "  Reason: keystrokes typed into the agents TUI dispatch a NEW",
-                "    agent-view session rather than landing in an existing",
-                "    Claude conversation.",
-                "  User action: switch to the target pane and use the TUI's",
-                "    own input (Enter to open a session, ? for shortcuts), or",
-                "    detach from `claude agents` before retrying.",
-            ]
-            if tail_lines:
-                lines.append("  Pane tail:")
-                lines.extend(f"    {l}" for l in tail_lines)
-            ccm_core.ccm_die("\n".join(lines))
+    if state == "IDLE" and _agents_tui_blocks_send(
+            pane_target, project_name, message, now):
+        return
 
     # Confirmation prompt (skip when piping or --yes)
     interactive = (
@@ -852,6 +1060,18 @@ def cmd_send(args):
     # longer enumerable) fails open, matching the delivery-pane
     # resolution fallback.
     rechecked = _recheck_delivery_state(win_target, pane_target)
+    if rechecked is None and subagent_permit:
+        # The screen let this past a PERMIT; with the screen unreadable
+        # now, nothing says a dialog has not appeared since.
+        if not now:
+            _queue_message(project_name, message,
+                           "target screen unreadable while in PERMIT")
+            return
+        ccm_core.ccm_die(
+            f"{project_name} is in PERMIT for a subagent's request, and "
+            "its screen could not be read again before typing — send "
+            "refused. Retry, or wait for the request to be answered."
+        )
     if rechecked == "PERMIT":
         if not now:
             _queue_message(project_name, message,
@@ -917,9 +1137,26 @@ def cmd_send(args):
             "  Finish or clear the draft in the target pane, then retry."
         )
 
+    # Confirmation, startup and mode cancellation can change the TUI.
+    # Check every delivery path, including --force and --start.
+    if _agents_tui_blocks_send(pane_target, project_name, message, now):
+        return
+
     # Literal send, converting `\n` into M-Enter (Claude Code's
     # "newline without submit" key) so the body is delivered as a
     # single multi-line prompt rather than multiple submitted turns.
+    if did_launch and _start_body_fits(pane_target, message) is False:
+        if _trace_enabled():
+            _trace_record(pane_target, "send-too-tall", (f"project={project_name}",))
+        ccm_core.ccm_die(
+            f"Claude is now running in {project_name}, but the message was not "
+            "typed: it is taller than the input box can show, so right after "
+            "a start ccm could not check that it arrived whole. Nothing was "
+            f"typed. Send it again without --start ({project_name} is ready "
+            "now), or put the text in a file and send a short line pointing "
+            "to it."
+        )
+
     lines = message.split("\n")
     if _trace_enabled():
         _trace_record(pane_target, "send-start",
@@ -927,50 +1164,56 @@ def cmd_send(args):
                        f"bytes={len(message)}"))
     _type_body(pane_target, lines)
 
-    # Post-launch delivery verification. On the --start path the
-    # body can be eaten by a not-yet-ready input handler even though
-    # detection saw IDLE (see the _DELIVERY_* note above). Verify the
-    # body actually reached the composer BEFORE committing the Enter;
-    # if not, clear and re-type a few times, then refuse honestly
-    # rather than print a false "Sent". Verifying before Enter means
-    # a retry can never double-submit. Skipped when we didn't launch
-    # (an already-IDLE target was genuinely ready) or when the
-    # message is too short to match without false positives.
-    signature = _message_signature(message) if did_launch else None
-    if signature is not None and not _body_landed(pane_target, signature):
-        landed = False
-        for _ in range(_DELIVERY_VERIFY_RETRIES):
-            time.sleep(_DELIVERY_VERIFY_SETTLE_SEC)
-            # Clear the composer (C-u) first so a partial landing from
-            # the previous attempt cannot duplicate text on re-type.
-            _send_keys(pane_target, "C-u", label="retry-clear")
-            _type_body(pane_target, lines)
-            if _body_landed(pane_target, signature):
-                landed = True
-                break
-        if not landed:
+    # Only a fully visible composer can confirm the body after launch.
+    # A partial match (including old transcript text) is not enough. Clearing
+    # and retyping is unsafe: the clear key can be dropped along with the text.
+    if did_launch:
+        confirmed, plain, attributed = _wait_for_start_body(pane_target, message)
+        if not confirmed:
             if _trace_enabled():
-                _trace_record(pane_target, "send-unverified",
-                              (f"project={project_name}",))
+                _trace_record(pane_target, "send-unverified", (f"project={project_name}",))
+            if not plain.strip() or not composer_visible(plain):
+                observation = "The input box could not be read."
+            elif composer_draft_fragment(plain, attributed) is None:
+                observation = "No message text is visible; some input may still remain."
+            elif composer_has_message_prefix(plain, attributed, message):
+                observation = "The beginning of the message remains in the input box."
+            else:
+                observation = "Text remains in the input box; the full message could not be confirmed."
             ccm_core.ccm_die(
-                f"Delivery to {project_name} could not be confirmed: the "
-                f"message did not appear in its input box after "
-                f"{_DELIVERY_VERIFY_RETRIES} retries.\n"
-                "  Likely cause: Claude had just launched (--start) and its "
-                "input handler was not yet accepting keystrokes — the body "
-                "was eaten.\n"
-                "  The send was NOT completed (no Enter submitted). Switch "
-                "to the target window, confirm it is idle at the prompt, "
-                "then resend (without --start, since Claude is now running)."
+                f"Delivery to {project_name} could not be confirmed. "
+                "No submit Enter was sent. " + observation + " "
+                "Check the recipient's input box and clear any leftover text "
+                "before deciding whether to send again."
             )
 
-    # Final submit (unless --no-enter)
+    # Final submit (unless --no-enter), then confirm the target took
+    # it: Enter is a keystroke, not an acceptance.
     if not no_enter:
         _send_keys(pane_target, "Enter", label="final-submit")
+        notice = held_after_submit(pane_target, message=message)
+        if notice:
+            if _trace_enabled():
+                _trace_record(pane_target, "send-not-accepted",
+                              (f"project={project_name}",))
+            ccm_core.ccm_die(
+                f"{project_name} did not take the message: it is still in "
+                f"that session's input box, unsent.\n"
+                f"  {notice}\n"
+                "  ccm does not press Enter again on its own, and does not "
+                "rewrite what you sent. In the target window, either press "
+                "Enter to send what is shown there, or clear it (ctrl+u) "
+                "and review the message before resending."
+            )
     if _trace_enabled():
         _trace_record(pane_target, "send-end", (f"project={project_name}",))
 
-    ccm_core.ccm_info(f"Sent to {project_name}")
+    if no_enter:
+        ccm_core.ccm_info(
+            f"Typing attempted for {project_name}; submit Enter not sent. "
+            "Check the input box before submitting.")
+    else:
+        ccm_core.ccm_info(f"Sent to {project_name}")
 
 
 # ─── ccm sidekick-send ───
@@ -985,29 +1228,38 @@ def cmd_send(args):
 #     known external agent (EXTERNAL_AGENT_COMMANDS), with a working
 #     directory inside this project. A mis-targeted send cannot
 #     happen silently.
+#   - no keys into a wait ccm can see: the sidekick is observed
+#     (`ccm_core.observe_sidekicks`: its screen, Codex's hook record,
+#     a waiting marker) before the body and again before Enter, and a
+#     dialog or a view that takes keys stops the send. A sidekick
+#     ccm cannot read is sent to; the guarantee is only for waits ccm
+#     can confirm, and a change after the last look can still win.
 #   - procedure: literal `-l --` typing, the settle pause before the
 #     committing Enter, and a post-send capture confirming a fragment
 #     of the message actually landed.
 #
-# What it deliberately does NOT do is read the sidekick's SCREEN
-# state: ccm tracks no state for a non-Claude pane, and matching
-# another TUI's prompt text would inherit every vendor's redesign.
-# Readiness stays the caller's judgment (`ccm capture` first).
+# Each run ends in one result (`_sidekick_send`): refused (no key
+# sent), or attempted_* (keys were sent, with what is known after).
+# The text output and `--json` are two renderings of it.
 
 _SIDEKICK_SEND_USAGE = (
     "Usage: ccm sidekick-send <message> "
-    "[--file path] [--stdin|-] [--no-enter]\n"
+    "[--file path] [--stdin|-] [--no-enter] [--json]\n"
     "       ccm sidekick-send -- <message starting with a dash>\n"
-    "Delivers to the sidekick agent CLI in a split pane of THIS window."
+    "Delivers to the sidekick agent CLI in a split pane of THIS window.\n"
+    "--json prints one JSON object with the result."
 )
 
 # Pause between the typed body and the committing Enter. A peer TUI
 # still digesting the inserted text when Enter arrives can take it as
 # a newline instead of a submit; the body then sits in the composer
-# unsent, looking exactly like a delivered message. Measured against
-# Kimi K3: no gap fails every time, 0.3 s submits. Claude Code's own
+# unsent, looking exactly like a delivered message. Kimi needs this
+# gap, and 0.3 s is enough. Claude Code's own
 # composer tolerates a zero gap, which is why `ccm send` needs none.
 _SIDEKICK_SUBMIT_SETTLE_SEC = 0.3
+# How long before the end of that pause the sidekick is looked at
+# again, so the look falls inside the pause rather than lengthening it.
+_SIDEKICK_RECHECK_LEAD_SEC = 0.1
 
 # Post-send confirmation polls the pane for a message fragment.
 # Presence can pass spuriously when the same text was already on
@@ -1017,20 +1269,35 @@ _SIDEKICK_VERIFY_TIMEOUT_SEC = 2.0
 _SIDEKICK_VERIFY_POLL_SEC = 0.5
 
 
+class _SidekickRefusal(Exception):
+    """No key was sent; `reason` names why for `--json`."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
 def _resolve_sidekick_pane(caller_pane):
     """Return `(pane_id, agent_name)` of THE sidekick pane in the
-    caller's window, refusing (ccm_die) on every ambiguity.
+    caller's window, refusing (_SidekickRefusal) on every ambiguity.
 
     Identity comes from tmux metadata only — the pane's foreground
     command against `external_agent_name`, and its working directory
-    against the project directory. The sidekick's screen is never
-    read."""
+    against the project directory."""
+    _, verified_pane = ccm_core.caller_context(resolve_project=False)
+    if not verified_pane or verified_pane != caller_pane:
+        raise _SidekickRefusal(
+            "caller_unverified",
+            "Cannot verify the caller pane from process ancestry or working directory. "
+            "Run sidekick-send from a pane of the registered project; "
+            "the pane environment may be stale. Nothing sent.")
     fmt = "#{window_id}\t#{pane_current_command}\t#{pane_current_path}"
     info = (ccm_core.tmux_cmd(
         "display-message", "-p", "-t", caller_pane, fmt) or "").strip()
     parts = info.split("\t")
     if len(parts) < 3 or not parts[0]:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "caller_unverified",
             f"Cannot identify the caller's window from {caller_pane} — "
             "is $TMUX_PANE stale? Run `ccm sidekick-send` from a live "
             "pane of the project window."
@@ -1039,7 +1306,8 @@ def _resolve_sidekick_pane(caller_pane):
 
     agent = external_agent_name(caller_cmd)
     if agent:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "wrong_direction",
             f"This pane IS the sidekick ({agent}) — refusing the "
             "reverse lane. To reach the window's Claude session, use "
             "`ccm send <project>`."
@@ -1058,7 +1326,8 @@ def _resolve_sidekick_pane(caller_pane):
             sidekicks.append((f[0], name, f[2]))
 
     if not sidekicks:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "no_sidekick",
             "No sidekick pane in this window — no pane is running a "
             "known external agent CLI.\n"
             "  Start the sidekick in a split pane of this window first. "
@@ -1067,7 +1336,8 @@ def _resolve_sidekick_pane(caller_pane):
         )
     if len(sidekicks) > 1:
         listing = ", ".join(f"{pid} ({name})" for pid, name, _ in sidekicks)
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "multiple_sidekicks",
             f"{len(sidekicks)} sidekick panes in this window "
             f"({listing}) — the target is ambiguous, refusing.\n"
             "  Keep exactly one sidekick pane in the window, or type "
@@ -1085,7 +1355,8 @@ def _resolve_sidekick_pane(caller_pane):
         "show-option", "-w", "-t", win_id, "-qv", "@ccm_dir") or "").strip()
     ref = ref or caller_cwd
     if not ref:
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "project_dir_unavailable",
             "Cannot establish this window's project directory (no "
             "@ccm_dir tag and the caller's cwd is unreadable) — "
             "refusing rather than guessing at the target."
@@ -1093,7 +1364,8 @@ def _resolve_sidekick_pane(caller_pane):
     ref_c = ccm_core.canonical_dir(ref)
     pane_c = ccm_core.canonical_dir(pane_cwd)
     if pane_c != ref_c and not pane_c.startswith(ref_c + os.sep):
-        ccm_core.ccm_die(
+        raise _SidekickRefusal(
+            "outside_project",
             f"The sidekick pane {pane_id} runs in {pane_cwd}, outside "
             f"this project ({ref}) — refusing: the pane does not "
             "belong to this window's project."
@@ -1101,26 +1373,226 @@ def _resolve_sidekick_pane(caller_pane):
     return pane_id, agent_name
 
 
-def cmd_sidekick_send(args):
-    """Send a prompt to the sidekick agent CLI in the caller's window.
+class _ObservationFailed(Exception):
+    """A look at the sidekick broke part-way: what it would have shown,
+    a wait from a hook or a marker included, is lost."""
 
-    Usage:
-      ccm sidekick-send <message>            Send literal message + Enter
-      ccm sidekick-send --file <path>        Read message from a file
-      ccm sidekick-send --stdin              Read message from stdin
-      ccm sidekick-send --no-enter <msg>     Send without submitting
-      ccm sidekick-send -- "--literal"       `--` ends flag parsing
-    """
-    if any(a in ("-h", "--help") for a in args):
-        print(_SIDEKICK_SEND_USAGE)
-        return
+
+def _observe_sidekick(pane_id, agent):
+    """(observation, identity) of the sidekick in `pane_id` now, from a
+    fresh pane list, process list, markers and hook records — nothing
+    carried over from an earlier look. The observation is None when the
+    pane is gone or runs another agent; the identity
+    (`ccm_sidekick_notify.agent_process_identity`) is None when its
+    process cannot be told. A screen ccm cannot read only leaves the
+    state unknown; a look that breaks raises _ObservationFailed."""
+    try:
+        import ccm_sidekick_notify
+        cache = ccm_core._build_panes_cache()
+        ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+        pc = next((p for p in cache if p[2] == pane_id), None)
+        if pc is None or external_agent_name(pc[3]) != agent:
+            return None, None
+        identity = ccm_sidekick_notify.agent_process_identity(pc[1], agent, ps_lines)
+        markers = ccm_core._read_attention_markers(cache, ps_lines, strict=True)
+        observed = next(o for o in ccm_core.observe_sidekicks(
+            cache, pc[0], markers, [], ps_lines, strict=True) if o.pane == pane_id)
+    except Exception as exc:
+        ccm_core.log_caught_exception("sidekick_send_observe")
+        raise _ObservationFailed from exc
+    return observed, identity
+
+
+def _wait_reason(observed):
+    """"dialog" / "view" when the observed sidekick would take typed
+    keys, else None."""
+    if observed.state == "PERMIT":
+        return "dialog"
+    if observed.keys == "held":
+        return "view"
+    return None
+
+
+_WAIT_TEXT = {
+    "dialog": "is waiting on a dialog",
+    "view": "shows a view that takes keys (such as selected text)",
+    "pane_changed": "cannot be confirmed to be the same sidekick of this window",
+    "observation_failed": "could not be looked at again",
+}
+
+
+def _sidekick_send(message, no_enter):
+    """Send `message` to the caller's sidekick and return the result:
+    {"outcome", "reason", "agent", "pane", "enter_requested",
+    "enter_sent", "message"} with outcome "refused" (no key sent) or
+    "attempted_seen" / "attempted_unseen" / "attempted_unchecked" /
+    "attempted_stopped" / "attempted_failed" (keys were sent).
+    `enter_sent` is False when Enter was not tried, True when tmux
+    took it, None when it was tried and the result is unknown."""
+    result = {"outcome": "refused", "reason": None, "agent": None,
+              "pane": None, "enter_requested": not no_enter,
+              "enter_sent": False, "message": ""}
+
+    def done(outcome, reason=None, message=""):
+        result.update(outcome=outcome, reason=reason, message=message)
+        return result
+
+    caller_pane = os.environ.get("TMUX_PANE", "")
+    if not caller_pane:
+        return done("refused", "not_in_tmux",
+                    "ccm sidekick-send must run inside tmux ($TMUX_PANE is "
+                    "unset) — it delivers to the sidekick pane of the caller's "
+                    "own window.")
+    try:
+        pane_id, agent = _resolve_sidekick_pane(caller_pane)
+        result.update(agent=agent, pane=pane_id)
+        # TOCTOU: re-resolve immediately before typing. The pane found a
+        # moment ago may have exited or been replaced while the message
+        # was being read (a slow --file, a human at the keys) — typing
+        # into its successor would be the mis-send this command exists
+        # to prevent.
+        again = _resolve_sidekick_pane(caller_pane)
+    except _SidekickRefusal as refusal:
+        return done("refused", refusal.reason, str(refusal))
+    if again != (pane_id, agent):
+        return done("refused", "pane_changed",
+                    f"The sidekick pane changed while preparing the send "
+                    f"({pane_id} → {again[0]}) — refusing. Retry the command.")
+
+    try:
+        observed, identity = _observe_sidekick(pane_id, agent)
+    except _ObservationFailed:
+        return done("refused", "observation_failed",
+                    f"Could not look at the sidekick ({agent}, {pane_id}) — "
+                    "refusing, since a dialog it shows could not be ruled out. "
+                    "Retry the command.")
+    if observed is None:
+        return done("refused", "pane_changed",
+                    f"The sidekick ({agent}, {pane_id}) changed while preparing "
+                    "the send — refusing. Retry the command.")
+    if identity is None:
+        return done("refused", "pane_unidentified",
+                    f"Cannot tell which {agent} process runs in {pane_id}, so a "
+                    "change before Enter could not be noticed — refusing. "
+                    "Type into it by hand if you must.")
+    wait = _wait_reason(observed)
+    if wait == "dialog":
+        return done("refused", "dialog",
+                    f"The sidekick ({agent}, {pane_id}) is waiting on a dialog — "
+                    "refusing to type into it. Answer the dialog in that pane "
+                    "first, then retry.")
+    if wait == "view":
+        return done("refused", "view",
+                    f"The sidekick ({agent}, {pane_id}) shows a view that takes "
+                    "keys (such as selected text) — refusing to type into it. "
+                    "Close the view in that pane as its last line says, then retry.")
+
+    # Defensively exit any tmux mode on the target pane (tmux reports
+    # failure when the pane is in none, the usual case), then type the
+    # body literally (shared helpers — see cmd_send).
+    _send_keys(pane_id, "-X", "cancel", label="sidekick-pre-cancel")
+    lines = message.split("\n")
+    if _trace_enabled():
+        _trace_record(pane_id, "sidekick-send-start",
+                      (f"agent={agent}", f"lines={len(lines)}",
+                       f"bytes={len(message)}"))
+    try:
+        _type_body(pane_id, lines, checked=True)
+    except (OSError, ValueError):
+        return done("attempted_failed", "typing_failed",
+                    f"tmux failed while typing into the sidekick ({agent}, "
+                    f"{pane_id}); what reached it is unknown and Enter was not "
+                    "sent. Check its input box with `ccm capture` before "
+                    "deciding whether to resend.")
+
+    if not no_enter:
+        # The settle pause is load-bearing — see the constant's note.
+        # The sidekick is looked at again near its end; a look that
+        # runs past it adds no further wait.
+        deadline = time.monotonic() + _SIDEKICK_SUBMIT_SETTLE_SEC
+        time.sleep(max(0.0, deadline - _SIDEKICK_RECHECK_LEAD_SEC
+                       - time.monotonic()))
+        # Still THE sidekick of the caller's window, not a pane that
+        # moved away or one beside a newcomer — never a switch to
+        # another pane.
+        try:
+            still = _resolve_sidekick_pane(caller_pane) == (pane_id, agent)
+        except _SidekickRefusal:
+            still = False
+        try:
+            now_observed, now_identity = (_observe_sidekick(pane_id, agent)
+                                          if still else (None, None))
+            failed = False
+        except _ObservationFailed:
+            failed = True
+        time.sleep(max(0.0, deadline - time.monotonic()))
+        stop = ("observation_failed" if failed
+                else "pane_changed"
+                if now_observed is None or now_identity != identity
+                else _wait_reason(now_observed))
+        if stop:
+            return done("attempted_stopped", stop,
+                        f"Typed into the sidekick ({agent}, {pane_id}) but did "
+                        f"not press Enter: it {_WAIT_TEXT[stop]}. The text may be "
+                        "in its input box; check with `ccm capture` before "
+                        "deciding what to do.")
+        try:
+            _send_keys(pane_id, "Enter", label="sidekick-submit", checked=True)
+        except OSError:
+            result["enter_sent"] = None
+            return done("attempted_failed", "enter_failed",
+                        f"tmux did not confirm Enter for the sidekick ({agent}, "
+                        f"{pane_id}); whether it was submitted is unknown. Check "
+                        "with `ccm capture`; do not resend if received.")
+        result["enter_sent"] = True
+
+    # A visible fragment may be in the composer or an earlier conversation;
+    # it does not confirm that this submission was accepted.
+    submit = "submit Enter not sent" if no_enter else "submit Enter attempted"
+    signature = _message_signature(message)
+    if signature is None:
+        return done("attempted_unchecked", None,
+                    f"Delivery unconfirmed for sidekick {agent} ({pane_id}); {submit}; "
+                    "message too short to auto-verify. "
+                    "Check the conversation and input box with `ccm capture`.")
+    deadline = time.time() + _SIDEKICK_VERIFY_TIMEOUT_SEC
+    while not _body_landed(pane_id, signature):
+        if time.time() >= deadline:
+            if _trace_enabled():
+                _trace_record(pane_id, "sidekick-send-unverified",
+                              (f"agent={agent}",))
+            return done("attempted_unseen", None,
+                        f"Delivery to the sidekick ({agent}, {pane_id}) could "
+                        "not be confirmed: no fragment of the message appeared "
+                        "in the pane after sending.\n"
+                        "  Check the conversation and input box with `ccm capture`: "
+                        "do not resend if received; resolve leftover text before "
+                        "deciding whether to resend.")
+        time.sleep(_SIDEKICK_VERIFY_POLL_SEC)
+    if _trace_enabled():
+        _trace_record(pane_id, "sidekick-send-end", (f"agent={agent}",))
+    return done("attempted_seen", None,
+                f"Typed into sidekick {agent} ({pane_id}); {submit}; "
+                "seen on screen, receipt not confirmed.")
+
+
+#: Outcomes that end `ccm sidekick-send` with status 0.
+_SIDEKICK_SEND_OK = ("attempted_seen", "attempted_unchecked")
+
+
+def _sidekick_send_args(args):
+    """(message, no_enter, as_json) from the arguments, or a
+    _SidekickRefusal. `--json` counts only where a flag can stand:
+    not after `--` and not as the value of `--file`."""
     positional_parts = []
     message_file = None
     use_stdin = False
     no_enter = False
+    as_json = False
 
     stop_flags = False
     i = 0
+    problem = None
     while i < len(args):
         arg = args[i]
         if not stop_flags and arg == "--":
@@ -1131,113 +1603,105 @@ def cmd_sidekick_send(args):
             if arg == "--file":
                 i += 1
                 if i >= len(args):
-                    ccm_core.ccm_die("--file requires a path argument")
-                message_file = args[i]
+                    problem = problem or "--file requires a path argument"
+                else:
+                    message_file = args[i]
             elif arg == "--stdin":
                 use_stdin = True
             elif arg == "--no-enter":
                 no_enter = True
+            elif arg == "--json":
+                as_json = True
             else:
-                ccm_core.ccm_die(
-                    f"Unknown flag: {arg}\n{_SIDEKICK_SEND_USAGE}")
+                problem = problem or f"Unknown flag: {arg}\n{_SIDEKICK_SEND_USAGE}"
         else:
             if arg == "-":  # conventional stdin alias
                 use_stdin = True
             else:
                 positional_parts.append(arg)
         i += 1
+    return (positional_parts, message_file, use_stdin, no_enter, as_json,
+            problem)
 
-    # Resolve message source (exactly one of the three), mirroring
-    # cmd_send's conventions.
+
+def _sidekick_send_message(positional_parts, message_file, use_stdin, no_enter):
+    """The message to send, from exactly one source, or a
+    _SidekickRefusal (mirroring cmd_send's conventions)."""
     positional_message = " ".join(positional_parts) if positional_parts else None
     source_count = sum(x is not None and x is not False for x in
                        (positional_message, message_file, use_stdin or None))
     if source_count == 0:
-        ccm_core.ccm_die("No message provided (positional, --file, or --stdin)")
+        raise _SidekickRefusal(
+            "usage", "No message provided (positional, --file, or --stdin)")
     if source_count > 1:
-        ccm_core.ccm_die(
-            "Provide exactly one of: positional message, --file, or --stdin"
-        )
-    if message_file:
+        raise _SidekickRefusal(
+            "usage", "Provide exactly one of: positional message, --file, or --stdin")
+    if message_file is not None:
         try:
-            with open(message_file, encoding="utf-8") as f:
+            # newline="": line endings reach `clean_message` as written.
+            with open(message_file, encoding="utf-8", newline="") as f:
                 message = f.read()
-        except OSError as e:
-            ccm_core.ccm_die(f"Failed to read message file: {e}")
+        except (OSError, UnicodeDecodeError) as e:
+            raise _SidekickRefusal(
+                "file_unreadable", f"Failed to read message file: {e}")
     elif use_stdin:
-        message = sys.stdin.read()
+        try:
+            message = sys.stdin.read()
+        except (OSError, UnicodeDecodeError) as e:
+            raise _SidekickRefusal(
+                "stdin_unreadable", f"Failed to read the message from stdin: {e}")
     else:
         message = positional_message
     if not message.strip() and not no_enter:
-        ccm_core.ccm_die(
-            "Empty message (use --no-enter to send only Enter suppression)"
-        )
+        raise _SidekickRefusal(
+            "usage", "Empty message (use --no-enter to send only Enter suppression)")
+    try:
+        message = clean_message(message)
+    except ValueError as e:
+        raise _SidekickRefusal("unsupported_text", str(e))
+    return message
 
-    caller_pane = os.environ.get("TMUX_PANE", "")
-    if not caller_pane:
-        ccm_core.ccm_die(
-            "ccm sidekick-send must run inside tmux ($TMUX_PANE is "
-            "unset) — it delivers to the sidekick pane of the caller's "
-            "own window."
-        )
 
-    pane_id, agent = _resolve_sidekick_pane(caller_pane)
+@ccm_core.caller_process_scope()
+def cmd_sidekick_send(args):
+    """Send a prompt to the sidekick agent CLI in the caller's window.
 
-    # TOCTOU: re-resolve immediately before typing. The pane found a
-    # moment ago may have exited or been replaced while the message
-    # was being read (a slow --file, a human at the keys) — typing
-    # into its successor would be the mis-send this command exists to
-    # prevent.
-    again = _resolve_sidekick_pane(caller_pane)
-    if again != (pane_id, agent):
-        ccm_core.ccm_die(
-            f"The sidekick pane changed while preparing the send "
-            f"({pane_id} → {again[0]}) — refusing. Retry the command."
-        )
-
-    # Defensively exit any tmux mode on the target pane, then type
-    # the body literally (shared helpers — see cmd_send).
-    _send_keys(pane_id, "-X", "cancel", label="sidekick-pre-cancel")
-    lines = message.split("\n")
-    if _trace_enabled():
-        _trace_record(pane_id, "sidekick-send-start",
-                      (f"agent={agent}", f"lines={len(lines)}",
-                       f"bytes={len(message)}"))
-    _type_body(pane_id, lines)
-
-    if not no_enter:
-        # The settle pause is load-bearing — see the constant's note.
-        time.sleep(_SIDEKICK_SUBMIT_SETTLE_SEC)
-        _send_keys(pane_id, "Enter", label="sidekick-submit")
-
-    # Post-send delivery confirmation: a fragment of the message must
-    # be visible in the pane (in the composer for --no-enter, in the
-    # conversation echo after Enter). Absence means the text never
-    # arrived — report failure honestly instead of a false "Sent".
-    signature = _message_signature(message)
-    if signature is None:
-        ccm_core.ccm_info(
-            f"Sent to sidekick {agent} ({pane_id}) — message too short "
-            "to auto-verify; confirm with `ccm capture`."
-        )
+    Usage:
+      ccm sidekick-send <message>            Send literal message + Enter
+      ccm sidekick-send --file <path>        Read message from a file
+      ccm sidekick-send --stdin              Read message from stdin
+      ccm sidekick-send --no-enter <msg>     Send without submitting
+      ccm sidekick-send --json <msg>         Print the result as JSON
+      ccm sidekick-send -- "--literal"       `--` ends flag parsing
+    """
+    (positional_parts, message_file, use_stdin, no_enter, as_json,
+     problem) = _sidekick_send_args(args)
+    if any(a in ("-h", "--help") for a in args):
+        if as_json:
+            import ccm_json
+            ccm_json.emit({"help": _SIDEKICK_SEND_USAGE})
+        print(_SIDEKICK_SEND_USAGE)
         return
-    deadline = time.time() + _SIDEKICK_VERIFY_TIMEOUT_SEC
-    while True:
-        if _body_landed(pane_id, signature):
-            break
-        if time.time() >= deadline:
-            if _trace_enabled():
-                _trace_record(pane_id, "sidekick-send-unverified",
-                              (f"agent={agent}",))
-            ccm_core.ccm_die(
-                f"Delivery to the sidekick ({agent}, {pane_id}) could "
-                "not be confirmed: no fragment of the message appeared "
-                "in the pane after sending.\n"
-                "  The send may have been eaten (a TUI still digesting "
-                "the text, or a dialog open over the composer). Check "
-                "the pane with `ccm capture`, then resend."
-            )
-        time.sleep(_SIDEKICK_VERIFY_POLL_SEC)
-    if _trace_enabled():
-        _trace_record(pane_id, "sidekick-send-end", (f"agent={agent}",))
-    ccm_core.ccm_info(f"Sent to sidekick {agent} ({pane_id})")
+    try:
+        if problem:
+            raise _SidekickRefusal("usage", problem)
+        message = _sidekick_send_message(positional_parts, message_file,
+                                         use_stdin, no_enter)
+    except _SidekickRefusal as refusal:
+        result = {"outcome": "refused", "reason": refusal.reason,
+                  "agent": None, "pane": None,
+                  "enter_requested": not no_enter, "enter_sent": False,
+                  "message": str(refusal)}
+    else:
+        result = _sidekick_send(message, no_enter)
+
+    ok = result["outcome"] in _SIDEKICK_SEND_OK
+    if as_json:
+        import ccm_json
+        if not ok:
+            print(result["message"], file=sys.stderr)
+        ccm_json.emit(result, 0 if ok else 1)
+    if ok:
+        ccm_core.ccm_info(result["message"])
+    else:
+        ccm_core.ccm_die(result["message"])

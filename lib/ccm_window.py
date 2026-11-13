@@ -22,19 +22,41 @@ test mocks working uniformly.
 """
 
 import os
+from typing import NamedTuple, Optional
 
+import ccm_agentview
+import ccm_roles
 import ccm_core  # late-bound for tmux_cmd / ps_snapshot
 from ccm_constants import (
     CLAUDE_CMD,
+    CLAUDE_CMD_FRESH,
     SHELL_FOREGROUND_COMMANDS,
     SLIVER_HEIGHT_THRESHOLD,
 )
-from ccm_pane_state import detect_pane_state, enumerate_window_panes
+from ccm_pane_state import detect_pane_state, enumerate_window_panes, read_work_clock
+
+#: How long the hand-off notice stays on the tmux message line. Long
+#: enough to read after the eye has moved to the launching pane.
+CONTINUE_NOTICE_MS = 12000
 
 
-def _resolve_launch_pane(win_target):
-    """Return the pane target that is safe to type the Claude launch
-    command into, or None when no pane can be resolved safely.
+#: Outcomes of `launch_claude`. Callers branch on these instead of
+#: inferring "did anything happen" from a return value.
+LAUNCHED = "launched"                # the launch command was typed
+ALREADY_RUNNING = "already-running"  # a pane in the window hosts claude; nothing typed
+UNAVAILABLE = "unavailable"          # no pane could be verified as a shell; nothing typed
+DISABLED = "disabled"                # `@ccm-auto-start` is off; nothing typed
+
+
+class LaunchResult(NamedTuple):
+    outcome: str
+    notice: Optional[str] = None   # hand-off notice, when one applies
+    pane: Optional[str] = None     # the pane typed into, when LAUNCHED
+    reason: Optional[str] = None   # why automatic operation was refused
+
+
+def _pick_shell_pane(panes, exclude_pane=None):
+    """The pane that is safe to type the launch command into, or None.
 
     `send-keys -t <window>` delivers to the window's ACTIVE pane. In a
     split window that pane may be running an editor or pager, and
@@ -45,17 +67,13 @@ def _resolve_launch_pane(win_target):
       - the active pane, if its foreground is a shell (the common
         case);
       - else the single non-ignored shell-foreground pane;
-      - else None — refuse to send. Not auto-starting beats typing
-        into an unknown foreground.
+      - else None — refuse. Not auto-starting beats typing into an
+        unknown foreground.
 
-    When pane enumeration fails entirely (tmux error) the window
-    target is returned, preserving the pre-resolution defensive
-    fallback (`ccm send` skips its guard on the same condition)."""
-    ps_lines = ccm_core.ps_snapshot().strip().split("\n")
-    panes = enumerate_window_panes(win_target, ps_lines)
-    if not panes:
-        return win_target
-    live = [p for p in panes if not p.ignored]
+    `exclude_pane` names a pane that must never be chosen — the
+    caller's own, for `ccm send`, whose launch would otherwise land
+    in the sender's composer."""
+    live = [p for p in panes if not p.ignored and p.pane_id != exclude_pane]
     active = next((p for p in live if p.active), None)
     if active and active.current_command in SHELL_FOREGROUND_COMMANDS:
         return active.pane_id
@@ -66,19 +84,211 @@ def _resolve_launch_pane(win_target):
     return None
 
 
-def auto_start_claude(win_target):
-    """Auto-start Claude Code if `@ccm-auto-start` is on (default).
+#: What `conversation_history` could establish about a directory.
+HISTORY = "history"        # a transcript directory with at least one transcript
+NO_HISTORY = "no-history"  # looked where the CLI would, found nothing
+UNKNOWN = "unknown"        # could not look where the CLI would
 
-    The launch command is typed into a shell-foreground pane only
-    (see `_resolve_launch_pane`); when no such pane can be resolved
-    safely, nothing is sent."""
-    setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
-    if setting != "on":
-        return
-    pane = _resolve_launch_pane(win_target)
+#: Environment variables that move where the CLI keeps or names a
+#: directory's transcripts. Set anywhere the launching shell could
+#: have inherited them from, ccm cannot say where the CLI will look.
+_TRANSCRIPT_LOCATION_VARS = ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_PROJECT_DIR_NAME")
+
+
+def _tmux_environment_names(session):
+    """The variable names set in tmux's global and `session`
+    environments — what a shell started in a new window inherits.
+    None when either listing could not be read — asked through
+    `tmux_query`, since an empty session environment is a valid
+    answer and must not read as a failure, nor a failure as "nothing
+    set"."""
+    names = set()
+    for args in (("show-environment", "-g"), ("show-environment", "-t", session)):
+        out = ccm_core.tmux_query(*args)
+        if out is None:
+            return None
+        for line in out.split("\n"):
+            if line and not line.startswith("-") and "=" in line:
+                names.add(line.split("=", 1)[0])
+    return names
+
+
+def conversation_history(project_dir, session=None) -> str:
+    """Whether `project_dir` holds a conversation for `claude --continue`
+    to resume — as far as ccm can see from here.
+
+    `NO_HISTORY` is a positive claim, so it is made only when every
+    place ccm can observe has been looked at: nothing in ccm's own
+    environment or in the tmux environment a new window's shell
+    inherits (`session`, when given) moves the CLI's config home or
+    names the transcript directory, the slug is short enough to be
+    spelled the way the CLI spells it, and the transcript directory
+    for the path — as given and as resolved, since the launching
+    shell may report either — is absent or holds no transcript.
+    Anything ccm cannot check (another config home, a custom
+    directory name, an unreadable directory, a slug the CLI would
+    truncate and hash) is `UNKNOWN`, not "none". What ccm cannot
+    observe at all — a shell's own exports, a startup file that
+    moves the transcript location — is outside the claim, which is
+    why only a window ccm has just created is judged this way (see
+    `launch_command`)."""
+    import ccm_jsonl
+    if not project_dir:
+        return UNKNOWN
+    if any(name in os.environ for name in _TRANSCRIPT_LOCATION_VARS):
+        return UNKNOWN
+    if session is not None:
+        tmux_names = _tmux_environment_names(session)
+        if tmux_names is None or tmux_names & set(_TRANSCRIPT_LOCATION_VARS):
+            return UNKNOWN
+    literal = os.path.expanduser(project_dir)
+    try:
+        resolved = os.path.realpath(literal)
+    except OSError:
+        return UNKNOWN
+    for candidate in {literal, resolved}:
+        slug = ccm_jsonl._project_slug(candidate)
+        if len(slug) > ccm_jsonl.PROJECT_SLUG_MAX:
+            return UNKNOWN
+        try:
+            entries = os.listdir(os.path.join(ccm_jsonl.CLAUDE_PROJECTS_DIR, slug))
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return UNKNOWN
+        if any(entry.endswith(".jsonl") for entry in entries):
+            return HISTORY
+    return NO_HISTORY
+
+
+def launch_command(project_dir, session) -> str:
+    """The command `ccm add` types into the window it has just created
+    in `session` for `project_dir`: plain `claude` only when ccm has
+    seen for itself that there is no conversation to resume (a new
+    project), `claude --continue` otherwise — including when ccm
+    could not look. Only a window ccm created is judged: its shell
+    inherits the tmux environment ccm can read. A launch into an
+    existing shell (`launch_claude`) always types `--continue`, since
+    that shell's own exports are invisible from here and a relaunch
+    almost always has something to resume.
+
+    Decided here rather than by chaining the two with `||`: the chain
+    also fired on every other non-zero exit of `--continue` — a
+    hand-off to a live background session, a startup failure — and
+    started a new conversation over the CLI's own explanation of what
+    went wrong. The remaining failure is the visible one: `--continue`
+    with nothing to resume says so and returns the pane to the
+    shell."""
+    if conversation_history(project_dir, session) == NO_HISTORY:
+        return CLAUDE_CMD_FRESH
+    return CLAUDE_CMD
+
+
+def launch_claude(win_target, honour_setting=True, exclude_pane=None) -> LaunchResult:
+    """Type the Claude launch command into `win_target`, after looking
+    at the window as it is NOW — the one place every launch path
+    (`ccm attach`, the dashboard, `ccm send --start`) goes through.
+
+    The caller's reason for launching is a SHELL verdict taken some
+    time ago. Between that verdict and this call the window can have
+    changed: Claude relaunching in place after an update briefly
+    shows no process, then has one again; a user can start Claude
+    by hand; the active pane can switch to an editor. So the window
+    is re-read here, from a fresh process snapshot and pane listing,
+    and the command is typed only when:
+
+      - the process snapshot was taken (`UNAVAILABLE` when `ps`
+        failed: without it every pane reads as claude-less, and a
+        launch into a window that does host claude would follow),
+      - no non-ignored pane hosts claude (`ALREADY_RUNNING` otherwise —
+        a second `claude --continue` would open the same conversation
+        twice), and
+      - a pane can be positively identified as a shell foreground
+        (`UNAVAILABLE` otherwise — including when the panes cannot be
+        listed at all: "could not look" is not "nothing there").
+
+    `exclude_pane` is never typed into (see `_pick_shell_pane`).
+
+    The command is always `claude --continue`: the pane's shell may
+    keep its transcripts somewhere ccm cannot see (its own exports
+    are invisible from here), so ccm never claims it has nothing to
+    resume. When that is nonetheless so, the CLI says it and returns
+    the pane to the shell; see `launch_command`. The hand-off notice
+    is judged first, before the launch is typed (the new session's
+    own transcript would otherwise be the newest one scanned), and
+    shown after."""
+    if ccm_roles.pending(win_target):
+        return LaunchResult(UNAVAILABLE)
+    if honour_setting:
+        setting = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-auto-start") or "on"
+        if setting != "on":
+            return LaunchResult(DISABLED)
+    notice = continue_blocker_notice(win_target)
+    ps_raw = ccm_core.ps_snapshot().strip()
+    if not ps_raw:
+        return LaunchResult(UNAVAILABLE, notice)
+    panes = enumerate_window_panes(win_target, ps_raw.split("\n"))
+    if not panes:
+        return LaunchResult(UNAVAILABLE, notice)
+    if any(p.claude_pid for p in panes if not p.ignored):
+        return LaunchResult(ALREADY_RUNNING, notice)
+    choice = ccm_roles.selection(win_target, panes)
+    if choice.state == ccm_roles.SelectionState.BLOCKED:
+        return LaunchResult(UNAVAILABLE, notice, reason=choice.reason)
+    eligible = [p for p in panes if p.pane_id in choice.eligible]
+    if choice.state == ccm_roles.SelectionState.PRIMARY:
+        eligible = [p for p in eligible if p.pane_id == choice.primary]
+    pane = _pick_shell_pane(eligible, exclude_pane)
     if pane is None:
-        return
+        reason = None if choice.state == ccm_roles.SelectionState.ORDINARY else (
+            'No eligible restored Claude pane; inspect ccm roles. '
+            'Sidekick, ignored and explicitly cleared panes require manual operation')
+        return LaunchResult(UNAVAILABLE, notice, reason=reason)
+    # Leave copy-mode if the pane is in it; a no-op otherwise. Without
+    # this the keys would be read as copy-mode bindings.
+    ccm_core.tmux_cmd("send-keys", "-t", pane, "-X", "cancel")
     ccm_core.tmux_cmd("send-keys", "-t", pane, CLAUDE_CMD, "Enter")
+    if notice:
+        # The notice carries a project name, which may hold `#`.
+        ccm_core.tmux_cmd("display-message", "-d", str(CONTINUE_NOTICE_MS),
+                          "ccm: " + ccm_core.tmux_literal(notice))
+    return LaunchResult(LAUNCHED, notice, pane)
+
+
+def auto_start_claude(win_target) -> LaunchResult:
+    """Auto-start Claude Code if `@ccm-auto-start` is on (default).
+    See `launch_claude` for what is checked before anything is typed."""
+    return launch_claude(win_target, honour_setting=True)
+
+
+def continue_blocker_notice(win_target):
+    """The hand-off notice for this window's project, or None: the
+    line to show when `claude --continue` is about to start a fresh
+    session because the newest transcript was handed to a background
+    session the daemon still lists.
+
+    Decided from the disk, roster and session registry as they are
+    now — this runs at the moment the launch command is about to be
+    typed. The fresh session itself prints the CLI's own notice, which names
+    the session but not the project or the state it is in; this one
+    is what the reader sees while the launch is still on screen.
+    Callers with a stdout of their own (`ccm attach`) print it too."""
+    proj_dir = ccm_core.tmux_cmd(
+        "show-option", "-wqv", "-t", win_target, "@ccm_dir"
+    )
+    if not proj_dir:
+        return None
+    try:
+        blocker = ccm_agentview.continue_blocker(proj_dir)
+    except Exception:
+        ccm_core.log_caught_exception("auto_start_claude.continue_blocker")
+        return None
+    if blocker is None:
+        return None
+    name = ccm_core.tmux_cmd(
+        "show-option", "-wqv", "-t", win_target, "@ccm_project"
+    ) or proj_dir
+    return ccm_agentview.format_continue_blocker(name, blocker)
 
 
 def reset_window_after_attach(win_target):
@@ -131,6 +341,10 @@ def auto_focus_attention_pane(win_target):
     `prefix + arrow` step and prevents the user from typing into
     the wrong pane.
 
+    When no Claude pane waits, a sidekick pane that waits for a person
+    (the `▸ ⚠` badge) is focused instead, whether Claude is idle or
+    busy: it is the pane that needs the person.
+
     Scope is intentionally narrow: PERMIT only. BUSY panes are
     interesting to monitor but do not require user input, so
     auto-stealing focus from where the user wanted to be would be
@@ -149,14 +363,14 @@ def auto_focus_attention_pane(win_target):
     panes_raw = ccm_core.tmux_cmd(
         "list-panes", "-t", win_target, "-F",
         "#{pane_pid}\t#{pane_id}\t#{pane_current_command}\t"
-        "#{pane_active}\t#{pane_height}",
+        "#{pane_active}\t#{pane_height}\t#{@ccm_dock}",
     )
     if not panes_raw:
         return
     rows = []
     for line in panes_raw.split("\n"):
         parts = line.split("\t")
-        if len(parts) < 5:
+        if len(parts) < 5 or ccm_core.is_dock_field(parts, 5):
             continue
         pid, pane_id, cmd, active, height_str = parts[:5]
         try:
@@ -165,12 +379,16 @@ def auto_focus_attention_pane(win_target):
             height = 0
         rows.append((pid, pane_id, cmd, active == "1", height))
 
-    if len(rows) < 2:
+    # Nothing to move to when the only work pane already has focus. A
+    # single work pane without focus is a real case: the docked
+    # dashboard (left out of `rows`) can hold the focus.
+    if not rows or (len(rows) == 1 and rows[0][3]):
         return
 
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
     own_pgid = str(os.getpgrp())
 
+    stored_clock = read_work_clock(win_target)
     permit_pane = None
     active_is_permit = False
     for pid, pane_id, cmd, is_active, height in rows:
@@ -180,7 +398,8 @@ def auto_focus_attention_pane(win_target):
         if height and height < SLIVER_HEIGHT_THRESHOLD:
             continue
         state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
-                                  current_command=cmd)
+                                  current_command=cmd,
+                                  stored_clock=stored_clock)
         if state != "PERMIT":
             continue
         if is_active:
@@ -192,5 +411,42 @@ def auto_focus_attention_pane(win_target):
     if active_is_permit:
         return
     if permit_pane is None:
+        # No Claude pane waits: a sidekick that does is the pane that
+        # needs the person, whatever Claude is doing.
+        permit_pane = _waiting_sidekick_pane(win_target, rows, ps_lines)
+    if permit_pane is None:
         return
     ccm_core.tmux_cmd("select-pane", "-t", permit_pane)
+
+
+def _waiting_sidekick_pane(win_target, rows, ps_lines):
+    """A sidekick pane of `rows` waiting for a person, or None — also
+    None when the focused pane is itself one, so focus stays. Waiting
+    is what the `▸ ⚠` badge shows, from `ccm_core.sidekick_pane_states`;
+    nothing when the sidekick attention display is off (`w`)."""
+    if ccm_core.tmux_cmd("show-option", "-gqv",
+                         "@ccm-sidekick-attention") == "off":
+        return None
+    target = ccm_core.tmux_cmd("display-message", "-p", "-t", win_target,
+                               "#{session_name}:#{window_index}")
+    if not target:
+        return None
+    try:
+        cache = ccm_core._build_panes_cache()
+        # A failed listing comes back empty or partial; judging waits
+        # from it would focus nothing, or worse, let the marker reader
+        # reap the waits of panes it did not see.
+        listed = {pc[2] for pc in cache if pc[0] == target}
+        if not all(pane_id in listed for _, pane_id, _, _, _ in rows):
+            return None
+        markers = ccm_core._read_attention_markers(cache, ps_lines)
+        states = ccm_core.sidekick_pane_states(ccm_core.observe_sidekicks(
+            cache, target, markers, [], ps_lines))
+    except Exception:
+        ccm_core.log_caught_exception("sidekick_focus")
+        return None
+    waiting = [(pane_id, is_active) for _, pane_id, _, is_active, _ in rows
+               if states.get(pane_id, ("", ""))[1] == "PERMIT"]
+    if not waiting or any(is_active for _, is_active in waiting):
+        return None
+    return waiting[0][0]

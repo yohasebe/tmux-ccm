@@ -7,12 +7,15 @@ state (`SHELL` / `BUSY` / `IDLE` / `PERMIT`) inferred from:
 
   1. The process tree under the pane (`find_claude_pid`,
      `has_children`) — distinguishes "no claude here" (SHELL) from
-     "claude is running tools" (children present) from "claude is
-     idle waiting for input" (no children).
-  2. The bottom rows of the pane via `tmux capture-pane`
-     (`capture_pane_bottom`) — recognises Claude's `❯` input
-     prompt (IDLE) and modal footers like `Esc to cancel · Tab to
-     amend` (PERMIT).
+     "claude is running tools" (children present) from "claude has
+     nothing spawned" (thinking, generating, or at rest — told
+     apart by the pane's work clock, below).
+  2. The pane text via `tmux capture-pane` (`capture_pane_bottom`,
+     `capture_pane_visible`) — recognises Claude's `❯` input prompt
+     (IDLE), modal footers like `Esc to cancel · Tab to amend`
+     (PERMIT), and the work clock: the spinner's elapsed-time
+     footer or a retry countdown, believed only while it ticks (see
+     `_clock_is_ticking`).
 
 `detect_pane_state` combines both per pane; `detect_window_raw`
 aggregates across panes (PERMIT > BUSY > IDLE > SHELL) with sliver
@@ -30,15 +33,24 @@ and `SLIVER_HEIGHT_THRESHOLD` are accessed via `ccm_core.X` so test
 mocks routed through `ccm_core` reach this module unchanged.
 """
 
+import time
 from collections import namedtuple
+from typing import Optional, Tuple
 
 from ccm_constants import (
     CLAUDE_PROCESS_NAME,
     IGNORED_CHILDREN,
     PATTERN_ACCEPT_EDITS,
     PATTERN_ACTIVE_SPINNER,
+    PATTERN_SPINNER_TIMER,
+    PATTERN_THINKING_HINT,
+    THINKING_HINT_RESAMPLES,
+    THINKING_HINT_RESAMPLE_SEC,
     PATTERN_INPUT_PROMPT,
     PATTERN_PERMIT_FOOTER,
+    PATTERN_RETRY_BACKOFF,
+    SPINNER_STALE_RELEASE_SEC,
+    strip_sgr,
 )
 # `import ccm_core` lives at the BOTTOM of this module (after the
 # function definitions) so that when `ccm_pane_state` is the entry
@@ -61,15 +73,7 @@ def find_claude_pid(parent_pid, ps_lines):
     * the pane process *being* `claude` — what `tmux new-window
       "claude …"` creates, with no shell in between.
 
-    The second shape was missed at first: the walk only ever
-    looked for a child, so a pane whose own process is claude resolved
-    to None and read as SHELL forever. `ccm debug trace` on a probe
-    session hit this immediately (probes launch claude as the pane
-    command), and a window registered with `ccm register` after being
-    created that way would have been just as invisible.
-
-    A child match still wins, so the common shape keeps its exact
-    previous result and only the previously-blind case changes.
+    A child match wins when both shapes apply.
     """
     want = str(parent_pid)
     self_match = None
@@ -110,15 +114,36 @@ def enumerate_window_panes(win_target, ps_lines):
 
     Robust to short rows: fields past pane_pid degrade to
     active=False / current_command="" / ignored=False."""
+    raw = ccm_core.tmux_cmd("list-panes", "-t", win_target, "-F", _PANE_FORMAT)
+    return _pane_infos((raw or "").split("\n"), ps_lines)
+
+
+def enumerate_all_window_panes(ps_lines):
+    """`{win_target: [PaneInfo]}` for every window, from one
+    `list-panes -a` instead of one query per window."""
     raw = ccm_core.tmux_cmd(
-        "list-panes", "-t", win_target, "-F",
-        "#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
-        "#{pane_current_command}\t#{@ccm_ignore}",
+        "list-panes", "-a", "-F",
+        "#{session_name}:#{window_index}\t" + _PANE_FORMAT,
     )
-    out = []
+    rows = {}
     for line in (raw or "").split("\n"):
+        win_target, sep, rest = line.partition("\t")
+        if sep:
+            rows.setdefault(win_target, []).append(rest)
+    return {w: _pane_infos(r, ps_lines) for w, r in rows.items()}
+
+
+_PANE_FORMAT = (
+    "#{pane_id}\t#{pane_pid}\t#{pane_active}\t"
+    "#{pane_current_command}\t#{@ccm_ignore}\t#{@ccm_dock}"
+)
+
+
+def _pane_infos(rows, ps_lines):
+    out = []
+    for line in rows:
         parts = line.split("\t")
-        if len(parts) < 2:
+        if len(parts) < 2 or ccm_core.is_dock_field(parts, 5):
             continue
         out.append(PaneInfo(
             pane_id=parts[0],
@@ -148,7 +173,11 @@ def has_children(pid, ps_lines, own_pgid):
     return False
 
 
-def capture_pane_bottom(pane_target, lines=8):
+# The rows a modal footer can sit in.
+BOTTOM_LINES = 8
+
+
+def capture_pane_bottom(pane_target, lines=BOTTOM_LINES):
     """Capture the bottom `lines` non-empty lines of a pane.
 
     Used for footer matching (PERMIT modal detection) where the
@@ -167,6 +196,97 @@ def capture_pane_bottom(pane_target, lines=8):
     return non_empty[-lines:]
 
 
+def capture_composer_snapshot(pane_target):
+    """Return plain and attributed text from one readable pane snapshot."""
+    attributed = ccm_core.tmux_cmd(
+        "capture-pane", "-e", "-t", pane_target, "-p") or ""
+    if not strip_sgr(attributed).strip():
+        attributed = ccm_core.tmux_cmd(
+            "capture-pane", "-e", "-a", "-t", pane_target, "-p") or ""
+    return strip_sgr(attributed), attributed
+
+
+# Panes captured ahead in one tmux process for the pass that follows
+# (see `prefetch_visible`): pane id -> text. Each is served once, to the
+# pass's first look at that pane; a second look (the spinner resample)
+# goes to tmux. Entries expire, so a pass that ends early cannot leave
+# old screens for a later one.
+_PREFETCHED = {}
+# The same screens with their indentation, for `capture_pane_screen`.
+_PREFETCHED_RAW = {}
+_PREFETCH_TTL_SEC = 1.0
+_prefetched_until = 0.0
+
+
+def prefetch_visible(pane_ids):
+    """Capture several panes' visible areas in one tmux process. The
+    capture is the one `capture_pane_visible` makes, with a separator
+    line between panes that carries a fresh random token, so no screen
+    can contain it. If the separators do not come back one per pane, or
+    tmux fails (a pane closed meanwhile aborts the rest), nothing is
+    kept and each pane is captured on its own. An empty
+    capture (an alternate-screen app) still takes the existing
+    alternate-screen read in `capture_pane_visible`."""
+    global _prefetched_until
+    import uuid
+    _PREFETCHED.clear()
+    _PREFETCHED_RAW.clear()
+    pane_ids = list(dict.fromkeys(pane_ids))
+    if len(pane_ids) < 2:
+        return
+    sep = f"==ccm-capture-{uuid.uuid4().hex}=="
+    args = []
+    for i, pane in enumerate(pane_ids):
+        if i:
+            args += [";", "display-message", "-p", sep, ";"]
+        args += ["capture-pane", "-t", pane, "-p"]
+    # A failure comes back empty: one segment, never one per pane.
+    # Unstripped, so the first screen keeps the indent of its first line.
+    out = ccm_core.tmux_cmd(*args, strip=False)
+    segments, current = [], []
+    for line in out.split("\n"):
+        if line == sep:
+            segments.append("\n".join(current))
+            current = []
+        else:
+            current.append(line)
+    segments.append("\n".join(current))
+    if len(segments) != len(pane_ids):
+        return
+    for pane, text in zip(pane_ids, segments):
+        _PREFETCHED[pane] = text.strip()
+        _PREFETCHED_RAW[pane] = text
+    _prefetched_until = time.monotonic() + _PREFETCH_TTL_SEC
+
+
+def clear_prefetched():
+    _PREFETCHED.clear()
+    _PREFETCHED_RAW.clear()
+
+
+def _take_prefetched(pane_target):
+    if not _PREFETCHED:
+        return None
+    if time.monotonic() > _prefetched_until:
+        _PREFETCHED.clear()
+        return None
+    return _PREFETCHED.pop(pane_target, None)
+
+
+def capture_pane_screen(pane_target):
+    """Non-empty visible lines with their indentation intact, for a
+    reader that tells a line by its column (the Codex screen). Served
+    from the pass's batch capture when it holds this pane, else read on
+    its own; never the alternate-screen fallback."""
+    raw = None
+    if _PREFETCHED_RAW and time.monotonic() <= _prefetched_until:
+        raw = _PREFETCHED_RAW.pop(pane_target, None)
+    if raw is None:
+        raw = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p",
+                                strip=False)
+    return [line for line in (raw or "").split("\n") if line.strip()]
+
+
 def capture_pane_visible(pane_target):
     """Capture the entire visible area of a pane (no scrollback).
 
@@ -178,7 +298,9 @@ def capture_pane_visible(pane_target):
     fixed-cost capture regardless of scrollback length.
 
     Returns a list of stripped non-empty lines, oldest first."""
-    raw = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p")
+    raw = _take_prefetched(pane_target)
+    if raw is None:
+        raw = ccm_core.tmux_cmd("capture-pane", "-t", pane_target, "-p")
     if not raw or not raw.strip():
         raw = ccm_core.tmux_cmd("capture-pane", "-a", "-t", pane_target, "-p")
     if not raw:
@@ -186,9 +308,214 @@ def capture_pane_visible(pane_target):
     return [l for l in raw.split("\n") if l.strip()]
 
 
+# ─── Work-clock staleness ───
+#
+# The no-children question — "is claude working or at rest?" — is
+# answered by the pane's clock: the spinner footer carries elapsed
+# seconds that tick once a second while a turn runs. But raw=BUSY
+# has no timeout anywhere in the pipeline (every stale-release path
+# requires raw=IDLE), so a STATIC clock must not be believed past a
+# window: a frozen frame (claude hung after rendering the footer)
+# and a transcript line merely quoting a footer are both static,
+# and either would pin the window busy forever — a worse failure
+# than the false idle this reading exists to prevent.
+#
+# So a clock is believed when it MOVED since the last read — a live
+# one changes every second — and an unmoved one only inside
+# SPINNER_STALE_RELEASE_SEC. Believing movement rather than novelty
+# is what keeps recycled strings honest: a retry countdown cycles
+# through its few values every attempt, and a thinking footer
+# repeats verbatim across turns, so aging by first-ever-sight would
+# call a live retry storm idle — the dangerous direction, the one
+# auto-exit acts on. The corner that loses: a screen showing
+# several static footers at once alternates them and reads as
+# movement, holding BUSY — accepted, because that direction only
+# delays auto-exit.
+#
+# The history this comparison needs CANNOT live in-process: tmux
+# spawns `ccm inject-status` fresh every status-interval, so the
+# periodic path — the one auto-exit runs on — always starts empty,
+# and an in-process cache only ever worked while the dashboard
+# happened to be open. It therefore lives on the window itself, in
+# `@ccm_work_clock` / `@ccm_work_clock_ts`, written by
+# `apply_actions` on CHANGE only: a static frame must never refresh
+# the timestamp, because its age is the verdict. Detection stays
+# read-only; a process that finds nothing stored sees every clock
+# as moved, i.e. fails open toward BUSY — the safe direction.
+#
+# The slot is per WINDOW, not per pane: single-pane projects (the
+# dominant case) get exact semantics; a window with several
+# clock-showing panes compares each pane's clock against the one
+# stored value, so an unfamiliar clock reads as moved — the safe
+# direction — and a frozen pane's clock ages out once it is the one
+# being stored.
+
+#: Indirection so tests can drive the staleness window deterministically.
+_now = time.time
+
+
+def _work_clock(line) -> Optional[str]:
+    """Return the on-screen clock string marking an active turn on
+    this line, or None.
+
+    The matched segment always contains a ticking value — the
+    spinner pattern requires the elapsed seconds, the retry pattern
+    the countdown — so the string itself serves as the clock:
+    identical across passes means static. The spinning glyph and
+    verb stay OUTSIDE the matched segment on purpose — they change
+    even in a frame grabbed mid-animation, and including them would
+    make a frozen frame look alive. The footer that carries no
+    elapsed time at all (a narrow pane in a long thinking phase) is
+    not a clock and is handled by `_spinner_moves`, which looks for
+    the glyph moving within one pass instead. Tabs are stripped so
+    the value is safe to persist through a tab-separated tmux
+    format."""
+    m = PATTERN_ACTIVE_SPINNER.search(line)
+    if m:
+        return m.group(0).replace("\t", " ")
+    m = PATTERN_RETRY_BACKOFF.search(line)
+    if m:
+        return m.group(0).replace("\t", " ")
+    m = PATTERN_SPINNER_TIMER.match(line)
+    if m:
+        return "(" + m.group("clock").replace("\t", " ") + ")"
+    return None
+
+
+#: Indirection so tests can skip the resample wait.
+_sleep = time.sleep
+
+
+def _hint_frames(lines):
+    """The (hint, glyph) pairs of the elapsed-less spinner footers in
+    `lines`, in order — the shape a narrow pane shows in a long
+    thinking phase (see `PATTERN_THINKING_HINT`)."""
+    out = []
+    for line in lines:
+        m = PATTERN_THINKING_HINT.match(line)
+        if m:
+            out.append((m.group("hint"), m.group("glyph")))
+    return out
+
+
+def _spinner_moves(pane_target, lines, stored_clock, now, clock_out) -> bool:
+    """True when an elapsed-less spinner footer in `lines` is seen to
+    animate — or when a later capture shows a ticking clock outright.
+
+    The pane is captured again, up to `THINKING_HINT_RESAMPLES` times
+    `THINKING_HINT_RESAMPLE_SEC` apart. Each recapture is first read
+    for the ordinary clocks (`_scan_work_clock`): the footer may have
+    regained its elapsed time meanwhile (the pane widened, the hint
+    changed), and that evidence must not be thrown away for having
+    arrived on the second look. Failing that, the recapture's
+    elapsed-less footers are compared with the previous capture's
+    LINE BY LINE, in order: movement is the same sequence of hints
+    with a glyph that differs at some position. A screen identical
+    on both looks — including two static lines with the same hint,
+    quoted in a transcript — is not movement, and a pair whose hints
+    do not line up (scrolled, or a hint that changed across a
+    threshold in the meantime) is not judged; the next pair, or the
+    next pass, will.
+
+    The CLI cycles the glyph through its frames on a fixed
+    two-second cosine period. Half a second apart, two captures of a
+    live spinner can still coincide on the cycle's symmetric phase
+    (about one start phase in ten); half a second and a full second
+    apart, they cannot both coincide — which is why the second
+    recapture exists. The comparison is made inside one pass on
+    purpose: across passes the poll interval can sit on the period
+    and read the same phase every time. Nothing is persisted."""
+    prev = _hint_frames(lines)
+    if not prev:
+        return False
+    for _ in range(THINKING_HINT_RESAMPLES):
+        _sleep(THINKING_HINT_RESAMPLE_SEC)
+        again = capture_pane_visible(pane_target)
+        if _scan_work_clock(again, stored_clock, now, clock_out):
+            return True
+        later = _hint_frames(again)
+        if [h for h, _ in later] == [h for h, _ in prev] and \
+                any(a != b for (_, a), (_, b) in zip(prev, later)):
+            return True
+        prev = later
+    return False
+
+
+def read_work_clock(win_target, cached=None):
+    """Read the window's clock history, or use an already-fetched pair.
+
+    Missing or malformed history returns None so every caller keeps the
+    same conservative ticking verdict. An empty cached pair skips I/O.
+    """
+    if cached is None:
+        if not win_target:
+            return None
+        cached = (
+            ccm_core.tmux_cmd(
+                "show-option", "-wqv", "-t", win_target, "@ccm_work_clock"),
+            ccm_core.tmux_cmd(
+                "show-option", "-wqv", "-t", win_target, "@ccm_work_clock_ts"),
+        )
+    clock_str, ts_str = cached
+    if not clock_str:
+        return None
+    try:
+        return clock_str, int(ts_str)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clock_is_ticking(clock, stored, now) -> bool:
+    """Believe `clock` when it moved, or has not stood still for long.
+
+    `stored` is the window's persisted `(clock_string, unix_ts)`
+    from the previous detection pass, or None when nothing is
+    stored. A different (or absent) stored value means the clock
+    moved — believed at once. The same value is believed only
+    inside SPINNER_STALE_RELEASE_SEC; past that it is a frozen
+    frame or a quotation, not a running turn. Pure: the caller
+    supplies the history and the time."""
+    if stored is None or stored[0] != clock:
+        return True
+    return now - stored[1] <= SPINNER_STALE_RELEASE_SEC
+
+
+def _scan_work_clock(lines, stored_clock, now, clock_out) -> bool:
+    """True when any work clock in `lines` is ticking.
+
+    The single implementation of the clock scan — the childless
+    branch and the accept-edits disambiguation ask the same
+    question ("is claude working?"), so they must not answer it
+    separately. The first clock seen is reported to `clock_out`
+    (when a list is passed) for the persistence hand-off. Every
+    visible clock is evaluated, not just the first, so each starts
+    being judged from the pass it appears on."""
+    ticking = False
+    found = None
+    for line in lines:
+        clock = _work_clock(line)
+        if clock is None:
+            continue
+        if found is None:
+            found = clock
+        if _clock_is_ticking(clock, stored_clock, now):
+            ticking = True
+    if found is not None and clock_out is not None:
+        clock_out.append(found)
+    return ticking
+
+
 def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
-                      current_command=""):
+                      current_command="", stored_clock=None,
+                      clock_out=None):
     """Per-pane raw state. Returns SHELL / BUSY / IDLE / PERMIT.
+
+    `stored_clock` is the window's persisted `(clock, ts)` tuple the
+    tick check compares against (see `_clock_is_ticking`); None means
+    no history, so every clock reads as moved. `clock_out`, when a
+    list is passed, collects the first work clock this pane shows
+    (if any) so the caller can persist it — the history cannot live
+    in-process (see the "Work-clock staleness" note above).
 
     Resolution order (highest priority first):
       1. No claude under the pane → SHELL.
@@ -201,18 +528,27 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
          before the tool subprocess spawns).
       4. Has live children + no input prompt anywhere visible →
          BUSY.
-      5. Has live children + input prompt visible + an active-work
-         spinner footer also visible → BUSY. In accept-edits mode
-         the `❯` composer stays on screen WHILE a tool runs, so a
-         visible prompt alone is not proof of idleness; the spinner
-         (`… (elapsed · arrow Nk tokens)`) is rendered only during
-         active generation / tool execution and disambiguates.
-      6. Has live children + input prompt visible + no spinner →
-         IDLE. The prompt is searched across the whole visible area
+      5. Has live children + input prompt visible + a ticking work
+         clock also visible → BUSY. In accept-edits mode the `❯`
+         composer stays on screen WHILE a tool runs, so a visible
+         prompt alone is not proof of idleness; the ticking footer
+         is rendered only during active generation / tool execution
+         and disambiguates. The clock is gated the same way as in 7,
+         so a leftover child plus a static footer-shaped string
+         cannot pin BUSY.
+      6. Has live children + input prompt visible + no ticking clock
+         → IDLE. The prompt is searched across the whole visible area
          (not just the bottom) because a long multi-line user input
          pushes the `❯` row well above the bottom 8 lines while the
          user is still composing.
-      7. No children → IDLE.
+      7. No children + a ticking work clock visible → BUSY. A turn
+         spends its thinking and its generation with nothing spawned,
+         and a retry backoff waits the same way — the spinner's
+         elapsed-time footer or the `Retrying in Ns` countdown is on
+         screen the whole while. Believed only while it ticks
+         (`_clock_is_ticking`), so a frozen frame or a quoted footer
+         cannot hold the window busy past SPINNER_STALE_RELEASE_SEC.
+      8. No children + no ticking clock → IDLE.
     """
     claude_pid = find_claude_pid(pane_pid, ps_lines)
     if not claude_pid:
@@ -223,21 +559,33 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
 
     has_child = has_children(claude_pid, ps_lines, own_pgid)
 
+    # One capture of the visible area serves every check below: the
+    # footer rows are its last lines, and a second read cost a tmux
+    # process per pane per poll.
+    visible = capture_pane_visible(pane_target)
+
     # PERMIT footer is always rendered at the very bottom of the
-    # pane — a tail-only capture is sufficient and avoids
+    # pane — the last few lines are read, which avoids
     # false-positives from "permit footer"-shaped strings appearing
     # in conversation content above.
-    bottom = capture_pane_bottom(pane_target)
+    bottom = visible[-BOTTOM_LINES:]
     for line in bottom:
         if PATTERN_PERMIT_FOOTER.match(line):
             return "PERMIT"
 
     if has_child:
-        # Scan the whole visible pane for the input prompt. The `❯`
-        # row marks the top of the input area — when the user is
-        # composing a multi-line message, the `❯` may be many rows
-        # above the pane bottom while the user keeps typing.
-        visible = capture_pane_visible(pane_target)
+        # Whether Claude's own UI is on screen at all, rather than
+        # where its input box is. The composer is drawn continuously,
+        # so this is true almost whenever Claude is running; what is
+        # actually being asked is "has something covered the UI"
+        # (a dialog, a flood of output).
+        #
+        # Do NOT read the match as locating the input area. A
+        # submitted prompt is drawn into the transcript with the same
+        # glyph, so the first `❯` on screen is usually an old message.
+        # Nothing here
+        # depends on which row matched, and the BUSY/IDLE call below
+        # is made by the spinner, not by this.
         prompt_visible = any(
             PATTERN_INPUT_PROMPT.match(line) and not PATTERN_ACCEPT_EDITS.match(line)
             for line in visible
@@ -245,28 +593,63 @@ def detect_pane_state(pane_pid, pane_target, ps_lines, own_pgid,
         if prompt_visible:
             # A visible `❯` normally means IDLE (queued-input box).
             # But accept-edits mode keeps that box on screen while a
-            # tool runs, so check for the active-work spinner first:
-            # its incrementing `(elapsed · arrow Nk tokens)` footer
-            # appears only during generation / tool execution, never
-            # at a true idle prompt or during a menu / permission
-            # wait (Claude has stopped generating to ask). Present →
-            # the pane is BUSY despite the visible prompt. This is
-            # what un-sticks the false PERMIT when an approved
-            # permission is the latest hook event and a long tool is
-            # still running (see PATTERN_ACTIVE_SPINNER docstring).
-            for line in visible:
-                if PATTERN_ACTIVE_SPINNER.search(line):
-                    return "BUSY"
+            # tool runs, so check for the work clock first: its
+            # ticking footer appears only during generation / tool
+            # execution, never at a true idle prompt or during a
+            # menu / permission wait (Claude has stopped generating
+            # to ask). Ticking → the pane is BUSY despite the visible
+            # prompt. This is what un-sticks the false PERMIT when an
+            # approved permission is the latest hook event and a long
+            # tool is still running (see PATTERN_ACTIVE_SPINNER
+            # docstring).
+            # The gate is the same one the childless branch uses —
+            # literally the same scan — because the question is the
+            # same: "is claude working?", not "is anything alive?".
+            # A leftover long-lived child (a dev server claude no
+            # longer owns — the `(bg)` case) keeps this branch
+            # reachable after the turn ends, and a static
+            # spinner-shaped string on screen would otherwise pin
+            # raw=BUSY, which has no release path. The leftover
+            # process itself is the bg-active mechanism's concern,
+            # not a reason to skip the gate.
+            if _scan_work_clock(visible, stored_clock, _now(), clock_out):
+                return "BUSY"
+            # A narrow pane may have squeezed the elapsed time out of
+            # the footer; the glyph still animates, and that is
+            # looked for within this pass (see `_spinner_moves`).
+            if _spinner_moves(pane_target, visible, stored_clock, _now(), clock_out):
+                return "BUSY"
             return "IDLE"
+        return "BUSY"
+
+    # No child process. That does not end the question: a turn spends
+    # its thinking and its generation entirely inside claude, with
+    # nothing spawned, and the pane says so all the while: the
+    # spinner's elapsed-time footer is on screen, ticking. Reading
+    # only the process table there calls a working session idle, and
+    # idle is the reading auto-exit acts on.
+    #
+    # The claim is gated on the clock ticking because raw=BUSY has no
+    # release path: a static footer (frozen frame, quoted text) must
+    # age out on its own — see `_clock_is_ticking`.
+    if _scan_work_clock(visible, stored_clock, _now(), clock_out):
+        return "BUSY"
+    if _spinner_moves(pane_target, visible, stored_clock, _now(), clock_out):
         return "BUSY"
 
     return "IDLE"
 
 
-def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
+def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,
+                      stored_clock=None, clock_out=None):
     """Window-level raw state = aggregation across panes that are
     tall enough to render Claude's UI. Priority: PERMIT > BUSY >
     IDLE > SHELL.
+
+    `stored_clock` / `clock_out` are passed through to
+    `detect_pane_state`: the persisted work-clock history the tick
+    check compares against, and the collector for the clock this
+    window shows now (so `apply_actions` can persist it).
 
     A tmux window can host multiple panes (single-pane projects are
     the dominant case, but Agent Teams splits a window into one
@@ -295,12 +678,26 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
     a hidden sidekick session (a second Claude pane launched with
     `CCM_IGNORE=1`) never contributes its PERMIT/BUSY to the window's
     state.
+
+    Visibility verdict — IGNORED is not a rung of the ladder above
+    but a different kind of conclusion, checked before SHELL/DOWN is
+    allowed to stand: if at least one IGNORED pane hosts claude and
+    no visible pane does, the window's claude is deliberately
+    unseen. SHELL ("claude is not running") or DOWN would then be
+    claims ccm has no basis for — it chose not to look. IGNORED says
+    "ccm cannot answer" instead. When no ignored pane hosts claude,
+    SHELL / DOWN stand (nothing is hidden, so the claim is
+    honest). Liveness uses the same `find_claude_pid` predicate
+    `_resolve_ignored_panes` uses, on the already-fetched `ps_lines`.
     """
     panes = []
+    hidden_claude = False
     for pc in panes_cache:
         if pc[0] != win_target:
             continue
         if ccm_core._pane_is_ignored(pc):
+            if find_claude_pid(pc[1], ps_lines):
+                hidden_claude = True
             continue
         try:
             height = int(pc[5]) if pc[5] else None
@@ -311,7 +708,7 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
         panes.append((pc[1], pc[2], pc[3], height))
 
     if not panes:
-        return "DOWN"
+        return "IGNORED" if hidden_claude else "DOWN"
 
     eligible = [p for p in panes
                 if p[3] is None or p[3] >= ccm_core.SLIVER_HEIGHT_THRESHOLD]
@@ -321,13 +718,20 @@ def detect_window_raw(win_target, panes_cache, ps_lines, own_pgid):
     best = "SHELL"
     for pid, pane_id, current_command, _height in eligible:
         state = detect_pane_state(pid, pane_id, ps_lines, own_pgid,
-                                  current_command=current_command)
+                                  current_command=current_command,
+                                  stored_clock=stored_clock,
+                                  clock_out=clock_out)
         if state == "PERMIT":
             return "PERMIT"
         if state == "BUSY":
             best = "BUSY"
         elif state == "IDLE" and best != "BUSY":
             best = "IDLE"
+    # A SHELL verdict claims "no claude in this window". If the only
+    # claude is in an ignored pane, that claim rests on evidence ccm
+    # deliberately excluded — answer IGNORED instead (see docstring).
+    if best == "SHELL" and hidden_claude:
+        return "IGNORED"
     return best
 
 

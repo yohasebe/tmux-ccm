@@ -33,8 +33,10 @@ from datetime import datetime
 # constants the test suite mutates. See module docstring.
 import ccm_core  # late-bound for tmux_cmd / ccm_die / build_project_list / etc.
 import ccm_window
+import ccm_agentview
 import ccm_canaries
 import ccm_commands
+import ccm_presentation
 import ccm_detection
 import ccm_jsonl
 import ccm_pane_state
@@ -44,6 +46,7 @@ import ccm_spool
 import ccm_rules
 import ccm_signals
 import ccm_snapshot
+import ccm_roles
 from ccm_constants import (CCM_VERSION, CLAUDE_CMD,
                            external_agent_name)
 from ccm_core import _C_BOLD, _C_RESET
@@ -53,7 +56,7 @@ from ccm_core import _C_BOLD, _C_RESET
 
 
 def _autosave_trigger():
-    """Trigger autosave in background (non-blocking).
+    """Save synchronously through the shared snapshot writer.
 
     Autosave is best-effort — its failure should not crash the
     caller. We do, however, surface the failure as a warning so
@@ -149,11 +152,7 @@ def cmd_add(directory, name="", start_claude=True, _loading=False,
             "are not allowed — they collide with window-index addressing)"
         )
 
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die(
-            "Not inside a tmux session — start one with `tmux new-session` first"
-        )
+    session = ccm_core.require_session()
 
     if ccm_core.project_exists(session, name):
         ccm_core.ccm_die(f"Project window already exists: {name}")
@@ -167,9 +166,10 @@ def cmd_add(directory, name="", start_claude=True, _loading=False,
         if directory == real_existing:
             ccm_core.ccm_die(f"Directory already registered as project '{_proj}': {existing_dir}")
 
-    # Create new window
+    # Create new window. `-c` expands tmux formats.
     win_idx = ccm_core.tmux_cmd("new-window", "-P", "-F", "#{window_index}",
-                                "-t", f"{session}:", "-n", name, "-c", directory)
+                                "-t", f"{session}:", "-n", name,
+                                "-c", ccm_core.tmux_literal(directory))
     if not win_idx:
         ccm_core.ccm_die("Failed to create tmux window — check `tmux info` for server status")
 
@@ -185,7 +185,8 @@ def cmd_add(directory, name="", start_claude=True, _loading=False,
     )
 
     if start_claude:
-        ccm_core.tmux_cmd("send-keys", "-t", win_target, CLAUDE_CMD, "Enter")
+        ccm_core.tmux_cmd("send-keys", "-t", win_target,
+                          ccm_window.launch_command(directory, session), "Enter")
 
     ccm_core.ccm_info(f"Added project: {name} ({directory})")
 
@@ -215,9 +216,13 @@ def cmd_open(directory, name=""):
     if not name:
         name = os.path.basename(directory)
 
-    # shlex.quote for safety
+    # Always `--continue`: the command runs after a `cd` in the
+    # caller's shell, and a directory-change hook there (chpwd,
+    # direnv) can move the CLI's transcript location before the CLI
+    # starts, so what ccm sees from here is not what the CLI will
+    # see. See `ccm_window.launch_command`.
     ccm_core.tmux_cmd("send-keys",
-                      f"cd {shlex.quote(directory)} && (claude --continue 2>/dev/null || claude)",
+                      f"cd {shlex.quote(directory)} && {CLAUDE_CMD}",
                       "Enter")
 
 
@@ -226,9 +231,7 @@ def cmd_register(source_target, new_name=""):
     if not source_target:
         ccm_core.ccm_die("Usage: ccm register <window_name|window_index> [name]")
 
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
+    session = ccm_core.require_session()
 
     # Find window by index or name
     if source_target.isdigit():
@@ -399,9 +402,7 @@ def cmd_attach(target):
     if not target:
         ccm_core.ccm_die("Project name or number is required")
 
-    session = ccm_core.get_session()
-    if not session:
-        ccm_core.ccm_die("Not inside a tmux session — start one with `tmux new-session` first")
+    session = ccm_core.require_session()
 
     idx = None
     if target.isdigit():
@@ -435,39 +436,21 @@ def cmd_attach(target):
         return
 
     win_target = f"{session}:{idx}"
+    if ccm_roles.pending(win_target):
+        ccm_core.ccm_die("Restore incomplete; retry the same snapshot before attaching")
 
-    # Auto-start Claude if SHELL state. Claude may live in ANY pane of
-    # the window (split-pane layouts), not just the first — check all
-    # pane pids before deciding to auto-start.
-    pane_pids_raw = ccm_core.tmux_cmd("list-panes", "-t", win_target, "-F", "#{pane_pid}")
-    if pane_pids_raw:
-        pane_pids = {p.strip() for p in pane_pids_raw.split("\n") if p.strip()}
-        # Check if claude is running as child of any pane
-        try:
-            ps_out = subprocess.run(["ps", "-eo", "ppid,comm"],
-                                    capture_output=True, timeout=5)
-            if ps_out.returncode != 0:
-                # ps exited non-zero: stdout is untrustworthy. Assume
-                # claude is running rather than risk a duplicate
-                # auto-start into a live session.
-                has_claude = True
-            else:
-                # macOS truncates `comm` mid-codepoint for apps with
-                # multi-byte names — see ccm_core.ps_snapshot for the
-                # full rationale. Decode permissively so the truncated
-                # row does not abort the scan.
-                ps_text = ps_out.stdout.decode("utf-8", errors="replace")
-                has_claude = False
-                for line in ps_text.strip().split("\n"):
-                    fields = line.split()
-                    if len(fields) >= 2 and fields[0] in pane_pids and fields[1] == "claude":
-                        has_claude = True
-                        break
-        except (subprocess.TimeoutExpired, OSError):
-            has_claude = True  # Assume running on error
-
-        if not has_claude:
-            ccm_window.auto_start_claude(win_target)
+    # Auto-start Claude unless a pane already hosts it. The check of
+    # the window as it is now — every pane, from a fresh process
+    # snapshot — lives in `launch_claude`, shared with the dashboard
+    # and `ccm send --start`.
+    result = ccm_window.auto_start_claude(win_target)
+    if result.outcome == ccm_window.UNAVAILABLE:
+        ccm_core.ccm_info(
+            result.reason or "Claude not auto-started: no pane could be verified as a "
+            "shell prompt. Start it by hand in the window."
+        )
+    if result.outcome == ccm_window.LAUNCHED and result.notice:
+        ccm_core.ccm_warn(result.notice)
 
     ccm_window.reset_window_after_attach(win_target)
     ccm_core.tmux_cmd("select-window", "-t", f"{session}:{idx}")
@@ -505,17 +488,13 @@ def _capture_window_text(session, idx):
     """Visible text of a window, pane by pane.
 
     `capture-pane -t <window>` delivers only the window's ACTIVE
-    pane, so on a split window this silently returned one pane and
-    dropped the rest — from inside the window that is usually the
-    caller's own pane, and from outside it is whichever pane happened
-    to hold focus. (Same window-vs-pane flaw the dashboard preview
-    had before `_resolve_preview_pane`.) Enumerate the panes and
-    capture each, labelled, so a split window is fully visible and
-    the result does not depend on focus.
+    pane, so a split window would show one pane, and which one would
+    depend on focus. Enumerate the panes and capture each, labelled,
+    so a split window is fully visible.
 
-    Single-pane windows keep the previous output byte-for-byte (no
-    headers). Enumeration failure falls back to the window target,
-    preserving the old behaviour rather than returning nothing.
+    A single-pane window is captured through the window target, with
+    no headers. Enumeration failure falls back to the window target
+    rather than returning nothing.
 
     The pane count is probed with a bare `list-panes` before the full
     enumeration so the common single-pane case never pays for a `ps`
@@ -597,8 +576,24 @@ def cmd_capture(args):
             ccm_core.ccm_warn("No clipboard tool available (install pbcopy, xclip, or xsel)")
     else:
         print(f"=== ccm capture: {proj_name} ===")
-        print(output)
+        # A read that came back with nothing must not look like a
+        # window that shows nothing. This output is what an agent
+        # reads to decide whether a message landed or whether a peer
+        # is still working, and a pane hosting a session is never
+        # blank — so silence here means the read failed, and saying
+        # so is the difference between "nothing happened" and "I
+        # could not see".
+        if output.strip():
+            print(output)
+        else:
+            print("(nothing captured — the pane may have exited "
+                  "or become unreadable)")
         print("=== end ===")
+
+
+def cmd_exit(args):
+    from ccm_exit import cmd_exit as exit_claude
+    return exit_claude(args)
 
 
 def cmd_stop(target):
@@ -616,8 +611,11 @@ def cmd_stop(target):
         # exists when it does not.
         ccm_core.init_dirs()
         try:
-            ccm_snapshot.cmd_snapshot_save("_autosave", quiet=True)
-            ccm_core.ccm_info("Auto-saved snapshot: _autosave")
+            saved = ccm_snapshot.cmd_snapshot_save("_autosave", quiet=True)
+            if saved:
+                ccm_core.ccm_info("Auto-saved snapshot: _autosave")
+            else:
+                ccm_core.ccm_info("Snapshot unchanged or protected: _autosave")
         except Exception as exc:
             ccm_core.ccm_warn(f"Autosave failed: {exc} — proceeding with stop")
 
@@ -672,8 +670,7 @@ def cmd_reset(name):
       - snapshots
 
     Intended as a recovery hatch for the rare cases where a stuck
-    `(Nm)` suffix won't clear (e.g. the upstream double silent fail
-    described in `memory/project_known_limitations.md`). For normal
+    `(Nm)` suffix won't clear. For normal
     "Claude got stuck" situations, `/exit` inside the pane is still
     the right answer."""
     if not name:
@@ -720,15 +717,15 @@ _IGNORE_PANE_TITLE = "⊘ ccm-ignored"
 def _resolve_ignore_targets(name):
     """Return the list of tmux pane ids to (un)ignore.
 
-    No name → the current pane from $TMUX_PANE (the pane `ccm ignore`
-    was typed in). A project name → all panes of that project's
+    No name → the cwd-verified pane from $TMUX_PANE.
+    A project name → all panes of that project's
     window. Dies with a clear message when the target cannot be
     resolved."""
     if not name:
-        pane = os.environ.get("TMUX_PANE", "").strip()
+        _, pane = ccm_core.caller_context(resolve_project=False)
         if not pane:
             ccm_core.ccm_die(
-                "ccm ignore: no pane context (run inside a tmux pane, "
+                "ccm ignore: no verified pane context (run inside a matching project pane, "
                 "or pass a project name)")
         return [pane]
     session = ccm_core.get_session()
@@ -756,7 +753,8 @@ def _pane_session_id(pane_id, ps_lines):
     if not claude_pid:
         return None
     info = ccm_jsonl.read_session_info(claude_pid, ps_lines)
-    return info.get("sessionId") if info else None
+    sid = info.get("sessionId") if info else None
+    return sid if ccm_core.is_safe_session_id(sid) else None
 
 
 def _ignore_marker_path(session_id):
@@ -798,6 +796,7 @@ def cmd_unignore(name=""):
     targets = _resolve_ignore_targets(name)
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
     for pane in targets:
+        ccm_roles.unignore(pane)
         ccm_core.tmux_cmd("set-option", "-p", "-t", pane, "-u", "@ccm_ignore")
         ccm_core.tmux_cmd("select-pane", "-t", pane, "-T", "")
         sid = _pane_session_id(pane, ps_lines)
@@ -811,7 +810,7 @@ def cmd_unignore(name=""):
     ccm_core.ccm_info(f"Restored {name or 'current pane'} to ccm.")
 
 
-def cmd_doctor():
+def cmd_doctor(verbose=False):
     """`ccm doctor` — single self-check command. Aggregates dependency
     versions, hook installation state, runtime canaries, project
     inventory, and a tail of the silent-exception log. Designed as
@@ -821,11 +820,31 @@ def cmd_doctor():
     WARN = f"{ccm_core._C_YELLOW}⚠{ccm_core._C_RESET}"
     FAIL = f"{ccm_core._C_RED}✗{ccm_core._C_RESET}"
 
-    def section(title):
-        print(f"\n{ccm_core._C_BOLD}{title}{ccm_core._C_RESET}")
+    issues = 0
 
-    def row(mark, label, detail=""):
-        print(f"  {mark} {label}{('  ' + detail) if detail else ''}")
+    def section(title):
+        if verbose:
+            print(f"\n{ccm_core._C_BOLD}{title}{ccm_core._C_RESET}")
+
+    def row(mark, label, detail="", *, brief=None):
+        nonlocal issues
+        if mark != OK:
+            issues += 1
+        if verbose or mark != OK:
+            if not verbose and brief is not None:
+                detail = brief
+            print(f"  {mark} {label}{('  ' + detail) if detail else ''}")
+
+    def evidence_count(path, label):
+        try:
+            with open(path, encoding="utf-8") as stream:
+                return sum(1 for line in stream if line.strip())
+        except FileNotFoundError:
+            return 0
+        except (OSError, UnicodeError):
+            row(WARN, label, f"could not read {path} — check file permissions and encoding",
+                brief="could not read records — check `ccm doctor --verbose` for the file")
+            return None
 
     def _probe(args):
         """Run a dependency probe, returning stdout or "" when the
@@ -833,9 +852,8 @@ def cmd_doctor():
         a missing `which`/`tmux` binary must surface as a "not found"
         row, not crash the whole report with FileNotFoundError."""
         try:
-            return subprocess.run(
-                args, capture_output=True, text=True, timeout=5,
-            ).stdout.strip()
+            result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+            return result.stdout.strip() if result.returncode == 0 else ""
         except (OSError, subprocess.TimeoutExpired):
             return ""
 
@@ -851,7 +869,8 @@ def cmd_doctor():
             "binary not found — install from https://docs.anthropic.com/en/docs/claude-code")
     else:
         version_out = _probe([claude_path, "--version"])
-        row(OK, "claude", version_out or claude_path)
+        row(OK if version_out else WARN, "claude",
+            version_out or "version check failed — try `claude --version`")
     # tmux
     tmux_ver = _probe(["tmux", "-V"])
     row(OK if tmux_ver else FAIL, "tmux", tmux_ver or "not found")
@@ -859,49 +878,119 @@ def cmd_doctor():
     for tool in ("jq", "fzf"):
         path = _probe(["which", tool])
         row(OK if path else WARN, tool, path or "not found (recommended)")
+    # Claude Code asks tmux for focus-events at startup and says so in
+    # its own banner. ccm is what put the session in tmux, so the
+    # setting belongs in the same report as the rest of what the
+    # session needs — the banner scrolls away, this does not.
+    focus = (ccm_core.tmux_cmd("show-option", "-gqv", "focus-events") or "").strip()
+    if focus == "on":
+        row(OK, "focus-events", "on")
+    else:
+        row(WARN, "focus-events",
+            f"{focus or 'could not read setting'} — Claude Code asks for it; "
+            "add `set -g focus-events on` to ~/.tmux.conf")
 
     section("Setup")
-    if ccm_core.hooks_configured():
-        row(OK, "Hooks installed")
-    else:
+    # `hooks_configured` checks complete registrations, not ownership;
+    # a ccm at a previous path satisfies it too. So an install
+    # with none of the entries in this ccm's hooks directory is not
+    # reported as installed. The two warnings below are independent of
+    # both answers: each helper says whether it has something to report.
+    if "user settings" in ccm_canaries.unreadable_settings():
+        # Neither "installed" nor "not installed" can be read out of a
+        # file that does not parse, and Claude Code cannot load hooks
+        # from it either. `ccm setup-hooks` refuses to write over it.
+        row(WARN, "Hooks",
+            "~/.claude/settings.json cannot be read as JSON, so Claude "
+            "Code is loading no hooks from it; repair it (ccm keeps a "
+            "copy at settings.json.bak when it writes)")
+    elif not ccm_core.hooks_configured():
         row(WARN, "Hooks not installed",
             "run `ccm setup-hooks` for full state detection")
+    elif (own_entries := ccm_core.own_hook_entry_count()) is None:
+        row(WARN, "Hooks", "could not inspect hook ownership — check settings.json and retry")
+    elif own_entries == 0:
+        row(WARN, "Hooks not from this ccm",
+            "ccm's hook script names are in ~/.claude/settings.json, but none "
+            "is in this ccm's hooks directory — run `ccm setup-hooks`")
+    else:
+        row(OK, "Hooks installed")
+    stale_timeout = ccm_core.hook_timeout_warning()
+    if stale_timeout:
+        row(WARN, "Hook timeout", stale_timeout)
+    lookalikes = ccm_core.hook_lookalike_warning()
+    if lookalikes:
+        row(WARN, "Other hooks", lookalikes,
+            brief="Hooks from another installation were left unchanged. "
+                  "See `ccm doctor --verbose` before removing them.")
     claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
     if os.path.exists(claude_md):
-        with open(claude_md, encoding="utf-8") as f:
-            has_ccm = "ccm" in f.read().lower()
-        if has_ccm:
+        try:
+            with open(claude_md, encoding="utf-8") as f:
+                has_ccm = "ccm" in f.read().lower()
+        except (OSError, UnicodeError):
+            has_ccm = None
+        if has_ccm is None:
+            row(WARN, "~/.claude/CLAUDE.md",
+                "could not read — check file permissions and encoding")
+        elif has_ccm:
             row(OK, "~/.claude/CLAUDE.md", "ccm section present")
         else:
             row(WARN, "~/.claude/CLAUDE.md",
                 "ccm section absent — run `ccm setup-claude-md`")
     else:
-        row(WARN, "~/.claude/CLAUDE.md", "missing")
+        row(WARN, "~/.claude/CLAUDE.md", "missing — run `ccm setup-claude-md`")
 
     section("Runtime canaries")
     hooks_warn = ccm_canaries.hooks_log_warning()
     log_size = ccm_canaries.hooks_log_size()
     if hooks_warn:
         row(WARN, "hooks.log size", hooks_warn)
+    elif log_size == -2:
+        row(WARN, "hooks.log size", "could not read — check file permissions")
     elif log_size < 0:
         row(OK, "hooks.log size", "(absent)")
     else:
         row(OK, "hooks.log size", f"{log_size / (1024*1024):.1f} MB")
-    projects = ccm_core.build_project_list(fast=False)
+    try:
+        projects = ccm_core.build_project_list(fast=False)
+    except Exception:
+        projects = []
+        row(WARN, "Projects", "could not inspect projects — check tmux and retry")
     # Name the scope: a bare "not set" reads as a claim about
     # everywhere, and a session started with an explicit
-    # `--permission-mode` is out of reach.
+    # `--permission-mode` is out of reach. The managed tier is named by
+    # its FILE, not by the tier: MDM / OS policy and claude.ai-console
+    # delivery leave no file to read, so a flag enforced either way is
+    # invisible here and `/status` is the thing that knows.
+    # A settings file that is there but cannot be read is not a file
+    # with the flag unset: a tick over it would be a claim about
+    # something this scan never saw.
     dah = ccm_canaries.disable_all_hooks_warning(projects)
-    row(WARN if dah else OK,
-        "disableAllHooks",
-        dah or "not set (managed, user and per-project settings)")
+    unread = ccm_canaries.unreadable_settings(projects)
+    if dah:
+        row(WARN, "disableAllHooks", dah)
+    if unread:
+        row(WARN, "disableAllHooks",
+            f"unknown — could not read: {', '.join(unread)}")
+    elif not dah:
+        row(OK, "disableAllHooks",
+            "not set (managed-settings.json, user and per-project settings; MDM / console policies: see /status)")
     # This one is read from the administrator's file alone, because
     # that is the only place Claude Code honours it. Saying otherwise
-    # would claim a scope the check does not have.
+    # would claim a scope the check does not have — and this flag is
+    # the likeliest of the two to arrive by MDM or from the console,
+    # the two managed paths that leave nothing on disk.
     mho = ccm_canaries.managed_hooks_only_warning()
-    row(WARN if mho else OK,
-        "allowManagedHooksOnly",
-        mho or "not set (managed settings)")
+    unread_managed = ccm_canaries.unreadable_settings(managed_only=True)
+    if mho:
+        row(WARN, "allowManagedHooksOnly", mho)
+    if unread_managed:
+        row(WARN, "allowManagedHooksOnly",
+            f"unknown — could not read: {', '.join(unread_managed)}")
+    elif not mho:
+        row(OK, "allowManagedHooksOnly",
+            "not set (managed-settings.json; MDM / console policies: see /status)")
 
     cluster_msgs = ccm_canaries.shell_cluster_warnings(projects)
     if cluster_msgs:
@@ -911,7 +1000,7 @@ def cmd_doctor():
         row(OK, "cluster-SHELL transitions",
             f"none in last {ccm_canaries.SHELL_CLUSTER_WINDOW // 60} min")
 
-    # Hook-silence canary is opt-in (observe-first). Report its state
+    # Hook-silence canary is opt-in. Report its state
     # so `ccm doctor` explains why it is or isn't watching, then list
     # any live suspects (empty unless opted in).
     if ccm_canaries.hook_silence_enabled():
@@ -921,11 +1010,11 @@ def cmd_doctor():
                 row(WARN, "hook-silence", msg)
         else:
             row(OK, "hook-silence", "on — no silent sessions")
-        # Firing-log evidence count (default-on promotion review):
-        # each past firing is one JSON line in the log; zero across a
-        # long dogfood window is the "no false fires" evidence.
-        fired = ccm_canaries.hook_silence_log_count()
-        if fired:
+        # Each past firing is one JSON line in the log.
+        fired = evidence_count(ccm_canaries.hook_silence_log_path(), "hook-silence log")
+        if fired is None:
+            pass
+        elif fired:
             row(OK, "hook-silence log",
                 f"{fired} firing(s) recorded — inspect "
                 f"{ccm_canaries.hook_silence_log_path()}")
@@ -935,26 +1024,54 @@ def cmd_doctor():
         row(OK, "hook-silence",
             "off (opt in with `tmux set -g @ccm-hook-silence on`)")
 
-    exited = ccm_runtime.auto_exit_log_count()
-    if exited:
+    # Background hand-offs: a project whose newest transcript was
+    # continued in a background session the daemon still lists.
+    # `claude --continue` starts fresh there, which reads as a lost
+    # conversation until someone names the cause.
+    handoff_msgs = ccm_agentview.continue_blocker_warnings(projects)
+    if handoff_msgs:
+        for msg in handoff_msgs:
+            row(WARN, "bg hand-off", msg)
+    else:
+        row(OK, "bg hand-off",
+            "no blocking hand-off found in SHELL projects' newest transcripts")
+
+    exited = evidence_count(ccm_runtime.auto_exit_log_path(), "auto-exit log")
+    if exited is None:
+        pass
+    elif exited:
         row(OK, "auto-exit log",
             f"{exited} session(s) closed by ccm — inspect "
             f"{ccm_runtime.auto_exit_log_path()}")
     else:
         row(OK, "auto-exit log", "no sessions closed by ccm")
+    declined = evidence_count(ccm_runtime.auto_exit_declined_log_path(), "auto-exit declined")
+    if declined is None:
+        pass
+    elif declined:
+        row(OK, "auto-exit declined",
+            f"{declined} record(s) — a pane showing the agent view or "
+            f"unreadable before `/exit`, or showing the agent view after "
+            f"it (a detach, most likely); inspect "
+            f"{ccm_runtime.auto_exit_declined_log_path()}")
+    else:
+        row(OK, "auto-exit declined", "no records")
 
     spool = ccm_spool.spool_summary()
-    if spool["pending"] or spool["expired"]:
-        parts = []
-        if spool["pending"]:
-            parts.append(f"{spool['pending']} queued — `ccm spool list`")
-        if spool["expired"]:
-            parts.append(
-                f"{spool['expired']} expired undelivered "
-                f"(TTL {ccm_spool.SPOOL_TTL_SEC // 60}m)")
-        row(WARN, "spool", "; ".join(parts))
+    summary = ccm_presentation.record_summary(spool)
+    if summary:
+        row(WARN, "spool", summary + " — review: `ccm spool list`; dashboard: `u`")
     else:
         row(OK, "spool", "no queued messages")
+
+    section("Snapshots")
+    for warning, detail in ccm_snapshot.snapshot_diagnostics():
+        row(WARN if warning else OK, detail)
+
+    section("Codex sidekick notifications")
+    import ccm_sidekick_notify
+    for warning, detail in ccm_sidekick_notify.doctor_rows(projects):
+        row(WARN if warning else OK, detail)
 
     section(f"Active projects ({len(projects)})")
     if not projects:
@@ -980,16 +1097,18 @@ def cmd_doctor():
         ) or "(no session)"
         ver = version_map.get(sid, "")
         sid_label = f"{sid} v{ver}" if ver else sid
-        row(OK, f"{p.name:<20}", f"{state_label}  {sid_label}")
+        row(WARN if p.state == "PERMIT" else OK, f"{p.name:<20}",
+            f"{state_label}  {sid_label}",
+            brief=f"Waiting for your response — open the project with `ccm attach {p.name}`")
 
     # Windows where more than one *visible* pane hosts claude. Two
     # readings are equally legitimate — Agent Teams teammates, or a
     # sidekick nobody hid — and they want opposite things, so this
     # states the fact and names both. It must not read as "hide one":
     # for the teammate reading that is advice which costs the reader a
-    # PERMIT. Same reason the standing dashboard hint was dropped in
-    # favour of the `ccm send` refusal line, which fires only once the
-    # ambiguity has actually bitten.
+    # PERMIT. For the same reason the dashboard carries no standing
+    # hint; the `ccm send` refusal line names it only once the
+    # ambiguity actually matters.
     #
     # Computed here rather than carried on `Project`: only doctor wants
     # it, and doctor is on-demand, whereas `build_project_list` runs on
@@ -997,7 +1116,7 @@ def cmd_doctor():
     #
     # One bulk `list-panes -a` for every window, not
     # `enumerate_window_panes` per project — that helper forks once per
-    # window, which measured +40% on a 34-project doctor. Same trade
+    # window, which is costly with many projects. Same trade
     # `_resolve_ignored_panes` already makes for the `⊘` count, and the
     # same reason: this is a whole-inventory question, so ask it once.
     multi_claude = []
@@ -1037,13 +1156,16 @@ def cmd_doctor():
         if os.path.exists(ccm_core.CCM_ERRORS_LOG):
             with open(ccm_core.CCM_ERRORS_LOG, encoding="utf-8") as f:
                 log_count = sum(1 for _ in f)
-    except OSError:
-        pass
-    if log_count == 0:
+    except (OSError, UnicodeError):
+        log_count = None
+    if log_count is None:
+        row(WARN, "errors.log", "could not read — check file permissions; run `ccm errors`")
+    elif log_count == 0:
         row(OK, "errors.log", "empty")
     else:
-        row(WARN, "errors.log",
-            f"{log_count} record(s) — view with `ccm errors`")
+        # Past records alone are not a current problem; the burst check
+        # below reports errors that are accumulating now.
+        row(OK, "errors.log", f"{log_count} record(s) — view with `ccm errors`")
     burst = ccm_canaries.errors_log_burst_warning()
     if burst:
         row(WARN, "errors burst", burst)
@@ -1051,9 +1173,12 @@ def cmd_doctor():
     section("Configuration")
     for key in ("CCM_ROOT", "CCM_TMP_DIR", "CCM_DATA_DIR", "CCM_HOOK_DIR"):
         val = getattr(ccm_core, key, None)
-        if val:
+        if val and verbose:
             print(f"  {key:<20} {val}")
-    print()
+    if verbose:
+        print()
+    elif not issues:
+        print("No issues found in the checks completed. For details, run ccm doctor --verbose.")
 
 
 def cmd_errors(args):
@@ -1136,14 +1261,11 @@ def _resolve_trace_target(target):
        JSONL transcript on.
 
     Pass 2 exists because probe sessions launched for an experiment
-    are not ccm projects, so the pass-1 lookup misses them and the
-    investigator falls back to hand-rolled greps over
-    `$HOOK_DIR/*.events.jsonl`. That glob aggregates every session's
-    events and silently re-introduces the cross-session contamination
-    the session_id keying was built to remove — a miscount that has
-    already sent one investigation down a false trail. Tracing an
-    unregistered pane directly keeps the observation scoped to the one
-    session under test.
+    are not ccm projects, so the pass-1 lookup misses them. A glob
+    over `$HOOK_DIR/*.events.jsonl` would aggregate every session's
+    events and re-introduce the cross-session contamination the
+    session_id keying removes; tracing an unregistered pane directly
+    keeps the observation scoped to the one session under test.
 
     Project matching stays first so an existing project name never
     changes meaning. Returns None when neither pass resolves.
@@ -1198,7 +1320,51 @@ def _resolve_trace_target(target):
     return None
 
 
-def cmd_debug_trace(target_match, interval=0.3):
+# A trace is an endless loop, so one started in the background by a
+# script outlives the script. It stops on its own when the window it
+# watches has been gone this long (a short grace, so one failed tmux
+# call does not end it), and after TRACE_MAX_TIME_DEFAULT seconds
+# unless the caller chooses otherwise.
+TRACE_TARGET_GONE_GRACE = 5.0
+TRACE_MAX_TIME_DEFAULT = 12 * 3600
+
+
+def _trace_window(target):
+    """Return (session:index, window_id, server_pid) for a tmux target,
+    or None.
+
+    `display-message` exits 0 for a window that no longer exists and
+    fills the fields with nothing (measured), and fails outright once
+    the server is gone; both come back as None. The window id is what
+    the trace follows, because a session:index can be renumbered or
+    reused by a different window. Window ids restart with the server,
+    so the server pid comes along to tell a restarted server's window
+    from the one being traced.
+    """
+    reply = ccm_core.tmux_cmd(
+        "display-message", "-p", "-t", target,
+        "#{session_name}:#{window_index}\t#{window_id}\t#{pid}",
+    )
+    fields = (reply or "").split("\t")
+    if len(fields) != 3:
+        return None
+    where, window_id, server_pid = fields
+    sess, _, index = where.partition(":")
+    if not (sess and index and window_id.startswith("@") and server_pid):
+        return None
+    return where, window_id, server_pid
+
+
+def _format_duration(seconds):
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def cmd_debug_trace(target_match, interval=0.3,
+                    max_time=TRACE_MAX_TIME_DEFAULT):
     """Print one line per scan showing every DetectionContext input,
     the rule that would match, and the resolved state. Read-only — this
     does NOT mutate @ccm_prev_state or any runtime file, so it can be
@@ -1215,6 +1381,10 @@ def cmd_debug_trace(target_match, interval=0.3):
     interval: seconds between scans. Smaller values catch faster
     transients but cost more CPU; 0.3 s is enough to observe the
     sub-second ordering that matters for detection bugs.
+
+    max_time: whole seconds before the trace stops by itself; 0 means
+    no limit. It also stops once the traced window has been gone for
+    TRACE_TARGET_GONE_GRACE seconds.
     """
     import signal as _signal
     import time as _time
@@ -1231,6 +1401,10 @@ def cmd_debug_trace(target_match, interval=0.3):
             "(e.g. %42, @7, probe:0) to trace a session ccm does not manage."
         )
     win_target, proj_name, proj_dir = resolved
+    located = _trace_window(win_target)
+    if located is None:
+        ccm_core.ccm_die(f"Could not identify the tmux window for {win_target}")
+    win_target, window_id, server_pid = located
 
     # Graceful Ctrl-C.
     stop = {"flag": False}
@@ -1240,13 +1414,40 @@ def cmd_debug_trace(target_match, interval=0.3):
 
     sys.stderr.write(
         f"# ccm debug trace: {proj_name} ({win_target}) — {proj_dir}\n"
-        f"# interval={interval}s  Ctrl-C to stop\n"
+        f"# interval={interval}s  Ctrl-C to stop; stops by itself when the window closes"
+        f"{f' or after {_format_duration(max_time)}' if max_time else ''}\n"
+        "# read-only: unresolved idle history advances only when detection commits; "
+        "idle_credit shows stored->candidate seconds, gap is the allowed interval\n"
         f"# columns: time  raw  prev  hook(state,age)  pid_age  jsonl(age,stop)  ev(derive)  rule[phase]  →  state[action]\n"
     )
     sys.stderr.flush()
 
+    started = _time.monotonic()
+    missing_since = None
     while not stop["flag"]:
         t0 = _time.monotonic()
+        if max_time and t0 - started >= max_time:
+            sys.stderr.write(
+                f"# trace stopped: reached the {_format_duration(max_time)} limit\n")
+            return
+        located = _trace_window(window_id)
+        if located is not None and located[2] != server_pid:
+            sys.stderr.write(
+                f"# trace stopped: the tmux server restarted, so window "
+                f"{window_id} is no longer the one traced\n")
+            return
+        if located is None:
+            if missing_since is None:
+                missing_since = t0
+            if t0 - missing_since >= TRACE_TARGET_GONE_GRACE:
+                sys.stderr.write(
+                    f"# trace stopped: window {window_id} is gone\n")
+                return
+            _time.sleep(interval)
+            continue
+        missing_since = None
+        # Follow the window if it was moved or renumbered.
+        win_target = located[0]
 
         # Fresh ps + pane snapshots each tick. No caching — we want to
         # observe real kernel/tmux state, not anything ccm has
@@ -1280,14 +1481,11 @@ def cmd_debug_trace(target_match, interval=0.3):
         ctx = ccm_detection.build_detection_context(
             win_target, proj_dir, prev_state,
             panes_cache, ps_lines, own_pgid,
+            write_session_cache=False,
         )
         # Use the REAL two-path merge (event-log derive primary,
-        # legacy fallback), not evaluate_rules alone. The trace used
-        # to run only the legacy table, which silently observed a
-        # different detection path than production — during the
-        # phantom-subagent incident it printed
-        # "default → IDLE" while the live pipeline was resolving
-        # derive=BUSY, misdirecting the investigation. Still
+        # legacy fallback), not evaluate_rules alone, so the trace
+        # shows what the live pipeline decides. Still
         # read-only: resolve_state_from_context has no side effects
         # (apply_actions is what writes, and we don't call it).
         state, rule, event_log_state = (
@@ -1297,10 +1495,19 @@ def cmd_debug_trace(target_match, interval=0.3):
         pid_age = ctx.claude_pid_age if ctx.claude_pid_age >= 0 else "-"
         jsonl_str = f"{ctx.jsonl_age if ctx.jsonl_age >= 0 else '-'},{ctx.jsonl_last_stop_reason or '-'}"
         action_short = "WRITE" if rule.action == ccm_rules.Action.DEFAULT else "HOLD"
-        # Phase annotation is metadata only (Step 1 of phase-machine
-        # roadmap) — show it next to the rule name so "why fired?"
-        # investigations include the intended session-lifecycle scope.
+        # The phase is metadata only; show it next to the rule name so
+        # "why fired?" questions include the rule's session-lifecycle
+        # scope.
         rule_label = f"{rule.name}[{rule.phase or '-'}]"
+
+        idle_label = ""
+        if ctx.session_unresolved:
+            try:
+                stored_credit = json.loads(ctx.prev_unresolved_idle_record)["idle_seconds"]
+            except (ValueError, TypeError, KeyError):
+                stored_credit = "-"
+            idle_label = (f" idle_credit={stored_credit}->{ctx.unresolved_idle_seconds}s"
+                          f" gap={ctx.unresolved_idle_max_gap}s")
 
         sys.stdout.write(
             f"{_time.strftime('%H:%M:%S')}  "
@@ -1308,7 +1515,7 @@ def cmd_debug_trace(target_match, interval=0.3):
             f"hook={hook_str:10}  pid_age={str(pid_age):4}  "
             f"jsonl={jsonl_str:20}  "
             f"ev={event_log_state or '-':5}  "
-            f"{rule_label:42} → {state:5} [{action_short}]\n"
+            f"{rule_label:42} → {state:5} [{action_short}]{idle_label}\n"
         )
         sys.stdout.flush()
 
@@ -1329,8 +1536,8 @@ def cmd_debug_trace(target_match, interval=0.3):
 # — PermissionRequest/PermissionResult fire, $TMUX_PANE is
 # inherited, config loads at session start). Grok Build is verified
 # too, through its Notification event. Gemini has a hook system but
-# its permission-wait event is unverified; Codex has no
-# approval-time hook at all (openai/codex#11808).
+# its permission-wait event is unverified. Codex uses a separate
+# payload-cwd adapter because its hook environment is shared.
 _SIDEKICK_BLOCK_BEGIN = "# ccm:sidekick-attention begin (managed by ccm)"
 _SIDEKICK_BLOCK_END = "# ccm:sidekick-attention end"
 
@@ -1444,16 +1651,17 @@ def cmd_setup_sidekick_hooks(agent):
     adapter into the sidekick CLI's own hook config, so the sidekick
     self-reports "waiting on a decision" without ccm parsing its
     screen."""
+    if agent == "codex":
+        import ccm_sidekick_notify
+        ccm_sidekick_notify.configure(remove=False)
+        return
     if agent == "grok":
         _setup_grok_hooks()
         return
     if agent != "kimi":
         ccm_core.ccm_die(
-            f"unsupported sidekick agent: {agent!r}. Supported: kimi, grok.\n"
-            "  Neither of the other two can be supported from ccm's side: "
-            "Codex has no approval-time hook at all "
-            "(openai/codex#11808), and Antigravity CLI loads hooks without "
-            "firing them (measured against 1.1.10).")
+            f"unsupported sidekick agent: {agent!r}. Supported: codex, kimi, grok.\n"
+            "  Antigravity CLI needs none: ccm reads its screen.")
     config = _kimi_config_path()
     if not os.path.isdir(os.path.dirname(config)):
         ccm_core.ccm_die(
@@ -1481,6 +1689,10 @@ def cmd_setup_sidekick_hooks(agent):
 
 def cmd_remove_sidekick_hooks(agent):
     """`ccm remove-sidekick-hooks <agent>` — uninstall the adapter."""
+    if agent == "codex":
+        import ccm_sidekick_notify
+        ccm_sidekick_notify.configure(remove=True)
+        return
     if agent == "grok":
         path = _grok_hook_path()
         if not os.path.exists(path):
@@ -1491,7 +1703,7 @@ def cmd_remove_sidekick_hooks(agent):
         return
     if agent != "kimi":
         ccm_core.ccm_die(
-            f"unsupported sidekick agent: {agent!r}. Supported: kimi, grok.")
+            f"unsupported sidekick agent: {agent!r}. Supported: codex, kimi, grok.")
     config = _kimi_config_path()
     if not os.path.exists(config):
         ccm_core.ccm_info("nothing to remove (no Kimi config found)")

@@ -3,14 +3,59 @@ state-based gating (PERMIT hard-refuse, BUSY behind --force,
 SHELL behind --start)."""
 
 import io
+import os
 
 from unittest.mock import patch
 
 import pytest
 
+import ccm_composer
 import ccm_constants
 import ccm_core
+import ccm_window
+from ccm_pane_state import PaneInfo
+
+
+def _is_launch(call):
+    """True for a send-keys call that types one of the launch commands."""
+    return bool(call) and call[0] == "send-keys" and any(
+        cmd in call for cmd in ccm_constants.LAUNCH_COMMANDS)
 import ccm_send
+
+
+def composer_screen(*composer_rows, scrollback=True):
+    """A pane capture shaped like Claude Code's real screen.
+
+    The composer sits between two horizontal rules with the status
+    lines under them, and — crucially — submitted prompts are drawn
+    into the transcript above with the SAME glyph. A fixture without
+    that scrollback cannot tell a draft from a message already sent,
+    so a guard that refuses every send while any prompt is on screen
+    would pass.
+    """
+    rule = "\u2500" * 80
+    out = []
+    if scrollback:
+        out += ["\u276f a prompt sent earlier", "\u23fa and its response", ""]
+    out += [rule] + list(composer_rows) + [
+        rule,
+        "  /tmp/demo  main  Opus 5  ctx 42%",
+        "  \u23f5\u23f5 auto mode on (shift+tab to cycle)",
+    ]
+    return "\n".join(out) + "\n"
+
+
+def _show_typed_body(monkeypatch, calls, message):
+    """Render the body only between its literal typing and final submit."""
+    def capture(pane):
+        items = calls()
+        bodies = [i for i, c in enumerate(items)
+                  if c[0] == "send-keys" and "-l" in c and c[-1] == message]
+        visible = bool(bodies) and not any(
+            c[0] == "send-keys" and c[-1] == "Enter"
+            for c in items[bodies[-1] + 1:])
+        return composer_screen("❯ " + (message if visible else "")), None
+    monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
 
 
 class TestCmdSend:
@@ -26,10 +71,13 @@ class TestCmdSend:
         )
 
     def _patch_resolution(self, monkeypatch, project=None, session="0"):
-        """Install stubs for get_session / find_window / build_project_list."""
+        """Install stubs for session / caller / target resolution."""
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
+        monkeypatch.setattr(ccm_core, "caller_context",
+                            lambda **kw: ("unknown", os.environ.get("TMUX_PANE", "")))
         if project is None:
             project = self._make_project()
-        monkeypatch.setattr(ccm_core, "get_session", lambda: session)
+        monkeypatch.setattr(ccm_core, "require_session", lambda: session)
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -41,7 +89,16 @@ class TestCmdSend:
         # to "" pane enumeration comes back empty either way, so an
         # empty snapshot preserves the window-target fallback these
         # tests assert against.
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        # A non-empty snapshot: `launch_claude` refuses to type when
+        # ps failed. The window-target fallback these tests assert
+        # against still applies to delivery, since tmux_cmd is "".
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
+        # `launch_claude` (the --start path) reads the window itself
+        # and refuses when the panes cannot be listed; give it one
+        # shell pane whose id matches the delivery target above.
+        monkeypatch.setattr(
+            ccm_window, "enumerate_window_panes",
+            lambda wt, ps: [PaneInfo("0:5", "100", True, "zsh", False, None)])
         # Non-interactive by default so the confirmation prompt is skipped
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
@@ -92,10 +149,9 @@ class TestCmdSend:
         tmux parses the line as a flag cluster, errors with "invalid
         flag", and the line is SILENTLY dropped while surrounding
         M-Enters land — the receiver gets the message with every
-        bullet line missing (mangled three real cross-project briefs
-        before diagnosis,..14). The delivery-verification
-        signature survived in non-bullet lines, so only a
-        content-level comparison would have caught it."""
+        bullet line missing. The delivery-verification signature survives
+        in non-bullet lines, so only a content-level comparison catches
+        it."""
         self._patch_resolution(monkeypatch)
         message = "header\n- bullet one\n- bullet two\n--flag-like"
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
@@ -239,7 +295,7 @@ class TestCmdSend:
             win_target="0:5", win_idx="5", name="main",
             directory="/tmp/shared", state=sibling_state,
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: "9" if name == "dup" else None,
@@ -261,9 +317,8 @@ class TestCmdSend:
         return fake_tmux
 
     def test_send_same_dir_second_window_accepted(self, monkeypatch):
-        """Regression: a send to the second same-dir window used to
-        die with "not a registered ccm project" because the window is
-        missing from build_project_list (seen_dirs dedup). The send
+        """A send to the second same-dir window must not die with "not a
+        registered ccm project" because the window is missing from build_project_list (seen_dirs dedup). The send
         must succeed, borrowing the tracked sibling's state for
         gating while delivering to the target window itself."""
         fake_tmux = self._patch_same_dir_second_window(monkeypatch, "IDLE")
@@ -314,6 +369,34 @@ class TestCmdSend:
             ccm_send.cmd_send(["6", "hello"])
 
     # --- state gating ---
+
+    def test_send_ignored_rejected_with_unignore_guidance(
+        self, monkeypatch, capsys
+    ):
+        """IGNORED is a hard guard: ccm cannot see a delivery target,
+        so the send is refused — not queued, not auto-started — and
+        the refusal names `ccm unignore` as the only exit."""
+        project = self._make_project(state="IGNORED")
+        self._patch_resolution(monkeypatch, project=project)
+        with patch("ccm_core.tmux_cmd", return_value=""), \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "hello"])
+        err = capsys.readouterr().err
+        assert "IGNORED state" in err
+        assert "ccm unignore demo" in err
+
+    def test_send_ignored_rejected_with_start_and_force(self, monkeypatch):
+        """Neither --start nor --force overrides IGNORED: launching
+        would type into a visible pane (e.g. a sidekick's), and force
+        only overrides BUSY."""
+        project = self._make_project(state="IGNORED")
+        self._patch_resolution(monkeypatch, project=project)
+        for flags in (["--start"], ["--force", "--now"], ["--start", "--force"]):
+            with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                    pytest.raises(SystemExit):
+                ccm_send.cmd_send(["demo", *flags, "hello"])
+            calls = self._tmux_calls(mock_tmux)
+            assert not any(c[:2] == ("send-keys", "-t") for c in calls), flags
 
     def test_send_permit_rejected(self, monkeypatch, capsys):
         """PERMIT state is a hard guard — refuse unconditionally.
@@ -403,6 +486,40 @@ class TestCmdSend:
                 pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
 
+    @pytest.mark.parametrize("state,flags", [
+        ("BUSY", ["--force"]), ("SHELL", ["--start"]),
+    ])
+    def test_agents_tui_blocks_all_delivery_paths(self, monkeypatch, state, flags):
+        self._patch_resolution(monkeypatch, project=self._make_project(state=state))
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
+                            lambda *a: ("%999", "bash"))
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle", lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
+        tail = "❯ \nenter to open · space to reply · ? for shortcuts"
+        with patch("ccm_core.tmux_cmd", return_value=tail), \
+                patch("ccm_send._type_body") as body, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", *flags, "hello"])
+        body.assert_not_called()
+
+    def test_agents_tui_opened_during_confirmation_is_refused(self, monkeypatch):
+        self._patch_resolution(monkeypatch)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+        tail = ["❯ "]
+
+        def confirm(_):
+            tail[0] = "❯ \nenter to return · ? for shortcuts"
+            return "y"
+
+        monkeypatch.setattr("builtins.input", confirm)
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
+        with patch("ccm_core.tmux_cmd", side_effect=lambda *a: tail[0]), \
+                patch("ccm_send._type_body") as body, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        body.assert_not_called()
+
     def test_send_busy_rejected_without_force(self, monkeypatch):
         project = self._make_project(state="BUSY")
         self._patch_resolution(monkeypatch, project=project)
@@ -433,7 +550,133 @@ class TestCmdSend:
             call_count[0] += 1
             return [initial if call_count[0] == 1 else after_start]
         monkeypatch.setattr(ccm_core, "build_project_list", stub_build)
-        monkeypatch.setattr("time.sleep", lambda _s: None)
+        monkeypatch.setattr(ccm_send, "_start_composer_ready", lambda pane: True)
+        clock = [0.0]
+        monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+
+    @pytest.mark.parametrize("panes_now", [
+        [PaneInfo("0:5", "100", True, "vim", False, None)],           # editor took the foreground
+        [PaneInfo("0:5", "100", True, "zsh", False, "200")],          # claude appeared by itself
+        [],                                                           # panes could not be listed
+    ])
+    def test_start_types_nothing_when_the_window_changed_under_it(
+            self, monkeypatch, panes_now):
+        """The SHELL verdict is stale by the time --start acts;
+        `launch_claude` re-reads the window and types the launch
+        command only when a shell pane is there and no pane hosts
+        claude. In every other case nothing is launched."""
+        import ccm_agentview
+        initial = self._make_project(state="SHELL")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, initial)
+        monkeypatch.setattr(ccm_window, "enumerate_window_panes",
+                            lambda wt, ps: panes_now)
+        monkeypatch.setattr(ccm_agentview, "continue_blocker",
+                            lambda *a, **kw: None)
+        # The already-running case goes on to wait for IDLE; answer
+        # at once so the test does not sit out the real timeout.
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
+                            lambda *a, **k: "SHELL")
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(_is_launch(c) for c in calls)
+        assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
+
+    def test_start_with_failed_ps_types_nothing(self, monkeypatch):
+        """ps failed: every pane would read as claude-less. Neither
+        the launch command nor the body is typed."""
+        initial = self._make_project(state="SHELL")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, initial)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(c[0] == "send-keys" for c in calls)
+
+    def test_start_never_launches_into_the_senders_own_pane(self, monkeypatch):
+        """The sender's pane is the only shell pane in the window:
+        nothing is launched (it would land in the sender's composer)
+        and nothing is sent."""
+        initial = self._make_project(state="SHELL")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, initial)
+        monkeypatch.setenv("TMUX_PANE", "0:5")
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
+                            lambda *a: ("%1", "zsh"))
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(c[0] == "send-keys" for c in calls)
+
+    def test_already_running_reresolved_to_the_senders_pane_is_refused(self, monkeypatch):
+        """First resolution: another pane. By the time claude is
+        found already running, delivery resolves to the sender's own
+        pane — the self-delivery guard applies again; no body typed."""
+        initial = self._make_project(state="SHELL")
+        idle = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, idle)
+        monkeypatch.setenv("TMUX_PANE", "%2")
+        resolutions = iter([("%1", "zsh"), ("%2", "claude")])
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane",
+                            lambda *a: next(resolutions))
+        claude_pane = [PaneInfo("%2", "200", True, "zsh", False, "300")]
+        monkeypatch.setattr(ccm_window, "enumerate_window_panes", lambda wt, ps: claude_pane)
+        monkeypatch.setattr(ccm_send, "enumerate_window_panes", lambda wt, ps: claude_pane)
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle", lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
+
+    def _already_running_setup(self, monkeypatch, panes_at_reresolve):
+        """SHELL at first, claude found already running by the launch
+        step; `panes_at_reresolve` is what the strict re-resolution
+        sees. Delivery checks answer IDLE so only the pane pinning
+        decides the outcome."""
+        initial = self._make_project(state="SHELL")
+        idle = self._make_project(state="IDLE")
+        self._patch_resolution(monkeypatch, project=initial)
+        self._patch_start_polling(monkeypatch, initial, idle)
+        monkeypatch.setenv("TMUX_PANE", "%2")
+        monkeypatch.setattr(ccm_send, "_resolve_delivery_pane", lambda *a: ("%1", "zsh"))
+        monkeypatch.setattr(
+            ccm_window, "enumerate_window_panes",
+            lambda wt, ps: [PaneInfo("%1", "100", False, "zsh", False, "300"),
+                            PaneInfo("%2", "200", True, "zsh", False, None)])
+        monkeypatch.setattr(ccm_send, "enumerate_window_panes",
+                            lambda wt, ps: panes_at_reresolve)
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle", lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state", lambda *a: "IDLE")
+
+    def test_already_running_with_unlistable_panes_sends_nothing(self, monkeypatch):
+        """Re-resolution fails (panes unreadable for a moment): no
+        window-target fallback — the body is not typed anywhere."""
+        self._already_running_setup(monkeypatch, [])
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, \
+                pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert not any(c[0] == "send-keys" and "-l" in c for c in calls)
+
+    def test_already_running_delivers_to_the_pinned_claude_pane(self, monkeypatch):
+        self._already_running_setup(
+            monkeypatch,
+            [PaneInfo("%1", "100", False, "zsh", False, "300"),
+             PaneInfo("%2", "200", True, "zsh", False, None)])
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+            ccm_send.cmd_send(["demo", "--start", "hello"])
+        calls = self._tmux_calls(mock_tmux)
+        assert ("send-keys", "-t", "%1", "-l", "--", "hello") in calls
+        assert not any(_is_launch(c) for c in calls)
 
     def test_send_shell_with_start_launches_claude_first(self, monkeypatch):
         initial = self._make_project(state="SHELL")
@@ -441,12 +684,13 @@ class TestCmdSend:
         self._patch_resolution(monkeypatch, project=initial)
         self._patch_start_polling(monkeypatch, initial, after_start)
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+            _show_typed_body(monkeypatch, lambda: self._tmux_calls(mock_tmux), "hello")
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         # Claude launch command appears before the message payload.
         # The call tuple is ("send-keys", "-t", target, CLAUDE_CMD, "Enter").
         claude_i = next(
-            (i for i, c in enumerate(calls) if ccm_constants.CLAUDE_CMD in c),
+            (i for i, c in enumerate(calls) if _is_launch(c)),
             None,
         )
         literal_i = next(
@@ -504,20 +748,28 @@ class TestCmdSend:
         busy = self._make_project(state="BUSY")
         idle = self._make_project(state="IDLE")
         states = iter([initial, busy, busy, idle, idle])
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: initial.win_idx if name == initial.name else None,
         )
         monkeypatch.setattr(
             ccm_core, "build_project_list",
-            lambda fast=False: [next(states)],
+            lambda fast=False: [next(states, idle)],
         )
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
+        monkeypatch.setattr(
+            ccm_window, "enumerate_window_panes",
+            lambda wt, ps: [PaneInfo("0:5", "100", True, "zsh", False, None)])
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         monkeypatch.setattr("sys.stdout.isatty", lambda: False)
-        monkeypatch.setattr("time.sleep", lambda _s: None)
+        monkeypatch.setattr(ccm_send, "_start_composer_ready", lambda pane: True)
+        clock = [0.0]
+        monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
         with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+            _show_typed_body(monkeypatch, lambda: self._tmux_calls(mock_tmux), "hello")
             ccm_send.cmd_send(["demo", "--start", "hello"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hello") in calls
@@ -532,19 +784,14 @@ class TestCmdSend:
 
     # --- post-launch delivery verification (premature-IDLE fix) ---
 
-    # A message long enough to clear `_DELIVERY_SIG_MIN_LEN` so the
-    # verification path actually engages (short messages skip it).
+    # A representative body for the post-launch composer check.
     _VERIFY_MSG = "delegate the queued implementation task"
 
     def _run_start_with_captures(self, monkeypatch, message, capture_responses):
-        """Drive a SHELL + --start send where `build_project_list`
-        reports IDLE after launch. The FIRST `capture-pane` call is the
-        composer-draft guard's, which runs before any typing, so it is
-        answered with a bare composer; each LATER call (the
-        delivery-verification `_body_landed`) returns the next item of
-        `capture_responses` (last item repeats). Returns
-        (send_calls, raised) where `raised` is True iff cmd_send exited
-        via ccm_die (delivery unconfirmed)."""
+        """Show an empty composer until typing, then the supplied snapshots.
+
+        Return the key calls and whether delivery was refused.
+        """
         initial = self._make_project(state="SHELL")
         idle = self._make_project(state="IDLE")
         self._patch_resolution(monkeypatch, project=initial)
@@ -552,21 +799,24 @@ class TestCmdSend:
 
         cap_idx = [0]
         send_calls = []
+        typed = [False]
+
+        def capture(pane):
+            if not typed[0]:
+                return composer_screen("❯ "), None
+            i = min(cap_idx[0], len(capture_responses) - 1)
+            cap_idx[0] += 1
+            return composer_screen(*capture_responses[i].split("\n")), None
 
         def tmux_side_effect(*args):
             if args and args[0] == "send-keys":
                 send_calls.append(args)
-                return ""
-            if args and args[0] == "capture-pane":
-                if cap_idx[0] == 0:
-                    cap_idx[0] += 1
-                    # Pre-typing read by the composer-draft guard.
-                    return "❯ \n"
-                i = min(cap_idx[0] - 1, len(capture_responses) - 1)
-                cap_idx[0] += 1
-                return capture_responses[i]
+                if "-l" in args:
+                    typed[0] = True
             return ""
 
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
+        monkeypatch.setattr(ccm_send, "held_after_submit", lambda *a, **kw: False)
         raised = False
         with patch("ccm_core.tmux_cmd", side_effect=tmux_side_effect):
             try:
@@ -588,8 +838,8 @@ class TestCmdSend:
         # The committing Enter (bare, no payload) was sent.
         assert ("send-keys", "-t", "0:5", "Enter") in send_calls
 
-    # A long body whose head has scrolled out of the composer. Observed
-    # against Kimi K3: a ~30-line message rendered as
+    # A long body whose head has scrolled out of the composer: a ~30-line
+    # message renders as
     # `↑ 24 more` with only the trailing lines on screen.
     _LONG_MSG = "\n".join(
         [f"opening line of the queued message, part {i}" for i in range(3)]
@@ -597,42 +847,34 @@ class TestCmdSend:
         + ["closing instruction: reply with ccm send when done"]
     )
 
-    def test_start_verifies_against_the_tail_when_head_scrolled_off(
+    def test_start_refuses_when_only_tail_is_visible(
         self, monkeypatch
     ):
-        """A composer showing only the END of a long body still counts
-        as landed.
-
-        Claude's composer grows upward and keeps the leading row, but a
-        body that outgrows the pane scrolls and keeps the trailing row
-        instead. Matching the head alone would report "did not land"
-        for a message sitting right there — and on this path that means
-        re-typing a body that already arrived, then refusing the send."""
+        """A visible tail cannot prove that the missing head arrived."""
         tail = "closing instruction: reply with ccm send when done"
         send_calls, raised = self._run_start_with_captures(
             monkeypatch, self._LONG_MSG,
             capture_responses=[f"↑ 24 more\n  {tail}"],
         )
-        assert not raised, "a visible tail must satisfy verification"
-        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+        assert raised, "a visible tail cannot confirm the complete body"
+        assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
 
-    def test_start_verifies_against_the_head_when_tail_scrolled_off(
+    def test_start_refuses_when_only_head_is_visible(
         self, monkeypatch
     ):
-        """The mirror case, so fixing the tail did not trade away the
-        head: a composer showing only the opening rows also counts."""
+        """A visible head cannot prove that the missing tail arrived."""
         send_calls, raised = self._run_start_with_captures(
             monkeypatch, self._LONG_MSG,
             capture_responses=[
                 "❯ opening line of the queued message, part 0"],
         )
-        assert not raised, "a visible head must satisfy verification"
-        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+        assert raised, "a visible head cannot confirm the complete body"
+        assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
 
     def test_start_premature_idle_refuses_without_false_sent(self, monkeypatch):
         """Premature-IDLE bug: the composer shows but the
         input handler eats the keystrokes, so the body never lands.
-        Every capture returns only the placeholder. After retries the
+        Every capture returns only the placeholder. The
         send must refuse (SystemExit) and must NOT commit the Enter —
         no false 'Sent', no half-delivered prompt."""
         placeholder = '❯ Try "how does .tags work?"'
@@ -643,49 +885,42 @@ class TestCmdSend:
         assert raised, "unverified delivery must refuse, not claim Sent"
         # The committing Enter must NOT have been sent.
         assert ("send-keys", "-t", "0:5", "Enter") not in send_calls
-        # It retried: the body was typed more than once.
+        # An unconfirmed body is never typed again.
         body_types = [
             c for c in send_calls
             if c == ("send-keys", "-t", "0:5", "-l", "--", self._VERIFY_MSG)
         ]
-        assert len(body_types) >= 2, "expected at least one retry re-type"
-        # Each retry cleared the composer first.
-        assert ("send-keys", "-t", "0:5", "C-u") in send_calls
+        assert len(body_types) == 1, "never retype after an unconfirmed attempt"
+        # No clearing key is sent.
+        assert ("send-keys", "-t", "0:5", "C-u") not in send_calls
 
-    def test_start_premature_idle_retry_then_succeeds(self, monkeypatch):
-        """The body is eaten on the first attempt but lands on a
-        retry (input handler became ready). The send then commits the
-        Enter and succeeds — the retry rescued the delivery."""
+    def test_start_waits_for_render_without_retyping(self, monkeypatch):
+        """A later matching snapshot must not cause another typing attempt."""
         placeholder = '❯ Try "how does .tags work?"'
         send_calls, raised = self._run_start_with_captures(
             monkeypatch, self._VERIFY_MSG,
-            # 1st capture: not landed → retry; 2nd capture: landed.
+            # Observe the later rendering without typing again.
             capture_responses=[placeholder, f"❯ {self._VERIFY_MSG}"],
         )
-        assert not raised, "a successful retry should not refuse"
-        assert ("send-keys", "-t", "0:5", "Enter") in send_calls
+        assert not raised
+        assert send_calls.count(("send-keys", "-t", "0:5", "Enter")) == 1
+        assert sum("-l" in call for call in send_calls) == 1
 
-    def test_start_short_message_skips_verification(self, monkeypatch):
-        """A message shorter than the signature minimum cannot be
-        matched in the pane without false positives, so verification
-        is skipped and the send proceeds as before (no capture-based
-        refusal). Guards against the fix breaking tiny --start sends."""
+    def test_start_short_message_requires_visible_body(self, monkeypatch):
         initial = self._make_project(state="SHELL")
         idle = self._make_project(state="IDLE")
         self._patch_resolution(monkeypatch, project=initial)
         self._patch_start_polling(monkeypatch, initial, idle)
-        # capture-pane would return empty (no body), but a short
-        # message skips verification entirely, so no refusal.
-        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux:
+        with patch("ccm_core.tmux_cmd", return_value="") as mock_tmux, pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--start", "--yes", "hi"])
         calls = self._tmux_calls(mock_tmux)
         assert ("send-keys", "-t", "0:5", "-l", "--", "hi") in calls
-        assert ("send-keys", "-t", "0:5", "Enter") in calls
+        assert ("send-keys", "-t", "0:5", "Enter") not in calls
 
     # --- error paths ---
 
     def test_send_unknown_project_rejected(self, monkeypatch):
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(ccm_core, "find_window", lambda s, n: None)
         monkeypatch.setattr(ccm_core, "build_project_list", lambda fast=False: [])
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -718,14 +953,14 @@ class TestCmdSend:
 
 
 class TestDeliveryPaneResolution:
-    """Delivery-pane resolution (incident).
+    """Delivery-pane resolution.
 
     Window state is a pane aggregation (PERMIT > BUSY > IDLE >
     SHELL), but `send-keys -t <window>` lands in the ACTIVE pane.
     A split window with Claude idle in a side pane and an active
-    bare zsh aggregated to IDLE, so `ccm send --start` skipped the
-    launch and typed the whole message into zsh as shell commands.
-    The fix targets the claude-hosting pane id directly."""
+    bare zsh aggregates to IDLE; a send to the window would type the
+    whole message into zsh as shell commands. The send targets the
+    claude-hosting pane id directly."""
 
     # Two-pane window: %72 is the active zsh, %51 hosts claude
     # (pane shell pid 12077 with a claude child). A pane whose
@@ -749,7 +984,8 @@ class TestDeliveryPaneResolution:
         )
 
     def _patch_resolution(self, monkeypatch, project, ps_text):
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -774,7 +1010,7 @@ class TestDeliveryPaneResolution:
         return stub, calls
 
     def test_idle_send_targets_claude_pane_not_active_zsh(self, monkeypatch):
-        """The reported accident: window IDLE (from the side claude
+        """Window IDLE (from the side claude
         pane) while the active pane is a bare zsh. The literal body
         must go to the claude pane id, never to the window target
         (= active zsh pane)."""
@@ -804,28 +1040,39 @@ class TestDeliveryPaneResolution:
             return [initial if call_count[0] == 1 else idle]
         monkeypatch.setattr(ccm_core, "build_project_list", build)
         monkeypatch.setattr("time.sleep", lambda _s: None)
+        monkeypatch.setattr(ccm_send, "_start_composer_ready", lambda pane: True)
+        clock = [0.0]
+        monkeypatch.setattr(ccm_send.time, "time", lambda: clock[0])
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
         stub, calls = self._tmux_stub(self._PANES_CLAUDE_INACTIVE)
         with patch("ccm_core.tmux_cmd", side_effect=stub):
+            _show_typed_body(monkeypatch, lambda: calls, "hi")
             ccm_send.cmd_send(["demo", "--start", "hi"])
+        # A launch into an existing shell always resumes; only
+        # `ccm add` ever types plain `claude`.
         assert ("send-keys", "-t", "%72",
                 ccm_constants.CLAUDE_CMD, "Enter") in calls
         assert ("send-keys", "-t", "%72", "-l", "--", "hi") in calls
 
-    def test_shell_start_refuses_when_active_pane_is_editor(self, monkeypatch):
+    def test_shell_start_never_types_into_the_editor_pane(self, monkeypatch):
         """SHELL window whose active pane runs vim (a claude-less
         pane reads SHELL regardless of its foreground): typing the
-        launch command would edit text, not start Claude. Refuse."""
+        launch command there would edit text, not start Claude. The
+        shared launch path picks the single shell pane instead, as
+        the dashboard's auto-start always has."""
         project = self._make_project(state="SHELL")
         self._patch_resolution(monkeypatch, project, self._PS_NO_CLAUDE)
         panes = "%72\t81413\t1\tvim\n%51\t12077\t0\tzsh"
         stub, calls = self._tmux_stub(panes)
+        monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
+                            lambda *a, **k: "SHELL")
         with patch("ccm_core.tmux_cmd", side_effect=stub), \
                 pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--start", "hi"])
-        assert not any(
-            c[0] == "send-keys" and ccm_constants.CLAUDE_CMD in c
-            for c in calls
-        ), "launch command was typed into a non-shell pane"
+        launches = [c for c in calls
+                    if _is_launch(c)]
+        assert [c[2] for c in launches] == ["%51"], (
+            f"launch must go to the shell pane only: {launches}")
 
     def test_multiple_claude_panes_active_wins(self, monkeypatch):
         """Agent Teams split: two claude panes, active one hosts
@@ -954,7 +1201,7 @@ class TestSendTrace:
                 win_target="0:5", win_idx="5", name="demo",
                 directory="/tmp/demo", state="IDLE",
             )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: session)
+        monkeypatch.setattr(ccm_core, "require_session", lambda: session)
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -1064,16 +1311,17 @@ class TestSendSelfDeliveryGuard:
     into the caller's own composer, and the state gate would consult a
     state the caller itself is producing — a session is BUSY *because*
     it is running the command, so the gate reports BUSY and appears to
-    blame the target. That self-reference was reported as
-    "sending to the other agent says BUSY when it isn't". The guard
+    blame the target. The guard
     refuses with an explanation instead of a state verdict."""
 
     def _patch(self, monkeypatch, delivery_pane, caller_pane):
+        monkeypatch.setattr(ccm_core, "caller_context",
+                            lambda **kw: ("unknown", caller_pane or ""))
         project = ccm_core.Project(
             win_target="0:5", win_idx="5", name="demo",
             directory="/tmp/demo", state="BUSY",
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(ccm_core, "find_window",
                             lambda s, n: "5" if n == "demo" else None)
         monkeypatch.setattr(ccm_core, "build_project_list",
@@ -1135,6 +1383,257 @@ class TestSendSelfDeliveryGuard:
                    for c in calls)
 
 
+# Screens below are real 2.1.278 captures, trimmed: a prompt held
+# for confirmation with the line the CLI says it in, one queued
+# while the session was working, one the session took, and a draft
+# typed into the composer after a send had landed.
+_RULE = "─" * 40
+_NOTICE = "  Removed 1 invisible character · review and press Enter to send"
+
+
+def _screen(*above, composer):
+    return "\n".join([*above, _RULE, composer, _RULE,
+                      "  ⏵⏵ auto mode on (shift+tab to cycle)", ""])
+
+
+HELD_FOR_CONFIRMATION = _screen(
+    _NOTICE, composer="❯ Reply only REVIEW278_OK. AB")
+HELD_NINE_REMOVED = _screen(
+    "  Removed 9 invisible characters · review and press Enter to send",
+    composer="❯ Reply only HOLD_OK. AB")
+QUEUED_WHILE_WORKING = "\n".join([
+    "· Thinking... (11s · ↓ 135 tokens)",
+    "❯ Reply only REVIEW278_OK. AB",
+    "  ctrl+x ctrl+s to send now",
+    "",
+    _RULE,
+    "❯ Press up to edit queued messages",
+    _RULE,
+    "  ⏸ manual mode on · esc to interrupt",
+    "",
+])
+TAKEN = _screen("❯ Reply only REVIEW278_OK. AB", "", "  REVIEW278_OK", "",
+                composer="❯ ")
+BARE = _screen(composer="❯ ")
+DRAFT_AFTER_THE_SEND = _screen(
+    "❯ Please reply only OK.", "", "  OK", "", composer="❯ reply only")
+BODY_WITH_INVISIBLE = "Reply only REVIEW278_OK. A​B"
+# A named session draws its name into the upper rule (2.1.304). The
+# message was taken; an older rule further up the transcript must not
+# become the composer's upper edge.
+_NAMED_RULE = "─" * 30 + " Check the new release ─"
+NAMED_MESSAGE = "Please review the attached notes and reply when done."
+TAKEN_UNDER_A_NAMED_RULE = "\n".join([
+    "⏺ an earlier answer", "", _RULE, "  a table border", "",
+    "❯ " + NAMED_MESSAGE, "", "✶ Thinking… (2s)", "",
+    _NAMED_RULE, "❯ ", _RULE,
+    "  ⏵⏵ auto mode on (shift+tab to cycle)", "",
+])
+
+
+class TestHeldAfterSubmit:
+    """Pressing Enter is a keystroke; the session taking the prompt
+    is another thing, and the pane says which happened."""
+
+    def _capture(self, monkeypatch, screens):
+        """Hand out `screens` in order, repeating the last one for as
+        long as the check keeps looking, and count the captures."""
+        seen = list(screens)
+        taken = []
+
+        def capture(pane):
+            screen = seen.pop(0) if len(seen) > 1 else seen[0]
+            taken.append(screen)
+            return screen, None
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: None)
+        return taken
+
+    def test_the_notice_is_what_it_reports(self, monkeypatch):
+        self._capture(monkeypatch, [HELD_FOR_CONFIRMATION])
+        assert ccm_send.held_after_submit("%51", timeout=0.2) == \
+            "Removed 1 invisible character · review and press Enter to send"
+
+    def test_a_hold_that_removed_nine_characters_is_no_different(self, monkeypatch):
+        """How much was removed does not decide anything: a hold that
+        removed nine characters is still a hold."""
+        self._capture(monkeypatch, [HELD_NINE_REMOVED])
+        assert ccm_send.held_after_submit("%51", timeout=0.2)
+
+    @pytest.mark.parametrize("screen", [TAKEN, BARE, QUEUED_WHILE_WORKING, ""],
+                             ids=["taken", "bare", "queued", "unreadable"])
+    def test_without_the_notice_the_message_went(self, monkeypatch, screen):
+        self._capture(monkeypatch, [screen])
+        assert ccm_send.held_after_submit("%51", timeout=0.2) is None
+
+    def test_a_draft_typed_after_the_send_is_not_a_hold(self, monkeypatch):
+        """The message was taken and answered, and `reply only` was
+        typed afterwards. It is the message minus six characters, so a
+        text comparison would call it the message held back."""
+        self._capture(monkeypatch, [DRAFT_AFTER_THE_SEND])
+        assert ccm_send.held_after_submit("%51", timeout=0.2) is None
+
+    def test_a_taken_message_under_a_named_rule_is_not_a_hold(self, monkeypatch):
+        """The prompt just sent is in the transcript and the composer
+        is empty; the session's name sits in the upper rule."""
+        taken = self._capture(monkeypatch, [TAKEN_UNDER_A_NAMED_RULE])
+        assert ccm_send.held_after_submit(
+            "%51", timeout=0.2, message=NAMED_MESSAGE) is None
+        assert len(taken) == 1
+
+    def test_the_notice_above_a_named_rule_is_a_hold(self, monkeypatch):
+        held = "\n".join([_NOTICE, _NAMED_RULE, "❯ Reply only REVIEW278_OK. AB",
+                          _RULE, "  ⏵⏵ auto mode on (shift+tab to cycle)", ""])
+        self._capture(monkeypatch, [held])
+        assert ccm_send.held_after_submit("%51", timeout=0.2) == _NOTICE.strip()
+
+    def test_a_clear_composer_answers_on_the_first_capture(self, monkeypatch):
+        """The ordinary send: one capture, no waiting."""
+        taken = self._capture(monkeypatch, [TAKEN])
+        assert ccm_send.held_after_submit("%51") is None
+        assert len(taken) == 1
+
+    def test_it_keeps_looking_while_something_is_in_the_composer(self, monkeypatch):
+        """The notice takes a moment to appear, and the body is in
+        the composer meanwhile."""
+        typed_not_yet_judged = _screen(
+            composer="❯ Reply only REVIEW278_OK. AB")
+        self._capture(monkeypatch,
+                      [typed_not_yet_judged, HELD_FOR_CONFIRMATION])
+        assert ccm_send.held_after_submit("%51") is not None
+
+
+class TestHeldAfterSubmitPassesWhatItCaptured:
+
+    def test_a_dim_suggestion_under_the_notice_is_not_a_hold(self, monkeypatch):
+        """The next-prompt suggestion is told from a draft by the
+        capture's attributes, so they have to reach the reader. With
+        them dropped, the notice's last moments over a suggestion
+        read as a hold."""
+        plain = _screen(_NOTICE, composer="\u276f try the next step")
+        attributed = plain.replace("\u276f try the next step",
+                                   "\u276f \x1b[2mtry the next step\x1b[0m")
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot",
+                            lambda pane: (plain, attributed))
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: None)
+        assert ccm_send.held_after_submit("%51", timeout=0.2) is None
+
+
+class TestHeldAfterSubmitInTime:
+    """The same check against a clock: the notice is on screen for a
+    few seconds only, so how often the pane is read, and for how
+    long, decides whether it is seen. The pane here changes with the
+    time, and `sleep` is what moves the time."""
+
+    BODY_ONLY = _screen(composer="\u276f Reply only REVIEW278_OK. AB")
+
+    def _world(self, monkeypatch, notice_from, notice_until):
+        now = [0.0]
+        captures = []
+        monkeypatch.setattr(ccm_send.time, "time", lambda: now[0])
+        monkeypatch.setattr(ccm_send.time, "sleep",
+                            lambda s: now.__setitem__(0, now[0] + s))
+
+        def capture(pane):
+            captures.append(now[0])
+            shown = notice_from <= now[0] < notice_until
+            return (HELD_FOR_CONFIRMATION if shown else self.BODY_ONLY), None
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot", capture)
+        return captures
+
+    def test_a_notice_drawn_a_moment_late_is_still_seen(self, monkeypatch):
+        """A notice that appears a second late, and is gone at five,
+        must be caught by the polling as configured."""
+        self._world(monkeypatch, notice_from=1.0, notice_until=5.0)
+        assert ccm_send.held_after_submit("%51") is not None
+
+    def test_the_pane_is_read_more_than_once_a_second(self, monkeypatch):
+        captures = self._world(monkeypatch, notice_from=99, notice_until=99)
+        assert ccm_send.held_after_submit("%51") is None
+        gaps = [b - a for a, b in zip(captures, captures[1:])]
+        assert gaps and max(gaps) < 1.0
+
+    def test_it_gives_up_at_the_timeout(self, monkeypatch):
+        """With the default, which is what every caller uses: a send
+        into a composer that stays occupied must not hang on it."""
+        captures = self._world(monkeypatch, notice_from=99, notice_until=99)
+        ccm_send.held_after_submit("%51")
+        assert 2.0 <= captures[-1] < 3.0
+
+
+class TestSendReportsWhatTheSessionTook:
+    """End to end: `ccm send` must not report a delivery the target
+    did not make, nor refuse one it did."""
+
+    def _patch(self, monkeypatch, screen):
+        project = ccm_core.Project(
+            win_target="0:5", win_idx="5", name="demo",
+            directory="/tmp/demo", state="IDLE",
+        )
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "find_window",
+                            lambda sess, name: project.win_idx)
+        monkeypatch.setattr(ccm_core, "build_project_list",
+                            lambda fast=False: [project])
+        monkeypatch.setattr(ccm_core, "ps_snapshot",
+                            lambda: "100 1 100 zsh 00:05\n")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+        from ccm_pane_state import PaneInfo
+        pane = PaneInfo("%51", "12077", True, "claude", False, 12078)
+        monkeypatch.setattr(ccm_send, "enumerate_window_panes",
+                            lambda win, ps: [pane])
+        monkeypatch.setattr(ccm_send, "detect_pane_state", lambda *a, **k: "IDLE")
+        monkeypatch.setattr(ccm_send.time, "sleep", lambda s: None)
+        keys = []
+        monkeypatch.setattr(ccm_core, "tmux_cmd", lambda *a: keys.append(a) or "")
+
+        def submitted():
+            return any(c[-1] == "Enter" for c in keys if c[:1] == ("send-keys",))
+
+        # Before the submit the composer is bare, as the pre-send draft
+        # guard needs to see; afterwards it shows `screen`.
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot",
+                            lambda pane_id: (screen if submitted() else BARE,
+                                             None))
+        return keys
+
+    @pytest.mark.parametrize("screen", [HELD_FOR_CONFIRMATION, HELD_NINE_REMOVED],
+                             ids=["one-removed", "nine-removed"])
+    def test_a_prompt_the_session_is_holding_is_reported_as_not_taken(
+            self, monkeypatch, capsys, screen):
+        keys = self._patch(monkeypatch, screen)
+        with pytest.raises(SystemExit) as exit_info:
+            ccm_send.cmd_send(["demo", "--now", BODY_WITH_INVISIBLE])
+        assert exit_info.value.code not in (0, None)
+        # One read: `readouterr` empties the buffers, so asking twice
+        # checks the second question against nothing.
+        captured = capsys.readouterr()
+        assert "did not take the message" in captured.err
+        assert "press Enter to send" in captured.err   # quotes what it saw
+        assert "Sent to demo" not in captured.out
+        # One Enter — the one that submitted. ccm does not confirm on
+        # the sender's behalf.
+        assert sum(1 for c in keys if c[:2] == ("send-keys", "-t")
+                   and c[-1] == "Enter") == 1
+
+    @pytest.mark.parametrize("screen", [TAKEN, DRAFT_AFTER_THE_SEND],
+                             ids=["taken", "draft-typed-afterwards"])
+    def test_a_prompt_the_session_took_is_reported_as_sent(
+            self, monkeypatch, capsys, screen):
+        self._patch(monkeypatch, screen)
+        ccm_send.cmd_send(["demo", "--now", BODY_WITH_INVISIBLE])
+        assert "Sent to demo" in capsys.readouterr().out
+
+    def test_no_enter_does_not_claim_submission(self, monkeypatch, capsys):
+        keys = self._patch(monkeypatch, TAKEN)
+        ccm_send.cmd_send(["demo", "--now", "--no-enter", BODY_WITH_INVISIBLE])
+        assert not any(c[-1] == "Enter" for c in keys if c[:1] == ("send-keys",))
+        out = capsys.readouterr().out
+        assert "Enter not sent" in out and "Check the input box" in out
+        assert "Sent to" not in out
+
+
 class TestSendPreTypeRecheck:
     """TOCTOU guard: the initial state gate runs on a
     `build_project_list` snapshot, and the interactive confirmation
@@ -1160,7 +1659,7 @@ class TestSendPreTypeRecheck:
             win_target="0:5", win_idx="5", name="demo",
             directory="/tmp/demo", state=project_state,
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -1168,12 +1667,16 @@ class TestSendPreTypeRecheck:
         monkeypatch.setattr(
             ccm_core, "build_project_list", lambda fast=False: [project],
         )
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
         monkeypatch.setattr("sys.stdin.isatty", lambda: interactive)
         monkeypatch.setattr("sys.stdout.isatty", lambda: interactive)
         panes = ([] if recheck_state is None
                  else [self._pane(command=pane_command, claude=pane_claude)])
         monkeypatch.setattr(ccm_send, "enumerate_window_panes",
+                            lambda win, ps: panes)
+        # `launch_claude` (the --start path) reads the window through
+        # its own import of the same helper.
+        monkeypatch.setattr(ccm_window, "enumerate_window_panes",
                             lambda win, ps: panes)
         monkeypatch.setattr(ccm_send, "detect_pane_state",
                             lambda *a, **k: recheck_state)
@@ -1189,10 +1692,117 @@ class TestSendPreTypeRecheck:
             for c in calls
         )
 
+    def _subagent_only(self, monkeypatch, value):
+        asked = []
+
+        def only(d, s):
+            asked.append((d, s))
+            return value
+        monkeypatch.setattr(ccm_send.ccm_signals, "permit_is_subagent_only", only)
+        return asked
+
+    def test_a_subagent_only_permit_sends_to_an_idle_screen(self, monkeypatch):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        asked = self._subagent_only(monkeypatch, True)
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert asked == [("/tmp/demo", "")]
+        assert self._literal_sent(calls)
+
+    def test_a_subagent_only_permit_with_a_dialog_on_screen_is_refused(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, "PERMIT", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert not self._literal_sent(calls)
+
+    def test_a_subagent_only_permit_on_a_busy_screen_reads_as_busy(
+            self, monkeypatch, capsys):
+        calls = self._patch(monkeypatch, "BUSY", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)
+        assert "BUSY" in capsys.readouterr().err
+
+    def test_a_subagent_only_permit_on_an_unreadable_screen_is_refused(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, None, project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert not self._literal_sent(calls)
+
+    def _screens(self, monkeypatch, *seen):
+        seq = list(seen)
+        monkeypatch.setattr(ccm_send, "_recheck_delivery_state",
+                            lambda w, p: seq.pop(0))
+        return seq
+
+    def _typed_anything(self, calls):
+        return any(c[:3] == ("send-keys", "-t", "%51") and "-X" not in c
+                   for c in calls)
+
+    @pytest.mark.parametrize("final", [None, "PERMIT"])
+    def test_a_subagent_only_bypass_needs_the_screen_again_before_typing(
+            self, monkeypatch, final):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        left = self._screens(monkeypatch, "IDLE", final)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert left == []
+        assert not self._typed_anything(calls)
+
+    def test_a_subagent_only_bypass_that_turns_busy_is_refused(self, monkeypatch):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        self._screens(monkeypatch, "IDLE", "BUSY")
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._typed_anything(calls)
+
+    def test_a_subagent_only_bypass_on_a_busy_screen_forced_still_needs_the_screen(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, "BUSY", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        self._screens(monkeypatch, "BUSY", None)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert not self._typed_anything(calls)
+
+    def test_a_subagent_only_bypass_queues_by_default_when_unreadable(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        self._subagent_only(monkeypatch, True)
+        self._screens(monkeypatch, "IDLE", None)
+        queued = []
+        monkeypatch.setattr(ccm_send, "_queue_message",
+                            lambda *a: queued.append(a))
+        ccm_send.cmd_send(["demo", "hello"])
+        assert len(queued) == 1
+        assert not self._typed_anything(calls)
+
+    def test_an_ordinary_idle_send_still_fails_open_on_an_unreadable_screen(
+            self, monkeypatch):
+        # Control: the existing fail-open for IDLE is unchanged.
+        calls = self._patch(monkeypatch, "IDLE", project_state="IDLE")
+        self._screens(monkeypatch, None)
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls)
+
+    def test_the_main_conversations_permit_is_refused_on_an_idle_screen(
+            self, monkeypatch):
+        calls = self._patch(monkeypatch, "IDLE", project_state="PERMIT")
+        self._subagent_only(monkeypatch, False)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
+        assert not self._literal_sent(calls)
+
     def test_recheck_permit_after_confirmation_refused(
         self, monkeypatch, capsys,
     ):
-        """The reported bug: gate sees IDLE, the operator confirms
+        """The gate sees IDLE, the operator confirms
         ("y") after the target has transitioned to PERMIT. Without
         the re-check the body would land in the dialog."""
         calls = self._patch(monkeypatch, "PERMIT", interactive=True)
@@ -1212,7 +1822,7 @@ class TestSendPreTypeRecheck:
 
     def test_recheck_shell_refused(self, monkeypatch):
         """Claude exited between the gate and the send: the body
-        would be typed into a bare shell (incident class)."""
+        would be typed into a bare shell."""
         calls = self._patch(monkeypatch, "SHELL")
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--now", "hello"])
@@ -1226,8 +1836,10 @@ class TestSendPreTypeRecheck:
         Pairs with test_recheck_shell_refused (no launch → refuse)."""
         calls = self._patch(monkeypatch, "SHELL", project_state="SHELL",
                             pane_command="zsh", pane_claude=False)
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
         monkeypatch.setattr(ccm_send, "_wait_for_target_idle",
                             lambda *a, **k: "IDLE")
+        _show_typed_body(monkeypatch, lambda: calls, "hi")
         ccm_send.cmd_send(["demo", "--start", "hi"])
         assert self._literal_sent(calls, "hi")
 
@@ -1253,8 +1865,8 @@ class TestSendPreTypeRecheck:
 
     def test_recheck_unresolvable_fails_open(self, monkeypatch):
         """Pane enumeration failing at re-check time (tmux hiccup)
-        must not break sends that worked before the guard existed —
-        matching the delivery-pane resolution fallback."""
+        must not break an ordinary send — it falls back the same way the
+        delivery-pane resolution does."""
         calls = self._patch(monkeypatch, None)
         ccm_send.cmd_send(["demo", "hello"])
         # Delivery resolution also fell back to the window target.
@@ -1262,6 +1874,47 @@ class TestSendPreTypeRecheck:
             c[:3] == ("send-keys", "-t", "0:5") and "-l" in c
             for c in calls
         )
+
+
+class TestDeliveryVerification:
+    """`_body_landed` decides whether a typed body actually reached
+    the composer. Its answer is reported to the caller as delivered
+    or not, so a false negative is as costly as a false positive: it
+    invites a resend of a message that is already there."""
+
+    @staticmethod
+    def _cap(text):
+        def tmux(*args):
+            return text if args[0] == "capture-pane" else ""
+        return tmux
+
+    def test_wrapped_signature_still_counts_as_landed(self, monkeypatch):
+        """The composer wraps the body to its own width, and the
+        break lands wherever the width falls — mid-word, or
+        mid-sentence in a language written without spaces. A
+        signature straddling the break is absent as a substring while
+        sitting in plain view, and the send would report a delivery
+        it could not confirm."""
+        sig = ("the quick brown fox jumps over the lazy dog",)
+        wrapped = ("  the quick brown fox jumps\n"
+                   "  over the lazy dog\n")
+        monkeypatch.setattr(ccm_core, "tmux_cmd", self._cap(wrapped))
+        assert ccm_send._body_landed("0:5", sig)
+
+    def test_absent_body_is_still_absent(self, monkeypatch):
+        sig = ("the quick brown fox jumps over the lazy dog",)
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            self._cap("nothing of the sort here\n"))
+        assert not ccm_send._body_landed("0:5", sig)
+
+    def test_whitespace_only_difference_does_not_invent_a_match(
+            self, monkeypatch):
+        """Flattening whitespace must not make unrelated text match:
+        the comparison drops spacing, not characters."""
+        sig = ("alpha beta gamma delta epsilon zeta",)
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            self._cap("alpha beta gamma delta\n"))
+        assert not ccm_send._body_landed("0:5", sig)
 
 
 class TestComposerDraftGuard:
@@ -1284,7 +1937,7 @@ class TestComposerDraftGuard:
             win_target="0:5", win_idx="5", name="demo",
             directory="/tmp/demo", state=project_state,
         )
-        monkeypatch.setattr(ccm_core, "get_session", lambda: "0")
+        monkeypatch.setattr(ccm_core, "require_session", lambda: "0")
         monkeypatch.setattr(
             ccm_core, "find_window",
             lambda sess, name: project.win_idx if name == project.name else None,
@@ -1314,17 +1967,26 @@ class TestComposerDraftGuard:
     def _literal_sent(calls):
         return any("-l" in c for c in calls if c[0] == "send-keys")
 
+    def test_composer_uses_a_non_breaking_space(self):
+        """The composer renders a NO-BREAK SPACE after the prompt
+        glyph, not an ordinary one.
+        `\\s` covers it — pinned so a future tightening to a literal
+        space cannot silently stop seeing every draft."""
+        import ccm_constants
+        assert ccm_composer.PATTERN_COMPOSER_DRAFT.match("\u276f\u00a0text")
+
     def test_doubled_glyph_mode_line_is_not_a_draft(self):
         """Older builds render the accept-edits mode as `❯❯ …` at line
         start. The prompt glyph doubled is a mode line, not a draft —
         the composer always puts a space after its single glyph."""
         import ccm_constants
-        assert not ccm_constants.PATTERN_COMPOSER_DRAFT.match(
+        assert not ccm_composer.PATTERN_COMPOSER_DRAFT.match(
             "❯❯ accept edits on")
-        assert ccm_constants.PATTERN_COMPOSER_DRAFT.match("❯ a draft")
+        assert ccm_composer.PATTERN_COMPOSER_DRAFT.match("❯ a draft")
 
     def test_draft_refuses_and_never_types(self, monkeypatch, capsys):
-        calls = self._patch(monkeypatch, "❯ half-typed thought\n")
+        calls = self._patch(monkeypatch,
+                            composer_screen("❯ half-typed thought"))
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls), \
@@ -1346,9 +2008,86 @@ class TestComposerDraftGuard:
         ccm_send.cmd_send(["demo", "--now", "hello"])
         assert self._literal_sent(calls)
 
+    def test_prompt_in_the_scrollback_is_not_a_draft(self, monkeypatch):
+        """Claude Code draws a SUBMITTED prompt into the transcript
+        with the same `❯` glyph the composer uses. Reading the pane
+        top-down and taking the first hit therefore calls the user's
+        previous message a draft, and refuses every send for as long
+        as one is on screen — which is nearly always."""
+        calls = self._patch(
+            monkeypatch,
+            composer_screen("❯ ", scrollback=True),
+        )
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls), \
+            "an old prompt on screen blocked a send into a bare composer"
+
+    @staticmethod
+    def _named_screen(composer_row):
+        rule = "─" * 80
+        return "\n".join([
+            "⏺ an earlier answer", "", rule, "  a table border", "",
+            "❯ a prompt sent earlier", "⏺ and its response", "",
+            "─" * 60 + " Check the new release ─", composer_row, rule,
+            "  /tmp/demo  main  Opus 5  ctx 42%", "",
+        ])
+
+    def test_named_session_bare_composer_proceeds(self, monkeypatch):
+        """The session's name in the upper rule leaves an older rule
+        as the nearest plain one; the prompt below it is history."""
+        calls = self._patch(monkeypatch, self._named_screen("❯ "))
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls)
+
+    @pytest.mark.parametrize("typed_rule", [
+        "  " + "─" * 30 + " Check the new release ─",
+        "  " + "─" * 60,
+    ], ids=["named", "plain"])
+    def test_rule_typed_into_a_draft_is_not_its_edge(self, monkeypatch,
+                                                     capsys, typed_rule):
+        """A rule-shaped line typed into a multi-line draft is an
+        indented continuation row, not the composer's upper rule."""
+        rule = "─" * 60
+        calls = self._patch(monkeypatch, "\n".join([
+            rule, "❯ Please review this section:", typed_rule,
+            "  unfinished notes", rule, "  status", ""]))
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)
+        assert "Please review this section" in capsys.readouterr().err
+
+    def test_named_session_is_ready_for_start(self, monkeypatch):
+        screen = self._named_screen("❯ ")
+        monkeypatch.setattr(ccm_send, "capture_composer_snapshot",
+                            lambda pane: (screen, None))
+        assert ccm_send._start_composer_ready("%1")
+
+    def test_named_session_draft_refuses(self, monkeypatch, capsys):
+        calls = self._patch(monkeypatch,
+                            self._named_screen("❯ half-typed thought"))
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)
+        assert "half-typed thought" in capsys.readouterr().err
+
+    def test_dialog_over_the_composer_is_not_a_draft(self, monkeypatch):
+        """A permission dialog replaces the input box entirely. With
+        no composer on screen there is no draft to protect, and the
+        open dialog is the state check's business, not this guard's."""
+        calls = self._patch(
+            monkeypatch,
+            "❯ a prompt sent earlier\n"
+            "\n"
+            + "\u2500" * 80 + "\n"
+            " ❯ 1. Yes\n"
+            " Esc to cancel \u00b7 Tab to amend\n",
+        )
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls)
+
     def test_unreadable_composer_fails_open(self, monkeypatch):
-        """An empty capture (tmux hiccup) must not break sends that
-        worked before this guard existed — the same fail-open call
+        """An empty capture (tmux hiccup) must not break an otherwise
+        ordinary send — the same fail-open call
         `_recheck_delivery_state` makes. Pinned so a future
         tightening is a deliberate choice, not a side effect."""
         calls = self._patch(monkeypatch, "")
@@ -1361,7 +2100,7 @@ class TestComposerDraftGuard:
         visible only there must still refuse."""
         def capture(args):
             if "-a" in args:
-                return "❯ draft on the alt screen\n"
+                return composer_screen("❯ draft on the alt screen")
             return ""
         calls = self._patch(monkeypatch, capture)
         with pytest.raises(SystemExit):
@@ -1372,8 +2111,8 @@ class TestComposerDraftGuard:
                                                      capsys):
         """A multi-line draft carries the `❯` prompt on its first
         row; that row alone must trigger the refusal."""
-        calls = self._patch(monkeypatch,
-                            "❯ first line of a draft\n  continuation\n")
+        calls = self._patch(monkeypatch, composer_screen(
+            "❯ first line of a draft", "  continuation"))
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
@@ -1383,7 +2122,8 @@ class TestComposerDraftGuard:
                                                    capsys):
         """`--force` licenses queueing into a BUSY turn — it does not
         license merging into the user's draft. Uniform refusal."""
-        calls = self._patch(monkeypatch, "❯ do not touch this\n",
+        calls = self._patch(monkeypatch,
+                            composer_screen("❯ do not touch this"),
                             project_state="BUSY")
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--force", "--now", "hello"])
@@ -1401,7 +2141,7 @@ class TestComposerDraftGuard:
         """A long draft is quoted capped, so the refusal stays a
         readable one-liner instead of flooding the terminal."""
         long_draft = "❯ " + "x" * 120
-        calls = self._patch(monkeypatch, long_draft + "\n")
+        calls = self._patch(monkeypatch, composer_screen(long_draft))
         with pytest.raises(SystemExit):
             ccm_send.cmd_send(["demo", "--now", "hello"])
         assert not self._literal_sent(calls)
@@ -1410,3 +2150,100 @@ class TestComposerDraftGuard:
         # `❯ ` prefix leaves room for 58 x's plus the ellipsis.
         assert "x" * 58 in err and "x" * 59 not in err
         assert "..." in err
+
+    def test_dim_suggestion_is_not_a_draft(self, monkeypatch):
+        """Claude Code draws a next-prompt SUGGESTION into the composer
+        after a turn ends — the exact moment a send is meant to land —
+        with the same `❯` line shape as a draft but entirely dim
+        (SGR 2). A plain capture drops the attribute, so only the
+        `-e` capture can tell it from a draft. The suggestion vanishes
+        on the first keystroke, so it must never refuse a send."""
+        ghost = "\x1b[39m❯ \x1b[2mnow try http://example.com/ and compare\x1b[0m"
+
+        def capture(args):
+            if "-e" in args:
+                return composer_screen(ghost)
+            return composer_screen("❯ now try http://example.com/ and compare")
+        calls = self._patch(monkeypatch, capture)
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls), \
+            "Claude's dim suggestion was mistaken for a draft"
+
+    def test_dim_mixed_with_plain_text_is_a_draft(self, monkeypatch):
+        """Only an ENTIRELY dim fragment is the suggestion. A genuine
+        draft with a dim fragment mixed in keeps the draft verdict —
+        the safe side."""
+        mixed = "\x1b[39m❯ real words \x1b[2mthen a dim tail\x1b[0m"
+
+        def capture(args):
+            if "-e" in args:
+                return composer_screen(mixed)
+            return composer_screen("❯ real words then a dim tail")
+        calls = self._patch(monkeypatch, capture)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert not self._literal_sent(calls)
+
+    def test_unreadable_attribute_capture_uses_unreadable_composer_policy(
+        self, monkeypatch
+    ):
+        """Without a readable snapshot there is no draft observation to merge."""
+        def capture(args):
+            if "-e" in args:
+                return ""
+            return composer_screen("❯ half-typed thought")
+        calls = self._patch(monkeypatch, capture)
+        ccm_send.cmd_send(["demo", "--now", "hello"])
+        assert self._literal_sent(calls)
+
+
+class TestControlCharacters:
+    """`send-keys -l` types every character as a key, so a body holding
+    `\\r`, ESC, `^C`, ... would press keys the sender never wrote:
+    submit extra prompts, interrupt the target, or quit its Claude and
+    reach the shell behind it. Bodies are refused before any key."""
+
+    @pytest.mark.parametrize("char", [
+        "\x00", "\r", "\x1b", "\x03", "\x15", "\x7f", "\x9b"])
+    def test_clean_message_refuses_control_characters(self, char):
+        with pytest.raises(ValueError, match="control character"):
+            ccm_send.clean_message(f"first\nsecond{char}third")
+
+    def test_tabs_expand_to_the_next_four_column_stop(self):
+        assert ccm_send.clean_message("a\tb\nabc\tc\n\td") == "a   b\nabc c\n    d"
+
+    def test_a_lone_carriage_return_in_a_message_file_is_refused(
+            self, monkeypatch, capsys, tmp_path):
+        path = tmp_path / "body.txt"
+        path.write_bytes(b"first\rsecond")
+        def no_tmux(*a, **k):
+            pytest.fail("cmd_send reached tmux with a control character")
+        monkeypatch.setattr(ccm_core, "tmux_cmd", no_tmux)
+        monkeypatch.setattr(ccm_send, "_send_keys", no_tmux)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--file", str(path)])
+        assert "control character" in capsys.readouterr().err
+
+    def test_clean_message_keeps_ordinary_text(self):
+        text = "line one\r\nline\ttwo\n日本語 ✅ zero​width"
+        assert ccm_send.clean_message(text) == (
+            "line one\nline    two\n日本語 ✅ zero​width")
+
+    @pytest.mark.parametrize("line", ["then\x1b[2Jgone", "a\tb"])
+    def test_type_body_refuses_before_the_first_key(self, monkeypatch, line):
+        keys = []
+        monkeypatch.setattr(ccm_send, "_send_keys", lambda *a, **k: keys.append(a))
+        with pytest.raises(ValueError):
+            ccm_send._type_body("%1", ["fine", line])
+        assert keys == []
+
+    @pytest.mark.parametrize("body", ["one\rtwo", "stop\x03\x03now", "esc\x1b"])
+    def test_cmd_send_refuses_before_resolving_the_target(
+            self, monkeypatch, capsys, body):
+        def no_tmux(*a, **k):
+            pytest.fail("cmd_send reached tmux with a control character")
+        monkeypatch.setattr(ccm_core, "tmux_cmd", no_tmux)
+        monkeypatch.setattr(ccm_send, "_send_keys", no_tmux)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", body])
+        assert "control character" in capsys.readouterr().err

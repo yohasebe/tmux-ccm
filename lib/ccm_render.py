@@ -15,6 +15,7 @@ import time
 import unicodedata
 
 import ccm_core
+import ccm_agentview
 import ccm_canaries
 import ccm_signals
 import ccm_spool
@@ -171,12 +172,14 @@ C_BOLD = "\033[1m"
 C_DIM = "\033[2m"
 C_CYAN = "\033[36m"        # for [N] pane-count digit
 C_GREEN_BOLD = "\033[1;32m"  # for "*" completed marker
+C_BG_WORK = "\033[38;5;209m"  # `(bg)`: BUSY's salmon on an IDLE row
 C_STATE = {
     "PERMIT": "\033[1;33m",      # bold yellow
     "BUSY": "\033[38;5;209m",    # salmon
     "IDLE": "\033[0;34m",        # blue
     "SHELL": "\033[38;5;245m",   # gray
     "DOWN": "\033[2m",           # dim
+    "IGNORED": "\033[2m",        # dim
 }
 
 
@@ -240,41 +243,14 @@ def signal_age_suffix(project_dir, state, session_id=None):
 # becomes visible in dashboard / statusline renderers. Hides the
 # marker during the first few seconds after a BUSY→IDLE transition.
 #
-# Why this exists (added, ccm 0.3.x post-agent-view):
-#   Multi-turn auto-loop commands — `/goal` is the canonical case,
-#   `/loop` and `/plan`-driven follow-ups have similar shape —
-#   execute as `BUSY → end_turn → (1-3 s IDLE gap) → auto-fired
-#   UserPromptSubmit → BUSY → …`. State detection during the gap
-#   is correct (Claude IS briefly idle waiting for the auto-prompt),
-#   but the dashboard would otherwise render `* 1s` / `* 2s` markers
-#   for each gap — falsely implying the work just completed when
-#   the loop is still mid-flight. Verified empirically on
-# with `ccm debug trace` against a 3-turn `/goal`
-#   condition: two ~2 s IDLE windows between turns, both surfaced
-#   the marker. See memory `project_goal_flicker_2026_05_13`.
-#
-#   The notification path (`on-stop.sh` grace sentinel) already
-#   absorbed these gaps via `CCM_COMPLETION_GRACE_SEC=3`. This
-#   constant brings the visual marker into the same window —
-#   conceptually one knob, applied at two layers.
-#
-# When this code can be removed (audit guide):
-#   - Upstream Claude Code exposes a "goal/loop active" signal
-#     (JSONL field or hook payload) that lets us suppress the
-#     marker only during real auto-loops. Then a blanket 3 s rule
-#     is too coarse and this should go.
-#   - `/goal` and similar auto-multi-turn commands disappear
-#     upstream (unlikely). Verify by running the empirical test
-#     below before deleting.
-#   - User reports the 3 s delay on normal completions is
-#     disruptive. In that case the tradeoff was wrong; remove
-#     this and restore immediate marker visibility.
-#
-# How to verify it's still load-bearing:
-#   `ccm debug trace <project> 0.3`, dispatch a `/goal` condition
-#   that requires 3+ turns (e.g. `/goal create files /tmp/x{1,2,3}.txt
-#   one per turn`). If short (<3 s) BUSY→IDLE→BUSY oscillations
-#   still appear in the trace, this suppression is still needed.
+# Multi-turn auto-loop commands (`/goal`, and `/loop`-like follow-ups)
+# run as `BUSY → end_turn → (1-3 s IDLE gap) → auto-fired
+# UserPromptSubmit → BUSY → …`. The state during the gap is correct
+# (Claude is briefly idle), but a `* 1s` marker for each gap would say
+# the work just completed while the loop is still running. The
+# notification path absorbs the same gaps with
+# `CCM_COMPLETION_GRACE_SEC=3` (`on-stop.sh`); this constant applies
+# that window to the visual marker.
 MIN_ELAPSED_DISPLAY_SEC = 3
 
 
@@ -304,6 +280,20 @@ def format_elapsed(ts):
     return f"{elapsed // 86400:>2d}d"
 
 
+def format_age_short(seconds):
+    """A duration in its largest whole unit, unpadded: `45s`, `3m`,
+    `9h`, `2d`. A negative duration (a clock that stepped back) reads
+    as `0s`."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
 def format_dir(directory, prefix_len, cols):
     d = ccm_core.shorten_home(directory)
     avail = cols - prefix_len - 4
@@ -321,24 +311,80 @@ def format_dir(directory, prefix_len, cols):
     return ""
 
 
-def external_agent_label(project):
-    """Compact label for a project's external-agent CLI panes
-    ("" when none). Names are the pane foreground commands
-    de-duplicated in first-seen order; a name hosted by several
-    panes gets a `×N` count suffix. Shared by `ccm status`, the
-    dashboard, and the status bar so the badge text is identical
-    on every surface."""
+def external_agent_segments(project):
+    """The badge after its mark, as (text, state) pieces: each sidekick
+    name (with its `×N`) followed by its own state's icon, and the `,`
+    between names with no state. A state is "PERMIT" while that
+    sidekick waits for a person, "BUSY" while it works on a turn (a
+    waiting one outranks a working one, as PERMIT outranks BUSY for the
+    window), else "". Names keep their first-seen order, and a name
+    hosted by several panes gets a `×N` count. Shared by `ccm status`,
+    the dashboard and the status bar, so each name's text, icon and
+    colour agree everywhere and two sidekicks in one window are told
+    apart."""
     names = getattr(project, "external_agents", ()) or ()
-    if not names:
-        return ""
-    parts = []
+    attention = set(getattr(project, "attention_agents", ()) or ())
+    busy = set(getattr(project, "busy_agents", ()) or ())
+    segments = []
     for name in dict.fromkeys(names):
+        if segments:
+            segments.append((",", ""))
         count = names.count(name)
-        parts.append(name if count == 1 else f"{name}×{count}")
-    return ",".join(parts)
+        label = name if count == 1 else f"{name}×{count}"
+        # An ignored Claude sidekick waits under `⊘`, not under `▸`,
+        # and is never among these names.
+        state = ("PERMIT" if name in attention
+                 else "BUSY" if name in busy else "")
+        segments.append((f"{label} {STATE_ICONS[state]}" if state else label,
+                         state))
+    return segments
+
+
+#: The badge's leading mark. Every surface draws it dim and colours only
+#: what follows (the name and the state's icon), so the mark reads as
+#: "a sidekick is here" and the colour as its state.
+EXTERNAL_AGENT_MARK = "▸ "
+
+
+def external_agent_badge(project):
+    """The badge text, `▸ ` and the segments (`external_agent_segments`),
+    or "" when there is no sidekick."""
+    segments = external_agent_segments(project)
+    if not segments:
+        return ""
+    return EXTERNAL_AGENT_MARK + "".join(text for text, _ in segments)
 
 
 # ─── CLI commands ───
+
+#: `ccm status` PROJECT column: its usual width, and how much of a
+#: project's name it keeps beside long markers before it widens.
+PROJECT_COL_W = 20
+PROJECT_NAME_KEEP = 12
+
+def status_warnings(projects):
+    """The warnings `ccm status` prints above its table, and
+    `ccm status --json` returns, for these projects."""
+    warnings = [w for w in (
+        ccm_canaries.hooks_log_warning(),
+        ccm_canaries.disable_all_hooks_warning(),
+        ccm_canaries.managed_hooks_only_warning(),
+    ) if w]
+    warnings += ccm_canaries.shell_cluster_warnings(projects)
+    warnings += ccm_canaries.hook_silence_warnings(projects)
+    # A project whose launch command will not resume its conversation:
+    # the newest transcript hands off to a background session the
+    # daemon still lists, so `claude --continue` starts fresh there.
+    warnings += ccm_agentview.continue_blocker_warnings(projects)
+    # A message that expired without arriving is a loss, not a queue
+    # length — the same weight the dashboard gives it. Left in the dim
+    # summary below it read as routine to anyone (or anything) that
+    # polls this output.
+    expired_msg = spool_expired_warning()
+    if expired_msg:
+        warnings.append(expired_msg)
+    return warnings
+
 
 def print_status():
     """Print status of all ccm projects (for `ccm status` CLI command)."""
@@ -350,31 +396,17 @@ def print_status():
         _print_spool_summary(spool_counts)
         return
 
-    if ccm_core.hooks_configured():
-        print(f"{C_DIM}Hooks: ON{C_RESET}")
-    else:
+    if not ccm_core.hooks_configured():
         print(f"{C_DIM}Hooks: OFF (run 'ccm setup-hooks' for improved detection){C_RESET}")
-    for warning in (
-        ccm_canaries.hooks_log_warning(),
-        ccm_canaries.disable_all_hooks_warning(),
-        ccm_canaries.managed_hooks_only_warning(),
-    ):
-        if warning:
-            print(f"\033[33m⚠ {warning}\033[0m")
-    for cluster_msg in ccm_canaries.shell_cluster_warnings(projects):
-        print(f"\033[33m⚠ {cluster_msg}\033[0m")
-    for silence_msg in ccm_canaries.hook_silence_warnings(projects):
-        print(f"\033[33m⚠ {silence_msg}\033[0m")
+    for warning in status_warnings(projects):
+        print(f"\033[33m⚠ {warning}\033[0m")
     print()
 
     # A SHELL row hosting an external agent says so once, with the
-    # `⚙name` badge beside the project name. It used to say it twice —
-    # a `(name)` note in this column repeated the badge, and widening
-    # the column to fit it shifted every other row's layout.
+    # `▸name` badge beside the project name, so this column stays narrow
+    # and no row's layout shifts for it.
     status_w = 12
-
-    print(f"{C_BOLD}{'STATUS':<{status_w}} {'PROJECT':<20} {'MODE':<8} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
-    print(f"{'------':<{status_w}} {'-------':<20} {'----':<8} {'------':<16} {'-----':<12} {'---------'}")
+    rows = []
 
     for p in projects:
         color = C_STATE.get(p.state, C_DIM)
@@ -385,14 +417,13 @@ def print_status():
         # for IDLE.
         suffix = signal_age_suffix(
             p.dir, p.state, session_id=p.cached_session_id or "")
-        if p.bg_active:
-            suffix += " (bg)"
+        bg = " (bg)" if p.bg_active else ""
         # Pad the STATUS column by VISIBLE width (pad_to_width), not by
         # len(): the per-state colour codes differ in length (256-colour
-        # `\033[38;5;209m` is 11 chars vs `\033[1;33m` at 7), so the old
-        # `22 + len(suffix)` format spec put the PROJECT column at a
+        # `\033[38;5;209m` is 11 chars vs `\033[1;33m` at 7), so a
+        # len()-based width would put the PROJECT column at a
         # different offset for BUSY/SHELL vs PERMIT/IDLE/DOWN rows.
-        status_text = f"{icon} {p.state}{suffix}"
+        status_text = f"{icon} {p.state}{suffix}{bg}"
         if display_width(status_text) > status_w:
             # pad_to_width passes overlong content through unchanged,
             # so a stale-signal row (`⚠ PERMIT (12m)` = 14 cols) would
@@ -401,9 +432,13 @@ def print_status():
             # wrong age); the icon/colour still flags the state, and
             # only PERMIT can overflow (BUSY + suffix fits exactly).
             status_text = f"{icon} {p.state}"
+            suffix = bg = ""
+        # `(bg)` takes the working colour: the window is IDLE, but
+        # something Claude started is still running.
         status_field = (
-            f"{color}{pad_to_width(status_text, status_w)}"
-            f"{C_RESET}"
+            f"{color}{icon} {p.state}{suffix}{C_RESET}"
+            f"{f'{C_BG_WORK}{bg}{C_RESET}' if bg else ''}"
+            f"{' ' * max(0, status_w - display_width(status_text))}"
         )
         # Pane-count marker `[N]` belongs to the PROJECT column.
         # Brackets dim, digit cyan to draw the eye to the count.
@@ -423,8 +458,8 @@ def print_status():
         if getattr(p, "ignored_panes", 0):
             # An ignored Claude sidekick waiting on a permission
             # dialog turns its ⊘ PERMIT-yellow — the counterpart of
-            # the ⚙ badge's attention colour, since a hidden claude
-            # wears ⊘ rather than ⚙.
+            # the ▸ badge's attention colour, since a hidden claude
+            # wears ⊘ rather than ▸.
             ignore_colour = (
                 C_STATE["PERMIT"]
                 if "claude" in getattr(p, "attention_agents", ())
@@ -434,23 +469,25 @@ def print_status():
         else:
             ignore_marker = ""
         pane_marker += ignore_marker
-        # External-agent presence badge `⚙<name>`: a pane running an
+        # External-agent presence badge `▸<name>`: a pane running an
         # external agent CLI exists in this window. Dim like `⊘` —
         # presence only, not a state. When a sidekick has a live
         # attention marker (it is blocked on a decision), the badge
         # takes PERMIT's bold yellow: same colour vocabulary, same
         # meaning — a human is needed — while staying out of the
         # 4-state model itself.
-        ext_label = external_agent_label(p)
-        if ext_label:
-            badge = f"⚙{ext_label}"
-            colour = (C_STATE["PERMIT"]
-                      if getattr(p, "attention_agents", ()) else C_DIM)
-            pane_marker += f" {colour}{badge}{C_RESET}"
+        badge = external_agent_badge(p)
+        if badge:
+            pane_marker += f" {C_DIM}{EXTERNAL_AGENT_MARK}{C_RESET}"
+            for text, ext_state in external_agent_segments(p):
+                colour = C_STATE[ext_state] if ext_state else C_DIM
+                pane_marker += f"{colour}{text}{C_RESET}"
             pane_marker_visible_w += 1 + display_width(badge)
         # Spool marker `✉N`: N messages are queued for this project
         # (store-and-forward). Dim like `⊘` — a queue length, not a
-        # state. `✉` (U+2709) is ambiguous-width, same as `⚙`.
+        # state. `✉` (U+2709) is ambiguous-width (unlike the `▸`
+        # badge, which was picked Neutral-width for exactly this
+        # reason).
         spool_n = spool_counts.get(p.name, 0)
         if spool_n:
             spool_marker = f"✉{spool_n}"
@@ -476,10 +513,24 @@ def print_status():
         # spaces under `<20` and overflow the column by 6 columns.
         # A name wider than the column is truncated (wide chars kept
         # whole) instead of being clamped to zero padding, which
-        # previously let an overlong name shove every later column
+        # would let an overlong name shove every later column
         # rightward and break the table.
-        name_avail = max(0, 20 - pane_marker_visible_w)
-        name_text = truncate_to_width(p.name, name_avail)
+        rows.append((status_field, p.name, pane_marker, pane_marker_visible_w,
+                     mode_field, branch, ports, d))
+
+    # The PROJECT column is 20 wide, wider when a row's markers would
+    # leave its name fewer than PROJECT_NAME_KEEP columns (several
+    # sidekicks, each with its state's icon). One width for every row,
+    # so the later columns stay aligned.
+    project_w = max([PROJECT_COL_W] + [
+        marker_w + min(display_width(name), PROJECT_NAME_KEEP)
+        for _, name, _, marker_w, *_ in rows])
+    print(f"{C_BOLD}{'STATUS':<{status_w}} {pad_to_width('PROJECT', project_w)} {'MODE':<8} {'BRANCH':<16} {'PORTS':<12} {'DIRECTORY'}{C_RESET}")
+    print(f"{'------':<{status_w}} {pad_to_width('-------', project_w)} {'----':<8} {'------':<16} {'-----':<12} {'---------'}")
+    for (status_field, name, pane_marker, marker_w, mode_field, branch,
+         ports, d) in rows:
+        name_avail = max(0, project_w - marker_w)
+        name_text = truncate_to_width(name, name_avail)
         name_pad_w = max(0, name_avail - display_width(name_text))
         name_field = f"{name_text}{pane_marker}{' ' * name_pad_w}"
         print(f"{status_field} {name_field} {mode_field} "
@@ -488,10 +539,34 @@ def print_status():
     _print_spool_summary(spool_counts)
 
 
+def spool_expired_warning():
+    """One line naming messages that expired without being delivered,
+    or "" when there are none.
+
+    Shared by `ccm status` and the dashboard so the same fact carries
+    the same weight in both — the reader who sees it in one place and
+    not the other learns to trust neither.
+    """
+    expired = ccm_spool.expired_counts()
+    total = sum(expired.values())
+    if not total:
+        return ""
+    names = ", ".join(f"{n}:{c}" for n, c in sorted(expired.items()))
+    if len(names) > 50:
+        names = names[:47] + "..."
+    return (f"spool: {total} expired undelivered ({names}) — "
+            "`ccm spool list`")
+
+
 def _print_spool_summary(spool_counts):
     """A queued-but-undelivered message is the store-and-forward
     equivalent of an unread refusal — keep the totals visible where
-    an agent polling `ccm status` will see them."""
+    an agent polling `ccm status` will see them.
+
+    Expired messages are named too, and named separately: a queue
+    length says work is still on its way, while an expired one says
+    work never arrived. Reporting only the first leaves a loss with
+    no trace anywhere the reader looks."""
     total_queued = sum(spool_counts.values())
     if total_queued:
         breakdown = ", ".join(f"{n}:{c}" for n, c in spool_counts.items())
@@ -582,12 +657,16 @@ def print_tree():
 # intent of `C_STATE` for ccm projects: NEEDS demands attention
 # (yellow), WORKING is in-progress (cyan), IDLE is at-rest (blue),
 # DONE / FAILED are terminal (dim / red).
+#: Widest a blocked session's ask is printed in `ccm bg list`.
+BG_NEEDS_MAX_WIDTH = 60
+
 _BG_STATE_COLOR = {
     "NEEDS": "\033[1;33m",       # bold yellow
     "WORKING": "\033[36m",       # cyan
     "IDLE": "\033[0;34m",        # blue
     "DONE": "\033[2m",           # dim
     "FAILED": "\033[31m",        # red
+    "STOPPED": "\033[2m",       # dim
     "UNKNOWN": "\033[2m",        # dim
 }
 
@@ -618,9 +697,9 @@ def print_bg_sessions():
         return
 
     print(f"{C_BOLD}{'SHORT':<10} {'STATE':<11} {'NAME':<38} "
-          f"{'AGE':<7} {'DIRECTORY'}{C_RESET}")
+          f"{'AGE':<7} {'DIRECTORY / NEEDS'}{C_RESET}")
     print(f"{'-----':<10} {'-----':<11} {'----':<38} "
-          f"{'---':<7} {'---------'}")
+          f"{'---':<7} {'-----------------'}")
 
     for s in sessions:
         from ccm_agentview import STATE_ICONS as BG_ICONS
@@ -649,13 +728,22 @@ def print_bg_sessions():
             else:
                 age_str = f"{age // 86400}d"
 
-        d = ccm_core.shorten_home(s.cwd) if s.cwd else ""
+        # A blocked session's ask says more than its directory; it
+        # takes the last column, in the state's colour, cut to one
+        # line's worth so the table stays a table.
+        needs = getattr(s, "needs", "")
+        if needs:
+            if display_width(needs) > BG_NEEDS_MAX_WIDTH:
+                needs = truncate_to_width(needs, BG_NEEDS_MAX_WIDTH - 1) + "…"
+            d = f"{color}{needs}{C_RESET}"
+        else:
+            d = ccm_core.shorten_home(s.cwd) if s.cwd else ""
 
         short_field = pad_to_width(s.short, 10)
         age_field = pad_to_width(age_str, 7)
 
         print(f"{short_field} {state_field:<{state_w}} {name_padded} "
-              f"{age_field} {C_DIM}{d}{C_RESET}")
+              f"{age_field} {C_DIM}{d}{C_RESET}")  # a coloured ask resets inside
 
 
 def print_statusline():

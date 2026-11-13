@@ -11,11 +11,14 @@ Three independent canary classes:
   - **hooks.log size**: anthropics/claude-code#16047 — a bloated
     `~/.claude/hooks.log` silently disables every hook write.
   - **Settings flags**: `disableAllHooks: true` and
-    `allowManagedHooksOnly: true` in `~/.claude/settings.json`
-    silently disable user-scope hooks (every ccm hook is user-scope).
-  - **Cluster-SHELL transitions**: rapid SHELL → BUSY → SHELL loops
-    likely mean the macOS silent-exit regression
-    (anthropics/claude-code#48069) is recycling Claude.
+    managed `allowManagedHooksOnly` locks disable user-scope hooks
+    (every ccm hook is user-scope). Invalid managed values are reported.
+  - **Cluster-SHELL transitions**: several transitions into SHELL
+    within a short window. What it observes is that Claude left the
+    pane repeatedly; why is not observed — an update relaunching in
+    place, manual exits, or unexpected exits all look the same here.
+    One known cause of unexpected exits is anthropics/claude-code#48069
+    (macOS silent exit), named in the warning as a lead, not a verdict.
 
 Cross-module discipline: this module imports `ccm_core` for
 late-bound access to `tmux_cmd` (so test mocks via
@@ -30,6 +33,7 @@ import sys
 import time
 
 import ccm_core  # late-bound for tmux_cmd
+from ccm_settings import read_settings as _read_settings_file
 
 
 # ─── Cluster-SHELL configuration ───
@@ -59,11 +63,13 @@ HOOKS_LOG_WARN_BYTES = int(
 
 
 def hooks_log_size() -> int:
-    """Return the byte size of `~/.claude/hooks.log`, or -1 if absent."""
+    """Return the byte size of `~/.claude/hooks.log`, or -1 if absent, -2 if unreadable."""
     try:
         return os.path.getsize(CLAUDE_HOOKS_LOG)
-    except OSError:
+    except FileNotFoundError:
         return -1
+    except OSError:
+        return -2
 
 
 def hooks_log_warning() -> str:
@@ -77,7 +83,7 @@ def hooks_log_warning() -> str:
     mb = size / (1024 * 1024)
     return (
         f"Claude hooks.log is {mb:.0f} MB — hooks may be silently failing. "
-        f"Run `: > ~/.claude/hooks.log` to restore hook delivery (#16047)."
+        "Save a copy first, then run `: > ~/.claude/hooks.log` to restore hook delivery (#16047)."
     )
 
 
@@ -85,8 +91,7 @@ def hooks_log_warning() -> str:
 # `log_caught_exception` records every silent catch in errors.log
 # and is wrapped around hot paths (inject_status, dashboard refresh,
 # build_project_list, autosave). A bug that fires every poll cycle
-# (e.g. the autosave NameError that ran 38 hours undetected before
-# we caught it) writes ~30 entries per minute. Without a canary,
+# writes an entry on every cycle. Without a canary,
 # operators only notice when they happen to run `ccm errors`.
 #
 # The canary scans errors.log itself (no separate counter state to
@@ -159,15 +164,11 @@ MANAGED_SETTINGS_FILES = {
     "win32": r"C:\ProgramData\ClaudeCode\managed-settings.json",
 }
 MANAGED_SETTINGS_DEFAULT = "/etc/claude-code/managed-settings.json"
-
-
-def _read_settings_file(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+# The label `_settings_sources` gives the managed file. It is BOTH
+# printed and compared against, so it lives in one place: renaming a
+# label that doubles as a discriminator silently stops a warning
+# firing, which is the one direction a canary must never fail in.
+MANAGED_SOURCE_LABEL = "managed-settings.json"
 
 
 def _settings_sources(projects=None):
@@ -179,8 +180,17 @@ def _settings_sources(projects=None):
     one that decides. Getting this order wrong does not change whether
     a warning fires, but it names the wrong file when more than one
     carries the flag, and the name is the whole point of saying it.
+
+    Only the FILE form of the managed tier is here. An organization can
+    also deliver managed settings through MDM / OS policy or from the
+    claude.ai console, and neither leaves a file to read — so a flag
+    enforced that way is invisible from here. That is why the label is
+    the file name rather than "managed settings": a check that cannot
+    see two of the three delivery paths must not answer for the tier.
+    Claude Code itself is the authority (`/status` names the managed
+    source in force); ccm does not re-derive it.
     """
-    yield ("managed settings",
+    yield (MANAGED_SOURCE_LABEL,
            MANAGED_SETTINGS_FILES.get(sys.platform, MANAGED_SETTINGS_DEFAULT))
     for project in projects or []:
         directory = os.path.expanduser(getattr(project, "dir", "") or "")
@@ -194,18 +204,72 @@ def _settings_sources(projects=None):
     yield ("user settings", CLAUDE_SETTINGS_FILE)
 
 
+def unreadable_settings(projects=None, managed_only=False):
+    """Labels of the settings files that are there but could not be
+    read as settings — not valid JSON, not an object, no permission.
+
+    A file that is absent sets nothing, and that is an answer. A file
+    that is present and unreadable is not: whatever it says, this
+    side did not see it, so "the flag is not set" is not something
+    the scan can say about it. Overlapping writers can leave
+    `~/.claude/settings.json` cut off mid-object.
+    """
+    labels = []
+    for label, path in _settings_sources(projects):
+        if managed_only and label != MANAGED_SOURCE_LABEL:
+            continue
+        if os.path.lexists(path) and _read_settings_file(path) is None:
+            labels.append(label)
+    return labels
+
+
+def _managed_hooks_lock(value) -> bool:
+    """Managed boolean lock parsing in Claude Code 2.1.282.
+
+    Quoted booleans are converted, null is absent, and other invalid
+    values fail closed. disableAllHooks is explicitly excluded from
+    this upstream parser and must not use this rule.
+    """
+    return value is not None and value is not False and value != "false"
+
+
 def _flag_source(flag, projects=None) -> str:
-    """Label of the first settings file setting `flag` true, else ""."""
+    """Label of the first file enabling a flag, including managed locks."""
     for label, path in _settings_sources(projects):
         data = _read_settings_file(path)
-        if data and data.get(flag) is True:
+        if not data or flag not in data:
+            continue
+        value = data[flag]
+        if (value is True or
+                (label == MANAGED_SOURCE_LABEL and
+                 flag == "allowManagedHooksOnly" and _managed_hooks_lock(value))):
             return label
     return ""
 
 
+def _managed_nonboolean_warning(flag) -> str:
+    """Explain malformed managed values without claiming literal true."""
+    for label, path in _settings_sources():
+        if label != MANAGED_SOURCE_LABEL:
+            continue
+        data = _read_settings_file(path)
+        if not data or flag not in data or isinstance(data[flag], bool):
+            return ""
+        if flag == "allowManagedHooksOnly":
+            if not _managed_hooks_lock(data[flag]):
+                return ""
+            effect = ("Claude Code 2.1.282 reads it as true, so all "
+                      "user-scope hooks (including every ccm hook) are blocked.")
+        else:
+            effect = "This value is ignored by Claude Code 2.1.282."
+        return (f"Claude Code `{flag}` has a non-boolean value in {label}. "
+                f"{effect} Ask your administrator to correct the setting; "
+                "check /status for the managed policy in force.")
+    return ""
+
+
 def disable_all_hooks_warning(projects=None) -> str:
-    """Return a warning string if `disableAllHooks: true` is set in
-    ~/.claude/settings.json, otherwise "".
+    """Warn about enabled disableAllHooks or an invalid managed value.
 
     Per Claude Code's docs, this setting disables ALL hooks AND any
     custom statusLine — ccm's entire fast-path signal goes dark with
@@ -231,12 +295,12 @@ def disable_all_hooks_warning(projects=None) -> str:
             "configured will stop rendering. Remove the setting to "
             "restore real-time hook signals."
         )
-    return ""
+    return _managed_nonboolean_warning("disableAllHooks")
 
 
 def managed_hooks_only_warning(projects=None) -> str:
-    """Return a warning string if `allowManagedHooksOnly: true` is set
-    in any settings file that applies, otherwise "".
+    """Warn about a managed allowManagedHooksOnly lock, including
+    non-boolean values interpreted as true by Claude Code 2.1.282.
 
     Per Claude Code's docs, when this is set in *managed* settings,
     every user-scope hook (which is exactly where ccm installs all
@@ -251,8 +315,11 @@ def managed_hooks_only_warning(projects=None) -> str:
     on working. `projects` is accepted for a uniform signature.
     """
     del projects  # deliberately not scanned; see above
+    malformed = _managed_nonboolean_warning("allowManagedHooksOnly")
+    if malformed:
+        return malformed
     source = _flag_source("allowManagedHooksOnly")
-    if source == "managed settings":
+    if source == MANAGED_SOURCE_LABEL:
         return (
             f"Claude Code `allowManagedHooksOnly: true` is set in "
             f"{source} — all user-scope hooks (including every ccm "
@@ -363,12 +430,17 @@ def _push_shell_transition(win_target: str) -> None:
 
 
 def _format_cluster_warning(history_len: int, project_name: str) -> str:
+    """Say what was seen — repeated transitions into SHELL — and list
+    the causes that look identical from here. The upstream issue is
+    one of them, offered as a lead; the wording must not promise a
+    cause, nor that `claude --continue` restores the conversation."""
     label = f"{project_name}: " if project_name else ""
     return (
-        f"{label}Claude Code exited {history_len}+ times in "
-        f"{SHELL_CLUSTER_WINDOW // 60} min — likely "
-        f"{SHELL_CLUSTER_ISSUE} ({SHELL_CLUSTER_ISSUE_NOTE}). "
-        f"The conversation auto-restores via `claude --continue`."
+        f"{label}Claude left the pane {history_len}+ times in "
+        f"{SHELL_CLUSTER_WINDOW // 60} min — an update relaunching, manual "
+        f"exits, or unexpected exits look the same here. If unintended, "
+        f"see `ccm doctor`; one known cause of unexpected exits is "
+        f"{SHELL_CLUSTER_ISSUE} ({SHELL_CLUSTER_ISSUE_NOTE})."
     )
 
 
@@ -398,13 +470,12 @@ def shell_cluster_warnings(projects) -> list:
     return out
 
 
-# ─── Hook-silence canary (opt-in, observe-first) ───
+# ─── Hook-silence canary (opt-in) ───
 #
 # Detects the upstream failure mode where a session's hook event log
 # stops updating while the conversation is demonstrably still active —
 # the #16047-class regression where hooks silently stop firing
-# mid-session (hooks silent through a
-# whole real turn). When that happens ccm's precise event-log path goes
+# mid-session. When that happens ccm's precise event-log path goes
 # blind and detection falls back to the coarser raw+JSONL heuristics,
 # where false BUSY/IDLE become possible. Surfacing this tells the
 # operator "detection is degraded for project X, and it's upstream, not
@@ -423,24 +494,18 @@ def shell_cluster_warnings(projects) -> list:
 #                       "event log exists" requirement excludes it
 #   - idle session   → no fresh JSONL activity, freshness gate excludes
 #
-# OBSERVE-FIRST: default OFF. During calibration the operator opts in
-# with `@ccm-hook-silence on` and watches the dashboard footer; a
-# mis-tuned threshold can then only mislead someone who explicitly
-# asked to see it, never a default user. Promote to default-on in a
-# later release once real-session dogfooding confirms zero false fires.
+# Default OFF: a mis-tuned threshold can then only mislead someone who
+# opted in with `@ccm-hook-silence on`, never a default user.
 
 HOOK_SILENCE_FRESH = int(os.environ.get("CCM_HOOK_SILENCE_FRESH", "90"))
 HOOK_SILENCE_GAP = int(os.environ.get("CCM_HOOK_SILENCE_GAP", "120"))
 _HOOK_SILENCE_OPT = "@ccm-hook-silence"
 
-# ─── Firing log (evidence for the default-on promotion) ───
-# Warnings alone leave no trace: the promotion criteria ("zero false
-# fires across N days of dogfood", "caught at least one real
-# silence") cannot be evaluated from memory. Every firing appends one
-# JSON line so the calibration record survives dashboard restarts and
-# reboots. The log lives under the persistent data dir (NOT
-# $TMPDIR — macOS purges that within days, which would erase exactly
-# the multi-week evidence this exists to collect) and is deliberately
+# ─── Firing log ───
+# Warnings alone leave no trace, so every firing appends one JSON
+# line that survives dashboard restarts and reboots. The log lives
+# under the persistent data dir (NOT $TMPDIR — macOS purges that
+# within days) and is deliberately
 # separate from errors.log so firings can't trip the
 # `errors_log_burst_warning` canary or drown real silent-catch
 # records.
@@ -516,8 +581,7 @@ def _log_hook_silence_firing(project_name, project_dir, state,
 
 def hook_silence_log_count() -> int:
     """Number of firing records in the active log (rotated `.1` not
-    counted). `ccm doctor` shows this so the promotion review has its
-    evidence count one command away. Returns 0 when the log is
+    counted), shown by `ccm doctor`. Returns 0 when the log is
     absent or unreadable."""
     try:
         with open(hook_silence_log_path(), encoding="utf-8") as f:

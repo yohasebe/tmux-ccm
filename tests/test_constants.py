@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+import ccm_composer
 import ccm_constants
 
 
@@ -60,6 +61,40 @@ class TestClassifyPermitModal:
     tests to exact wording.
     """
 
+    @pytest.mark.parametrize("footer", [
+        # /autocompact and /effort captured from 2.1.280;
+        # /fast's enabled form verified in the installed bundle.
+        "←/→ to adjust · Enter to apply · Esc to cancel",
+        "←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel",
+        "Space to toggle · Enter to confirm · Esc to cancel",
+    ])
+    def test_adjustment_modals_v2_1_280(self, footer):
+        assert ccm_constants.PATTERN_PERMIT_FOOTER.match("   " + footer)
+        assert ccm_constants.classify_permit_modal("Settings\n   " + footer)[0] == "confirmation-modal"
+
+    @pytest.mark.parametrize("text", [
+        "←/→ to switch · ↓ to select · Esc to cancel",
+        "Esc to close",
+        "Use Space to toggle · Enter to confirm · Esc to cancel",
+        "The hint is ←/→ to adjust · Enter to apply · Esc to cancel",
+        "←/→ to adjust ·\nEnter to apply",
+        "Space to toggle ·\nEnter to confirm · Esc to cancel",
+    ])
+    def test_adjustment_prefix_does_not_match_prose_or_cross_lines(self, text):
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.match(text)
+
+    def test_permissions_navigation_with_enter_is_not_permit(self):
+        # Source-derived from 2.1.280; this focus state was not captured live.
+        footer = "↑/↓ to navigate · Enter to select · ←/→ to switch · Esc to cancel"
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.match(footer)
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.search("Permissions\n" + footer)
+
+    def test_known_limit_unverified_tab_prefix_is_not_registered(self):
+        # Synthetic future form, not an observation. If captured in a
+        # confirmation dialog later, register it and update this expectation.
+        assert not ccm_constants.PATTERN_PERMIT_FOOTER.match(
+            "Tab to switch · Enter to apply · Esc to cancel")
+
     def test_session_resume_modal(self):
         text = (
             "This session is 2h 15m old and 43k tokens.\n"
@@ -75,10 +110,8 @@ class TestClassifyPermitModal:
     @pytest.mark.parametrize("age", ["45m", "2h 15m", "2d 4h", "1d"])
     def test_session_resume_age_takes_any_units(self, age):
         """The age line carries whatever units it needs. Requiring a
-        fixed `\\d+h \\d+m` pair excluded every session under the hour,
-        and `--continue` also resumes ones days old. Found while fixing
-        the same mistake in PATTERN_ACTIVE_SPINNER, where
-        an hours component silently stopped the match.
+        fixed `\\d+h \\d+m` pair would exclude every session under the
+        hour, and `--continue` also resumes ones days old.
 
         The age line alone must classify: the recommended-summary line
         that would otherwise carry it is dropped here on purpose."""
@@ -138,9 +171,8 @@ class TestClassifyPermitModal:
         cat, _ = ccm_constants.classify_permit_modal(text)
         assert cat == "confirmation-modal"
 
-    def test_ask_user_question_menu_footer_measured_2026_07_26(self):
-        """Verbatim footer of a live `AskUserQuestion` choice menu,
-        captured from a real pane on (v2.1.220).
+    def test_ask_user_question_menu_footer_is_a_permit_footer(self):
+        """The footer of a live `AskUserQuestion` choice menu.
 
         This one is load-bearing beyond classification: the PERMIT
         staleness guard in `ccm_activity.map_activity_to_state`
@@ -166,7 +198,7 @@ class TestClassifyPermitModal:
         assert ccm_constants.PATTERN_PERMIT_FOOTER.search(text)
 
     def test_idle_composer_is_not_a_permit_footer(self):
-        """The other half of the measurement: the same pane with no
+        """The other half: the same pane with no
         modal (empty `❯` composer + status line) must NOT match, or
         every idle session would read as PERMIT. Captured alongside
         the menu above."""
@@ -180,7 +212,7 @@ class TestClassifyPermitModal:
 
     def test_footerless_webfetch_permission_is_permission_request(self):
         """Footer-less WebFetch / web-content permission dialog
-        (observed, raised by a background subagent). It
+        (raised by a background subagent). It
         must classify as the DANGEROUS permission-request kind, not a
         safe confirmation-modal — `ccm send` warns the operator not
         to dismiss a permission prompt from another pane, and that
@@ -211,6 +243,43 @@ class TestClassifyPermitModal:
         )
         cat, guidance = ccm_constants.classify_permit_modal(text)
         assert cat == "permission-request"
+
+    def test_folder_trust_prompt_is_a_permission_request(self):
+        """The first-run folder-trust prompt carries the same
+        `Enter to confirm · Esc to cancel` footer a safe picker uses,
+        so without a content signature it read as harmless — and the
+        guidance would have invited dismissing it from another pane.
+        Answering it grants read, edit and execute in that
+        directory."""
+        text = (
+            " Quick safety check: Is this a project you created or one "
+            "you trust?\n"
+            " \u276f 1. Yes, I trust this folder\n"
+            "   2. No, exit\n"
+            " Enter to confirm \u00b7 Esc to cancel"
+        )
+        cat, guidance = ccm_constants.classify_permit_modal(text)
+        assert cat == "permission-request"
+
+    def test_trust_signature_does_not_catch_the_safe_pickers(self):
+        for text in ("Switch between Claude models\nEnter to confirm \u00b7 Esc to cancel",
+                     "This session is 3h 11m old\nEnter to confirm \u00b7 Esc to cancel"):
+            assert ccm_constants.classify_permit_modal(text)[0] != "permission-request"
+
+    def test_question_accepts_nbsp_after_to(self):
+        """The composer uses a NO-BREAK SPACE; the question prefix
+        must accept horizontal whitespace, not only an ordinary
+        space."""
+        assert ccm_constants.PATTERN_PERMISSION_DIALOG.search(
+            "Do you want to allow Claude to\u00a0fetch this content?")
+
+    def test_wrapped_question_text_is_a_quotation_not_a_dialog(self):
+        """The question phrase split across a line break is a wrapped
+        transcript quotation, not a live dialog. The question prefix
+        matches horizontal whitespace only (space / tab / NBSP), so a
+        newline after `to` must not count."""
+        text = "Do you want to allow Claude to\nfetch this content?"
+        assert not ccm_constants.PATTERN_PERMISSION_DIALOG.search(text)
 
     def test_confirmation_modal_footer_only(self):
         """No content signature matches but footer is the confirm
@@ -286,36 +355,33 @@ class TestPermitFooterPattern:
         assert self._matches("Enter to confirm · Esc to exit")
 
     def test_confirm_modal_v2_1_144_model_picker(self):
-        """v2.1.144 added a `d to set as default` action key between
+        """The `/model` footer with a `d to set as default` action key between
         `Enter to confirm` and `Esc to cancel` on `/model`. Without
-        the intermediate-segment tolerance the pre-existing regex
-        would have silently dropped this footer — `ccm send` would
+        the intermediate-segment tolerance the regex
+        would silently drop this footer — `ccm send` would
         then deliver keystrokes into the open picker and could
-        accidentally confirm a model change. Verified empirically
- against Claude Code v2.1.144."""
+        accidentally confirm a model change."""
         assert self._matches(
             "Enter to confirm · d to set as default for new sessions · Esc to cancel"
         )
 
     def test_confirm_modal_v2_1_153_model_picker(self):
-        """v2.1.153 reworded the `/model` footer: the Enter verb is
-        now `set as default` (formerly `confirm`) and the alternate
-        action is `s to use this session only`. The pre-v2.1.153
-        regex hard-coded `Enter to confirm` and would silently
-        drop this footer, leaving `/model` undetected (IDLE) while
-        the user is actually blocked at the picker. Verified
-        empirically against Claude Code v2.1.153."""
+        """The `/model` footer whose Enter verb is `set as default`
+        and whose alternate action is `s to use this session only`. A
+        regex that hard-codes `Enter to confirm` would drop this footer,
+        leaving `/model` undetected (IDLE) while the user is blocked at
+        the picker."""
         assert self._matches(
             "Enter to set as default · s to use this session only · Esc to cancel"
         )
 
     def test_confirm_modal_with_pipe_separator(self):
-        """`|` separator variant — observed historically as an
+        """`|` separator variant, an
         alternative to `·` on some terminals/themes."""
         assert self._matches("Enter to confirm | Esc to cancel")
 
     def test_footerless_permission_dialog_deny_option(self):
-        """Footer-less permission dialog (observed on a
+        """Footer-less permission dialog (a
         WebFetch permission raised by a background subagent):
             Do you want to allow Claude to fetch this content?
             ❯ 1. Yes
@@ -323,9 +389,7 @@ class TestPermitFooterPattern:
               3. No, and tell Claude what to do differently (esc)
         There is NO `Esc to cancel · Tab to amend` footer here — the
         `(esc)` is inline on the deny option. The deny-option line is
-        the PERMIT signal. ccm showed IDLE for this blocking dialog
-        until the deny-option alternative was added; verified live
-        against the paused dialog."""
+        the PERMIT signal."""
         assert self._matches(
             "  3. No, and tell Claude what to do differently (esc)"
         )
@@ -346,10 +410,7 @@ class TestPermitFooterPattern:
             ❯ 1. Allow
               2. Allow all actions on www.example.org for this session
               3. Deny (esc)
-        The old alternative fixed the deny label to one dialog's
-        wording, so this one read as no-match — hook path only, and
-        BUSY/IDLE whenever hooks are silent. Verified against the live
-        dialog. The label is matched as a negative word, not a
+        The label is matched as a negative word, not a
         wording."""
         assert self._matches("  3. Deny (esc)")
 
@@ -361,9 +422,9 @@ class TestPermitFooterPattern:
     def test_cursor_on_the_deny_line_still_matches(self):
         """Arrowing onto the deny option rewrites the line as
         `❯ 3. Deny (esc)`. Without the optional cursor prefix the
-        footer match dropped out at exactly that moment — and the line
-        fell through to PATTERN_INPUT_PROMPT, reading as an idle
-        prompt while the dialog was open. Review finding."""
+        footer match would drop out at exactly that moment, and the
+        line would fall through to PATTERN_INPUT_PROMPT, reading as an
+        idle prompt while the dialog is open."""
         assert self._matches("❯ 3. Deny (esc)")
         assert self._matches("❯ 2. No, and tell Claude what to do differently (esc)")
 
@@ -468,11 +529,45 @@ class TestAgentsTUIDetection:
         )
         assert self._detect(text)
 
+    def test_collapsed_row_footer(self):
+        """The TUI draws a DIFFERENT footer for a collapsed row —
+        different verb, different middle segments. Fixing the leading
+        verb to `open` read this state as not-the-TUI and silently
+        lifted the send refusal: keystrokes spawned an unintended
+        agent-view session."""
+        text = (
+            "  3 sessions collapsed\n"
+            "enter to collapse · ctrl+x to delete all · ? for shortcuts"
+        )
+        assert self._detect(text)
+
+    def test_mode_chip_prefixed_footer(self):
+        """After `←` backgrounds the session, the agent view draws a
+        THIRD footer variant with a mode chip prepended. A line-start
+        anchor read this as not-the-TUI, lifting the send refusal —
+        and with the dispatch box's ghost correctly passing the
+        dim-draft check, the send flowed into the box that spawns a
+        brand-new session."""
+        text = (
+            "  session a · idle · 2m\n"
+            "❯ describe a task for a new session\n"
+            "⏵⏵ auto mode · enter to return · space to reply · "
+            "ctrl+x to delete · ? for shortcuts"
+        )
+        assert self._detect(text)
+
+    def test_for_shortcuts_without_question_mark_not_matched(self):
+        """The literal `?` is a required anchor: a different UI that
+        merely ends in `for shortcuts` must not classify as the
+        agents TUI."""
+        assert not self._detect(
+            "enter to open · ctrl+x to delete · for shortcuts")
+
     def test_case_insensitive(self):
         """Upstream tweaks capitalization periodically; the matcher
         is IGNORECASE so we don't have to chase wording drift."""
         assert self._detect("Enter to open · ? for shortcuts")
-        assert self._detect("ENTER TO OPEN something FOR SHORTCUTS")
+        assert self._detect("ENTER TO OPEN something ? FOR SHORTCUTS")
 
     def test_empty_and_none(self):
         assert not self._detect("")
@@ -499,21 +594,33 @@ class TestAgentsTUIDetection:
         assert not self._detect("Esc to cancel · Tab to amend")
         assert not self._detect("Enter to confirm · Esc to cancel")
 
-    def test_body_text_with_phrases_not_at_line_start(self):
-        """Defensive: claude could mention these phrases in answer
-        text. The line-start MULTILINE anchor keeps body text from
-        false-tripping the matcher — only the actual footer line
-        at column 0 (after optional whitespace) qualifies."""
+    def test_body_text_with_phrases_on_separate_lines_not_matched(self):
+        """Defensive: claude could quote these phrases in answer text.
+        The `enter to …` half and the `? for shortcuts` half must sit
+        on the SAME line to match, so prose that mentions them on
+        separate lines cannot false-trip the matcher."""
         text = (
-            "I see you have `enter to open` mapped in your TUI; the "
-            "documentation says `? for shortcuts` shows the help."
+            "In the agents TUI, `enter to open` opens a session row.\n"
+            "Press `? for shortcuts` there to see the help overlay."
         )
         assert not self._detect(text)
 
+    def test_single_line_full_skeleton_quote_matches(self):
+        """Documents the accepted cost of dropping the line-start
+        anchor (needed for the mode-chip variant): prose quoting the
+        WHOLE skeleton on ONE line matches. The caller only captures
+        the send-time tail (-S -10) and the failure direction is a
+        visible refusal — the safe side."""
+        text = (
+            "the footer reads `enter to open · space to reply · "
+            "ctrl+x to delete · ? for shortcuts` verbatim"
+        )
+        assert self._detect(text)
+
 
 class TestStaleReleaseWindows:
-    """The BUSY and PERMIT stale-release windows were split apart so
-    they could be tuned independently. The behaviour
+    """The BUSY and PERMIT stale-release windows are separate so they
+    can be tuned independently. The behaviour
     tests around them are written boundary-relative — `W ± 1` — which
     correctly exercises the mechanism but adapts to whatever the
     constant says, so none of them would notice the BUSY window being
@@ -544,3 +651,135 @@ class TestStaleReleaseWindows:
         window only governs the already-resolved case, where being
         slow is harmless."""
         assert ccm_constants.PERMIT_MAX_TIMEOUT == 600
+
+
+class TestPromptHeldNotice:
+    """Claude Code does not always take a prompt on the Enter that
+    submits it: since 2.1.277 one carrying characters it strips is
+    rewritten and held for the sender to confirm. It says so in a
+    line above the composer — the only thing on screen that does."""
+
+    RULE = "\u2500" * 30
+
+    def _screen(self, *above, composer="\u276f Reply only HOLD_OK. AB"):
+        return "\n".join([*above, self.RULE, composer, self.RULE,
+                           "  \u23f5\u23f5 auto mode on", ""])
+
+    @pytest.mark.parametrize("notice", [
+        "Removed 1 invisible character \u00b7 review and press Enter to send",
+        "Removed 9 invisible characters \u00b7 review and press Enter to send",
+    ], ids=["one", "nine"])
+    def test_the_notice_is_returned_whatever_it_counts(self, notice):
+        """How many characters were removed, and why, is upstream's
+        wording: a count this side insisted on would be a second
+        place to get it wrong."""
+        assert ccm_composer.prompt_held_notice(
+            self._screen("  " + notice)) == notice
+
+    def test_a_rewording_of_the_instruction_is_still_read(self):
+        notice = "Cleaned the prompt \u00b7 press Enter again to send"
+        assert ccm_composer.prompt_held_notice(self._screen("  " + notice)) \
+            == notice
+
+    def test_no_notice_is_no_hold(self):
+        """What the composer holds says nothing: a draft typed after
+        the send landed sits there exactly like a message held back.
+        Only the notice separates them."""
+        assert ccm_composer.prompt_held_notice(
+            self._screen(composer="\u276f reply only")) is None
+        assert ccm_composer.prompt_held_notice(
+            self._screen(composer="\u276f ")) is None
+
+    def test_a_notice_shaped_line_further_up_the_pane_is_not_the_notice(self):
+        """A transcript can hold the notice verbatim — a reply quoting
+        it, an earlier hold scrolled up. Only the rows right above
+        the composer are the CLI speaking now. The composer holds a
+        draft here, so the row limit is the only thing refusing."""
+        quoted = "  Removed 1 invisible character \u00b7 review and press Enter to send"
+        assert ccm_composer.prompt_held_notice(
+            self._screen(quoted, "", "", composer="\u276f a draft")) is None
+
+    @pytest.mark.parametrize("composer", ["\u276f ", "\u276f something else"],
+                             ids=["empty-composer", "another-draft"])
+    @pytest.mark.parametrize("rows_above", [1, 2])
+    def test_a_reply_saying_the_words_is_not_the_notice(self, composer, rows_above):
+        """Measured against 2.1.278: a streamed reply whose lines read
+        `press Enter to send` sits in the same rows as the notice — a
+        hint line between it and the rule, or nothing. It carries the
+        instruction but not the status line's shape, and with an
+        empty composer nothing is being held whatever it says."""
+        above = ["  press Enter to send"] + ["  (hint line)"] * (rows_above - 1)
+        assert ccm_composer.prompt_held_notice(
+            self._screen(*above, composer=composer)) is None
+
+    def test_the_notice_over_an_empty_composer_is_not_a_hold(self):
+        """A held prompt is in the composer. The notice's last
+        moments over a box already cleared are not a hold."""
+        notice = "  Removed 1 invisible character \u00b7 review and press Enter to send"
+        assert ccm_composer.prompt_held_notice(
+            self._screen(notice, composer="\u276f ")) is None
+
+    def test_a_notice_cut_short_by_a_narrow_pane_is_not_read(self):
+        """At 60 columns the line is cut before the instruction, so
+        the hold is not read."""
+        cut = "  Removed 1 invisible character \u00b7 review and press Enter \u2026"
+        assert ccm_composer.prompt_held_notice(self._screen(cut)) is None
+
+    def test_no_composer_is_no_answer(self):
+        """A dialog covering the composer, or a capture that read
+        nothing: no notice is read (None), and the caller reports the
+        send without a hold."""
+        assert ccm_composer.prompt_held_notice("") is None
+        assert ccm_composer.prompt_held_notice(
+            "review and press Enter to send\nDo you want to proceed?\n"
+            "\u276f 1. Yes") is None
+
+
+class TestComposerRule:
+    """The rules above and below the composer, including the upper
+    one carrying a named session's name (2.1.304)."""
+
+    @pytest.mark.parametrize("line", [
+        "\u2500" * 10,
+        "  " + "\u2500" * 80 + "  ",
+        "\u2500" * 60 + " Gemini\u306e\u65b0\u30e2\u30c7\u30eb\u3092\u78ba\u8a8d \u2500",
+        "\u2500" * 30 + " Check the new release " + "\u2500" * 3,
+        "\u2500" * 30 + "\u00a0Check\u00a0\u2500",
+        "\u2500\u2500 Check the new release " + "\u2500" * 40,
+    ], ids=["ten", "padded", "cjk-name", "name", "nbsp", "name-left"])
+    def test_rules(self, line):
+        assert ccm_composer.PATTERN_COMPOSER_RULE.match(line)
+
+    @pytest.mark.parametrize("line", [
+        "\u2500" * 9,
+        "\u2500" * 10 + " output without a closing rule",
+        "heading " + "\u2500" * 20,
+        "\u2500\u2500 short \u2500\u2500",
+        "\u2500" * 10 + "\u252c" + "\u2500" * 10,
+        "\u276f " + "\u2500" * 20,
+    ], ids=["nine", "no-close", "text-first", "short-runs", "table", "prompt"])
+    def test_not_rules(self, line):
+        assert not ccm_composer.PATTERN_COMPOSER_RULE.match(line)
+
+
+class TestComposerExtendedColours:
+    @pytest.mark.parametrize("colour", [
+        "38;5;2", "48;5;2", "38;2;100;100;100", "48;2;100;100;100",
+        "38;5;0", "48;5;22", "38;2;0;22;2", "48;2;22;0;2",
+    ])
+    @pytest.mark.parametrize("dim", [False, True])
+    def test_extended_colour_preserves_draft_or_suggestion(self, colour, dim):
+        plain = "──────────\n❯ text\n──────────"
+        prefix = "\x1b[2m" if dim else ""
+        attributed = f"──────────\n❯ {prefix}\x1b[{colour}mtext\x1b[0m\n──────────"
+        result = ccm_composer.composer_draft_fragment(plain, attributed)
+        assert result == (None if dim else "❯ text")
+
+    @pytest.mark.parametrize("reset", ["0", "22"])
+    def test_attribute_after_colour_still_clears_dim(self, reset):
+        line = f"❯ \x1b[2;38;2;100;100;100;{reset}mtext"
+        assert not ccm_composer._fragment_text_is_dim(line)
+
+    @pytest.mark.parametrize("colour", ["38", "48;2;100", "38;5;"])
+    def test_incomplete_colour_keeps_draft(self, colour):
+        assert not ccm_composer._fragment_text_is_dim(f"❯ \x1b[2;{colour}mtext")

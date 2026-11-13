@@ -4,6 +4,7 @@
 import fcntl
 import os
 import re
+import shlex
 import sys
 import time
 import unicodedata
@@ -18,15 +19,19 @@ from ccm_constants import (
     STATE_ICONS,
     STATE_PRIORITY,
 )
+import ccm_core  # noqa: E402
 from ccm_core import (
     build_project_list,
     tmux_batch,
     tmux_cmd,
+    tmux_literal,
 )
 import ccm_spool
 from ccm_notify import notify
 from ccm_render import (ambiguous_width_declared, display_width,
-                        external_agent_label, signal_age_suffix)
+                        EXTERNAL_AGENT_MARK, external_agent_badge,
+                        external_agent_segments,
+                        signal_age_suffix)
 from ccm_runtime import (
     auto_exit_idle,
     periodic_autosave,
@@ -44,7 +49,17 @@ TMUX_COLORS = {
     "IDLE": "#5f87af",
     "SHELL": "#8a8a8a",
     "DOWN": "#8a8a8a",
+    "IGNORED": "#8a8a8a",
 }
+
+
+_SHOWN_TEXT = re.compile(r"##|#\[[^\]]*\]")
+
+
+def shown_text(entry):
+    """What a status entry draws: styles removed and `##` read as the
+    one `#` tmux shows, scanned left to right as tmux does."""
+    return _SHOWN_TEXT.sub(lambda m: "#" if m.group() == "##" else "", entry)
 
 
 def strip_tmux_formats(s):
@@ -75,7 +90,8 @@ def strip_tmux_formats(s):
 def acquire_lockfile():
     """Prevent concurrent inject-status execution using flock."""
     lockfile = os.path.join(CCM_TMP_DIR, "inject.lock")
-    os.makedirs(CCM_TMP_DIR, exist_ok=True)
+    if not ccm_core.secure_tmp_root(CCM_TMP_DIR):
+        sys.exit(0)
 
     fd = open(lockfile, "w", encoding="utf-8")
     try:
@@ -155,7 +171,55 @@ def priority_icon(projects):
     return "≡"
 
 
-def build_detail_entries(projects, with_extras=False, current_win_target=""):
+# The project in the window you are looking at is drawn on its own
+# background across its whole cell, separator spaces included, so it
+# reads at a glance which one that is. A neutral grey that every state
+# colour stays legible on; `@ccm-status-current-bg` overrides it.
+CURRENT_PILL_BG = "#505050"
+# The dim greys the entries use would sink into that background; on it
+# they are drawn lighter.
+_LIFTED_ON_PILL = {"#666666": "#a8a8a8", "#888888": "#b8b8b8"}
+
+
+def _as_current_pill(entry, pill_bg):
+    """Put an entry on the current-project background. The background is
+    named in every style change inside it, so nothing can drop it
+    halfway; the block's colours come back in `_join_entries`, after
+    the space that follows."""
+    def restyle(m):
+        style = m.group()[2:-1]
+        for dim, lifted in _LIFTED_ON_PILL.items():
+            style = style.replace(f"fg={dim}", f"fg={lifted}")
+        return f"#[{style},bg={pill_bg}]"
+    return f"#[bg={pill_bg}]" + _SHOWN_TEXT.sub(
+        lambda m: m.group() if m.group() == "##" else restyle(m), entry)
+
+
+def _is_current_pill(entry):
+    return entry.startswith("#[bg=")
+
+
+def _join_entries(entries, separators, pill_bg, block_bg, block_fg):
+    """Interleave `entries` with `separators` (one more than the entries:
+    the lead, those between, and the end). Each separator before an entry
+    must end with a space and each after one must start with a space; the
+    current entry's background takes in those two spaces, which are the
+    cell it owns, and adds no columns."""
+    if not entries:
+        return "".join(separators)
+    seps = list(separators)
+    for i, entry in enumerate(entries):
+        if _is_current_pill(entry):
+            seps[i] = seps[i][:-1] + f"#[bg={pill_bg}] "
+            seps[i + 1] = f" #[bg={block_bg},nobold,fg={block_fg}]" + seps[i + 1][1:]
+    out = seps[0]
+    for entry, sep in zip(entries, seps[1:]):
+        out += entry + sep
+    return out
+
+
+def build_detail_entries(projects, with_extras=False, current_win_target="",
+                         pill_bg=CURRENT_PILL_BG):
     """Build status bar entries for mode 1/2.
     current_win_target: full `session:window_index` of the active
     window. Compared against `Project.win_target`, not just the
@@ -167,6 +231,10 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         color = TMUX_COLORS.get(p.state, TMUX_COLORS["SHELL"])
         icon = STATE_ICONS.get(p.state, "○")
         is_current = (p.win_target == current_win_target)
+        # The entry is a status format: the name and branch come from
+        # outside, so they go in as literal text.
+        name = tmux_literal(p.name)
+        branch = tmux_literal(p.branch) if p.branch else ""
 
         # Stale-signal suffix for BUSY / PERMIT (e.g. "(2m)"). Same
         # threshold as the dashboard / `ccm status` affordance — gives
@@ -184,8 +252,7 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # Stale-age and bg fire on different states (BUSY/PERMIT vs
         # IDLE) so they're mutually exclusive. Both render AFTER
         # the state icon as state-modifiers ("BUSY but stale", "IDLE
-        # but with leftover bg processes").
-        post = stale or bg
+        # but with leftover bg processes"); see `_render_post`.
         # Multi-pane marker `[N]` is structural (about the window's
         # pane layout, not the project's state). Render it BEFORE
         # the icon so the visual unit `:icon` stays clean and the
@@ -194,14 +261,13 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
         # draws the eye. ASCII-only to avoid font/terminal width
         # ambiguity that would offset later columns.
         pane_n = str(p.pane_count) if p.pane_count > 1 else ""
-        # External-agent presence badge `⚙<name>` (mode 2 only — mode
+        # External-agent presence badge `▸<name>` (mode 2 only — mode
         # 1 is the minimal no-extras format). Dim; presence only, not
         # a state. The label is the shared one from ccm_render so the
         # badge text matches `ccm status` / the dashboard exactly.
-        ext_label = external_agent_label(p)
+        ext_badge = external_agent_badge(p)
         # A SHELL row with an external agent is marked once, by the
-        # `⚙name` badge. A `(name)` note in the post slot used to
-        # repeat it on the same entry.
+        # `▸name` badge.
 
         def _render_pane_marker(name_color):
             """`[N]` with brackets dim and N cyan, returning to
@@ -213,54 +279,73 @@ def build_detail_entries(projects, with_extras=False, current_win_target=""):
                 f"#[fg={name_color}]"
             )
 
+        def _render_post():
+            """The stale age dim; `(bg)` in BUSY's colour — the
+            window is IDLE, but something Claude started is still
+            running."""
+            if stale:
+                return f"#[fg=#666666]{stale}#[fg=#9E9E9E]"
+            if bg:
+                return f"#[fg={TMUX_COLORS['BUSY']}]{bg}#[fg=#9E9E9E]"
+            return ""
+
         if with_extras:
-            # Mode 2: idx:name (branch) [:port][ [N]]:icon[(stale|bg)]
+            # Mode 2: idx:name (branch) [:port][ [N]]:icon[(stale|bg)][ ▸agent]
             if is_current:
-                entry = f"#[fg=#ffffff,bold]{p.win_idx}:#[fg=#ffffff,bold]{p.name}"
+                entry = f"#[fg=#ffffff,bold]{p.win_idx}:#[fg=#ffffff,bold]{name}"
             else:
-                entry = f"#[fg=#666666]{p.win_idx}:#[fg=#9E9E9E]{p.name}"
-            if p.branch:
+                entry = f"#[fg=#666666]{p.win_idx}:#[fg=#9E9E9E]{name}"
+            if branch:
                 if is_current:
-                    entry += f" #[fg=#888888](#[fg=cyan,bold]{p.branch}#[fg=#888888])#[fg=#ffffff,bold]"
+                    entry += f" #[fg=#888888](#[fg=cyan,bold]{branch}#[fg=#888888])#[fg=#ffffff,bold]"
                 else:
-                    entry += f" #[fg=#666666](#[fg=cyan]{p.branch}#[fg=#666666])#[fg=#9E9E9E]"
+                    entry += f" #[fg=#666666](#[fg=cyan]{branch}#[fg=#666666])#[fg=#9E9E9E]"
             if p.ports:
                 entry += f"#[fg=#666666][:{p.ports}]#[fg=#9E9E9E]"
             entry += _render_pane_marker(
                 "#ffffff,bold" if is_current else "#9E9E9E"
             )
-            # Presence badge next to [N], same dim treatment — except
-            # when a sidekick holds a live attention marker, where the
-            # badge takes PERMIT yellow (a human is needed) without
-            # entering the state model.
-            if ext_label:
-                badge_fg = ("yellow,bold"
-                            if getattr(p, "attention_agents", ())
-                            else "#666666")
-                entry += (
-                    f" #[fg={badge_fg}]⚙{ext_label}"
-                    f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
-                )
             entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
-            if post:
-                entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"
+            entry += _render_post()
+            # Sidekick badge after Claude's own icon, so the icon and
+            # `(bg)` read as Claude's, not the sidekick's: dim while
+            # the sidekick only sits there, PERMIT yellow with ⚠ while
+            # it waits for a person, BUSY's colour with ◉ while it
+            # works — without entering the window's state model.
+            if ext_badge:
+                entry += f" #[fg=#666666]{EXTERNAL_AGENT_MARK}"
+                for text, ext_state in external_agent_segments(p):
+                    badge_fg = ("yellow,bold" if ext_state == "PERMIT"
+                                else TMUX_COLORS["BUSY"] if ext_state == "BUSY"
+                                else "#666666")
+                    entry += f"#[fg={badge_fg}]{text}#[nobold]"
+                entry += f"#[fg={'#ffffff,bold' if is_current else '#9E9E9E'}]"
             if is_current:
                 entry += "#[nobold]"
         else:
             # Mode 1: name[ [N]]:icon[(stale|bg)]
             if is_current:
-                entry = f"#[fg=#ffffff,bold]{p.name}"
+                entry = f"#[fg=#ffffff,bold]{name}"
                 entry += _render_pane_marker("#ffffff,bold")
                 entry += f":#[fg={color},bold]{icon}#[nobold]#[fg=#9E9E9E]"
             else:
-                entry = f"{p.name}"
+                entry = name
                 entry += _render_pane_marker("#9E9E9E")
                 entry += f":#[fg={color}]{icon}#[fg=#9E9E9E]"
-            if post:
-                entry += f"#[fg=#666666]{post}#[fg=#9E9E9E]"
+            entry += _render_post()
 
+        if is_current:
+            entry = _as_current_pill(entry, pill_bg)
         entries.append(entry)
     return entries
+
+
+def refresh_command():
+    """The `#(...)` that has tmux run inject-status again whenever it draws
+    the bar. tmux expands formats inside it before the shell runs it, so
+    the install path goes in literally."""
+    ccm_bin = shlex.quote(os.path.join(CCM_ROOT, "ccm"))
+    return f"#({tmux_literal(ccm_bin)} inject-status 2>/dev/null)"
 
 
 def scan_active_windows(projects, include_all=False):
@@ -348,8 +433,7 @@ def _ambiguous_width_allowance(text):
 
     On a terminal that draws these narrow, the hedge is not free. In
     left placement the columns nobody used stay on screen as a band of
-    empty space after `status-left` — measured at 12 columns on a real
-    theme. The reservation is right while the width is unknown and
+    empty space after `status-left`. The reservation is right while the width is unknown and
     wrong the moment it is known.
     """
     if ambiguous_width_declared():
@@ -363,9 +447,8 @@ def _ambiguous_width_allowance(text):
 # The plain text of mode 1's list structure. The width budget is
 # measured from these strings and the list is drawn from them, so the
 # accounting cannot drift away from the rendering. The bar is a box
-# drawing character, which is ambiguous-width like the state icons —
-# reserving its plain width alone left the block a column short per
-# separator.
+# drawing character, which is ambiguous-width like the state icons,
+# so its plain width alone can fall a column short per separator.
 ENTRY_LEAD = " "          # before the first entry
 ENTRY_SEPARATOR = " │ "   # between entries
 LIST_END = " │"           # closes the list, before the preserved content
@@ -393,7 +476,7 @@ def _worst_case_width(text):
     little takes characters off the entry the placement exists to
     protect.
     """
-    plain = re.sub(r"#\[[^\]]*\]", "", text)
+    plain = shown_text(text)
     return display_width(plain) + _ambiguous_width_allowance(plain)
 
 
@@ -411,7 +494,7 @@ def original_status_right_width(original):
     preserve.
 
     Falls back to counting the template when the option cannot be
-    expanded, which is the old behaviour: short by however much the
+    expanded: short by however much the
     variable parts expand, but better than refusing to render.
     """
     measured = reserved_width("#{T:@ccm-orig-status-right}")
@@ -439,8 +522,8 @@ def inject_status(force_fast=False):
     the cached `@ccm_prev_state` instead. Used by the focus-refresh
     path (window switch): the only thing that changed is which window
     is current, the per-project states are already known, and a full
-    detection here would add ~250 ms of lag to a switch that should
-    feel instant. The next regular poll tick re-detects."""
+    detection here would add lag to a switch that should feel
+    instant. The next regular poll tick re-detects."""
     lock_fd = acquire_lockfile()
     if lock_fd is None and not force_fast:
         # The periodic (full-detection) path must not double-run: two
@@ -450,11 +533,9 @@ def inject_status(force_fast=False):
     # force_fast proceeds EVEN IF the lock is held. It is read-only on
     # @ccm_prev_state (cached render, no detection), so it cannot
     # cause state flicker — and it must not skip: a window switch
-    # landing while a periodic tick is running (~25% of the time at
-    # status-interval 1, full detection ~250 ms) would otherwise drop
+    # landing while a periodic tick is running would otherwise drop
     # the focus refresh, leaving the highlight stalled until the next
-    # tick. That was the intermittent "status bar didn't switch on
-    # dashboard select" bug.
+    # tick.
     try:
         _inject_status_impl(force_fast=force_fast)
         if force_fast:
@@ -478,6 +559,19 @@ def inject_status(force_fast=False):
                 pass
 
 
+def _apply_permit_pending(projects, pending):
+    """Force PERMIT on the one window the hook named, if detection has
+    not caught up yet. `pending` is the window target the hook wrote
+    (`session:index`); it is compared whole, so two tmux sessions
+    with a window at the same index cannot be confused. A value in
+    the older `index:name` form matches nothing and is dropped."""
+    for p in projects:
+        if p.win_target == pending:
+            if p.state != "PERMIT":
+                p.state = "PERMIT"
+            return
+
+
 def _inject_status_impl(force_fast=False):
     # Detect external status-right changes
     detect_external_status_change()
@@ -486,9 +580,12 @@ def _inject_status_impl(force_fast=False):
     # If dashboard is running, skip full detection to avoid race conditions.
     # Both inject-status and dashboard write @ccm_prev_state via _set_win_state;
     # running both causes state flickering between different detection results.
-    dash_pidfile = os.path.join(CCM_TMP_DIR, "dashboard.pid")
+    # The popup and the docked dashboard keep separate pid files.
     dashboard_running = False
-    if os.path.exists(dash_pidfile):
+    for name in ("dashboard.pid", "dashboard-dock.pid"):
+        dash_pidfile = os.path.join(CCM_TMP_DIR, name)
+        if not os.path.exists(dash_pidfile):
+            continue
         try:
             dash_pid = int(open(dash_pidfile, encoding="utf-8").read().strip())
             os.kill(dash_pid, 0)
@@ -509,14 +606,7 @@ def _inject_status_impl(force_fast=False):
     permit_pending = tmux_cmd("show-option", "-gqv", "@ccm-permit-pending")
     if permit_pending:
         tmux_cmd("set", "-g", "-u", "@ccm-permit-pending")  # Clear flag
-        # Force PERMIT state on the matching project if not already detected
-        parts = permit_pending.split(":", 1)
-        if len(parts) == 2:
-            pending_idx, pending_name = parts
-            for p in projects:
-                if p.win_idx == pending_idx and p.state != "PERMIT":
-                    p.state = "PERMIT"
-                    break
+        _apply_permit_pending(projects, permit_pending)
 
     # Maintenance side effects run ONLY on the periodic (non-fast)
     # path. The fast path bypasses the flock precisely so it can run
@@ -528,7 +618,7 @@ def _inject_status_impl(force_fast=False):
     # user's shell (the shape documented in
     # ccm_runtime.py's auto_exit_idle). They also cost several tmux
     # subprocesses per call, which contradicts the fast path's job:
-    # a ~10 ms cached-state redraw on every hook fire / window switch.
+    # a cheap cached-state redraw on every hook fire / window switch.
     if not force_fast:
         # Always update window name icons
         update_window_names(projects)
@@ -609,8 +699,7 @@ def _inject_status_impl(force_fast=False):
 
         # Spool drain: deliver messages `ccm send` queued while the
         # target was undeliverable. One driver only (this periodic
-        # full pass, under the flock) in v1 — hook-driven delivery is
-        # a latency optimisation deferred to v1.1. Must run BEFORE
+        # full pass, under the flock). Must run BEFORE
         # auto-exit: a session with a pending message is about to be
         # used, and delivering it flips the session to BUSY, which
         # auto-exit then leaves alone.
@@ -631,8 +720,7 @@ def _inject_status_impl(force_fast=False):
         pass
 
     original = tmux_cmd("show-option", "-gqv", "@ccm-orig-status-right")
-    ccm_bin = os.path.join(CCM_ROOT, "ccm")
-    refresh = f"#({ccm_bin} inject-status 2>/dev/null)"
+    refresh = refresh_command()
 
     # Current window target (session:index) for highlighting the active
     # project in mode 1/2. Indices alone are not unique across sessions,
@@ -654,17 +742,24 @@ def _inject_status_impl(force_fast=False):
             ("set", "-g", "window-status-current-format", ""),
         )
 
-        entries = build_detail_entries(all_projects, current_win_target=current_win_target)
+        pill_bg = _opt_color("@ccm-status-current-bg", CURRENT_PILL_BG)
+        entries = build_detail_entries(
+            all_projects, current_win_target=current_win_target,
+            pill_bg=pill_bg)
+
+        # The terminal width bounds the entry budget below and, after
+        # the write, the `status-right-length` floor — the latter on
+        # every write, entries or not, so it is read before the branch.
+        term_width = 120
+        try:
+            term_width = int(tmux_cmd("display-message", "-p", "#{client_width}") or "120")
+        except ValueError:
+            pass
 
         if not entries:
             new_status = f"#[fg=#666666]≡#[default] {original}{refresh}"
         else:
             # Calculate available width for ccm entries
-            term_width = 120
-            try:
-                term_width = int(tmux_cmd("display-message", "-p", "#{client_width}") or "120")
-            except ValueError:
-                pass
             orig_visible = original_status_right_width(original)
             # What the block spends outside the entries, measured from
             # the very strings it will draw rather than guessed at: the
@@ -672,18 +767,16 @@ def _inject_status_impl(force_fast=False):
             # preserved. The refresh suffix is a `#()` whose command
             # prints nothing, so it draws no columns.
             #
-            # This was a flat 10 while the parts around it were
-            # approximate. Now that both segments are reserved for
-            # their worst case, the same slack is being kept twice, and
-            # it shows: on a wide bar the entries were pushed 20
-            # columns clear of `status-left`.
+            # No extra slack is added: both segments are already
+            # reserved for their worst case, and slack on top would
+            # push the entries clear of `status-left` on a wide bar.
             avail = term_width - orig_visible - _worst_case_width(LIST_END)
 
             # Select entries by priority (highest first) until width is exhausted,
             # then reverse so high-priority items appear on the right (visible in right-aligned status-right)
             selected = []
             for entry in entries:
-                stripped = re.sub(r'#\[[^\]]*\]', '', entry)
+                stripped = shown_text(entry)
                 # display_width, not len(): CJK project/branch names
                 # occupy two terminal columns per character; len()
                 # counts one, overestimating the remaining budget and
@@ -691,11 +784,10 @@ def _inject_status_impl(force_fast=False):
                 # CJK — validate_name only strips shell metacharacters).
                 # What placing this entry costs beyond the entry
                 # itself: a leading space for the first, ` │ ` for
-                # every one after it. Charging 3 to all of them
-                # reserved two columns nobody drew — and charging the
-                # separator its plain width reserved one column too
-                # few, because that bar is an ambiguous-width glyph
-                # like the icons inside the entries.
+                # every one after it (ENTRY_LEAD, then ENTRY_SEPARATOR),
+                # each charged its worst-case width, because the bar is
+                # an ambiguous-width glyph like the icons inside the
+                # entries.
                 #
                 # The allowance covers the state icon and any other
                 # ambiguous-width glyph in the entry, which may draw
@@ -751,15 +843,16 @@ def _inject_status_impl(force_fast=False):
             def _styled(sep):
                 return sep.replace("│", "#[fg=#666666]│#[fg=#9E9E9E]")
 
-            detail = ""
-            for i, entry in enumerate(selected):
-                detail += _styled(ENTRY_SEPARATOR if i else ENTRY_LEAD)
-                detail += entry
+            separators = ([_styled(ENTRY_LEAD)]
+                          + [_styled(ENTRY_SEPARATOR)] * (len(selected) - 1)
+                          + [_styled(LIST_END)])
+            detail = _join_entries(selected, separators, pill_bg,
+                                   "#3a3a3a", "#9E9E9E")
 
             gap = " " * pad if pad > 0 else ""
             new_status = (
                 f"#[fg=#9E9E9E,bg=#3a3a3a]{detail}"
-                f"{_styled(LIST_END)}#[default]{gap}{original}{refresh}"
+                f"#[default]{gap}{original}{refresh}"
             )
 
         if new_status != prev_status:
@@ -786,7 +879,6 @@ def _inject_status_impl(force_fast=False):
 
         all_projects = apply_shell_filter(
             scan_active_windows(projects, include_all=True))
-        entries = build_detail_entries(all_projects, with_extras=True, current_win_target=current_win_target)
 
         # Visual palette for the dedicated mode-2 line(s). `BG`
         # (slightly darker than the main bar) keeps the ccm rows
@@ -803,6 +895,10 @@ def _inject_status_impl(force_fast=False):
         FG_DEFAULT = _opt_color("@ccm-status-fg", "#9E9E9E")
         FG_DIM = _opt_color("@ccm-status-fg-dim", "#5a5a5a")
         SEP = f"  #[fg={FG_DIM}]·#[fg={FG_DEFAULT}]  "
+        pill_bg = _opt_color("@ccm-status-current-bg", CURRENT_PILL_BG)
+        entries = build_detail_entries(
+            all_projects, with_extras=True, current_win_target=current_win_target,
+            pill_bg=pill_bg)
         SEP_VISIBLE_W = 5  # "  ·  "
         GUTTER_FMT = f"#[fill={GUTTER_BG}]#[bg={GUTTER_BG}] "
 
@@ -825,7 +921,7 @@ def _inject_status_impl(force_fast=False):
             # Estimate entry width from ALL entries (strip tmux color codes)
             total_visible_width = 0
             for e in entries:
-                stripped = re.sub(r'#\[[^\]]*\]', '', e)
+                stripped = shown_text(e)
                 # display_width, not len() — see the mode-1 width note:
                 # CJK names are two columns per character, and an
                 # underestimate here packs too many entries per line,
@@ -838,18 +934,12 @@ def _inject_status_impl(force_fast=False):
             # binding constraint is tmux's `status` option itself:
             # it accepts on/off/2..5, i.e. AT MOST 5 status lines
             # total. With 1 main bar + 1 gutter, entry lines max out
-            # at 3. This is NOT theoretical: with 27 projects the
-            # layout wanted 4 entry lines → `set -g status 6` →
-            # tmux rejected it ("unknown value: 6") and — because
-            # the whole mode-2 render is one `;`-chained batch — the
-            # status-format writes died with it. Every render path
-            # (periodic tick, focus hook, manual run) failed the
-            # same way, so the bar froze at the last good bake:
-            # stale states, stale highlight, newly added projects
-            # missing entirely (incident; the freeze
-            # looked like "the focus mechanism broke" but was the
-            # whole bar). `_MODE2_MAX_SLOTS` still bounds the
-            # cleanup range for slots left over from this bug's era.
+            # at 3. Asking for more makes tmux reject the value
+            # ("unknown value: 6"), and because the whole mode-2
+            # render is one `;`-chained batch, the status-format
+            # writes die with it and the bar freezes at its last
+            # good bake. `_MODE2_MAX_SLOTS` still bounds the
+            # cleanup range for any slots left over.
             max_entry_lines = min(_MODE2_MAX_SLOTS - 1,
                                   _TMUX_STATUS_MAX_LINES - 2)
             if num_lines > max_entry_lines:
@@ -867,17 +957,13 @@ def _inject_status_impl(force_fast=False):
 
             entry_idx = 0
             for line_idx in range(num_lines):
-                line_str = ""
-                count = 0
-                while entry_idx < len(entries) and count < entries_per_line:
-                    if count > 0:
-                        line_str += SEP
-                    else:
-                        line_str += " "
-                    line_str += entries[entry_idx]
-                    entry_idx += 1
-                    count += 1
-                fmt = f"#[fill={BG}]#[fg={FG_DEFAULT},bg={BG}]{line_str}  "
+                line_entries = entries[entry_idx:entry_idx + entries_per_line]
+                entry_idx += len(line_entries)
+                separators = ([" "] + [SEP] * (len(line_entries) - 1)
+                              + ["  "])
+                line_str = _join_entries(line_entries, separators, pill_bg,
+                                         BG, FG_DEFAULT)
+                fmt = f"#[fill={BG}]#[fg={FG_DEFAULT},bg={BG}]{line_str}"
                 # +2 because slot 0 is main bar, slot 1 is gutter,
                 # slot 2 is first entry line.
                 cmds.append(("set", "-g", f"status-format[{line_idx + 2}]", fmt))
@@ -918,8 +1004,7 @@ _MODE2_MAX_SLOTS = 16
 # Hard ceiling on how many status LINES tmux will render. The
 # `status` option accepts on / off / 2..5 — passing anything above 5
 # fails with "unknown value: N" and, inside a `;`-chained batch,
-# takes every subsequent command down with it (the
-# frozen-status-bar incident). Layout math must never ask for more
+# takes every subsequent command down with it. Layout math must never ask for more
 # than this many total lines (main bar + gutter + entry lines).
 _TMUX_STATUS_MAX_LINES = 5
 
@@ -1036,11 +1121,29 @@ def _write_cache(cache_file, content):
         pass
 
 
+# The global options a pass reads, fetched in one tmux process when it
+# starts. Any not listed is read on its own when needed; this list
+# only saves work. Settings only: a flag
+# that hooks write and a pass consumes (@ccm-permit-pending) must be
+# read when it is consumed, never from the start of the pass.
+PASS_OPTIONS = (
+    "status-right", "status-right-length",
+    "@ccm-orig-status-right", "@ccm-orig-sr-length", "@ccm-status-line",
+    "@ccm-status-line-position", "@ccm-status-line-hide-shell",
+    "@ccm-mock-state", "@ccm-idle-timeout",
+    "@ccm-ambiguous-width", "@ccm-notify", "@ccm-notify-sound",
+    "@ccm-notify-sound-name", "@ccm-status-current-bg", "@ccm-status-bg",
+    "@ccm-status-gutter-bg", "@ccm-status-fg", "@ccm-status-fg-dim",
+)
+
+
 if __name__ == "__main__":
     try:
         # `--fast` forces the cached-state render (focus-refresh on
         # window switch); the default path runs full detection.
         import sys as _sys
+        import ccm_core as _core
+        _core.prefetch_global_options(PASS_OPTIONS)
         inject_status(force_fast="--fast" in _sys.argv[1:])
     except Exception:
         # Never crash — tmux will retry. But log so the next

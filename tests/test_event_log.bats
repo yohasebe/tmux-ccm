@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Tests for the event log writer. Each hook script appends one JSONL
 # record to $HOOK_DIR/<session_id>.events.jsonl in addition to
 # writing the signal file. This suite verifies both the event-log
@@ -8,13 +9,15 @@ CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
 load helpers/mock_tmux.bash
 
-# Synthetic session_id used in every hook payload. Bats tests no
-# longer derive KEY from cwd — session_id is the primary key, so we
-# pin a fixed UUID here and inject it into each payload via the
-# `_payload` helper.
+# Synthetic session_id used in every hook payload. session_id is the
+# primary key, so we pin a fixed UUID here and inject it into each
+# payload via the `_payload` helper.
 TEST_SESSION_ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 setup() {
+    # The temp roots made below must be closed to others, as ccm makes them;
+    # under umask 002 ccm would rightly move them aside.
+    umask 077
     SANDBOX="$(mktemp -d)"
     export TMPDIR="${SANDBOX}/tmp"
     mkdir -p "$TMPDIR"
@@ -37,7 +40,7 @@ setup() {
 
 # Inject session_id into a JSON payload string. Used by every
 # end-to-end hook test so payloads always carry the field hooks
-# now require for keying.
+# require for keying.
 _with_session() {
     local payload="$1"
     # Strip the trailing `}` and append the session_id field
@@ -268,6 +271,85 @@ _wait_for_stub_log() {
     grep -q -- "inject-status --fast" "$CCM_STUB_LOG"
 }
 
+@test "on-pre-tool-use.sh: tmux calls that fail do not fail the hook" {
+    # Real tmux: `refresh-client` exits 1 with no client attached.
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    printf 'refresh-client\nset-option\nrename-window\n' > "${MOCK_STATE_DIR}/fail"
+    run _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreCompact","cwd":"/x/test-project"}'
+    [[ "$status" -eq 0 ]]
+    _wait_for_stub_log
+    grep -q -- "inject-status --fast" "$CCM_STUB_LOG"
+}
+
+@test "write_signal: a PERMIT with failing tmux calls still returns 0" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    printf 'refresh-client\nset-option\nset\nrename-window\n' > "${MOCK_STATE_DIR}/fail"
+    run bash -c 'set -euo pipefail; source "$1/hooks/lib.sh"; _ccm_instant_notify() { :; }; ccm_write_signal "$2" "$3" PERMIT /x/test-project "Bash: ls"; wait; echo done' \
+        _ "$CCM_ROOT" "$HOOK_DIR" "$KEY"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *done* ]]
+}
+
+@test "on-pre-tool-use.sh: a failed window listing does not fail the hook" {
+    printf 'list-windows\n' > "${MOCK_STATE_DIR}/fail"
+    run _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreCompact","cwd":"/x/test-project"}'
+    [[ "$status" -eq 0 ]]
+    [[ -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-permission-request.sh: a failed window listing does not fail the hook" {
+    printf 'list-windows\n' > "${MOCK_STATE_DIR}/fail"
+    run _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","tool_name":"Bash"}'
+    [[ "$status" -eq 0 ]]
+    run cat "${HOOK_DIR}/${KEY}"
+    [[ "$output" == *PERMIT* ]]
+}
+
+@test "on-stop.sh: a failed window listing does not fail the hook" {
+    printf 'list-windows\n' > "${MOCK_STATE_DIR}/fail"
+    run _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    [[ "$status" -eq 0 ]]
+    run _latest_type
+    [[ "$output" == "stop" ]]
+}
+
+@test "write_signal: a listing that fails after printing updates no window" {
+    _setup_push_stub
+    printf 'sess:1\t/x/test-project\ttest-project\tIDLE\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    : > "${MOCK_STATE_DIR}/windows-then-fail"
+    ccm_write_signal "$HOOK_DIR" "$KEY" "BUSY" "/x/test-project"
+    sleep 0.5
+    [[ ! -s "$CCM_STUB_LOG" ]]
+    run mock_get_option "sess:1" "@ccm_prev_state"
+    [[ -z "$output" ]]
+}
+
+@test "resolve_project: a listing that fails after printing gives no project" {
+    printf 'sess:1\t/x/test-project\ttest-project\n' \
+        > "${MOCK_STATE_DIR}/windows"
+    : > "${MOCK_STATE_DIR}/windows-then-fail"
+    run ccm_hook_resolve_project "/x/test-project"
+    [[ "$status" -eq 0 ]]
+    [[ -z "$output" ]]
+}
+
+@test "instant_permit_icon: failing tmux calls still return 0" {
+    printf 'set\nrefresh-client\n' > "${MOCK_STATE_DIR}/fail"
+    run bash -c 'set -euo pipefail; source "$1/hooks/lib.sh"; _ccm_instant_permit_icon sess:1 test-project; echo done' \
+        _ "$CCM_ROOT"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *done* ]]
+}
+
 # ─── hook_event_name() helper ───
 
 @test "hook_event_name: extracts from JSON payload" {
@@ -292,7 +374,7 @@ _run_hook() {
     # Hook scripts resolve TMPDIR and write under $TMPDIR/ccm-$UID/hooks,
     # so the sandbox TMPDIR from setup() is already in effect.
     # All payloads are augmented with the test session_id since hooks
-    # now key on it.
+    # key on it.
     printf '%s' "$(_with_session "$payload")" | bash "${CCM_ROOT}/hooks/${script}"
 }
 
@@ -335,6 +417,213 @@ _latest_type() {
     [[ "$output" == "subagent" ]]
 }
 
+@test "on-pre-tool-use.sh: a subagent's tool event stays out of the log, no BUSY signal" {
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ ! -f "$EVENTS_FILE" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent's tool event records its time" {
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    run cat "${HOOK_DIR}/${KEY}.agent-activity"
+    [[ "$output" =~ ^[0-9]+$ ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent's tool event leaves a Stop's cleared signal cleared" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    run _latest_type
+    [[ "$output" == "stop" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "subagent requests and events keep the main conversation's last event in the log" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        _run_hook on-permission-request.sh \
+            '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+        _run_hook on-pre-tool-use.sh \
+            '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    done
+    run wc -l < "$EVENTS_FILE"
+    [[ "$output" -eq 1 ]]
+}
+
+@test "on-permission-request.sh: a subagent's request is written to its own file" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1","tool_name":"Bash"}'
+    run cut -d' ' -f2- "${HOOK_DIR}/${KEY}.agent-permit.a1"
+    [[ "$output" == "PERMIT Subagent · Bash" ]]
+}
+
+@test "on-permission-request.sh: a subagent's request stays out of the log and the signal" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ ! -f "$EVENTS_FILE" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-permission-request.sh: a subagent's request still updates the window at once" {
+    _setup_push_stub
+    mkdir -p "${MOCK_STATE_DIR}/options/global"
+    printf 'off' > "${MOCK_STATE_DIR}/options/global/@ccm-notify"
+    printf '0:1\t/x/test-project\ttest-project\tIDLE\t%s\n' "$KEY" > "${MOCK_STATE_DIR}/windows"
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    run cat "${MOCK_STATE_DIR}/options/0___1/@ccm_prev_state"
+    [[ "$output" == "PERMIT" ]]
+}
+
+@test "on-permission-denied.sh: a subagent's denial is written to its own file" {
+    _run_hook on-permission-denied.sh \
+        '{"hook_event_name":"PermissionDenied","cwd":"/x/test-project","agent_id":"a1"}'
+    run cut -d' ' -f2 "${HOOK_DIR}/${KEY}.agent-permit.a1"
+    [[ "$output" == "PERMIT" ]]
+    [[ ! -f "$EVENTS_FILE" ]]
+}
+
+@test "on-permission-request.sh: the main conversation's request stays permit_req" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project"}'
+    run _latest_type
+    [[ "$output" == "permit_req" ]]
+    run find "$HOOK_DIR" -name "${KEY}.agent-permit*"
+    [[ -z "$output" ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent event keeps the main conversation's PERMIT signal" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project"}'
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    run cut -d' ' -f2 "${HOOK_DIR}/${KEY}"
+    [[ "$output" == "PERMIT" ]]
+}
+
+@test "on-pre-tool-use.sh: a subagent's event leaves a scheduled completion alone" {
+    : > "${HOOK_DIR}/${KEY}.pending"
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ -f "${HOOK_DIR}/${KEY}.pending" ]]
+}
+
+@test "on-pre-tool-use.sh: a main event cancels a scheduled completion" {
+    : > "${HOOK_DIR}/${KEY}.pending"
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project"}'
+    [[ ! -f "${HOOK_DIR}/${KEY}.pending" ]]
+}
+
+@test "on-permission-request.sh: a subagent's request leaves no temporary file" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    run find "$HOOK_DIR" -name "${KEY}.agent-permit.a1.*"
+    [[ -z "$output" ]]
+}
+
+@test "on-pre-tool-use.sh: the same subagent's next event answers its request" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "on-pre-tool-use.sh: the same subagent's end answers its request" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"SubagentStop","cwd":"/x/test-project","agent_id":"a1"}'
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "on-pre-tool-use.sh: another subagent's event leaves the request waiting" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"b2"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"SubagentStop","cwd":"/x/test-project","agent_id":"b2"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "two subagents' requests wait side by side" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"b2"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project","agent_id":"b2"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit.b2" ]]
+}
+
+@test "the main conversation going on leaves a subagent's request waiting" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    _run_hook on-prompt-submit.sh \
+        '{"hook_event_name":"UserPromptSubmit","cwd":"/x/test-project"}'
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PostToolUse","cwd":"/x/test-project"}'
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "on-session-end.sh: removes the subagent requests left waiting" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    printf '1 PERMIT' > "${HOOK_DIR}/${KEY}.agent-permit"
+    printf '1 PERMIT' > "${HOOK_DIR}/other.agent-permit.a1"
+    _run_hook on-session-end.sh \
+        '{"hook_event_name":"SessionEnd","cwd":"/x/test-project"}'
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+    [[ ! -f "${HOOK_DIR}/${KEY}.agent-permit" ]]
+    [[ -f "${HOOK_DIR}/other.agent-permit.a1" ]]
+}
+
+@test "on-permission-request.sh: an agent id that is not a plain token names no path" {
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"../x"}'
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.unknown" ]]
+    run find "$HOOK_DIR/.." -maxdepth 1 -name "x"
+    [[ -z "$output" ]]
+}
+
+@test "on-permission-request.sh: a subagent's request is filed by agent without the one-jq field read too" {
+    jq() {
+        if [[ "$*" == *'join("\u0000")'* ]]; then return 1; fi
+        command jq "$@"
+    }
+    export -f jq
+    _run_hook on-permission-request.sh \
+        '{"hook_event_name":"PermissionRequest","cwd":"/x/test-project","agent_id":"a1"}'
+    unset -f jq
+    [[ -f "${HOOK_DIR}/${KEY}.agent-permit.a1" ]]
+}
+
+@test "on-pre-tool-use.sh: subagent id is read without the one-jq field read too" {
+    jq() {
+        if [[ "$*" == *'join("\u0000")'* ]]; then return 1; fi
+        command jq "$@"
+    }
+    export -f jq
+    _run_hook on-pre-tool-use.sh \
+        '{"hook_event_name":"PreToolUse","cwd":"/x/test-project","agent_id":"a1"}'
+    unset -f jq
+    [[ ! -f "$EVENTS_FILE" ]]
+    [[ -f "${HOOK_DIR}/${KEY}.agent-activity" ]]
+}
+
 @test "on-pre-tool-use.sh: PreCompact -> compact" {
     _run_hook on-pre-tool-use.sh \
         '{"hook_event_name":"PreCompact","cwd":"/x/test-project"}'
@@ -344,13 +633,342 @@ _latest_type() {
 
 @test "on-stop.sh: emits stop event and removes signal file" {
     # Pre-populate the signal file so we can observe the stop-path
-    # delete behaviour alongside the new event append.
+    # delete behaviour alongside the event append.
     printf '0 BUSY' > "${HOOK_DIR}/${KEY}"
     _run_hook on-stop.sh \
         '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
     run _latest_type
     [[ "$output" == "stop" ]]
     [[ ! -f "${HOOK_DIR}/${KEY}" ]]
+}
+
+@test "on-stop.sh: a stop reporting background work carries its count" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","permission_mode":"auto","background_tasks":[{"id":"t1","type":"shell"}],"session_crons":[{"id":"c1"}]}'
+    run jq -c '.' "$EVENTS_FILE"
+    [[ "$output" =~ ^\{\"ts\":[0-9]+,\"type\":\"stop\",\"mode\":\"auto\",\"bg\":2,\"bgk\":\"shell,cron\"\}$ ]]
+}
+
+@test "on-stop.sh: Claude Code's own upkeep is recorded but not counted" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"d1","type":"dream"},{"id":"a1","type":"auto-mode scan"},{"id":"m1","type":"memory import"}]}'
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "dream,auto-mode scan,memory import" ]]
+    run cat "${HOOK_DIR}/${KEY}.stop-bg"
+    [[ "$output" == "0" ]]
+}
+
+@test "on-stop.sh: upkeep beside real work counts only the real work" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"d1","type":"dream"},{"id":"s1","type":"subagent"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "1" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "dream,subagent" ]]
+}
+
+@test "on-stop.sh: a published Artifact's watch is recorded but not counted" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"w1","type":"monitor","status":"running","description":"live updates for artifact https://claude.ai/artifact/abc (auto-armed on publish)"},{"id":"w2","type":"monitor","status":"running","description":"presence on artifact https://claude.ai/artifact/abc"}]}'
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "artifact watch,artifact watch" ]]
+    run cat "${HOOK_DIR}/${KEY}.stop-bg"
+    [[ "$output" == "0" ]]
+}
+
+@test "on-stop.sh: a monitor that only resembles an Artifact's watch still counts" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"m1","type":"monitor","description":"live updates for artifact x","server":"srv","tool":"watch"},{"id":"m2","type":"monitor","description":"tail the build log"},{"id":"m3","type":"shell","description":"live updates for artifact y"},{"id":"m4","type":"monitor"},{"id":"m5","type":"monitor","description":"live updates for artifact z","server":"srv"},{"id":"m6","type":"monitor","description":"presence on artifact z","tool":"watch"},{"id":"m7","type":"monitor","description":["live updates for artifact z"]},{"id":"m8","type":"artifact watch"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "8" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "monitor,monitor,shell,monitor,monitor,monitor,monitor,artifact watch" ]]
+}
+
+@test "on-stop.sh: a kind outside the recorded characters is cut to them" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"x","type":"we\"ird}"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "1" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "weird" ]]
+}
+
+@test "on-stop.sh: work without a kind is recorded as unknown, in ASCII only" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"x"},"y",{"id":"z","type":"é shell"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "3" ]]
+    run jq -r '.bgk' "$EVENTS_FILE"
+    [[ "$output" == "unknown,unknown, shell" ]]
+}
+
+@test "ccm_append_event: kinds keep ASCII only under a UTF-8 locale, in any bash" {
+    # bash 3.2 (macOS /bin/bash) lets a UTF-8 locale widen [^A-Za-z];
+    # check every bash at hand, not only the one running the tests.
+    local sh out
+    for sh in /bin/bash "$(command -v bash)"; do
+        [[ -x "$sh" ]] || continue
+        rm -f "$EVENTS_FILE"
+        LC_ALL=en_US.UTF-8 "$sh" -c 'source "$1/hooks/lib.sh"; ccm_append_event "$2" "$3" stop 1 "é shell"' \
+            _ "$CCM_ROOT" "$HOOK_DIR" "$KEY"
+        out=$(jq -r '.bgk' "$EVENTS_FILE")
+        [[ "$out" == " shell" ]] || { echo "$sh: $out"; return 1; }
+    done
+}
+
+@test "on-stop.sh: keeps the newest count beside the log" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"t1"}]}'
+    run cat "${HOOK_DIR}/${KEY}.stop-bg"
+    [[ "$output" == "1" ]]
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[]}'
+    run cat "${HOOK_DIR}/${KEY}.stop-bg"
+    [[ "$output" == "0" ]]
+}
+
+@test "on-stop.sh: lists the counted work for the dashboard" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"t1","type":"shell","description":"Wait for the review","command":"until x; do sleep 120; done"},{"id":"t2","type":"shell","description":"","command":"npm\nrun dev"},{"id":"d1","type":"dream","description":"dreaming"},{"id":"w1","type":"monitor","description":"live updates for artifact a (auto-armed on publish)"}],"session_crons":[{"id":"c1","prompt":"check CI"}]}'
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    run jq -c '[.tasks[] | [.id, .kind, .label]]' "$f"
+    [[ "$output" == '[["t1","shell","Wait for the review"],["t2","shell",""],["c1","cron",""]]' ]]
+    run jq -r '[.tasks[].since | type == "number" and . > 1700000000] | all' "$f"
+    [[ "$output" == "true" ]]
+}
+
+@test "on-stop.sh: a description that may carry a secret is not kept" {
+    local d colon=":" at="@"
+    # The URL is put together here so the file never holds the shape.
+    for d in "Fetch https://alice${colon}hunter2${at}example.test/status" \
+             'Run deploy --password shortsecret' \
+             'Use {"password":"jsonsecret"}' \
+             'Deploy password="correct horse battery staple" now' \
+             'curl -H Bearer eyJhbGciOiJIUzI1NiJ9xyz' \
+             'Use ghp_ABCdef1234567890 here' \
+             'sha 9f86d081884c7d659a2feaa0c55ad015' \
+             'Authorization: Basic xyz' \
+             'Deploy API_TOKEN=shortsecret' \
+             'Run --client-secret shortsecret' \
+             "Use {'password': 'hunter2'}" \
+             'Set access_token=shortsecret' \
+             'Run --access-token shortsecret'; do
+        _run_hook on-stop.sh "$(jq -nc --arg d "$d" \
+            '{hook_event_name: "Stop", cwd: "/x/test-project",
+              background_tasks: [{id: "t1", type: "shell", description: $d, command: "x"}]}')"
+        run jq -r '.tasks[0].label' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+        [[ "$output" == "" ]] || { echo "kept: $d"; return 1; }
+    done
+}
+
+@test "on-stop.sh: an ordinary description is kept as written" {
+    local d
+    for d in 'Run basic tests for login' 'Run task-runner tests' \
+             'Check bypass: enabled' 'Run the auth tests for token refresh' \
+             'Fix token handling: retry on 401' 'Run npm run dev at http://localhost:3000' \
+             'Set tokenizer=fast'; do
+        _run_hook on-stop.sh "$(jq -nc --arg d "$d" \
+            '{hook_event_name: "Stop", cwd: "/x/test-project",
+              background_tasks: [{id: "t1", type: "shell", description: $d}]}')"
+        run jq -r '.tasks[0].label' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+        [[ "$output" == "$d" ]] || { echo "changed: $d -> $output"; return 1; }
+    done
+}
+
+@test "on-stop.sh: a task reported again keeps the time it was first reported" {
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    printf '%s\n' '{"v":1,"tasks":[{"id":"t1","kind":"shell","label":"old","since":100},{"id":"t2","kind":"subagent","label":"x","since":200}]}' > "$f"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"t1","type":"shell","description":"new"},{"id":"t2","type":"shell","description":"same id, other kind"},{"id":"t3","type":"shell"}]}'
+    run jq -r '.tasks[0].since' "$f"
+    [[ "$output" == "100" ]]
+    run jq -r '.tasks[0].label' "$f"
+    [[ "$output" == "new" ]]
+    run jq -r '.tasks[1].since > 200 and .tasks[2].since > 200' "$f"
+    [[ "$output" == "true" ]]
+}
+
+@test "on-stop.sh: a new task's age starts at its launch in the transcript" {
+    local t="${SANDBOX}/transcript.jsonl"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.500Z","toolUseResult":{"backgroundTaskId":"t1"}}' > "$t"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T02:00:00.000Z","toolUseResult":{"agentId":"t2"}}' >> "$t"
+    printf '%s\n' '{"type":"user","timestamp":"2999-01-01T00:00:00.000Z","toolUseResult":{"backgroundTaskId":"t3"}}' >> "$t"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"},{"id":"t2","type":"subagent"},{"id":"t3","type":"shell"},{"id":"t4","type":"shell"}]}'
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    run jq -r '.tasks[0].since' "$f"
+    [[ "$output" == "1767229200" ]]
+    run jq -r '.tasks[1].since' "$f"
+    [[ "$output" == "1767232800" ]]
+    run jq -r '.tasks[2].since < 2000000000 and .tasks[2].since > 1700000000' "$f"
+    [[ "$output" == "true" ]]
+    run jq -r '.tasks[3].since > 1767232800' "$f"
+    [[ "$output" == "true" ]]
+}
+
+@test "on-stop.sh: a task already listed keeps its time over the transcript" {
+    local t="${SANDBOX}/transcript.jsonl"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t1"}}' > "$t"
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    printf '%s\n' '{"v":1,"tasks":[{"id":"t1","kind":"shell","label":"x","since":100}]}' > "$f"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+    run jq -r '.tasks[0].since' "$f"
+    [[ "$output" == "100" ]]
+}
+
+@test "on-stop.sh: a line naming the task without a readable timestamp is passed over" {
+    local t="${SANDBOX}/transcript.jsonl"
+    printf '%s\n' '{"type":"queue-operation","content":"t1"}' > "$t"
+    printf '%s\n' '{"type":"queue-operation","content":"\"t1\""}' >> "$t"
+    printf '%s\n' '{"type":"queue-operation","content":"t1","timestamp":null}' >> "$t"
+    printf '%s\n' '{"type":"queue-operation","content":"t1","timestamp":"yesterday"}' >> "$t"
+    printf '%s\n' '{"type":"progress","data":{"id":"t1","timestamp":"2025-01-01T00:00:00.000Z"}}' >> "$t"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t1"}}' >> "$t"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+    run jq -r '.tasks[0].since' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    [[ "$output" == "1767229200" ]]
+}
+
+@test "on-stop.sh: a line too long to be a launch result is skipped" {
+    local t="${SANDBOX}/transcript.jsonl"
+    jq -nc '{type: "user", timestamp: "2025-01-01T00:00:00.000Z", id: "t1", pad: ("x" * 200000)}' > "$t"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t1"}}' >> "$t"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+    run jq -r '.tasks[0].since' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    [[ "$output" == "1767229200" ]]
+}
+
+@test "on-stop.sh: a line just over the limit is skipped wherever it falls" {
+    local t="${SANDBOX}/transcript.jsonl" pre n
+    for pre in 0 1000 40000; do
+        for n in 65537 70000 131072; do
+            : > "$t"
+            if (( pre > 0 )); then
+                jq -nc --argjson n "$pre" '{type: "x", pad: ("y" * ($n - 23))}' >> "$t"
+            fi
+            jq -nc --argjson n "$n" \
+                '{type: "user", timestamp: "2025-01-01T00:00:00.000Z", id: "t1"} as $o
+                 | $o + {pad: ("x" * ($n - ($o | tojson | length) - 10))}' >> "$t"
+            printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t1"}}' >> "$t"
+            rm -f "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+            _run_hook on-stop.sh \
+                '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+            run jq -r '.tasks[0].since' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+            [[ "$output" == "1767229200" ]] || { echo "pre=$pre n=$n since=$output"; return 1; }
+        done
+    done
+}
+
+@test "on-stop.sh: tasks already listed are not looked up again" {
+    local t="${SANDBOX}/transcript.jsonl"
+    printf '%s\n' '{"type":"user","timestamp":"2026-01-01T01:00:00.000Z","toolUseResult":{"backgroundTaskId":"t2"}}' > "$t"
+    printf '%s\n' '{"v":1,"tasks":[{"id":"t1","kind":"shell","label":"x","since":100}]}' > "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    mkdir -p "${SANDBOX}/bin"
+    local real_perl
+    real_perl=$(command -v perl)
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "${SANDBOX}/perl.log" "$real_perl" > "${SANDBOX}/bin/perl"
+    chmod +x "${SANDBOX}/bin/perl"
+    PATH="${SANDBOX}/bin:${PATH}" _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"}]}'
+    [[ ! -e "${SANDBOX}/perl.log" ]]
+    PATH="${SANDBOX}/bin:${PATH}" _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","transcript_path":"'"$t"'","background_tasks":[{"id":"t1","type":"shell"},{"id":"t2","type":"shell"}]}'
+    run cat "${SANDBOX}/perl.log"
+    [[ "$output" == *" t2" ]]
+    [[ "$output" != *" t1"* ]]
+    run jq -r '.tasks[1].since' "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    [[ "$output" == "1767229200" ]]
+}
+
+@test "on-stop.sh: an unreadable earlier list starts the times afresh" {
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    printf 'not json' > "$f"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"t1","type":"shell"}]}'
+    run jq -r '.tasks | length' "$f"
+    [[ "$output" == "1" ]]
+    run jq -r '.tasks[0].since > 1700000000' "$f"
+    [[ "$output" == "true" ]]
+}
+
+@test "on-stop.sh: the list goes when no counted work is left" {
+    local f="${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    printf '%s\n' '{"v":1,"tasks":[{"id":"t1","kind":"shell","label":"x","since":100}]}' > "$f"
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[{"id":"d1","type":"dream"}]}'
+    [[ ! -e "$f" ]]
+    run bash -c "ls '${HOOK_DIR}' | grep -c 'stop-bg-tasks\.'"
+    [[ "$output" == "0" ]]
+}
+
+@test "on-stop.sh: a task list it cannot remove still lets the busy signal go" {
+    mkdir -p "${HOOK_DIR}/${KEY}.stop-bg-tasks/stuck"
+    printf '1 BUSY\n' > "${HOOK_DIR}/${KEY}"
+    : > "${HOOK_DIR}/${KEY}.busy"
+    run _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[]}'
+    [ "$status" -eq 0 ]
+    [[ ! -e "${HOOK_DIR}/${KEY}" ]]
+    [[ ! -e "${HOOK_DIR}/${KEY}.busy" ]]
+}
+
+@test "on-session-end.sh: a task list it cannot remove still writes SHELL" {
+    mkdir -p "${HOOK_DIR}/${KEY}.stop-bg-tasks/stuck"
+    run _run_hook on-session-end.sh \
+        '{"hook_event_name":"SessionEnd","cwd":"/x/test-project"}'
+    [ "$status" -eq 0 ]
+    run cat "${HOOK_DIR}/${KEY}"
+    [[ "$output" == *" SHELL"* ]]
+}
+
+@test "on-session-end.sh: removes the task list" {
+    printf '{}\n' > "${HOOK_DIR}/${KEY}.stop-bg-tasks"
+    _run_hook on-session-end.sh \
+        '{"hook_event_name":"SessionEnd","cwd":"/x/test-project"}'
+    [[ ! -e "${HOOK_DIR}/${KEY}.stop-bg-tasks" ]]
+}
+
+@test "on-session-end.sh: removes the kept count" {
+    printf '1\n' > "${HOOK_DIR}/${KEY}.stop-bg"
+    _run_hook on-session-end.sh \
+        '{"hook_event_name":"SessionEnd","cwd":"/x/test-project"}'
+    [[ ! -e "${HOOK_DIR}/${KEY}.stop-bg" ]]
+}
+
+@test "on-stop.sh: a scheduled cron alone counts as background work" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[],"session_crons":[{"id":"c1"}]}'
+    run jq -r '.bg' "$EVENTS_FILE"
+    [[ "$output" == "1" ]]
+}
+
+@test "on-stop.sh: a stop with no background work has no count" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project","background_tasks":[]}'
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+}
+
+@test "on-stop.sh: a stop without the fields has no count" {
+    _run_hook on-stop.sh \
+        '{"hook_event_name":"Stop","cwd":"/x/test-project"}'
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == "false" ]]
+}
+
+@test "ccm_append_event: a count that is not plain digits is left out" {
+    ccm_append_event "$HOOK_DIR" "$KEY" "stop" '1,"x":1'
+    ccm_append_event "$HOOK_DIR" "$KEY" "stop" "01"
+    run jq -r 'has("bg")' "$EVENTS_FILE"
+    [[ "$output" == $'false\nfalse' ]]
 }
 
 @test "on-notification.sh: permission_prompt -> notify_permit" {
@@ -373,10 +991,9 @@ _latest_type() {
 # that is actively working) must survive. Only a BUSY signal OLDER
 # than CCM_IDLE_PROMPT_GUARD_SEC (default 60) may be cleared — an
 # older one necessarily predates the point where Claude decided the
-# session was idle. The pre-fix guard (`ts >= NOW`) only protected
-# signals from the same second, so a 5-second-old legitimate BUSY
-# signal was deleted and a working session falsely dropped to IDLE
-# (which feeds auto-exit's kill path).
+# session was idle. A guard that protected only signals from the same
+# second would delete a 5-second-old legitimate BUSY signal and drop a
+# working session to IDLE (which feeds auto-exit's kill path).
 
 _run_idle_prompt() {
     printf '%s' "$(_with_session \
@@ -439,7 +1056,7 @@ _run_idle_prompt() {
     [[ "$output" == "session_end" ]]
 }
 
-# ─── Legacy signal-file path is still intact (P1 regression guard) ───
+# ─── Legacy signal-file path ───
 
 @test "on-prompt-submit.sh: still writes BUSY signal file" {
     _run_hook on-prompt-submit.sh \

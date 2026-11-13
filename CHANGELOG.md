@@ -8,6 +8,214 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+
+- **`ccm status --json`.** Agents and scripts can read each window's state, its sidekicks' states and the queued messages as one JSON object, for all windows, one by name, or `self`.
+- **`ccm sidekick-send --json`.** The result of a send comes back as one JSON object: refused before any key, or attempted, with whether a fragment of the message appeared and whether Enter was sent.
+
+### Changed
+
+- **`ccm sidekick-send` stops for more waits.** It refuses a sidekick whose wait it learns from Codex's hooks or a Kimi or Grok marker, not only from the screen, and one whose process it cannot identify or whose observation fails; it looks again before Enter and leaves Enter unsent if a wait appeared or the sidekick was restarted.
+
+### Fixed
+
+- **Auto-restore at tmux start skips when managed windows already exist.**
+
+### Security
+
+- **Text that holds `#` reaches tmux literally:** a project directory opened by `ccm add`, v1 snapshot loading or the dashboard's attach window, a project name or branch in the status bar, and the plugin's install path.
+- **A message holding a control character is refused before any key** by `ccm send`, the message queue and `ccm sidekick-send`; one already queued moves to `expired/` unsent. Windows line endings are folded and tabs become spaces.
+
+## [0.13.0] - 2026-11-05
+
+### Added
+
+- **Docked dashboard.** The dashboard can sit as a full-width pane at the
+  top or bottom of the window (`@ccm-dashboard-dock`,
+  `@ccm-dashboard-dock-size`) and stays in view while you work. It follows
+  you between windows, can stay open or close when you open a project
+  (`@ccm-dashboard-dock-close-on-open`), draws a coloured edge toward your
+  panes (`@ccm-dashboard-dock-edge`), and gives each window its layout back
+  when it leaves.
+- **Sidekicks working and waiting.** The `▸` badge shows a Codex or
+  Antigravity CLI (`agy`) sidekick working (`◉`, in BUSY's colour) or
+  waiting for a key (`⚠`, in PERMIT's yellow), read from its screen.
+  Attaching through ccm focuses a waiting sidekick when no Claude pane
+  waits. An `agy` pane is recognised as a sidekick. Hide these states with
+  dashboard key `w` or `@ccm-sidekick-attention off`.
+- The dashboard says what keeps a project `(bg)` and for how long
+  (`(bg 9h)`, and a line per task in the preview). Stop unwanted
+  background tasks from that session's `/tasks`.
+- `ccm finish-restore` (Menu → Finish restore) ends an incomplete restore
+  with the projects restored so far and resumes autosave. The full
+  `_autosave` checkpoint is kept as `_autosave-held-back-<id>`; the active
+  projects replace `_autosave`, or it is removed if none remain. Named
+  snapshots are unchanged. Run the command again if finishing stops.
+- The guide's Tips explain how to keep `←` on an empty prompt from opening
+  the agent list, in Claude Code and in Codex.
+
+### Changed
+
+- **Faster and lighter.** Hooks and status updates use fewer resources,
+  dashboard selection responds faster, and an unused dashboard refreshes
+  less often. The dashboard opens faster with Python version managers,
+  and restores with many windows finish sooner. Long-running dashboards
+  use less memory.
+- **Restores no longer stop at one bad window.** Each restored window
+  becomes usable as soon as it is ready; others are held back with their
+  reasons. Autosave stays paused until the restore completes. Use Menu →
+  Continue restore to retry held-back windows, or `ccm finish-restore`
+  to keep what has been restored and resume autosave.
+- With several sidekicks in one window, each name on the `▸` badge carries
+  its own state (`▸ codex ◉,agy ⚠`).
+- Queued messages for a project are delivered oldest first in batches,
+  each under its own envelope header (`delivery 3fa29c 1/2`). A batch is
+  limited to 5 messages, 16 KB and what the input box can show; an
+  oversized oldest message goes alone. Remaining messages wait for a later
+  idle turn.
+- Time spent waiting on a permission prompt or while the Mac sleeps no
+  longer counts toward a queued message's expiry (`CCM_SPOOL_TTL_SEC`,
+  default 60 minutes). A separate age limit still applies
+  (`CCM_SPOOL_MAX_AGE_SEC`, default 24 hours). When a message expires,
+  its sender receives instructions for reading and resending it.
+- `(bg)` is drawn in BUSY's colour beside Claude's own state, ahead of any
+  sidekick badge, and no longer counts Claude Code's own upkeep.
+- Status modes 1 and 2 highlight the current project
+  (`@ccm-status-current-bg`).
+- After a restore, the hint for a Codex sidekick suggests
+  `codex resume --last`.
+- A long error message ends with its first line again, for callers that
+  keep only the tail of the output.
+- `ccm doctor` reports when no Codex hook has arrived in 7 days. Complete
+  a turn in Codex before checking the hook installation.
+
+### Fixed
+
+- A subagent's permission request stays PERMIT while you carry on in the
+  main conversation, and each agent's request is kept separately. When
+  only a subagent is waiting, `ccm send` and queued messages use the main
+  conversation's screen to decide whether it can receive a message.
+- A window no longer switches between IDLE and BUSY while background
+  agents work after Claude's turn has ended.
+- `ccm sidekick-send` refuses a Codex or Antigravity sidekick whose screen
+  shows a dialog waiting for a key, or a Codex sidekick with text selected
+  in its pane. Answer the dialog or clear the selection before retrying.
+- Running `ccm setup-sidekick-hooks codex` again keeps other tools' hooks
+  in Codex's `hooks.json` where they are, so Codex does not ask to review
+  them again.
+- Checkpoints, auto-restore and the docked dashboard support tmux 3.8's
+  JSON window layouts. Close floating panes before saving a checkpoint.
+  ccm's popups use the terminal's own background again under tmux 3.8.
+- Publishing an Artifact alone no longer leaves a session marked
+  `IDLE (bg)` or prevents auto-exit.
+- Auto-exit no longer exits a session on macOS while Claude runs a Bash
+  command; `IDLE (bg)` survives interrupting a turn with Esc.
+- Named Claude Code sessions no longer cause false draft warnings or
+  input-box timeouts when sending messages.
+- A restore no longer holds a window back when the terminal changes size
+  while it runs, and stops with the reason when it cannot record its own
+  progress.
+- A checkpoint is no longer refused while a Kimi Code sidekick runs as
+  `kimi-code`.
+- A sidekick's approval wait survives a moment when tmux or `ps` fails to
+  list panes; a Codex approval wait clears when its tool resolves.
+- ccm's hooks no longer fail while no terminal is attached to tmux.
+- The dashboard's key help stays on screen when the project list is longer
+  than the popup.
+- `ccm debug trace` stops after 12 hours by default, after its window has
+  been gone for 5 seconds, or when the tmux server is replaced.
+  `--max-time SECONDS` changes the time limit; `--max-time 0` removes it.
+- A command run in a pane uses its own pane's tmux session, not the one a
+  popup was opened from.
+- `ccm send --start` no longer types a message that looks too tall for the
+  started session's input box. Claude stays running; resend without
+  `--start`, or send a short message pointing to a file.
+
+### Security
+
+- Fixed unsafe handling of Claude session ids.
+- Secured ccm's temporary directory handling. ccm refuses unsafe runtime
+  directories and may move an existing one to `ccm-<uid>.untrusted-<pid>`
+  before creating a new one that only you can access.
+
+## [0.12.0] - 2026-10-03
+
+### Added
+
+- **Restore across logout.** `ccm prepare-logout` saves and protects the
+  `_autosave` checkpoint, which now records each window's pane splits,
+  working directories, pane roles (Claude, sidekick, shell) and zoom.
+  Restoring it (`ccm start _autosave`, or automatically at tmux start with
+  `@ccm-auto-restore on`) rebuilds the panes as login shells and starts
+  Claude only in the pane reserved for it. Agents are never started for
+  you; sidekicks are resumed by hand. Progress and the outcome appear in
+  the tmux status area and the dashboard, a stopped restore names its
+  reason, and auto-restore output is kept in `state/auto-restore.log`.
+- `ccm exit <name>` ends Claude in a project and keeps its window and
+  sidekicks (`ccm stop` still closes the window). `ccm roles` shows or
+  clears pane role reservations.
+- Dashboard menu: logout preparation, continue restore, saved
+  checkpoints, reset and exit; a help preview for the selected item
+  (Japanese with `@ccm-lang ja`); a `/` live filter; grouped items and
+  coloured setting values.
+- Undelivered messages: dashboard `u` and `ccm spool show / discard /
+  resend` let you read, resend or delete expired and held messages.
+- Opt-in Codex sidekick completion notices to the Claude in the same
+  window (`@ccm-sidekick-notify on`), and Codex approval waits on the
+  existing attention marker.
+- Opt-in unread mark on pane borders for split-pane agents
+  (`@ccm-pane-labels on`).
+- A notice when `claude --continue` would not resume a project's
+  conversation because it was handed to a live background session.
+
+### Changed
+
+- `ccm setup-hooks` writes a hook timeout of 5 seconds (it wrote 5000,
+  which Claude Code reads as seconds). Run `ccm setup-hooks` once after
+  upgrading; it changes only ccm's own hooks. `ccm setup-hooks` and
+  `ccm remove-hooks` no longer touch other tools' hooks, and hooks left
+  at a previous ccm path are named for you to remove.
+- Starting Claude in an existing shell always types `claude --continue`;
+  only `ccm add` types a plain `claude`, and only when no transcript
+  exists. If `--continue` cannot resume, its message stays on screen
+  instead of silently starting a new conversation. Every launch checks
+  the window first and starts nothing when Claude already runs there.
+- `ccm doctor` shows actionable items by default; `--verbose` keeps the
+  details.
+- The sidekick badge is `▸<name>` (was `⚙<name>`).
+
+### Fixed
+
+- `ccm send` and the spool:
+  - report a message as unsent when Claude Code holds it for
+    confirmation;
+  - no longer mistake Claude's own prompt suggestion, or an earlier
+    message in the transcript, for a draft;
+  - refuse the `claude agents` view on every footer form;
+  - with `--start`, wait for an empty input box and never type into a
+    shell.
+- State detection:
+  - work with no child process (thinking, retries, narrow or
+    reduced-motion spinners) reads as busy, and frozen screens are
+    released;
+  - Esc before an answer no longer holds a project busy;
+  - parked background conversations stay tracked;
+  - adjustment dialogs from Claude Code 2.1.280 read as PERMIT.
+- A window whose only Claude is in an ignored pane reads as IGNORED (`⊘`)
+  instead of SHELL; ignored sidekick panes stay ignored.
+- `ccm doctor` no longer reports settings it could not read as fine, and
+  names managed-settings limits honestly.
+- Status bar, dashboard and cleanup fixes: mode 1 with no projects, the
+  background-session block on tall lists, per-session PERMIT flags, and
+  the temp-directory sweep no longer deleting the dashboard's marker.
+
+## [0.11.0] - 2026-08-17
+
+### Added
+- `ccm doctor` reports tmux's `focus-events`, which Claude Code asks for in
+  a startup banner that scrolls away.
+- `ccm spool clear-expired [project]` acknowledges messages that expired
+  without being delivered, clearing the warning they raise. A warning that
+  cannot be answered is one the reader learns to scroll past.
 - Store-and-forward spool for `ccm send`. When the target cannot take a
   message (BUSY / PERMIT / SHELL, an agents TUI, or a composer holding a
   draft), the message is written to `$CCM_DATA_DIR/spool/<project>/` and
@@ -48,6 +256,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `right`. `status-left` is not written to.
 
 ### Changed
+- `ccm sidekick-send` does not read the peer's composer, so a message typed
+  into a half-written draft still merges. Locating another vendor's input box
+  means matching that vendor's screen, which is the coupling this lane exists
+  without; capture the pane first, as the manual procedure always asked.
 - `ccm send` no longer refuses when the target cannot take the message
   right now — it queues the message to the spool and reports
   `Queued for <project>` (queue length, TTL, message id). This flips the
@@ -57,6 +269,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   classification and guidance included).
 
 ### Fixed
+- The spinner is recognised through the shapes its footer takes. Within one
+  turn it carries an elapsed time with no token count, then one with a
+  trailing segment, then the familiar form — and only the last was matched, so
+  a pane with a tool running read as idle for the rest.
+- The guide's example search binding says that `prefix + /` is tmux-copycat's
+  too, and that a second binding replaces the first.
+- A project whose transcript directory is shared with another finds its own
+  session. The directory name turns every non-alphanumeric character into a
+  dash, so `a/b`, `a-b` and `a_b` name one directory — and the newest file in
+  it could belong to the other project, holding this one busy or releasing it
+  early. A transcript records the directory it belongs to; that now decides.
+- Background sessions list only workers a task has claimed. The daemon also
+  keeps a worker warm for the next dispatch, and that appeared as a nameless
+  row with nothing to attach to. A job whose state file is missing or corrupt
+  still counts — existence, not readability.
+- `ccm capture` says when it read nothing instead of printing an empty block.
+  A pane hosting a session is never blank, so silence there means the read
+  failed — and this output is what an agent reads to decide whether a message
+  landed or whether a peer is still working.
+- The folder-trust prompt is treated as a permission request. It carries the
+  same footer a model picker does, so it classified as a harmless
+  confirmation — and answering it grants read, edit and execute in that
+  directory.
+- The permission-dialog question matches whichever space Claude Code draws
+  after it. The composer renders a no-break space, so requiring an ordinary
+  one anywhere is an assumption with nothing behind it. The prefix now
+  matches horizontal whitespace only, so a wrapped transcript quotation of
+  the question does not read as a live dialog.
+- A session's transcript is found by its session id when the directory it
+  sits in is not the sanitised working directory. Losing the transcript loses
+  the terminal stop reason that releases a held BUSY, and that failure has no
+  timeout of its own.
+- A delivered message is no longer reported as unconfirmed because the
+  composer wrapped it. The check looked for a fragment as a contiguous
+  substring, and the wrap lands wherever the width falls — mid-word, or
+  mid-sentence in a language written without spaces.
+- A prompt already sent no longer reads as a half-typed draft. Claude Code
+  draws submitted prompts into the transcript with the same `❯` glyph the
+  composer uses, and the guard scanned the pane from the top and took the
+  first one — so a send was refused, and under the spool queued and then
+  expired undelivered, for as long as any prompt was on screen. The composer
+  is now located by the rules the TUI draws around it.
+- A queued message that expired without arriving is reported wherever the
+  queue is: a desktop notice when it happens, a named warning in `ccm
+  status`, the dashboard and `ccm doctor`, and its own row in `ccm spool
+  list`. `ccm spool clear-expired` acknowledges it. The sender had been
+  told "queued", and queued is not delivered.
 - `ccm send` no longer types into a composer that already holds a
   half-typed draft. State detection cannot see one (an `❯` prompt
   holding text still reads IDLE), so the message used to merge into the
@@ -95,16 +354,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   project. Adding one was listed there; the ways back out were reachable only
   behind `r`, which the help line rendered as "remove". The name prompt
   defaults to the selected project, so a plain Enter targets it.
-- The settings canaries resolve files in the order Claude Code does, so the
-  file they name is the one deciding. `allowManagedHooksOnly` is reported only
-  from the administrator's settings, where it has effect.
-- The example project name used across the README, guide and tests is a
-  synthetic one.
-- The `disableAllHooks` and `allowManagedHooksOnly` canaries read the
-  administrator's settings and each project's settings as well as the user's
-  own file, and name which one carries the flag.
-- `stat` in the config-writer tests no longer assumes BSD flags, which failed
-  the Linux CI job.
+- The settings canaries read the administrator's settings and each
+  project's as well as the user's own file, resolving them in the order
+  Claude Code does, and name which one carries the flag.
+  `allowManagedHooksOnly` is reported only from the administrator's
+  settings, where it has effect.
 - The status bar re-lays itself when the terminal is resized. Its layout is
   baked from the width at render time, so a resize left it laid out for the
   old width until the next periodic pass — entries clipped on a narrower

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Tests for hook setup/removal (lib/common.sh)
 
 CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
@@ -10,8 +11,7 @@ setup() {
     mkdir -p "${MOCK_DIR}/.claude"
 
     # Hermetic claude stub: ccm_setup_hooks requires `claude --version`
-    # on PATH, so these tests previously depended on the host's real
-    # claude binary (green locally, red on CI runners without one).
+    # on PATH, and not every test host has one.
     # Version-gate tests prepend their own bin to PATH, which overrides
     # this stub.
     mkdir -p "${MOCK_DIR}/bin"
@@ -101,17 +101,114 @@ teardown() {
     [[ "$session_end_cmd" == *"/hooks/on-session-end.sh" ]]
 }
 
-@test "setup-hooks: timeout uses CCM_HOOK_CMD_TIMEOUT" {
-    run ccm_setup_hooks
-    [[ "$status" -eq 0 ]]
-    local timeout
-    timeout=$(jq '.hooks.UserPromptSubmit[0].hooks[0].timeout' "${MOCK_DIR}/.claude/settings.json")
-    [[ "$timeout" -eq "${CCM_HOOK_CMD_TIMEOUT:-5000}" ]]
+# Re-source common.sh with CCM_HOOK_CMD_TIMEOUT as given, restoring the
+# test overrides that sourcing replaces.
+_resource_with_timeout() {
+    if [[ "$1" == "unset" ]]; then unset CCM_HOOK_CMD_TIMEOUT; else export CCM_HOOK_CMD_TIMEOUT="$1"; fi
+    source "${CCM_ROOT}/lib/common.sh"
+    ccm_init_dirs() { :; }
+    ccm_die() { echo "ERROR: $1" >&2; return 1; }
 }
 
-# ============================================================
-# ccm_remove_hooks tests
-# ============================================================
+_timeout_of() {
+    jq ".hooks.$1[0].hooks[0].timeout" "${MOCK_DIR}/.claude/settings.json"
+}
+
+# Another tool's hooks, added the ways they really appear: one inside
+# ccm's own Stop matcher entry, and one under its own matcher whose
+# script shares a ccm script's name in a different directory. Plus an
+# unrelated setting.
+_add_peers() {
+    local f="${MOCK_DIR}/.claude/settings.json"
+    jq '.hooks.Stop[0].hooks += [{"type":"command","command":"/peer/independent.sh","timeout":600}]
+        | .hooks.Stop += [{"matcher":"x","hooks":[{"type":"command","command":"/peer/hooks/on-stop.sh","timeout":600}]}]
+        | .model = "keep"' "$f" > "$f.new" && mv "$f.new" "$f"
+}
+
+# Every /peer/ hook with its entry's matcher, plus the unrelated setting.
+_peers() {
+    jq -S '{model, peers: ([.hooks[]?[]? | . as $e | .hooks[]? | select(.command | startswith("/peer/"))
+             | {matcher: $e.matcher, hook: .}] | sort_by(.hook.command))}' "${MOCK_DIR}/.claude/settings.json"
+}
+
+# "<count> <distinct timeouts>" of the hooks whose command starts with $1.
+_hooks_under() {
+    jq -r --arg d "$1" '[.hooks[]?[]?.hooks[]? | select(.command | startswith($d)) | .timeout]
+        | "\(length) \(unique | map(tostring) | join(","))"' "${MOCK_DIR}/.claude/settings.json"
+}
+
+# Rewrite ccm command paths: every one ($3 = all) or only the first Stop entry's ($3 = stop).
+_respell_ccm_paths() {
+    local f="${MOCK_DIR}/.claude/settings.json"
+    if [[ "$3" == "stop" ]]; then
+        jq --arg from "$1" --arg to "$2" '.hooks.Stop[0].hooks[0].command |= sub("^" + $from; $to)' "$f" > "$f.new"
+    else
+        jq --arg from "$1" --arg to "$2" '(.hooks[]?[]?.hooks[]? | .command) |= (if startswith($from) then $to + ltrimstr($from) else . end)' "$f" > "$f.new"
+    fi
+    mv "$f.new" "$f"
+}
+
+@test "setup-hooks: the default timeout is 5 seconds" {
+    # The field is in seconds; the default is pinned here with the
+    # variable unset, so it cannot pass by reading back whatever the
+    # variable happens to hold.
+    _resource_with_timeout unset
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(_timeout_of UserPromptSubmit)" == "5" ]]
+    [[ "$(_timeout_of SessionEnd)" == "5" ]]
+    [[ "$(_timeout_of Stop)" == "5" ]]
+}
+
+@test "setup-hooks: an explicit CCM_HOOK_CMD_TIMEOUT is written as given" {
+    _resource_with_timeout 7
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(_timeout_of UserPromptSubmit)" == "7" ]]
+}
+
+@test "setup-hooks: on an existing install, updates ccm's timeouts and nothing else" {
+    # An install written with the old millisecond value, then another
+    # tool's hooks added the ways they really appear: one inside ccm's
+    # own Stop matcher entry, one under its own matcher with a script
+    # that shares a ccm basename in a different directory. Plus an
+    # unrelated setting.
+    _resource_with_timeout 5000
+    run ccm_setup_hooks
+    local f="${MOCK_DIR}/.claude/settings.json"
+    jq '.hooks.Stop[0].hooks += [{"type":"command","command":"/peer/independent.sh","timeout":600}]
+        | .hooks.Stop += [{"matcher":"x","hooks":[{"type":"command","command":"/peer/hooks/on-stop.sh","timeout":600}]}]
+        | .model = "keep"' "$f" > "$f.new" && mv "$f.new" "$f"
+    local before; before=$(jq -S . "$f")
+
+    _resource_with_timeout unset
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+
+    # every one of ccm's 16 hook commands carries the current default ...
+    [[ "$(_hooks_under "${CCM_ROOT}/hooks/")" == "16 5" ]]
+
+    # ... and putting the old value back on ccm's commands alone gives
+    # the file as it was: nothing else changed, peers included.
+    local restored; restored=$(jq -S --arg d "${CCM_ROOT}/hooks/" '
+        .hooks |= with_entries(.value |= map(
+            if (.hooks | type) == "array" then
+                .hooks |= map(if (.command | type) == "string" and (.command | startswith($d))
+                              then .timeout = 5000 else . end)
+            else . end))' "$f")
+    [[ "$restored" == "$before" ]]
+}
+
+@test "setup-hooks: on an install already current, the file is left alone" {
+    _resource_with_timeout unset
+    run ccm_setup_hooks
+    local f="${MOCK_DIR}/.claude/settings.json"
+    local before; before=$(cat "$f")
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"already installed"* ]]
+    [[ "$(cat "$f")" == "$before" ]]
+}
 
 @test "remove-hooks: removes ccm hooks" {
     ccm_setup_hooks >/dev/null 2>&1
@@ -345,9 +442,8 @@ STUB
 @test "on-notification.sh: elicitation_dialog writes PERMIT signal" {
     # End-to-end: feed the actual hook script the JSON Claude Code would
     # send for an elicitation event, and verify the signal file content.
-    # Hook signal files are now keyed on the session_id from the payload,
-    # not md5(cwd) — so we pass an explicit session_id and check that
-    # specific path.
+    # Hook signal files are keyed on the session_id from the payload,
+    # so we pass an explicit session_id and check that specific path.
     local hook_dir="${MOCK_DIR}/hooks-tap"
     local sid="11111111-1111-1111-1111-111111111111"
     mkdir -p "$hook_dir"
@@ -364,8 +460,7 @@ STUB
 }
 
 @test "on-notification.sh: permission_prompt writes PERMIT signal" {
-    # Regression: ensure the existing matcher path still works after
-    # the elicitation_dialog addition.
+    # The permission_prompt matcher path, alongside elicitation_dialog.
     local hook_dir="${MOCK_DIR}/hooks-tap2"
     local sid="22222222-2222-2222-2222-222222222222"
     mkdir -p "$hook_dir"
@@ -432,41 +527,26 @@ STUB
     [[ "$output" == *"already installed"* ]]
 }
 
-@test "setup-hooks: auto-updates when hook paths change" {
-    # Install hooks with current CCM_ROOT
+@test "setup-hooks: after a move, installs from the new place and names the old hooks without editing them" {
     ccm_setup_hooks >/dev/null 2>&1
-
-    # Verify current paths are recorded
-    local orig_prompt_cmd
-    orig_prompt_cmd=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "${MOCK_DIR}/.claude/settings.json")
-    [[ "$orig_prompt_cmd" == *"$CCM_ROOT"* ]]
-
-    # Change CCM_ROOT to simulate plugin relocation
+    local f="${MOCK_DIR}/.claude/settings.json"
     local old_root="$CCM_ROOT"
+    local old_hooks; old_hooks=$(jq -c --arg d "${old_root}/hooks/" '[.hooks[]?[]?.hooks[]? | select(.command | startswith($d))]' "$f")
+    [[ "$(echo "$old_hooks" | jq length)" -eq 16 ]]
+
+    # Simulate the plugin moving: the old checkout is still on disk, and
+    # nothing in the settings can tell it apart from another tool.
     CCM_ROOT="${MOCK_DIR}/new-location"
     mkdir -p "${CCM_ROOT}/hooks"
-    cp "${old_root}/hooks/on-prompt-submit.sh" "${CCM_ROOT}/hooks/"
-    cp "${old_root}/hooks/on-stop.sh" "${CCM_ROOT}/hooks/"
+    cp "${old_root}/hooks/"*.sh "${CCM_ROOT}/hooks/"
 
-    # Re-run setup-hooks — should detect path change and update
     run ccm_setup_hooks
-    [[ "$status" -eq 0 ]]
-    [[ "$output" == *"paths changed"* ]]
-
-    # Verify paths were updated to new location
-    local new_prompt_cmd
-    new_prompt_cmd=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "${MOCK_DIR}/.claude/settings.json")
-    [[ "$new_prompt_cmd" == *"new-location"* ]]
-
-    # Verify no duplicates (still exactly 1 hook each)
-    local hook_count
-    hook_count=$(jq '.hooks.UserPromptSubmit | length' "${MOCK_DIR}/.claude/settings.json")
-    [[ "$hook_count" -eq 1 ]]
-    hook_count=$(jq '.hooks.Stop | length' "${MOCK_DIR}/.claude/settings.json")
-    [[ "$hook_count" -eq 1 ]]
-
-    # Restore
     CCM_ROOT="$old_root"
+    [[ "$status" -eq 0 ]]
+    [[ "$(_hooks_under "${MOCK_DIR}/new-location/hooks/")" == "16 5" ]]
+    [[ "$(jq -c --arg d "${old_root}/hooks/" '[.hooks[]?[]?.hooks[]? | select(.command | startswith($d))]' "$f")" == "$old_hooks" ]]
+    [[ "$output" == *"Left in place"* ]]
+    [[ "$output" == *"${old_root}/hooks/on-stop.sh"* ]]
 }
 
 # ============================================================
@@ -474,7 +554,8 @@ STUB
 # ============================================================
 
 @test "_ccm_strip_hooks: strips ccm hooks from JSON" {
-    local input='{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/path/on-prompt-submit.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"/path/on-stop.sh"}]}]}}'
+    local input
+    input=$(jq -nc --arg h "${CCM_ROOT}/hooks" '{hooks:{UserPromptSubmit:[{hooks:[{type:"command",command:($h+"/on-prompt-submit.sh")}]}],Stop:[{hooks:[{type:"command",command:($h+"/on-stop.sh")}]}]}}')
     local result
     result=$(echo "$input" | _ccm_strip_hooks)
     local has_hooks
@@ -483,12 +564,171 @@ STUB
 }
 
 @test "_ccm_strip_hooks: preserves non-ccm hooks" {
-    local input='{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/path/on-prompt-submit.sh"}]},{"hooks":[{"type":"command","command":"/other/hook.sh"}]}]}}'
+    local input
+    input=$(jq -nc --arg h "${CCM_ROOT}/hooks" '{hooks:{UserPromptSubmit:[{hooks:[{type:"command",command:($h+"/on-prompt-submit.sh")}]},{hooks:[{type:"command",command:"/other/hook.sh"}]}]}}')
     local result
     result=$(echo "$input" | _ccm_strip_hooks)
     local count
     count=$(echo "$result" | jq '.hooks.UserPromptSubmit | length')
     [[ "$count" -eq 1 ]]
+}
+
+@test "_ccm_strip_hooks: removes ccm's hook alone, keeping the tool beside it and a look-alike" {
+    # A script named like ccm's is not ccm's for that alone: here /path
+    # does not exist and is tied to a single ccm script, so it is kept.
+    local input result
+    input=$(jq -nc --arg h "${CCM_ROOT}/hooks" '{hooks:{Stop:[
+        {matcher:"m", hooks:[{type:"command",command:($h+"/on-stop.sh")},{type:"command",command:"/peer/x.sh"}]},
+        {hooks:[{type:"command",command:"/path/on-stop.sh"}]}]}}')
+    result=$(echo "$input" | _ccm_strip_hooks)
+    [[ "$(echo "$result" | jq -c .hooks.Stop)" == '[{"matcher":"m","hooks":[{"type":"command","command":"/peer/x.sh"}]},{"hooks":[{"type":"command","command":"/path/on-stop.sh"}]}]' ]]
+}
+
+@test "setup-hooks: an install missing an event is rebuilt without losing another tool's hooks" {
+    _resource_with_timeout 5000
+    run ccm_setup_hooks
+    _add_peers
+    local f="${MOCK_DIR}/.claude/settings.json"
+    jq 'del(.hooks.PostCompact)' "$f" > "$f.new" && mv "$f.new" "$f"
+    local peers_before; peers_before=$(_peers)
+    _resource_with_timeout unset
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(_peers)" == "$peers_before" ]]
+    [[ "$(_hooks_under "${CCM_ROOT}/hooks/")" == "16 5" ]]
+}
+
+@test "setup-hooks: an install written through a symlinked path is rebuilt without losing another tool's hooks" {
+    _resource_with_timeout 5000
+    run ccm_setup_hooks
+    _add_peers
+    ln -s "${CCM_ROOT}/hooks" "${MOCK_DIR}/alias-hooks"
+    _respell_ccm_paths "${CCM_ROOT}/hooks/" "${MOCK_DIR}/alias-hooks/" all
+    local peers_before; peers_before=$(_peers)
+    _resource_with_timeout unset
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(_peers)" == "$peers_before" ]]
+    [[ "$(_hooks_under "${CCM_ROOT}/hooks/")" == "16 5" ]]
+    [[ "$(_hooks_under "${MOCK_DIR}/alias-hooks/")" == "0 " ]]
+}
+
+@test "setup-hooks: a single command written through a symlink is updated with the rest" {
+    _resource_with_timeout 5000
+    run ccm_setup_hooks
+    _add_peers
+    ln -s "${CCM_ROOT}/hooks" "${MOCK_DIR}/alias-hooks"
+    _respell_ccm_paths "${CCM_ROOT}/hooks/" "${MOCK_DIR}/alias-hooks/" stop
+    local peers_before; peers_before=$(_peers)
+    _resource_with_timeout unset
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(_peers)" == "$peers_before" ]]
+    [[ "$(_hooks_under "${CCM_ROOT}/hooks/")" == "15 5" ]]
+    [[ "$(_hooks_under "${MOCK_DIR}/alias-hooks/")" == "1 5" ]]
+}
+
+@test "setup-hooks: hooks in a directory that no longer exists are named, not removed" {
+    # They may be a deleted ccm's, or another tool's whose scripts share
+    # the names; the settings alone cannot say which.
+    _resource_with_timeout unset
+    run ccm_setup_hooks
+    _respell_ccm_paths "${CCM_ROOT}/hooks/" "${MOCK_DIR}/gone/hooks/" all
+    local f="${MOCK_DIR}/.claude/settings.json"
+    local before; before=$(jq -S . "$f")
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(_hooks_under "${MOCK_DIR}/gone/hooks/")" == "16 5" ]]
+    [[ "$(_hooks_under "${CCM_ROOT}/hooks/")" == "16 5" ]]
+    [[ "$(jq -S --arg d "${CCM_ROOT}/hooks/" 'del(.hooks[][] | select(.hooks[0].command | startswith($d)))' "$f")" == "$before" ]]
+    [[ "$output" == *"${MOCK_DIR}/gone/hooks/on-stop.sh"* ]]
+}
+
+@test "setup-hooks: names the look-alike hooks it leaves in place" {
+    _resource_with_timeout unset
+    run ccm_setup_hooks
+    _add_peers
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"Left in place"* ]]
+    [[ "$output" == *"/peer/hooks/on-stop.sh"* ]]
+    [[ "$output" != *"/peer/independent.sh"* ]]
+}
+
+@test "setup-hooks and remove-hooks: a settings file that does not parse is left alone, and so is the backup" {
+    # An overlapping writer can leave the file cut off mid-object. The
+    # backup is what recovers from that, so copying the broken file
+    # over it first would destroy the one thing worth having.
+    local f="${MOCK_DIR}/.claude/settings.json"
+    mkdir -p "$(dirname "$f")"
+    printf '{"good": true}\n' > "$f.bak"
+    printf '{"hooks": {"Stop": [' > "$f"
+    local broken; broken=$(cat "$f")
+    run ccm_setup_hooks
+    [[ "$status" -ne 0 ]]
+    [[ "$(cat "$f")" == "$broken" ]]
+    [[ "$(cat "$f.bak")" == '{"good": true}' ]]
+    run ccm_remove_hooks
+    [[ "$status" -ne 0 ]]
+    [[ "$(cat "$f")" == "$broken" ]]
+    [[ "$(cat "$f.bak")" == '{"good": true}' ]]
+}
+
+_assert_untouched() {   # $1 = content expected in settings.json
+    local f="${MOCK_DIR}/.claude/settings.json"
+    [[ "$(cat "$f")" == "$1" ]] || { echo "settings changed: $(cat "$f")"; return 1; }
+    [[ "$(cat "$f.bak")" == '{"good": true}' ]] || { echo "backup changed: $(cat "$f.bak")"; return 1; }
+}
+
+@test "setup-hooks and remove-hooks: JSON that is not an object is not settings, and is left alone with its backup" {
+    # `[]`, `123` and `null` parse, and jq builds an object out of
+    # `null` without complaint — which is how a good backup got
+    # replaced by `null` and hooks written over it.
+    local f="${MOCK_DIR}/.claude/settings.json" content
+    mkdir -p "$(dirname "$f")"
+    for content in '[]' '123' 'null' '"text"'; do
+        printf '{"good": true}' > "$f.bak"
+        printf '%s' "$content" > "$f"
+        run ccm_setup_hooks
+        [[ "$status" -ne 0 ]] || { echo "setup accepted $content"; return 1; }
+        _assert_untouched "$content"
+        run ccm_remove_hooks
+        [[ "$status" -ne 0 ]] || { echo "remove accepted $content"; return 1; }
+        _assert_untouched "$content"
+    done
+}
+
+@test "setup-hooks and remove-hooks: a settings path that is a broken symlink is not replaced" {
+    local f="${MOCK_DIR}/.claude/settings.json"
+    mkdir -p "$(dirname "$f")"
+    printf '{"good": true}' > "$f.bak"
+    ln -s "${MOCK_DIR}/missing-target" "$f"
+    run ccm_setup_hooks
+    [[ "$status" -ne 0 ]]
+    [[ -L "$f" && ! -e "$f" ]]
+    run ccm_remove_hooks
+    [[ "$status" -ne 0 ]]
+    [[ -L "$f" && ! -e "$f" ]]
+    [[ "$(cat "$f.bak")" == '{"good": true}' ]]
+}
+
+@test "setup-hooks: the backup is the file as it was before this write" {
+    local f="${MOCK_DIR}/.claude/settings.json"
+    mkdir -p "$(dirname "$f")"
+    printf '{"model": "keep"}\n' > "$f"
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(jq -c . "$f.bak")" == '{"model":"keep"}' ]]
+}
+
+@test "remove-hooks: keeps another tool's hooks, even in ccm's matcher entry" {
+    ccm_setup_hooks >/dev/null 2>&1
+    _add_peers
+    local peers_before; peers_before=$(_peers)
+    run ccm_remove_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$(_peers)" == "$peers_before" ]]
+    [[ "$(_hooks_under "${CCM_ROOT}/hooks/")" == "0 " ]]
 }
 
 # ============================================================
@@ -614,6 +854,21 @@ EOF
     }
 }
 
+@test "on-stop.sh: writes .pending when only Claude Code's own upkeep is reported" {
+    # A memory "dream" or the auto-mode scan is not work the user waits
+    # on, so the turn is done and the completion notice is due.
+    local tmp_home="${MOCK_DIR}/stop-bg-upkeep"
+    local sid="99999999-9999-9999-9999-999999999999"
+    _run_stop_with_payload_extras \
+        '"background_tasks":[{"id":"d1","type":"dream"}],"session_crons":[]' \
+        "$tmp_home" "/tmp/stop-bg-upkeep" "$sid"
+
+    local pending="${tmp_home}/ccm-${UID}/hooks/${sid}.pending"
+    [[ -f "$pending" ]] || {
+        echo "pending sentinel should have been written for upkeep-only background work: $pending"; return 1;
+    }
+}
+
 @test "on-pre-tool-use.sh: cancels pending sentinel from prior Stop" {
     local tmp_home="${MOCK_DIR}/pretool-home"
     local cwd="/tmp/pretool-proj"
@@ -690,4 +945,23 @@ for k, v in STATE_ICONS.items():
     [[ ! -f "${hook_dir}/${sid}.pending" ]] || {
         echo "pending should have been cancelled by UserPromptSubmit"; return 1;
     }
+}
+
+@test "setup-hooks: names in metadata do not mean hooks are installed" {
+    # Include the current-path markers and every event/matcher literal
+    # the former grep probe looked for, but no actual hook registrations.
+    jq --arg root "$CCM_ROOT" '
+        {notes: ([.hooks[][] | .hooks[].command |
+                   sub("/plugin"; $root)] +
+                 ["PostToolUseFailure", "SubagentStop", "PreCompact", "PostCompact"]),
+         matcher: "elicitation_dialog"}
+    ' "${CCM_ROOT}/tests/fixtures/hooks-complete.json" > "${MOCK_DIR}/.claude/settings.json"
+    run ccm_setup_hooks
+    [[ "$status" -eq 0 ]]
+    [[ "$output" != *"already installed"* ]]
+    jq -e '.hooks.UserPromptSubmit[0].hooks[0].command != null and
+           any(.hooks.Notification[]; .matcher == "elicitation_dialog")' \
+        "${MOCK_DIR}/.claude/settings.json" >/dev/null
+    run ccm_hooks_configured
+    [[ "$status" -eq 0 ]]
 }

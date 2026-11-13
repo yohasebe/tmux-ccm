@@ -34,8 +34,7 @@ env var) which writes one JSONL record per detection cycle.
    Hot-path write from Claude Code hook scripts. Bypasses the
    Python detector so the statusline reflects BUSY / PERMIT /
    SHELL with zero polling latency. Routing through Python would
-   add 30–80 ms of interpreter startup per hook event, which
-   defeats the purpose of instant status updates.
+   add interpreter startup to every hook event, which defeats the purpose of instant status updates.
 
 When changing state-transition semantics, audit both sites.
 """
@@ -46,11 +45,13 @@ import time
 from typing import Optional
 
 import ccm_canaries
+import ccm_agentview
 import ccm_core  # late-bound for tmux_cmd / find_process_age
 import ccm_jsonl
 import ccm_signals
-from ccm_activity import derive_state_from_events
-from ccm_pane_state import detect_window_raw, find_claude_pid
+from ccm_activity import background_work_reported, derive_state_from_events
+from ccm_constants import BUSY_STALE_RELEASE_SEC
+from ccm_pane_state import detect_window_raw, find_claude_pid, read_work_clock
 from ccm_rules import (
     Action,
     DetectionContext,
@@ -64,10 +65,61 @@ def _set_win_state(win_target, state):
     ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_prev_state", state)
 
 
+UNRESOLVED_IDLE_OPTION = "@ccm_unresolved_idle"
+
+
+def _unresolved_idle_max_gap(status_interval):
+    """Allow the actual status/reconciliation cadence plus one missed tick."""
+    try:
+        tick = max(1, int(status_interval))
+    except (TypeError, ValueError):
+        tick = 15
+    try:
+        reconcile = max(0, int(os.environ.get("CCM_RECONCILE_INTERVAL", "20")))
+    except ValueError:
+        reconcile = 20
+    period = max(1, (reconcile + tick - 1) // tick) * tick
+    return max(BUSY_STALE_RELEASE_SEC, 2 * period + 2)
+
+
+def _unresolved_idle_observation(previous, identity, raw, clock, now, prev_state,
+                                 max_gap):
+    """Measure consecutive idle observations, never unobserved elapsed time."""
+    if identity is None or raw != "IDLE":
+        return 0, 0, ""
+    since = now
+    credit = 0
+    try:
+        record = json.loads(previous)
+        start, seen = record["since"], record["seen"]
+        previous_credit = record["idle_seconds"]
+        if (type(start) is int and type(seen) is int
+                and 0 < start <= seen <= now
+                and type(previous_credit) is int
+                and 0 <= previous_credit <= seen - start
+                and now - seen <= max_gap
+                and prev_state == ("IDLE" if previous_credit > BUSY_STALE_RELEASE_SEC
+                                   else "BUSY")
+                and record["identity"] == identity
+                and record["clock"] == clock):
+            since = start
+            credit = previous_credit + min(now - seen,
+                                           max(1, BUSY_STALE_RELEASE_SEC // 2))
+    except (ValueError, TypeError, KeyError):
+        pass
+    return since, credit, json.dumps(
+        dict(identity=identity, since=since, seen=now, clock=clock,
+             idle_seconds=credit), separators=(",", ":"))
+
+
 def build_detection_context(win_target, project_dir, prev_state,
                             panes_cache, ps_lines, own_pgid,
                             prev_bg_active: bool = False,
                             cached_session_id: Optional[str] = None,
+                            cached_work_clock=None,
+                            cached_unresolved_idle=None,
+                            cached_status_interval=None,
+                            write_session_cache=True,
                             ) -> DetectionContext:
     """Gather all inputs needed for rule evaluation.
 
@@ -75,7 +127,14 @@ def build_detection_context(win_target, project_dir, prev_state,
     The returned context is an immutable snapshot.
     """
     now = int(time.time())
-    raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid)
+
+    prev_work_clock = read_work_clock(win_target, cached=cached_work_clock)
+
+    observed_clocks = []
+    raw = detect_window_raw(win_target, panes_cache, ps_lines, own_pgid,
+                            stored_clock=prev_work_clock,
+                            clock_out=observed_clocks)
+    work_clock = observed_clocks[0] if observed_clocks else None
 
     # Find the window's primary claude_pid (first pane that hosts one).
     # Used to resolve the exact JSONL path via the runtime session file
@@ -105,15 +164,24 @@ def build_detection_context(win_target, project_dir, prev_state,
     # repeating the pid chain. Re-write only when the value changes
     # to avoid pointless tmux churn on every scan.
     session_id = None
+    # What this cycle learned from the session registry: a validated
+    # record, or None when the pid has no usable record — including
+    # the pid-reuse rejection below. Passed on to the JSONL resolver
+    # so it neither reads the file a second time nor reads it without
+    # the check. Stays UNCHECKED when there is no claude pid at all.
+    session_info = ccm_jsonl.UNCHECKED
+    activity_session = ccm_agentview.PaneSession()
+    info = None
     if claude_pid is not None:
         # Pass `ps_lines` so `read_session_info` can verify the
         # session_info file's `startedAt` against the live process's
         # etime — defends against pid recycling where a prior
         # claude session's json file lingers under the same pid.
         info = ccm_jsonl.read_session_info(claude_pid, ps_lines=ps_lines)
-        if info:
-            session_id = info.get("sessionId") or info.get("session_id")
-    if win_target:
+        session_info = info or None
+        activity_session = ccm_agentview.resolve_pane_session(info)
+        session_id = activity_session.session_id
+    if win_target and write_session_cache:
         # `cached_session_id` is the value already read from the
         # bulk `list-windows` query in `build_project_list`, so we
         # avoid an extra `show-option` subprocess per project per
@@ -160,12 +228,47 @@ def build_detection_context(win_target, project_dir, prev_state,
             else:
                 hook_age = now - hook_ts
 
-    if project_dir:
+    if activity_session.parked:
+        jsonl_age, jsonl_last_stop_reason = (
+            ccm_jsonl.read_jsonl_tail_info_for_session(
+                activity_session.cwd or project_dir, session_id)
+            if session_id else (-1, None))
+    elif project_dir:
         jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(
-            project_dir, claude_pid=claude_pid
+            project_dir, claude_pid=claude_pid, session_info=session_info
         )
     else:
         jsonl_age, jsonl_last_stop_reason = -1, None
+
+    previous_idle = cached_unresolved_idle
+    if previous_idle is None:
+        previous_idle = (ccm_core.tmux_cmd(
+            "show-option", "-w", "-t", win_target, "-qv", UNRESOLVED_IDLE_OPTION)
+            if win_target else "")
+    identity = ([str(claude_pid), info.get("startedAt"), info.get("sessionId"),
+                 info.get("parkedJobId")]
+                if activity_session.unresolved and info else None)
+    status_interval = cached_status_interval
+    if status_interval is None and activity_session.unresolved:
+        status_interval = ccm_core.tmux_cmd(
+            "show-option", "-t", win_target, "-qv", "status-interval")
+    idle_max_gap = _unresolved_idle_max_gap(status_interval)
+    idle_since, idle_seconds, idle_record = _unresolved_idle_observation(
+        previous_idle, identity, raw, work_clock, now, prev_state, idle_max_gap)
+
+    agent_ts = 0
+    agent_permit_ts = 0
+    background = False
+    if session_id and _event_log_enabled():
+        agent_ts = ccm_signals.read_agent_activity(
+            project_dir, session_id=session_id)
+        agent_permit = ccm_signals.read_agent_permit(
+            project_dir, session_id=session_id)
+        if agent_permit is not None:
+            agent_permit_ts = agent_permit[0]
+        background = background_work_reported(
+            ccm_signals.read_events_tail(project_dir, session_id=session_id),
+            ccm_signals.read_stop_background(project_dir, session_id=session_id))
 
     return DetectionContext(
         raw=raw,
@@ -179,6 +282,17 @@ def build_detection_context(win_target, project_dir, prev_state,
         now=now,
         prev_bg_active=prev_bg_active,
         session_id=session_id,
+        session_unresolved=activity_session.unresolved,
+        unresolved_idle_since=idle_since,
+        unresolved_idle_seconds=idle_seconds,
+        unresolved_idle_max_gap=idle_max_gap,
+        unresolved_idle_record=idle_record,
+        prev_unresolved_idle_record=previous_idle,
+        work_clock=work_clock,
+        prev_work_clock=prev_work_clock,
+        agent_ts=agent_ts,
+        agent_permit_ts=agent_permit_ts,
+        background_work=background,
     )
 
 
@@ -213,16 +327,42 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     ):
         ccm_canaries._push_shell_transition(win_target)
 
+    if ctx.unresolved_idle_record != ctx.prev_unresolved_idle_record:
+        if ctx.unresolved_idle_record:
+            ccm_core.tmux_cmd("set-option", "-wt", win_target,
+                              UNRESOLVED_IDLE_OPTION, ctx.unresolved_idle_record)
+        else:
+            ccm_core.tmux_cmd("set-option", "-wut", win_target,
+                              UNRESOLVED_IDLE_OPTION)
+
     if action == Action.HOLD_NO_WRITE:
         return state
 
+    # Work-clock persistence. The tick check in ccm_pane_state
+    # compares the window's current clock against the value stored
+    # here last pass — and that history cannot live in-process,
+    # because tmux spawns the periodic path (ccm inject-status, the
+    # one auto-exit runs on) fresh every status-interval. Write on
+    # CHANGE only: a static frame must never refresh the timestamp,
+    # because its age is the verdict. Same shape as the
+    # @ccm_session_id cache above, including clearing when the clock
+    # disappears so a later identical footer starts fresh.
+    prev_clock_str = ctx.prev_work_clock[0] if ctx.prev_work_clock else None
+    if ctx.work_clock != prev_clock_str:
+        if ctx.work_clock is None:
+            ccm_core.tmux_cmd("set-option", "-wut", win_target, "@ccm_work_clock")
+            ccm_core.tmux_cmd("set-option", "-wut", win_target, "@ccm_work_clock_ts")
+        else:
+            ccm_core.tmux_cmd("set-option", "-wt", win_target,
+                              "@ccm_work_clock", ctx.work_clock)
+            ccm_core.tmux_cmd("set-option", "-wt", win_target,
+                              "@ccm_work_clock_ts", str(ctx.now))
+
     # Action.DEFAULT — set @ccm_prev_state.
-    # Skip the write when the value is already what we'd set. On a
-    # 13-window dashboard refreshing twice a second, a tmux subprocess
-    # per window dominates the slow path — and the steady state is
-    # mostly "everyone IDLE", so the overwhelming majority of writes
-    # are no-ops. The hot path now pays one tmux subprocess only when
-    # a state actually transitions.
+    # Skip the write when the value is already what we'd set. A tmux
+    # subprocess per window would dominate the slow path, and in the
+    # steady state most writes are no-ops, so a subprocess is paid only
+    # when a state actually transitions.
     if state != ctx.prev_state:
         _set_win_state(win_target, state)
 
@@ -251,9 +391,10 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
     # Surface the discrepancy as a `(bg)` UI suffix so the user
     # knows "claude is at rest, but something it spawned is still
     # alive". Written when committed state is IDLE but raw says
-    # BUSY; cleared whenever they agree, so a stale flag cannot
-    # survive a state change.
-    if state == "IDLE" and ctx.raw == "BUSY":
+    # BUSY, or while Claude Code reports background work outstanding;
+    # cleared otherwise, so a stale flag cannot survive a state
+    # change.
+    if state == "IDLE" and (ctx.raw == "BUSY" or ctx.background_work):
         # Only write when transitioning into bg-active mode.
         if not ctx.prev_bg_active:
             ccm_core.tmux_cmd("set-option", "-wt", win_target, "@ccm_bg_active", "1")
@@ -305,8 +446,20 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
     """
     rule, legacy_state = evaluate_rules(ctx)
 
+    if ctx.session_unresolved and ctx.raw not in ("SHELL", "DOWN", "IGNORED"):
+        if (ctx.raw == "IDLE"
+                and ctx.unresolved_idle_seconds > BUSY_STALE_RELEASE_SEC):
+            return legacy_state, rule, None
+        return ("PERMIT" if ctx.raw == "PERMIT" else "BUSY"), rule, None
+
     event_log_state = None
-    if _event_log_enabled():
+    # raw=IGNORED short-circuits the event-log path: the verdict is
+    # about visibility (every claude pane is deliberately unseen), not
+    # activity, and the log belongs to sessions ccm chose not to
+    # watch — their hooks early-exit, so anything in it is stale and
+    # must not resurrect a claim. It would also read pid_present as
+    # False and answer SHELL, overriding the verdict.
+    if _event_log_enabled() and ctx.raw != "IGNORED":
         # `ctx.session_id or ""` — same N+1 guard as the hook-signal
         # read in build_detection_context: a SHELL window has no
         # session_id, and None would trigger a per-cycle tmux
@@ -315,8 +468,9 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
             project_dir, session_id=ctx.session_id or "")
         # pid_present: the legacy raw detection already resolved
         # SHELL when no claude process is present, so raw not in
-        # ("SHELL", "DOWN") is a reliable proxy without a second ps scan.
-        pid_present = ctx.raw not in ("SHELL", "DOWN")
+        # ("SHELL", "DOWN") is a reliable proxy without a second ps
+        # scan. IGNORED's visible panes host no claude either.
+        pid_present = ctx.raw not in ("SHELL", "DOWN", "IGNORED")
         event_log_state = derive_state_from_events(
             events=events,
             jsonl_stop_reason=ctx.jsonl_last_stop_reason,
@@ -325,6 +479,8 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
             raw=ctx.raw,
             jsonl_age=ctx.jsonl_age,
             now=ctx.now,
+            agent_ts=ctx.agent_ts,
+            agent_permit_ts=ctx.agent_permit_ts,
         )
 
     state = event_log_state if event_log_state is not None else legacy_state
@@ -334,7 +490,10 @@ def resolve_state_from_context(ctx: DetectionContext, project_dir: str):
 def detect_window_state(win_target, project_dir, prev_state,
                         panes_cache, ps_lines, own_pgid,
                         prev_bg_active: bool = False,
-                        cached_session_id: Optional[str] = None):
+                        cached_session_id: Optional[str] = None,
+                        cached_work_clock=None,
+                        cached_unresolved_idle=None,
+                        cached_status_interval=None):
     """Full detection pipeline. Returns the resolved state string.
 
     Three-line orchestrator:
@@ -351,6 +510,9 @@ def detect_window_state(win_target, project_dir, prev_state,
         panes_cache, ps_lines, own_pgid,
         prev_bg_active=prev_bg_active,
         cached_session_id=cached_session_id,
+        cached_work_clock=cached_work_clock,
+        cached_unresolved_idle=cached_unresolved_idle,
+        cached_status_interval=cached_status_interval,
     )
     state, rule, event_log_state = resolve_state_from_context(ctx, project_dir)
     return apply_actions(win_target, project_dir, ctx, rule, state,
@@ -451,6 +613,14 @@ def _trace_scan(win_target, ctx, rule, state, event_log_state=None):
             "jsonl_age": ctx.jsonl_age,
             "jsonl_stop": ctx.jsonl_last_stop_reason,
             "claude_pid_age": ctx.claude_pid_age,
+            "session_id": ctx.session_id,
+            "session_unresolved": ctx.session_unresolved,
+            "unresolved_idle_since": ctx.unresolved_idle_since,
+            "unresolved_idle_seconds": ctx.unresolved_idle_seconds,
+            "unresolved_idle_max_gap": ctx.unresolved_idle_max_gap,
+            "agent_ts": ctx.agent_ts,
+            "agent_permit_ts": ctx.agent_permit_ts,
+            "background_work": ctx.background_work,
             "rule": rule.name,
             "phase": rule.phase,
             "state": state,

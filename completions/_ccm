@@ -20,7 +20,11 @@ _ccm() {
         'search:Open dashboard in live-filter search mode'
         'statusline:One-line status for tmux status bar'
         'snapshot:Snapshot operations'
+        'roles:Inspect or release restored pane roles'
+        'prepare-logout:Save and protect / unseal the autosave checkpoint'
+        'finish-restore:Keep what an incomplete restore restored and resume autosave'
         'start:Start from a snapshot'
+        'exit:Exit Claude, keeping the window and sidekicks'
         'stop:Stop project window(s)'
         'bg:External Claude Code agent-view sessions'
         'send:Send a prompt to another project'
@@ -38,7 +42,7 @@ _ccm() {
         'ignore:Hide a pane/project from ccm'
         'unignore:Restore a hidden pane/project to ccm'
         'debug:Live state-detection trace (debug trace)'
-        'doctor:Self-check: dependencies, hooks, canaries, projects'
+        'doctor:Show issues (--verbose for all diagnostic details)'
         'clear-notifications:Remove all ccm notifications from Notification Center'
         'version:Print the ccm version'
         'help:Show help'
@@ -65,6 +69,10 @@ _ccm() {
             attach|a|unregister|unreg|remove|rm|rename|mv|capture|cap|stop|send|reset|ignore|unignore)
                 _ccm_projects
                 ;;
+            exit)
+                _ccm_projects
+                compadd -- -y --yes
+                ;;
             add|open)
                 _directories
                 ;;
@@ -73,6 +81,15 @@ _ccm() {
                 local -a windows
                 windows=(${(f)"$(tmux list-windows -F '#{window_name}' 2>/dev/null)"})
                 compadd -a windows
+                ;;
+            roles)
+                compadd -- --clear
+                ;;
+            prepare-logout)
+                compadd -- --cancel -y --yes
+                ;;
+            finish-restore)
+                compadd -- -y --yes
                 ;;
             snapshot|snap)
                 local -a snap_cmds
@@ -86,8 +103,17 @@ _ccm() {
                 ;;
             spool)
                 local -a spool_cmds
-                spool_cmds=('list' 'cancel')
-                compadd -a spool_cmds
+                spool_cmds=('list:Inspect pending, held and expired messages'
+                            'cancel:Withdraw pending messages'
+                            'clear-expired:Delete expired records only; sends nothing'
+                            'clear-held:Acknowledge held records'
+                            'show:Read one expired or held record'
+                            'discard:Discard one expired or held record'
+                            'resend:Send one expired record as a new message')
+                _describe 'spool command' spool_cmds
+                ;;
+            doctor)
+                compadd -- --verbose
                 ;;
             debug)
                 local -a debug_cmds
@@ -100,6 +126,23 @@ _ccm() {
         esac
     elif (( CURRENT == 4 )); then
         case "${words[2]}" in
+            exit)
+                _ccm_projects
+                compadd -- -y --yes
+                ;;
+            spool)
+                case "${words[3]}" in
+                    show|discard)
+                        compadd expired held
+                        ;;
+                    resend)
+                        compadd expired
+                        ;;
+                    list|clear-expired|clear-held)
+                        _ccm_projects
+                        ;;
+                esac
+                ;;
             snapshot|snap)
                 case "${words[3]}" in
                     load|delete|del)

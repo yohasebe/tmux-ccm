@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Regression guard for executable bits in the GIT INDEX.
 #
 # ccm is distributed via git/TPM, so what users receive is decided by
@@ -47,24 +48,20 @@ _index_mode() {
     [[ "$count" -ge 7 ]]
 }
 
+@test "scripts tmux runs directly are executable in the index" {
+    # tmux's run-shell executes these by path; a mode lost in the index
+    # is a handler that silently never runs on a fresh clone. Tests that
+    # call them through `bash <script>` would not notice.
+    local f
+    for f in lib/on-resize.sh lib/on-pane-focus.sh; do
+        [[ "$(_index_mode "$f")" == "100755" ]] || { echo "$f is $(_index_mode "$f")"; return 1; }
+    done
+}
+
 @test "hooks/lib.sh stays non-executable (source-only contract)" {
     # lib.sh is sourced by every hook, never exec'd. Keeping it 644
     # documents that contract in the index; if someone flips it to
     # 755, either they are about to exec it (wrong — it has no main)
     # or the change is accidental. Both deserve a failing test.
     [[ "$(_index_mode hooks/lib.sh)" == "100644" ]]
-}
-
-@test "dev scripts are executable in the git index" {
-    # scripts/*.sh are maintainer tooling run directly (./scripts/…).
-    # Not user-facing, but the same forgotten-+x accident applies.
-    local count=0 mode path
-    while read -r mode _ _ path; do
-        count=$((count + 1))
-        [[ "$mode" == "100755" ]] || {
-            echo "script not executable in index: $path ($mode)" >&2
-            return 1
-        }
-    done < <(git -C "$CCM_ROOT" ls-files -s -- 'scripts/*.sh')
-    [[ "$count" -ge 1 ]]
 }

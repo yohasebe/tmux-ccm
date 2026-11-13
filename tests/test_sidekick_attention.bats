@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Writer half of the sidekick attention-marker contract:
 # hooks/sidekick-attention.sh, invoked by a sidekick CLI's OWN hook
 # system with the event JSON on stdin. The reader/GC half is pinned
@@ -8,6 +9,9 @@ CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 SCRIPT="${CCM_ROOT}/hooks/sidekick-attention.sh"
 
 setup() {
+    # The temp roots made below must be closed to others, as ccm makes them;
+    # under umask 002 ccm would rightly move them aside.
+    umask 077
     SANDBOX="$(mktemp -d)"
     export TMPDIR="${SANDBOX}/tmp"
     mkdir -p "$TMPDIR"
@@ -97,7 +101,7 @@ _request_payload() {
     [[ "$output" == *"kimi needs a decision"* ]]
     [[ "$output" == *"npm test"* ]]
     # No -sender: bundle-identity swapping makes notifications
-    # silently droppable (feedback_terminal_notifier_sender).
+    # silently droppable.
     [[ "$output" != *"-sender"* ]]
 }
 
@@ -132,15 +136,15 @@ _grok_notification() {
 
 @test "grok: summary falls back to the payload message" {
     # Grok's permission Notification has no toolName/toolInput, and an
-    # empty summary is what a consumer's watch face cannot use.
+    # summary must not be empty.
     _grok_notification | bash "$SCRIPT" grok
     run jq -r '.summary' "${ATTENTION_DIR}/%40.json"
     [[ "$output" == "Tool permission requested" ]]
 }
 
 @test "grok: snake_case activity event resolves the wait" {
-    # `post_tool_use`, not `PostToolUse` — the casing that made a consumer's
-    # PascalCase dispatch an accidental near-miss.
+    # `post_tool_use`, not `PostToolUse`: the event name is normalized
+    # before dispatch.
     _grok_notification | bash "$SCRIPT" grok
     printf '%s' '{"hookEventName":"post_tool_use","sessionId":"g-1"}' \
         | bash "$SCRIPT" grok

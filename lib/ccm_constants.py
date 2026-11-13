@@ -27,11 +27,12 @@ here.
 
 import os
 import re
+import unicodedata
 
 
 # Version string. Keep in sync with the `CCM_VERSION` constant in
 # the bash `ccm` wrapper and with CHANGELOG.md's top entry.
-CCM_VERSION = "0.10.0"
+CCM_VERSION = "0.13.0"
 
 
 # ─── Runtime paths ───
@@ -92,22 +93,35 @@ HOOK_FRESH_THRESHOLD = 2
 # that a missed Stop does not strand the project in BUSY indefinitely.
 BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))
-# Stale-BUSY release window, split from BUSY_HOOK_JSONL_WINDOW's 600 s.
+# Stale-BUSY release window, shorter than BUSY_HOOK_JSONL_WINDOW's 600 s.
 # This is a FLICKER-PREVENTION window, not an estimate of the longest
 # silent tool: the real safety net against reporting IDLE for a session
 # that is still working lives on the auto-exit side (IDLE_EXIT_TIMEOUT
 # requires 600 s of *sustained* IDLE before anything is killed), so
-# 600 -> 60 only moves the worst-case kill threshold for a silent tool
-# from 1200 s of silence to 660 s. What it buys is large: an
-# Esc-interrupted turn fires no Stop hook and writes no further JSONL,
-# so it used to sit in a false BUSY for ten minutes; it now clears in
-# one. The release requires the CONJUNCTION of raw=IDLE (no spinner on
-# screen) and a frozen JSONL — neither alone is trusted, because a
-# single long silent tool freezes the JSONL too, and spinner detection
-# has broken before on upstream reworks (the accept-edits
-# marker, the /model footer verb).
+# the worst-case kill threshold for a silent tool is 660 s of silence.
+# It is how long a turn that ended with no terminal evidence (no
+# Stop hook, no terminal transcript record) reads BUSY with an idle
+# screen. The release requires the CONJUNCTION of raw=IDLE (no ticking
+# work clock on screen — a static footer does not count) and a frozen
+# JSONL — neither alone is trusted, because a single long silent tool
+# freezes the JSONL too, and spinner detection can break on upstream
+# rewording.
 BUSY_STALE_RELEASE_SEC = int(
     os.environ.get("CCM_BUSY_STALE_RELEASE_SEC", "60"))
+# How long an on-screen work clock (the spinner's elapsed-time
+# footer) may stand still before its claim to a running turn stops
+# being believed. The claim is what lets a childless pane — claude
+# thinking or generating, nothing spawned — read BUSY, and raw=BUSY
+# has no timeout anywhere in the pipeline, so the claim must limit
+# itself: a frozen frame (claude hung after rendering the footer)
+# and a transcript line merely quoting a footer are static, and past
+# this window they stop holding the window busy. The clock has
+# 1-second resolution and ticks every second while live, so 30 s of
+# stillness (~15 consecutive identical reads at the dashboard's 2 s
+# cadence) is unambiguous; the safety net for the false-IDLE
+# direction remains auto-exit's IDLE_EXIT_TIMEOUT (600 s sustained).
+SPINNER_STALE_RELEASE_SEC = int(
+    os.environ.get("CCM_SPINNER_STALE_RELEASE_SEC", "30"))
 IDLE_EXIT_TIMEOUT = int(os.environ.get("CCM_IDLE_EXIT_TIMEOUT", "600"))
 CACHE_TTL = int(os.environ.get("CCM_CACHE_TTL", "30"))  # git/port cache seconds
 # Hook-vs-real-activity gap discriminator. A BUSY hook fired more
@@ -132,11 +146,9 @@ JSONL_HOOK_GAP_TOLERANCE = int(
 # without forming an import cycle.
 JSONL_USER_PENDING = "user_pending"
 # Synthetic `stop_reason` for an Esc-interrupted turn. Claude Code
-# fires no Stop hook on a user interrupt (documented upstream), which
-# is why detection long treated Esc as leaving no trace at all — but
-# it DOES write a transcript record saying so, and that record is the
-# only positive evidence the turn ended (measured: 8
-# occurrences in one session). Treated as terminal so the existing
+# fires no Stop hook on a user interrupt (documented upstream), but it
+# writes a transcript record saying so, and that record is the only
+# positive evidence the turn ended. Treated as terminal so the existing
 # "terminal stop_reason newer than the latest event → release"
 # path in `ccm_activity` picks it up, instead of the session waiting
 # out BUSY_STALE_RELEASE_SEC with an idle screen.
@@ -144,17 +156,14 @@ JSONL_INTERRUPTED = "interrupted"
 # Anchored to the WHOLE record text, with the trailing clause left
 # open. Three spellings are known — "[Request interrupted by user]",
 # "[Request interrupted by user for tool use]" and a rare bare
-# "[Request interrupted]" (the last from a consumer's corpus of ~165) — so
-# the clause is exactly the detail that gets reworded and must not be
-# pinned. What must NOT be loose is the anchoring: a substring test
+# "[Request interrupted]" — so the clause is exactly the detail that
+# gets reworded and must not be pinned. What must NOT be loose is the anchoring: a substring test
 # fires on any message that merely mentions the phrase, and a session
 # discussing interrupts then reads as interrupted — a false IDLE,
 # the dangerous direction, since `ccm send` would deliver into a
 # working session and auto-exit could eventually kill it. Claude's
 # own note is the entire content of its record, so requiring that
-# separates it from every quotation of it. (Measured: a
-# naive substring scan of this very session's transcript returned 41
-# hits for 7 real interrupts. a consumer hit the same contamination.)
+# separates it from every quotation of it.
 JSONL_INTERRUPT_RE = re.compile(r"^\[Request interrupted[^\]]*\]$")
 # How long after the `claude` process starts a `raw=BUSY` reading
 # is treated as MCP-loading startup rather than real work, when no
@@ -171,7 +180,7 @@ STARTUP_GRACE_SEC = int(os.environ.get("CCM_STARTUP_GRACE_SEC", "60"))
 # the pane falsely reads BUSY (has children, no prompt visible).
 SLIVER_HEIGHT_THRESHOLD = int(os.environ.get("CCM_SLIVER_HEIGHT_THRESHOLD", "4"))
 # Attention-marker garbage collection. A `resolved` marker is kept
-# this long so a slow consumer (a consumer's poll) can still see the
+# this long so a slow consumer (another tool's poll) can still see the
 # resolution, then unlinked. A `waiting` marker is dropped past this
 # hard TTL even when nothing resolved it — the safety net for an
 # agent that died mid-wait without firing its resolution hook. Both
@@ -184,28 +193,29 @@ ATTENTION_WAITING_TTL_SEC = int(
 
 
 # ─── Claude Code UI patterns ───
-# These are the ONLY place where Claude Code's terminal output is
-# matched. If detection breaks after a Claude Code update, check
-# these first. See: https://github.com/anthropics/claude-code
+# These, and the input-box patterns in ccm_composer, are the ONLY
+# place where Claude Code's terminal output is matched. If detection
+# breaks after a Claude Code update, check these first. See:
+# https://github.com/anthropics/claude-code
 
-# Input prompt characters (single character followed by space = idle prompt)
+# Input prompt characters. The composer renders a NO-BREAK SPACE
+# after the glyph, not an ordinary one, which is why
+# patterns below match whitespace rather than a literal space.
+# Where a wrapped line must not count, horizontal whitespace is
+# spelled out instead (`[ \t\xa0]`).
 _PROMPT_CHARS = "❯"
 # Accept-edits prompt characters (doubled = accept-edits mode)
 _ACCEPT_CHARS = "❯⏵"
 PATTERN_INPUT_PROMPT = re.compile(rf"^[{_PROMPT_CHARS}]\s")
 PATTERN_ACCEPT_EDITS = re.compile(rf"^\s*[{_ACCEPT_CHARS}]{{2}}")
 
-# A composer line that carries text after the prompt character is a
-# half-typed draft. State detection cannot see this: raw IDLE only
-# requires `^❯\s`, which a composer holding text also satisfies. The
-# send path matches this against the pane bottom and refuses to merge
-# a message into a draft the user is still writing. Claude-only on
-# purpose — it is the one TUI ccm tracks; sidekick TUIs are never
-# pattern-matched (see EXTERNAL_AGENT_COMMANDS).
-# `\s+`, not `\s*`: the composer always renders a space after the
-# prompt glyph, and requiring it keeps the doubled-glyph mode line of
-# older builds (`❯❯ accept edits on`) from reading as a draft.
-PATTERN_COMPOSER_DRAFT = re.compile(rf"^[{_PROMPT_CHARS}]\s+\S")
+_SGR_PARAM_RE = re.compile(r"\x1b\[([0-9;]*)m")
+
+
+def strip_sgr(text):
+    """Remove SGR attributes without changing text or row positions."""
+    return _SGR_PARAM_RE.sub("", text)
+
 
 # Active-work spinner footer. Claude Code renders a status line of
 # the shape `<glyph> <verb>… (<elapsed> · <arrow> <N>k tokens)` ONLY
@@ -232,26 +242,157 @@ PATTERN_COMPOSER_DRAFT = re.compile(rf"^[{_PROMPT_CHARS}]\s+\S")
 # signal that distinguishes "approved tool running" (spinner
 # present) from "menu / permission wait" (spinner absent — Claude
 # has stopped generating to ask) and "true idle" (spinner absent).
-# Empirically verified: running panes show the spinner,
-# AskUserQuestion menu waits do not. See memory
-# project_false_idle_long_tool.md.
+# Running panes show the spinner; AskUserQuestion menu waits do not.
 #
 # Elapsed forms: "59s", "2m 2s", or "3h 11m 16s". Token forms: "8.0k",
-# "8k", or — below 1000 — a bare count with NO k suffix ("557 tokens";
-# observed, a project: a fresh turn streamed for 1m39s showing
-# "(1m 39s · ↓ 557 tokens)" and the then-mandatory `k` made the
-# spinner invisible to raw detection, so an accept-edits pane sat at
-# false IDLE through the whole sub-1k window).
-#
-# The hour component is the same lesson a second time: a turn past
-# the hour mark rendered
-# "(3h 11m 16s · ↓ 8.8k tokens)" and the minutes-only form stopped
-# matching, so the ONE piece of direct on-screen evidence that Claude
-# is working went dark for the rest of that turn). Each unit is
+# "8k", or — below 1000 — a bare count with NO k suffix
+# ("(1m 39s · ↓ 557 tokens)"). A turn past the hour mark renders
+# "(3h 11m 16s · ↓ 8.8k tokens)". Missing either form would hide the
+# ONE piece of direct on-screen evidence that Claude is working, so
+# an accept-edits pane would read IDLE. Each unit is
 # independently optional rather than a fixed "h m s" shape, because
 # nothing guarantees Claude Code keeps printing a zero-valued unit.
+# The segments after the elapsed time are read as opaque. Within one
+# turn the footer passes through several shapes — a bare verb, then
+# `(2s · thinking with max effort)`, then
+# `(5s · ↓ 25 tokens · thought for 3s)`, then `(7s · ↓ 380 tokens)` —
+# and a pattern anchored on `tokens)` would match only the last of
+# them, leaving the pane reading IDLE while Claude is plainly working.
+# What separates a running turn from the finished line beside it
+# (`Crunched for 8s`) is the parenthesised elapsed time, not what
+# follows it, so that is all this asks for.
+#
+# The closing paren is optional: a narrow pane clips the footer at
+# the pane's right edge (`(5s · ↓ 25 tok`), and ccm's own sidekick
+# layout splits windows into panes narrow enough to do that.
+# End of line therefore closes the match as well as `)`. The
+# finished line still fails — it has no opening paren at all.
+#
+# The separator and what follows it stay REQUIRED here, even
+# though the footer can render the time alone (see
+# `PATTERN_SPINNER_TIMER`): this pattern is matched anywhere on a
+# line, and `(2s)` or `(45s)` is ordinary enough in prose that
+# accepting it here would let a static screen holding two such
+# spans claim the window indefinitely — each differs from the one
+# stored value, so neither ever ages out. The lone time is read
+# only where it cannot be prose: on the spinner's own line.
 PATTERN_ACTIVE_SPINNER = re.compile(
-    r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·\s*[↑↓]\s*[\d.]+k?\s+tokens\)"
+    r"\((?:\d+h\s+)?(?:\d+m\s+)?\d+s\s*·[^)\n]*(?:\)|$)"
+)
+# The same footer with the elapsed time left out. The footer gives
+# its thinking hint (`thinking`, `still thinking`, `deep in thought`,
+# `picking the thought back up`) precedence over the elapsed time
+# when the pane is too narrow for both, so a narrow pane in a long
+# thinking phase shows `✻ Thinking… (deep in thought)` and nothing
+# that counts. What still moves there is the glyph, which the CLI
+# animates through its spinner frames (`· ✢ ✳ ✶ ✻ ✽`) on a fixed
+# two-second cycle while the session is alive. That cycle is why
+# the glyph cannot be a persisted clock: a poll every 2 s (or 20 s)
+# reads the same phase every time and would call a live spinner
+# static. Instead, movement is looked for within one pass — the
+# pane is captured again a fraction of a second later (see
+# `THINKING_HINT_RESAMPLE_SEC`), and a glyph that changed between
+# the captures is the evidence. A frozen frame does not change and
+# earns nothing. The verb between glyph and hint is opaque; the
+# hint must begin with a letter, which is what separates it from
+# the elapsed form above, and the glyph is restricted to the CLI's
+# own frames to keep prose out of it. With `prefersReducedMotion`
+# the CLI draws a fixed `●` instead, and then nothing on the line
+# moves: the hint form is deliberately not matched there and reads
+# as idle — a known limit, see the guide. The timer form below
+# reads there, but see what that is worth under its own note.
+# Both forms of the elapsed-less footer start the same way: the
+# animating glyph, the verb, its ellipsis, and the opening paren.
+# One definition, because the two patterns below must agree on
+# what a spinner line looks like.
+#
+# The ellipsis may be the character or three dots: the CLI appends
+# `…` to a verb that does not already end in one, and since 2.1.273
+# it counts ASCII `...` as one and leaves it alone. A verb can end
+# that way — `spinnerVerbs` takes whatever the user configures, and
+# a task's own wording is used as the verb too — so a pattern that
+# knows only the character reads such a footer as idle.
+#: The frames the CLI animates the spinner through.
+SPINNER_GLYPHS = "·✢✳✶✻✽"
+#: What it draws instead under `prefersReducedMotion` — one fixed
+#: character, never animated.
+SPINNER_GLYPH_STILL = "●"
+
+
+def _spinner_line_opens(glyphs):
+    return (r"^\s*(?P<glyph>[" + glyphs + r"])\s+\S[^\n]*?"
+            r"(?:…|\.{3})\s*\(")
+
+
+# The hint form takes the animated glyphs only: there the glyph is
+# the evidence, so a glyph that cannot move is no evidence at all.
+PATTERN_THINKING_HINT = re.compile(
+    _spinner_line_opens(SPINNER_GLYPHS) + r"(?P<hint>[A-Za-z][^)\n]*)(?:\)|$)"
+)
+# The footer with its time but nothing after it. The footer fits
+# its parts to the pane one at a time — hint, then timer, then
+# tokens — and drops what does not fit, so the time can end up
+# alone: on a pane too narrow for the hint beside it, and equally
+# on a wide one during a tool phase that has produced no tokens
+# (the footer starts showing itself once the turn passes ~16 s, or
+# straight away in verbose mode). Anchored to the spinner line,
+# unlike `PATTERN_ACTIVE_SPINNER`, because a bare `(2s)` is not
+# rare in prose and this form has nothing else to distinguish it.
+# A quoted spinner line still matches — the same bounded risk the
+# other patterns carry, and it ages out like any static clock.
+#
+# This form takes the still glyph as well, which is worth less
+# than it looks: under `prefersReducedMotion` the CLI leaves the
+# footer as drawn, so its elapsed time can stand still through a
+# minute of real work and move only when something else redraws
+# the line (a resize does), as with 2.1.278's
+# `● Thinking... (2s · ↓ 40 tokens)`. A clock that does not tick ages out like any other
+# static one (`SPINNER_STALE_RELEASE_SEC`), so under reduced
+# motion this form holds a turn busy for that window and no
+# longer. The hooks path is what carries such a session; this is
+# the fallback's limit, not its guarantee.
+PATTERN_SPINNER_TIMER = re.compile(
+    _spinner_line_opens(SPINNER_GLYPHS + SPINNER_GLYPH_STILL)
+    + r"(?P<clock>(?:\d+h\s+)?(?:\d+m\s+)?\d+s)\s*(?:\)|$)"
+)
+#: Seconds between the captures that look for the spinner glyph
+#: moving. The CLI's frame index follows a cosine over a two-second
+#: period, which passes each frame twice per cycle, so two captures
+#: half a second apart can coincide on a symmetric phase (about one
+#: start phase in ten; more where the top frames share a glyph, as
+#: they do under Ghostty). Captures at +0.5 s AND +1.0 s cannot both
+#: coincide with the first — the second resample is what makes the
+#: check sound, not a rounding margin. An interval that is a
+#: multiple of the period (2 s) would read the same phase every
+#: time and defeat the check.
+THINKING_HINT_RESAMPLE_SEC = float(
+    os.environ.get("CCM_THINKING_HINT_RESAMPLE_SEC", "0.5"))
+THINKING_HINT_RESAMPLES = 2
+# Connection / rate-limit retries REPLACE the spinner footer with a
+# line of their own, for example:
+#
+#   ✻ Connection refused — a firewall or proxy may be blocking it (ConnectionRefused) · Retrying in 3s · attempt 8/10
+#
+# The spinner footer does not come back between attempts.
+# While it waits, the session has no child process, writes no JSONL,
+# and shows nothing else that moves — so without this line a long
+# backoff reads as idle, the reading auto-exit acts on.
+#
+# Only the countdown is asked for: the tail clips in narrow panes
+# (at 100 columns the line can end `attemp…`), and the
+# countdown is also the clock — it ticks once a second, which is
+# what lets the staleness check treat the line like the spinner.
+#
+# The units are optional the same way the spinner's elapsed units
+# are: backoff grows with every attempt, so a seconds-only pattern
+# would stop matching exactly the long backoffs this exists for.
+# (`Retrying in 1m 5s` is unobserved as yet — the risk is in the
+# shape, and the duration formatter is shared with the footer,
+# which does render minutes.) Decimal seconds are not matched:
+# unobserved anywhere upstream, and the footer's own elapsed is
+# integer seconds.
+PATTERN_RETRY_BACKOFF = re.compile(
+    r"Retrying in (?:\d+h\s+)?(?:\d+m\s+)?\d+s"
 )
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:
@@ -264,6 +405,8 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 #                                             (/model picker, v2.1.144–v2.1.152)
 #   - "Enter to set as default · s to use this session only · Esc to cancel"
 #                                             (/model picker, v2.1.153+)
+#   - "←/→ to adjust · Enter to apply · Esc to cancel" (/autocompact, captured v2.1.280)
+#   - "Space to toggle · Enter to confirm · Esc to cancel" (/fast, source-derived v2.1.280)
 #   - "3. No, and tell Claude what to do differently (esc)"
 #                                             (footer-less permission dialog —
 #                                              WebFetch / web-content prompts,
@@ -289,32 +432,40 @@ PATTERN_ACTIVE_SPINNER = re.compile(
 # possible verb. Esc-verb after `Esc to` is also permissive
 # (`\w+`) for the same reason — cancel / exit / close / quit /
 # dismiss have all been observed.
+# Register verified confirmation forms individually: /autocompact and
+# /effort were captured; /fast is source-derived, not captured live.
+# A structural Enter-anywhere matcher also accepts /permissions' navigation
+# footer: "↑/↓ to navigate · Enter to select · ←/→ to switch · Esc to cancel".
+# Whether that panel is a confirmation is a content decision, not a hint
+# shape. Keep navigation classification stable; unregistered leading hints
+# remain a known detection limit until verified and added here.
 #
 # Anchored at line start (after optional whitespace) so the same
 # words inside a Claude response — e.g. "use ctrl+e to explain" in
 # answer text, or a code example containing "Enter to confirm" —
 # do not falsely trigger PERMIT. The bare "Esc to cancel" line
-# used by slash menus (/hooks, /config, /skills, /resume from
-# v2.1.144 onwards, ...) deliberately does NOT match: those menus
-# are free navigation with type-to-search / preview keys, not a
-# blocked single-decision modal.
+# used by slash menus (/help, /skills, /resume from v2.1.144
+# onwards, ...) deliberately does NOT match: those menus are free
+# navigation with type-to-search / preview keys, not a blocked
+# single-decision modal. Some lists do carry an "Enter to … · Esc
+# to …" footer — /hooks and /memory, and /rewind once there is a
+# conversation — and therefore read as PERMIT. That errs towards
+# not typing into a screen that is not a conversation input box.
 #
 # re.MULTILINE: the pattern is consumed two ways — per-line
 # `.match(line)` in detect_pane_state (unaffected by the flag) and
 # whole-tail `.search(pane_text)` in classify_permit_modal, where
 # the footer sits on the LAST line of a multi-line capture. Without
 # MULTILINE the `^` anchor only matches at position 0 of the joined
-# string, so the classifier's footer fallback silently never fired
-# and unrecognized confirm modals fell through to "unknown-permit"
+# string, so the classifier's footer fallback would never fire and
+# unrecognized confirm modals would fall through to "unknown-permit"
 # instead of "confirmation-modal".
 # The third alternative matches the deny option of a permission
-# prompt that has no separate "Esc to cancel · …" footer (observed
-# on a WebFetch permission raised by a background
-# subagent, and again on the Claude-in-Chrome navigation dialog,
-# whose deny line is just `Deny (esc)`). The deny label varies by
-# dialog, so it is matched as a negative word (`No,` / `Deny` /
-# `Decline`) rather than any one wording — fixing the exact string
-# is how the browser dialog was missed.
+# prompt that has no separate "Esc to cancel · …" footer (a WebFetch
+# permission raised by a background subagent, the Claude-in-Chrome
+# navigation dialog, whose deny line is just `Deny (esc)`). The deny
+# label varies by dialog, so it is matched as a negative word (`No,` /
+# `Deny` / `Decline`) rather than any one wording.
 # Two anchors keep this specific to a real
 # dialog: the leading `\d+\.` (an actual numbered option line) AND
 # a trailing inline `(esc)`. The `(esc)` is what disambiguates the
@@ -340,7 +491,8 @@ _DENY_OPTION_LINE = (
 PATTERN_PERMIT_FOOTER = re.compile(
     r"^\s*(?:"
     r"Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
-    r"|Enter to \S[^\n]*?\s*(?:·|\|)\s*[^\n]*?\bEsc to \w+"
+    r"|(?:(?:←/→ to adjust|Space to toggle)[ \t\xa0]*(?:·|\|)[ \t\xa0]*)?"
+    r"Enter to \S[^\n]*?[ \t\xa0]*(?:·|\|)[ \t\xa0]*[^\n]*?\bEsc to \w+"
     r"|" + _DENY_OPTION_LINE +
     r")",
     re.MULTILINE,
@@ -361,9 +513,8 @@ PATTERN_PERMIT_FOOTER = re.compile(
 # The age expression takes whatever units it needs — `45m old` under the
 # hour, `3h 11m old` over it, `2d 4h old` for a session resumed days
 # later, which `--continue` invites. Spelled as a repeated unit rather
-# than a fixed pair after the same mistake was found in
-# PATTERN_ACTIVE_SPINNER: requiring `\d+h \d+m` silently
-# excluded every session younger than an hour. Days are worth allowing
+# than a fixed pair: requiring `\d+h \d+m` would exclude every
+# session younger than an hour. Days are worth allowing
 # here even though the spinner ignores them — a single turn does not
 # span days, but a resumable session easily does.
 PATTERN_RESUME_MODAL = re.compile(
@@ -372,7 +523,10 @@ PATTERN_RESUME_MODAL = re.compile(
 )
 PATTERN_PERMISSION_DIALOG = re.compile(
     r"Do you want to proceed\?"
-    r"|Do you want to allow Claude to "
+    # Horizontal whitespace only: a wrapped transcript line that ends
+    # in this phrase is a quotation, not a live dialog, and must not
+    # classify as one.
+    r"|Do you want to allow Claude to[ \t\xa0]"
     r"|Esc to cancel\s*(?:·|\|)\s*(?:Tab to amend|ctrl\+e to explain)"
     # Footer-less permission dialogs (WebFetch / web-content,
     # subagent permission requests) ask "Do you want to allow
@@ -384,6 +538,16 @@ PATTERN_PERMISSION_DIALOG = re.compile(
     # same reason as in PATTERN_PERMIT_FOOTER — it keeps prose that
     # merely quotes the option text from mis-classifying.
     r"|" + _DENY_OPTION_LINE
+)
+# The folder-trust prompt. Its footer is the same `Enter to confirm ·
+# Esc to cancel` a safe picker uses, so without a content signature it
+# classified as a harmless confirmation — and the guidance `ccm send`
+# prints would have invited an operator to dismiss it from another
+# pane. Answering it grants read, edit and execute in that directory,
+# which is a permission grant wearing a confirmation's clothes.
+PATTERN_TRUST_MODAL = re.compile(
+    r"Yes, I trust this folder"
+    r"|Is this a project you created or one you trust\?"
 )
 PATTERN_MODEL_PICKER = re.compile(
     r"Switch between Claude models"
@@ -409,7 +573,7 @@ _PERMIT_GUIDANCE = {
         "User action required: switch to the target pane and\n"
         "respond to the prompt yourself. ccm refuses to send\n"
         "keystrokes here because they could accidentally approve\n"
-        "or deny a tool call."
+        "or deny the requested action."
     ),
     "confirmation-modal": (
         "Confirmation modal (e.g., /model picker, /exit).\n"
@@ -437,25 +601,41 @@ _PERMIT_GUIDANCE = {
 # the surrounding window appears send-able. But unlike a regular
 # Claude REPL, typing into the agents TUI dispatches a BRAND-NEW
 # agent-view session rather than landing in an existing conversation.
-# A `ccm send` to that pane would silently spawn an unintended session
-# (Issue 5 in `project_agent_view_findings_2026_05_12`).
+# A `ccm send` to that pane would silently spawn an unintended session.
 #
 # `cmd_send` checks `PATTERN_AGENTS_FOOTER` against the captured pane
 # tail and refuses on match, with a tailored guidance message.
 #
-# Footer shape observed on v2.1.139+:
-#   "enter to open · space to reply · ctrl+x to delete · ? for shortcuts"
+# Footer shapes observed on v2.1.139+ — the TUI draws a DIFFERENT
+# footer per view state, and only the skeleton is stable (the verb
+# and the middle segments vary, and a mode chip may be prepended):
+#   session row:   "enter to open · space to reply · ctrl+x to delete · ? for shortcuts"
+#   collapsed row: "enter to collapse · ctrl+x to delete all · ? for shortcuts"
+#   after `←` backgrounds the session (chip prefix):
+#     "⏵⏵ auto mode · enter to return · space to reply · ctrl+x to delete · ? for shortcuts"
 #
-# The "enter to open" prefix + "? for shortcuts" suffix together are
-# specific enough to the TUI that a permissive `.*?` between them is
-# safe — Claude response text containing those phrases at line start
-# is implausible, and the footer line lives at the captured-pane tail
-# (the only place `cmd_send` looks). IGNORECASE absorbs upstream
-# wording case shifts; MULTILINE lets `^` match any line so multi-row
-# capture works without splitting per-line.
+# Fixing the leading verb (`enter to open`) reads the collapsed-row
+# footer as NOT the TUI — and `is_agents_tui` returning False there
+# lifts the send refusal, so keystrokes meant for a conversation
+# silently spawn an agent-view session (the dangerous direction).
+# Anchoring `enter to` at line start would miss the chip-prefixed
+# variant the same way. As in PATTERN_PERMIT_FOOTER, the leading
+# `enter to <verb>` is opaque and may sit mid-line after a mode
+# chip; the invariants are `enter to <word>` and the closing
+# `? for shortcuts` on the same line, with the literal `?` required
+# so a different UI that merely ends in `for shortcuts` does not
+# match. IGNORECASE absorbs upstream wording case shifts.
+#
+# Accepted cost of dropping the line-start anchor: prose that quotes
+# the WHOLE skeleton on ONE line (both `enter to …` and
+# `? for shortcuts`) matches. The caller captures only the send-time
+# tail (`capture-pane -S -10`), the quote must survive to the last
+# 10 lines at send time, and the failure direction is a visible send
+# refusal with guidance — the safe side. Quotes split across lines
+# still cannot match (`[^\n]` does not cross the newline).
 PATTERN_AGENTS_FOOTER = re.compile(
-    r"^\s*enter to open\b.*?\bfor shortcuts\b",
-    re.IGNORECASE | re.MULTILINE,
+    r"\benter to \S+\b[^\n]*?\?\s*for shortcuts\b",
+    re.IGNORECASE,
 )
 
 
@@ -492,6 +672,8 @@ def classify_permit_modal(pane_text: str):
     through as a safe confirmation-modal.
     """
     if PATTERN_PERMISSION_DIALOG.search(pane_text):
+        cat = "permission-request"
+    elif PATTERN_TRUST_MODAL.search(pane_text):
         cat = "permission-request"
     elif PATTERN_RESUME_MODAL.search(pane_text):
         cat = "session-resume"
@@ -554,7 +736,7 @@ PARKED_FOREGROUND_COMMANDS = frozenset({
 # Foreground commands (`tmux #{pane_current_command}`) of external
 # agent CLIs — non-claude agent sessions a user runs in a sidekick
 # pane of a registered window. Display-only presence signal: panes
-# matching this set surface a dim `⚙<name>` badge (dashboard /
+# matching this set surface a dim `▸<name>` badge (dashboard /
 # `ccm status` / status bar mode 2) so the session is visible
 # without ccm tracking its state. Deliberately an allowlist rather
 # than "any non-shell foreground": parked editors / pagers (vim,
@@ -567,8 +749,12 @@ PARKED_FOREGROUND_COMMANDS = frozenset({
 # it would have a single pane claim both at once — the exact asymmetry
 # assets/sidekick-model.svg exists to draw.
 EXTERNAL_AGENT_COMMANDS = frozenset({
-    # Measured: this is what tmux reports for a running Kimi Code pane.
+    # Measured: this is what tmux reports for a running Kimi Code pane
+    # (0.31.1, and `kimi` again on 2.1.1).
     "kimi", "kimi-code",
+    # Measured: Antigravity CLI 1.3.3 (Gemini CLI's successor) is a
+    # native `agy` binary, and tmux reports `agy`.
+    "agy",
     # Assumed from each CLI's binary name — not verified against a running
     # pane, because none of them are installed here. The asymmetry makes
     # guessing safe: a name that never appears simply never matches, while
@@ -587,13 +773,29 @@ EXTERNAL_AGENT_COMMANDS = frozenset({
 # Some CLIs are a launcher symlink pointing at a platform-suffixed
 # binary, and tmux reports the RESOLVED name (truncated): Grok Build's
 # `grok` resolves to `grok-macos-aarch64` and arrives as
-# `grok-macos-aarc` (measured). Enumerating every
-# platform/arch spelling — and guessing tmux's truncation width — is
-# the fixed-shape mistake this project keeps paying for, so a matching
-# prefix stands in for the whole family. Prefixes must stay specific
+# `grok-macos-aarc`. Enumerating every platform/arch spelling would
+# also mean guessing tmux's truncation width, so a matching prefix
+# stands in for the whole family. Prefixes must stay specific
 # enough that no unrelated program collides: `grok-` qualifies,
 # a bare `grok` would also swallow `grokking-notes`.
 EXTERNAL_AGENT_PREFIXES = ("grok-",)
+
+
+#: Every name `external_agent_name` can return. Checkpoints and restore
+#: roles record a sidekick's agent by that name and accept exactly
+#: these (plus `claude` and `unknown`), so recognising a new agent
+#: cannot make its own checkpoint invalid.
+EXTERNAL_AGENT_NAMES = EXTERNAL_AGENT_COMMANDS | frozenset(
+    prefix.rstrip("-") for prefix in EXTERNAL_AGENT_PREFIXES)
+#: The agent values a checkpoint or restore role may hold.
+RECORDED_AGENT_NAMES = EXTERNAL_AGENT_NAMES | {"claude", "unknown", None}
+
+
+def is_recorded_agent(value):
+    """True for an agent value a checkpoint or restore role may hold.
+    The value comes from a file, so anything but a string or None is
+    refused before the set lookup (a list there would not hash)."""
+    return (value is None or isinstance(value, str)) and value in RECORDED_AGENT_NAMES
 
 
 def external_agent_name(command):
@@ -614,7 +816,194 @@ def external_agent_name(command):
             return prefix.rstrip("-")
     return ""
 
-CLAUDE_CMD = "claude --continue 2>/dev/null || claude"
+# Codex sidekick screen (measured on Codex 0.162.1). Its hooks say when
+# a turn opens and closes and when it asks for approval, but nothing
+# fires when the approval is answered: the next event is PostToolUse,
+# when the approved command finishes, minutes later for a long one. The
+# screen says it at once, so it decides whenever it is legible.
+#
+# Each mark is read where Codex draws it and nowhere else, because the
+# transcript above can quote the same words:
+#   - a dialog's key hint ("Press enter to confirm or esc to cancel",
+#     "enter confirm · esc skip") is the LAST line of the screen;
+#   - the working line ("Working (5m 09s • esc to interrupt) · …")
+#     starts at column 0 just above the composer, where transcript
+#     lines start with a bullet or an indent instead;
+#   - the composer line starts with `›` at column 0.
+# A dialog replaces the composer and the working line, and its selected
+# option also starts with `›` (`› 1. Yes, proceed`). The same kind of
+# key hint also closes a view that sits under the composer without
+# replacing it, such as text selected in the transcript
+# (`New activity · ⌃c copy · enter copy & follow · esc clear`): there
+# the working line and the composer are still drawn, so the turn is
+# read from them, while the keys typed still go to the view.
+# Words are matched loosely, not as fixed strings.
+_CODEX_DIALOG_HINT = re.compile(r"\benter\b.*\besc\b", re.IGNORECASE)
+_CODEX_WORKING = re.compile(r"^[A-Za-z][A-Za-z ]* \([^()]*\besc to interrupt\)")
+_CODEX_COMPOSER = re.compile(r"^›")
+_CODEX_OPTION = re.compile(r"^›\s*\d+\.\s")
+#: How many lines above the composer the working line may sit (a tip
+#: line can come between them).
+CODEX_WORKING_LOOKBACK = 6
+
+
+def codex_screen_state(lines):
+    """Classify a Codex pane from its visible lines (non-empty, oldest
+    first, not stripped): "PERMIT" while a dialog waits for a key,
+    "BUSY" while a turn runs, "IDLE" at the composer with no turn, or
+    None when the screen shows none of these (an overlay, a scrolled
+    view, a capture that failed) and something else has to decide."""
+    if not lines:
+        return None
+    composer = next((i for i in range(len(lines) - 1, -1, -1)
+                     if _CODEX_COMPOSER.match(lines[i])), None)
+    working = composer is not None and any(
+        _CODEX_WORKING.match(line)
+        for line in lines[max(0, composer - CODEX_WORKING_LOOKBACK):composer])
+    if codex_screen_holds_keys(lines):
+        # Under a key hint, a `›` line that reads as a numbered option
+        # is taken for a dialog's, even when it is a numbered draft.
+        if working and not _CODEX_OPTION.match(lines[composer]):
+            return "BUSY"
+        return "PERMIT"
+    if composer is None:
+        return None
+    return "BUSY" if working else "IDLE"
+
+
+def codex_screen_holds_keys(lines):
+    """True when the last line of a Codex pane is a key hint: a dialog,
+    or a view such as a transcript selection, takes the keys typed
+    there instead of the composer."""
+    return bool(lines) and bool(_CODEX_DIALOG_HINT.search(lines[-1]))
+
+
+# Antigravity CLI (`agy`) sidekick screen (measured on 1.4.12). Its
+# hooks have no event for an approval, so the screen is the only
+# source. The bottom of the screen is agy's own frame, read by shape so
+# that a transcript quoting the same words does not count:
+#   - the last line is the footer: `? for shortcuts` at the composer,
+#     `esc to cancel` while a turn runs, with a rule right above it;
+#   - the composer is a line starting with `>` right below a rule as
+#     wide as that one (a sent prompt is echoed the same way, but below
+#     the narrower start-up rule), and the lowest such line counts;
+#   - a subagent's approval is a box of `┃` lines ending in its key hint
+#     (`ctrl+k approve · alt+j manage`) right above the composer's rule,
+#     and the agent list between the composer and the footer shows an
+#     agent whose status is `Blocked`. The box alone can be quoted by a reply; the list
+#     sits inside the frame, where a reply never reaches. A list folded
+#     past the blocked agent is missed rather than guessed;
+#   - a menu (the main agent's approval, the folder-trust question)
+#     replaces the composer: its key hint (`↑/↓ Navigate · …`) sits on
+#     the line above the last, its selected item starts with `>` a few
+#     lines up, and the last line is `esc to cancel` or the bare status
+#     line (indented model name).
+# Words are matched loosely, not as fixed strings.
+_AGY_RULE = re.compile(r"^─{20,}\s*$")
+_AGY_MENU_HINT = re.compile(r"^\s*↑/↓\s+\S")
+_AGY_MENU_ITEM = re.compile(r"^>\s+\S")
+_AGY_BOX = re.compile(r"^\s*┃")
+_AGY_BOX_HINT = re.compile(r"^\s*┃.*\bctrl\+k\b", re.IGNORECASE)
+# An agent-list row: `● Agent(self: <name>)  <status> · <task> · <age>`.
+# The status is the field between the closing `)` and the first `·`; a
+# task or name that merely mentions "blocked" is not one. A name with
+# its own brackets leaves the field's start unknown, so the row is not read.
+_AGY_BLOCKED_AGENT = re.compile(r"^[^()]*\([^()]*\)\s{2,}Blocked\s+·", re.IGNORECASE)
+_AGY_BUSY_FOOTER = re.compile(r"^esc to \w", re.IGNORECASE)
+_AGY_IDLE_FOOTER = re.compile(r"^\?\s+\w")
+_AGY_BARE_STATUS = re.compile(r"^\s{2,}\S")
+#: How many lines above a menu's key hint its selected item may sit.
+AGY_MENU_LOOKBACK = 10
+
+
+def _agy_menu(lines):
+    """True when the bottom of the screen is an agy menu."""
+    if not (_AGY_BUSY_FOOTER.match(lines[-1]) or _AGY_BARE_STATUS.match(lines[-1])):
+        return False
+    if not _AGY_MENU_HINT.match(lines[-2]):
+        return False
+    for line in reversed(lines[max(0, len(lines) - 2 - AGY_MENU_LOOKBACK):-2]):
+        if _AGY_RULE.match(line):
+            return False
+        if _AGY_MENU_ITEM.match(line):
+            return True
+    return False
+
+
+def agy_screen_state(lines):
+    """Classify an Antigravity CLI pane from its visible lines
+    (non-empty, oldest first, not stripped), with the same answers as
+    `codex_screen_state`: "PERMIT", "BUSY", "IDLE", or None when the
+    bottom of the screen is not agy's frame."""
+    if len(lines) < 4:
+        return None
+    if _agy_menu(lines):
+        return "PERMIT"
+    if _AGY_BUSY_FOOTER.match(lines[-1]):
+        footer = "BUSY"
+    elif _AGY_IDLE_FOOTER.match(lines[-1]):
+        footer = "IDLE"
+    else:
+        return None
+    if not _AGY_RULE.match(lines[-2]):
+        return None
+    width = len(lines[-2].rstrip())
+    composer = next((i for i in range(len(lines) - 3, 0, -1)
+                     if lines[i].startswith(">")
+                     and _AGY_RULE.match(lines[i - 1])
+                     and len(lines[i - 1].rstrip()) == width), None)
+    if composer is None:
+        return None
+    if (composer >= 3 and _AGY_BOX_HINT.match(lines[composer - 2])
+            and _AGY_BOX.match(lines[composer - 3])):
+        below = next((i for i in range(composer + 1, len(lines) - 1)
+                      if _AGY_RULE.match(lines[i])), None)
+        if below is not None and any(_AGY_BLOCKED_AGENT.match(line)
+                                     for line in lines[below + 1:-2]):
+            return "PERMIT"
+    return footer
+
+
+#: Sidekicks whose state ccm reads from their screen, by short name
+#: (`external_agent_name`).
+SIDEKICK_SCREEN_READERS = {"codex": codex_screen_state, "agy": agy_screen_state}
+
+#: Sidekicks whose screen can take typed keys while not waiting on a
+#: dialog. For any other reader, only a "PERMIT" screen takes them.
+SIDEKICK_KEY_HOLDERS = {"codex": codex_screen_holds_keys}
+
+
+def sidekick_screen_reading(name, lines):
+    """(state, keys) read from one screen of sidekick `name`. `state` is
+    the reader's answer ("PERMIT", "BUSY", "IDLE") or None. `keys` is
+    "held" when a dialog or a view takes typed keys, "free" when the
+    reader found its composer in front, and None when neither can be
+    told (no reader, or a screen it does not recognise)."""
+    reader = SIDEKICK_SCREEN_READERS.get(name)
+    if reader is None or not lines:
+        return None, None
+    state = reader(lines)
+    holder = SIDEKICK_KEY_HOLDERS.get(name)
+    if state == "PERMIT" or (holder and holder(lines)):
+        return state, "held"
+    # IDLE and BUSY are only answered when the reader found its composer.
+    return state, ("free" if state in ("IDLE", "BUSY") else None)
+
+
+#: The two launch commands. A launch into an existing shell always
+#: types the first; `ccm add` types the second only when ccm has
+#: seen that the directory holds no conversation to resume
+#: (`ccm_window.launch_command`). There is deliberately no
+#: `--continue || claude` chain: `claude --continue` exits 1 when it
+#: has nothing to resume — a fresh project — but also when the
+#: newest conversation was handed to a live background session, or
+#: when it cannot start for any other reason, and a chained fallback
+#: would turn every one of those into a silently new conversation
+#: with the reason hidden. Without it the reason stays on screen and
+#: the pane returns to the shell.
+CLAUDE_CMD = "claude --continue"
+CLAUDE_CMD_FRESH = "claude"
+LAUNCH_COMMANDS = (CLAUDE_CMD, CLAUDE_CMD_FRESH)
 
 
 # ─── Hook scripts + state metadata ───
@@ -651,13 +1040,14 @@ TERMINAL_STOP_REASONS = frozenset({
 })
 TERMINAL_STOP_REASONS_TUPLE = tuple(sorted(TERMINAL_STOP_REASONS))
 # Detection state icons. Keep in sync with `lib/state_meta.sh` —
-# bash hooks pay a ~50 ms cost per Python cold start, so we cannot
+# bash hooks would pay a Python cold start per event, so we cannot
 # just shell out to Python to resolve icons; the bash side has its
 # own copy in `ccm_state_icon`. Update BOTH when adding / changing
 # a state icon. The extra "COMPLETED" key used by notification
 # paths is bash-only (not a detection state).
 STATE_ICONS = {
     "PERMIT": "⚠", "BUSY": "◉", "IDLE": "●", "SHELL": "■", "DOWN": "○",
+    "IGNORED": "⊘",
 }
 
 

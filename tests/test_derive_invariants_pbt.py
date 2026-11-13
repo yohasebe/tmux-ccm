@@ -34,7 +34,7 @@ from hypothesis import given, strategies as st, settings, HealthCheck
 
 
 VALID_RESULTS = {None, "SHELL", "BUSY", "IDLE", "PERMIT"}
-KNOWN_EVENT_TYPES = tuple(EVENT_CLASSES.keys())
+KNOWN_EVENT_TYPES = tuple(EVENT_CLASSES.keys()) + ("agent",)
 RAW_CHOICES = (None, "DOWN", "SHELL", "BUSY", "IDLE", "PERMIT")
 TERMINAL_REASONS = ("end_turn", "max_tokens", "stop_sequence")
 NONTERMINAL_REASONS = ("tool_use", "user_pending")
