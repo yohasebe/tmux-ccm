@@ -8,8 +8,9 @@ backend:
   - macOS, terminal-notifier installed → `terminal-notifier
     -group ccm-<project>` so a fresh notification for a project
     replaces (rather than accumulates with) the previous one.
-  - macOS, terminal-notifier missing → `osascript display
-    notification` (no group / replace primitive).
+  - macOS, terminal-notifier missing, or `@ccm-notify-transport
+    osascript` → `osascript display notification` (no group /
+    replace primitive).
   - Linux → `notify-send`.
 
 `clear_notifications()` enumerates the macOS Notification Center
@@ -141,7 +142,11 @@ def sidekick_attention(agent, pane):
 
 
 def _desktop(title, body, group_id, sound):
-    tn_path = _terminal_notifier_path()
+    # `@ccm-notify-transport osascript` skips terminal-notifier, for a
+    # Mac where it cannot post. Same rule as lib/ccm_notify_transport.sh
+    # for the shell senders.
+    transport = ccm_core.tmux_cmd("show-option", "-gqv", "@ccm-notify-transport") or ""
+    tn_path = None if transport == "osascript" else _terminal_notifier_path()
     if tn_path:
         # Intentionally NO `-sender com.apple.Terminal`. Specifying
         # a sender bundle id makes macOS deliver the notification

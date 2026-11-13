@@ -131,7 +131,9 @@ case "$EVENT" in
         if [[ "$(tmux show-option -gqv @ccm-sidekick-attention 2>/dev/null)" != "off" ]]; then
             TITLE="ccm: ${AGENT} needs a decision"
             BODY="${SUMMARY:-permission requested}${CWD:+ — ${CWD##*/}}"
-            if command -v terminal-notifier >/dev/null 2>&1; then
+            # shellcheck source=../lib/ccm_notify_transport.sh
+            if source "$(dirname "${BASH_SOURCE[0]}")/../lib/ccm_notify_transport.sh" 2>/dev/null \
+                    && ccm_use_terminal_notifier; then
                 terminal-notifier -title "$TITLE" -message "$BODY" \
                     -group "ccm-sidekick-${TMUX_PANE}" >/dev/null 2>&1 || true
             elif command -v osascript >/dev/null 2>&1; then
