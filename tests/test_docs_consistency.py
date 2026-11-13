@@ -2,10 +2,7 @@
 
 These pin the parts of the README that are mechanically checkable
 against the code, so documentation drift fails the suite instead of
-waiting to be caught by a manual audit. The audit found
-three drifts at once (a missing subcommand, two missing display
-markers, and a stale copy of the setup-claude-md template); each was
-invisible until someone read both sides line by line.
+waiting for someone to read both sides line by line.
 
 Deliberately narrow: only claims with a single source of truth in the
 code are asserted. Prose is not checked — it cannot be, and pretending
@@ -145,12 +142,7 @@ class TestStatusIcons:
 
 class TestClaudeMdTemplate:
     """`ccm setup-claude-md` writes into the user's global Claude Code
-    instructions, so the README must not understate what it adds. It
-    used to embed a copy of the template that had drifted to a third
-    of its length, dropping `ccm send` entirely — a session was told
-    how to type into other projects while the README implied only
-    read-only commands. The copy is gone; these assert the properties
-    that replaced it."""
+    instructions, so the README must not understate what it adds."""
 
     def _template(self):
         import subprocess
@@ -216,10 +208,9 @@ def _send_flags():
 class TestSendFlags:
     """`ccm send`'s flags are the part of the CLI a user is most
     likely to need mid-task and least likely to find by guessing.
-    The audit found `--` — the only way to send a message
-    beginning with a dash — documented in the guide but missing from
-    both help outputs, which is precisely where someone whose message
-    was just eaten as flags will look."""
+    `--` — the only way to send a message beginning with a dash — must
+    be in both help outputs, which is precisely where someone whose
+    message was just eaten as flags will look."""
 
     def test_extraction_sanity(self):
         flags = _send_flags()
@@ -341,9 +332,8 @@ class TestKnobsAreDocumented:
 
     Options and environment variables have a single source of truth in
     the code, so the drift is mechanically checkable — unlike prose.
-    The check exists because features kept landing in the README while
-    the guide, where the tuning tables live, was left behind; one
-    opt-in canary went several releases with no mention anywhere.
+    The guide holds the tuning tables, so every option must appear
+    there.
     """
 
     @pytest.mark.parametrize("name", list(READMES))

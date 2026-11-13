@@ -590,9 +590,8 @@ def cleanup_project_runtime_files(project_dir):
        resolver only matches the live session.
 
     2. Caches keyed on `md5(project_dir)` (git-cache, port-cache,
-       notify-marker). These were already cwd-keyed on the ccm
-       side and stay that way — they identify the project window,
-       not the session.
+       notify-marker). These are cwd-keyed because they identify
+       the project window, not the session.
 
     Each removal is independent and guarded against OSError so a
     missing file (normal case for inactive projects) is a silent

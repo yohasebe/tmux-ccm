@@ -157,11 +157,10 @@ ccm_hook_init() {
     # its own session id, stamp `@ccm_prev_state` through the fast-path
     # spawn, and fire COMPLETED notifications for turns no Claude ran.
     # `workspaceRoot` is the discriminator: Grok sends it on every
-    # event, Claude Code sends it on none. (a downstream consumer adopted the same
-    # test for the same exposure, their commit 9813d68.)
+    # event, Claude Code sends it on none.
     #
-    # Every field the hooks read comes from one jq (each used to be a jq
-    # process of its own, the larger part of a hook's cost): the
+    # Every field the hooks read comes from one jq, since a jq per field
+    # would be the larger part of a hook's cost: the
     # foreign-harness marker, session id, cwd, permission mode, event
     # name, tool name, the subagent id, and the background work a Stop reports
     # (its count and kinds, see `_CCM_BG_JQ_DEFS`),
@@ -170,7 +169,7 @@ ccm_hook_init() {
     # pretty, this would print them compact) fails the read, and trailing
     # newlines are dropped as `$(...)` drops them. If the read fails (no
     # jq, a payload that is not an object, such a field), each field is
-    # read the old way.
+    # read on its own.
     local _fields=() _field
     while IFS= read -r -d '' _field; do _fields+=("$_field"); done < <(
         printf '%s' "$INPUT" | jq -j "$_CCM_BG_JQ_DEFS"'
@@ -347,10 +346,8 @@ ccm_hook_event_name() {
 }
 
 # Append a single event record to the per-project event log.
-# This is the authoritative state timeline consumed by the Python
-# detection layer in Phase 2+ of the event-log redesign. Phase 1
-# (current) writes events in parallel to the existing signal-file
-# mechanism; detection logic is unchanged until Phase 2 opts in.
+# This is the authoritative state timeline the Python detection
+# layer reads; the signal files are written alongside it.
 #
 # Format: JSONL, append-only. One hook invocation = one line.
 # Path: $HOOK_DIR/<session_id>.events.jsonl
@@ -522,8 +519,8 @@ ccm_write_signal() {
             _ccm_instant_notify "PERMIT" "$project" "$detail" "$cwd" &
         else
             # Non-PERMIT transitions also benefit from forcing an
-            # immediate status redraw so BUSY ↔ IDLE flips appear in
-            # ~100 ms instead of waiting up to status-interval (1 s).
+            # immediate status redraw so BUSY ↔ IDLE flips appear at
+            # once instead of waiting up to status-interval.
             # The PERMIT branch above already calls refresh-client via
             # `_ccm_instant_permit_icon`, so this `else` covers BUSY
             # signal writes (PreToolUse / PostToolUse / etc.) without
@@ -536,10 +533,10 @@ ccm_write_signal() {
         # but mode 0's status-right icon and mode 2's dedicated
         # line(s) are literal text baked by inject-status — a plain
         # refresh-client redraws the STALE bake, so those surfaces
-        # otherwise lag one status-interval (~1 s) behind the hook.
+        # otherwise lag one status-interval behind the hook.
         # `inject-status --fast` re-renders from @ccm_prev_state
         # (which this function just wrote) without running detection:
-        # read-only, lock-tolerant, ~100 ms — and backgrounded so
+        # read-only, lock-tolerant, and backgrounded so
         # hook latency is unaffected. Gated on a real state
         # TRANSITION so BUSY→BUSY bursts (PreToolUse/PostToolUse
         # pairs during rapid tool sequences) spawn nothing.
@@ -797,11 +794,9 @@ _ccm_instant_notify() {
     # the WindowServer / NotificationCenter CPU drain that long-
     # running ccm sessions can otherwise produce.
     #
-    # Notably we do NOT pass `-sender com.apple.Terminal`. Earlier
-    # versions did, intending to render the notification with the
-    # Terminal.app icon, but that meant the notification was
-    # delivered under Terminal.app's bundle identity — and macOS
-    # silently drops it for every user not running Terminal.app
+    # Notably we do NOT pass `-sender com.apple.Terminal`: the
+    # notification would be delivered under Terminal.app's bundle
+    # identity, and macOS silently drops it for every user not running Terminal.app
     # (iTerm2, WezTerm, kitty, ghostty, ...). Without the flag the
     # notification flows under terminal-notifier's own bundle id,
     # which the user authorises once and is independent of which

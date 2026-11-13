@@ -45,7 +45,7 @@ class TestDerive:
         assert derive(events) == "IDLE"
 
     def test_without_the_agent_type_the_same_events_read_busy(self):
-        # Control: before the split, these were pretool events.
+        # Control: the same timeline as pretool/posttool events.
         events = ENDED_TURN + [ev("pretool", 3), ev("posttool", 1)]
         assert derive(events, jsonl_age=-1) == "BUSY"
 

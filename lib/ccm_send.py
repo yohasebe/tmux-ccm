@@ -220,8 +220,7 @@ _START_BODY_POLL_SEC = 0.1
 
 
 # How many rows of a body Claude Code's input box shows: half the pane
-# height less five (measured on 2.1.289 at heights 24, 25, 30, 40, 41,
-# 60 and 80). A taller body shows only its last rows, with the prompt
+# height less five (Claude Code 2.1.289). A taller body shows only its last rows, with the prompt
 # glyph on the first of them, so the checks that read its start can
 # never see it.
 def composer_capacity(pane_target):
@@ -304,9 +303,8 @@ def _message_signature(message):
     Returns a tuple, and a match on ANY of them counts, because a
     composer holding a long body shows only part of it. Claude's grows
     upward and keeps the leading row; a body that outgrows the pane
-    scrolls instead and keeps the trailing row (observed
-    against Kimi K3: a 30-line message rendered as `↑ 24 more` with the
-    head cut off). Checking one end only would report "did not land"
+    scrolls instead and keeps the trailing row (a 30-line message
+    renders as `↑ 24 more` with the head cut off). Checking one end only would report "did not land"
     for a message sitting right there. Take a candidate from each end.
     Startup submission uses a separate full-composer check instead."""
     candidates = [ln.strip() for ln in message.split("\n") if ln.strip()]
@@ -538,8 +536,8 @@ def _recheck_delivery_state(win_target, pane_target):
     Returns the raw state, or None when the pane can no longer be
     enumerated (tmux hiccup — includes the case where delivery
     resolution already fell back to the window target). None fails
-    OPEN: refusing on a transient tmux error would break sends that
-    worked before this guard existed."""
+    OPEN: refusing on a transient tmux error would break ordinary
+    sends."""
     ps_lines = ccm_core.ps_snapshot().strip().split("\n")
     pane = next(
         (p for p in enumerate_window_panes(win_target, ps_lines)
@@ -562,7 +560,7 @@ def _recheck_delivery_state(win_target, pane_target):
 # their draft, and the committing Enter submits the garbled mix.
 # The delivery path therefore reads the composer line itself and
 # refuses while a draft is present. This shrinks the mixing race from
-# "the whole IDLE period" to the capture→send-keys gap (~100 ms);
+# "the whole IDLE period" to the capture→send-keys gap;
 # that residual TOCTOU cannot be closed from outside the TUI and is
 # accepted. Fail-OPEN when no composer line is visible at all: a
 # transient capture error must not break sends that worked before
@@ -591,10 +589,10 @@ _SEND_USAGE = (
 
 # ─── Spool hand-off ───
 # A target that cannot take the message right now (BUSY / PERMIT /
-# SHELL / agents-TUI / a composer holding a draft) no longer fails
-# the send by default: the message is queued for the reconciler's
+# SHELL / agents-TUI / a composer holding a draft) does not fail the
+# send by default: the message is queued for the reconciler's
 # delivery pass (see ccm_spool) and the sender is told. `--now`
-# restores the old fail-fast behaviour for callers that would rather
+# refuses instead, for callers that would rather
 # retry themselves. Permanent errors — ambiguous target, self-send,
 # unregistered window — still refuse immediately: they do not heal
 # with time, so queueing them would only hide the mistake.
@@ -786,9 +784,8 @@ def cmd_send(args):
     if matched is None:
         # A second window registered against the SAME directory is
         # dropped from `projects` by build_project_list's seen_dirs
-        # dedup, so the win_target lookup misses it and the send
-        # used to die with "not a registered ccm project" even
-        # though the window is a legitimate ccm project. Fall back
+        # dedup, so the win_target lookup misses it although the
+        # window is a legitimate ccm project. Fall back
         # to the same-directory sibling that IS tracked: delivery
         # still targets this window's own pane (resolved from
         # win_target below via _resolve_delivery_pane); only the
@@ -847,8 +844,8 @@ def cmd_send(args):
     # gate below would consult a state the caller itself is producing
     # — a session is BUSY precisely because it is running this
     # command, so the gate reports BUSY and blames the target. That
-    # self-reference reads as a spurious "the other agent is busy",
-    # which is how it was reported. Refuse explicitly
+    # self-reference reads as a spurious "the other agent is busy".
+    # Refuse explicitly
     # instead: the honest answer is not a state verdict at all.
     #
     # A pane hint is usable when its process is an ancestor or its
@@ -1259,8 +1256,8 @@ _SIDEKICK_SEND_USAGE = (
 # Pause between the typed body and the committing Enter. A peer TUI
 # still digesting the inserted text when Enter arrives can take it as
 # a newline instead of a submit; the body then sits in the composer
-# unsent, looking exactly like a delivered message. Measured against
-# Kimi K3: no gap fails every time, 0.3 s submits. Claude Code's own
+# unsent, looking exactly like a delivered message. Kimi needs this
+# gap, and 0.3 s is enough. Claude Code's own
 # composer tolerates a zero gap, which is why `ccm send` needs none.
 _SIDEKICK_SUBMIT_SETTLE_SEC = 0.3
 # How long before the end of that pause the sidekick is looked at

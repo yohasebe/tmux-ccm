@@ -82,7 +82,7 @@ def notify(state, project, detail=""):
     # looking action ccm just took, and transparency about that must
     # not depend on the user having predicted the event and added it
     # to @ccm-notify. Without it an auto-exit reads as a crash or a
-    # mystery timeout (report).
+    # mystery timeout.
     if (state not in ("AUTOEXIT", "SPOOLEXPIRED")
             and setting != "all" and state_lower not in setting):
         return
@@ -190,8 +190,7 @@ def clear_notifications():
 
     Scopes the removal to ccm by enumerating `-list ALL` and
     deleting only group ids prefixed with `ccm-` (the convention
-    `notify()` uses). `-remove ALL` was tempting but would also
-    delete notifications a user has sent via terminal-notifier
+    `notify()` uses). `-remove ALL` would also delete notifications a user has sent via terminal-notifier
     from unrelated scripts (deploy alerts, monitoring, …). The
     enumerate-then-filter approach pays one extra subprocess but
     keeps the user's other notifications intact.

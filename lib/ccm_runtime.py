@@ -163,9 +163,8 @@ def _window_has_background_work(panes_raw, ps_lines):
          on its own, and exiting Claude leaves the sibling pane
          untouched — so the exemption cannot interrupt anything.
          Without it, a split-editor workflow silently disables
-         auto-exit for every window (observed: three
-         sessions idle for 3-4 days with `@ccm-idle-timeout 10` set,
-         each with a parked nvim in the second pane).
+         auto-exit for every window that keeps an editor in a
+         second pane.
 
       2. The Claude pane's process has a live SHELL child. Claude
          spawns a shell per Bash tool invocation, and that shell
@@ -499,18 +498,14 @@ def auto_exit_idle(projects):
             # `ps_snapshot()` returns the raw stdout string; the
             # process-tree helpers iterate over lines, so split here.
             # Without this `find_claude_pid` walks one character at a
-            # time and never matches anything, which is what made the
-            # first cut of this fix silently no-op forever.
+            # time and never matches anything.
             ps_lines = ps_lines_once()
 
             # Background-work guard: a window that still hosts live
             # work must not have its Claude exited, no matter how
             # long the CONVERSATION has been idle. The cost asymmetry
             # decides this: wrongly exiting interrupts running work
-            # and surprises the user — a sibling-pane batch job's window went
-            # quiet, the 10-min timer fired, and Claude was exited
-            # out from under a project the user considered active),
-            # while wrongly keeping costs one idle Claude process.
+            # and surprises the user, while wrongly keeping costs one idle Claude process.
             # Checked only here — inside the already-rare timeout
             # branch — so the steady-state poll cycle pays nothing.
             if _window_has_background_work(panes_raw, ps_lines):
@@ -563,13 +558,6 @@ def auto_exit_idle(projects):
                 # exists to reclaim an idle process, not to close panes,
                 # and the difference is invisible from the state model,
                 # so the shape has to be excluded here.
-                #
-                # Such panes were unreachable by accident until
-                #: `find_claude_pid` only looked for a child,
-                # so they resolved to None and the background-work guard
-                # above read their versioned command name as live work.
-                # Teaching the walk about them (3a1534b) removed that
-                # accidental cover, which is what makes this explicit.
                 if str(claude_pid) == str(parts[1]):
                     continue
                 claude_pane = f"{win_target}.{parts[0]}"
@@ -601,7 +589,7 @@ def auto_exit_idle(projects):
                 # Tell the user WHAT happened and THAT nothing is
                 # lost. An unannounced exit reads as a crash or a
                 # mystery timeout and sends the user hunting for a
-                # cause (report); one
+                # cause; one
                 # notification removes the entire investigation.
                 # Fired only here — after the shell-foreground gate
                 # confirmed the exit actually landed — so it can

@@ -26,6 +26,7 @@ from ccm_core import (
     ps_snapshot,
     raise_on_die,
     tmux_cmd,
+    tmux_literal,
     tmux_query,
 )
 from ccm_pane_state import enumerate_window_panes
@@ -207,8 +208,7 @@ class ActionsMixin:
 
         Why a new window (not the current pane / not a split): ccm's
         `auto_start_claude` fires on attach to any SHELL-state pane in
-        a ccm-tagged window, racing the user's `claude attach` (see
-        Issue 6 in `project_agent_view_findings_2026_05_12`). A
+        a ccm-tagged window, racing the user's `claude attach`. A
         brand-new window has no `@ccm_project` / `@ccm_dir` tags, so
         it stays out of ccm's lifecycle entirely. The send-keys-driven
         `claude attach` then has a clean shell prompt to dispatch
@@ -274,7 +274,7 @@ class ActionsMixin:
         # absolute path starting with "/", so this only rejects
         # upstream-malformed values.
         if cwd and not cwd.startswith("-") and os.path.isdir(cwd):
-            args.extend(["-c", cwd])
+            args.extend(["-c", tmux_literal(cwd)])
         new_target = tmux_cmd(*args)
         if not new_target:
             self._show_message(stdscr, "Failed to open attach window", 2)
@@ -472,9 +472,8 @@ class ActionsMixin:
         elif choice.lower() == "d":
             # One more step than unregister gets, because this one
             # cannot be undone: the window closes and the session in
-            # it ends. The menu route already confirms; a single
-            # keypress being the harsher of the two paths was the
-            # wrong way around.
+            # it ends. The menu route confirms too, so the single
+            # keypress is never the harsher of the two paths.
             confirm = self._prompt(
                 stdscr, f"Close {p.name}'s window and its session? [y/N]: ")
             if not confirm or confirm.lower() != "y":

@@ -34,8 +34,7 @@ env var) which writes one JSONL record per detection cycle.
    Hot-path write from Claude Code hook scripts. Bypasses the
    Python detector so the statusline reflects BUSY / PERMIT /
    SHELL with zero polling latency. Routing through Python would
-   add 30–80 ms of interpreter startup per hook event, which
-   defeats the purpose of instant status updates.
+   add interpreter startup to every hook event, which defeats the purpose of instant status updates.
 
 When changing state-transition semantics, audit both sites.
 """
@@ -360,12 +359,10 @@ def apply_actions(win_target, project_dir, ctx: DetectionContext, rule: Rule,
                               "@ccm_work_clock_ts", str(ctx.now))
 
     # Action.DEFAULT — set @ccm_prev_state.
-    # Skip the write when the value is already what we'd set. On a
-    # 13-window dashboard refreshing twice a second, a tmux subprocess
-    # per window dominates the slow path — and the steady state is
-    # mostly "everyone IDLE", so the overwhelming majority of writes
-    # are no-ops. The hot path now pays one tmux subprocess only when
-    # a state actually transitions.
+    # Skip the write when the value is already what we'd set. A tmux
+    # subprocess per window would dominate the slow path, and in the
+    # steady state most writes are no-ops, so a subprocess is paid only
+    # when a state actually transitions.
     if state != ctx.prev_state:
         _set_win_state(win_target, state)
 

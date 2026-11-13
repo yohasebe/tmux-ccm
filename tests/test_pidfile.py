@@ -1,9 +1,9 @@
 """Tests for dashboard.acquire_pidfile PID-identity verification.
 
 A pidfile left behind by a crashed dashboard holds a stale PID, and
-the OS may have recycled that PID for an unrelated process. The old
-code SIGTERM→SIGKILL'd it blind; `acquire_pidfile` now verifies via
-`_pid_is_dashboard` (ps command-line probe) before signalling.
+the OS may have recycled that PID for an unrelated process.
+`acquire_pidfile` verifies via `_pid_is_dashboard` (ps command-line
+probe) before signalling.
 
 The conftest `block_live_subprocess` guard forbids real `ps` runs,
 so every test stubs `_pid_is_dashboard` (or `subprocess.run` for the

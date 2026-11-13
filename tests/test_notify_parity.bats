@@ -3,8 +3,8 @@ load helpers/tmux_guard.bash
 # Parity test: Python `notify()` and bash `_ccm_instant_notify` must
 # reach the same fire/skip decision for every (@ccm-notify, state)
 # combination. The two implementations are intentionally NOT merged
-# — the bash hot path cannot tolerate 30-80 ms of Python interpreter
-# startup per hook event. This test is the drift guard that replaces
+# — the bash hot path cannot afford a Python interpreter startup per
+# hook event. This test is the drift guard that replaces
 # structural unification.
 #
 # Observation approach: PATH-override. We drop stub `osascript` and
@@ -102,8 +102,8 @@ ccm_notify.notify('${state}', '${project}', '${detail}')
 
     # Poll the log briefly; stubs are fast but Popen/& are async.
     local i
-    # Up to 5 s: the notifier is started asynchronously, and on a busy
-    # machine 0.5 s was not always enough. A fire ends the wait at once;
+    # Up to 5 s: the notifier is started asynchronously and can be slow
+    # on a busy machine. A fire ends the wait at once;
     # a case that must not fire waits the full 5 s.
     for i in $(seq 1 100); do
         [[ -s "$NOTIFY_LOG" ]] && break
@@ -228,8 +228,8 @@ ccm_notify.notify('BUSY', 'proj', '')
 "
     # Wait for Popen to complete.
     local i
-    # Up to 5 s: the notifier is started asynchronously, and on a busy
-    # machine 0.5 s was not always enough. A fire ends the wait at once;
+    # Up to 5 s: the notifier is started asynchronously and can be slow
+    # on a busy machine. A fire ends the wait at once;
     # a case that must not fire waits the full 5 s.
     for i in $(seq 1 100); do
         [[ -s "$NOTIFY_LOG" ]] && break
@@ -288,8 +288,8 @@ ccm_notify.notify('BUSY', 'proj', '')
 
     # The notification itself is dispatched async (`&`); poll briefly.
     local i
-    # Up to 5 s: the notifier is started asynchronously, and on a busy
-    # machine 0.5 s was not always enough. A fire ends the wait at once;
+    # Up to 5 s: the notifier is started asynchronously and can be slow
+    # on a busy machine. A fire ends the wait at once;
     # a case that must not fire waits the full 5 s.
     for i in $(seq 1 100); do
         [[ -s "$NOTIFY_LOG" ]] && break

@@ -55,9 +55,9 @@ class TestFindClaudePid:
 
     def test_finds_claude_when_pane_process_is_claude(self):
         """`tmux new-window "claude …"` gives the pane no shell, so the
-        pane pid IS claude. Measured with Claude Code
-        2.1.226: the child-only walk returned None here and the pane
-        read as SHELL while a permission dialog was on screen."""
+        pane pid IS claude (Claude Code 2.1.226). A child-only walk
+        would return None here and read the pane as SHELL while a
+        permission dialog is on screen."""
         ps = make_ps_lines((100, 50, 100, "claude"))
         assert ccm_pane_state.find_claude_pid(100, ps) == "100"
 
@@ -143,10 +143,8 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_permit_when_pane_process_is_claude(self, mock_tmux):
-        """The shape that exposed the bug: a direct-launch pane sitting
-        on a permission dialog read as SHELL because the claude lookup
-        found nothing. Verified live with Claude Code
-        2.1.226."""
+        """A direct-launch pane sitting on a permission dialog is not
+        SHELL: the claude lookup finds the pane process itself."""
         ps = make_ps_lines((100, 50, 100, "claude"), (300, 100, 100, "node"))
         mock_tmux.return_value = (
             "Do you want to proceed?\n"
@@ -230,14 +228,12 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_busy_when_spinner_present_despite_visible_prompt(self, mock_tmux):
-        """Accept-edits long-tool fix: in accept-edits
-        mode the `❯` composer stays on screen WHILE a tool runs, so a
-        visible prompt alone is not idleness. When the active-work
-        spinner footer (`… (elapsed · arrow Nk tokens)`) is also
-        visible, the pane is BUSY. Without this, an approved
-        permission left as the latest hook event produced a stuck
-        PERMIT on the dashboard for an actively-executing session.
-        Verbatim shape from a real pane."""
+        """In accept-edits mode the `❯` composer stays on screen WHILE
+        a tool runs, so a visible prompt alone is not idleness. When the
+        active-work spinner footer (`… (elapsed · arrow Nk tokens)`) is
+        also visible, the pane is BUSY; otherwise an approved permission
+        left as the latest hook event would hold PERMIT for an
+        actively-executing session."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "ruby")
         )
@@ -245,7 +241,7 @@ class TestDetectPaneState:
             "⏺ Reading 1 file, running 3 shell commands…\n"
             "✻ 処理中… (27m 26s · ↓ 28.5k tokens)\n"
             "❯ \n"
-            "  ~/code/tcse  main  Fable 5  ████░ 46%\n"
+            "  ~/code/my-project  main  Fable 5  ████░ 46%\n"
             "  ⏵⏵ accept edits on (shift+tab to cycle)"
         )
         assert ccm_pane_state.detect_pane_state("100", "%0", ps, "99999") == "BUSY"
@@ -254,11 +250,8 @@ class TestDetectPaneState:
     def test_busy_spinner_with_sub_1k_token_count(self, mock_tmux):
         """Below 1000 tokens the spinner renders a bare count with NO
         `k` suffix — "(1m 39s · ↓ 557 tokens)". A mandatory `k` in
-        the pattern made every young turn's spinner invisible, so an
-        accept-edits pane sat at false IDLE until the count crossed
-        1000 (observed, a project: a fresh turn streaming
-        under session-long upstream hook silence had no other signal
-        left to promote it). Verbatim shape from that incident."""
+        the pattern would hide every young turn's spinner, leaving an
+        accept-edits pane at false IDLE until the count crosses 1000."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "node")
         )
@@ -273,10 +266,10 @@ class TestDetectPaneState:
     @patch("ccm_core.tmux_cmd")
     def test_busy_spinner_before_any_tokens(self, mock_tmux):
         """Early in a turn the footer carries no token count at all —
-        "(2s · thinking with max effort)". Anchoring on `tokens)` made
-        the one piece of on-screen evidence that Claude is working
-        invisible until output started flowing, and an accept-edits
-        pane keeps `❯` on screen throughout, so raw read IDLE."""
+        "(2s · thinking with max effort)". It is BUSY too: an
+        accept-edits pane keeps `❯` on screen throughout, so this
+        footer is the one piece of on-screen evidence that Claude is
+        working."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"),
             (300, 200, 200, "bats")
@@ -346,14 +339,11 @@ class TestDetectPaneState:
     @patch("ccm_core.tmux_cmd")
     def test_busy_spinner_with_hour_component(self, mock_tmux):
         """Past the hour mark the elapsed gains an `h` unit —
-        "(3h 11m 16s · ↓ 8.8k tokens)". The minutes-only pattern stopped
+        "(3h 11m 16s · ↓ 8.8k tokens)". A minutes-only pattern would stop
         matching there, and since an accept-edits pane keeps `❯` on
-        screen while a tool runs, raw fell to IDLE — taking with it the
+        screen while a tool runs, raw would fall to IDLE — taking with it the
         only promotion that rescues a resolved-but-unreported
-        permission (`raw == "BUSY"` in ccm_activity). Observed
- a permission approved within ~6 s left
-        the dashboard showing `⚠ PERMIT` for the remaining ~110 s of a
-        `bats` run. Verbatim shape from that incident."""
+        permission (`raw == "BUSY"` in ccm_activity)."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "bats")
         )
@@ -408,8 +398,7 @@ class TestDetectPaneState:
         (NOT the permit footer), and there is no spinner (Claude has
         stopped generating to ask). detect_pane_state must return
         IDLE — the event-log permit event is what correctly surfaces
-        it as PERMIT, NOT a false BUSY from the spinner path.
-        Measured live: menu waits show no spinner."""
+        it as PERMIT, NOT a false BUSY from the spinner path."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude"), (300, 200, 200, "python")
         )
@@ -427,10 +416,8 @@ class TestDetectPaneState:
         """With the cursor on the deny option, the line begins with
         `❯` — which PATTERN_INPUT_PROMPT also matches. The footer
         check runs first on the pane tail, so the open dialog must
-        win over the idle-prompt reading. Before the cursor prefix
-        was allowed, this exact screen read as IDLE while a
-        permission dialog was open (and `ccm send` would type into
-        it)."""
+        win over the idle-prompt reading: read as IDLE, the screen would
+        let `ccm send` type into the open dialog."""
         ps = make_ps_lines(
             (100, 1, 100, "bash"), (200, 100, 100, "claude")
         )
@@ -536,11 +523,10 @@ class TestDetectPaneState:
 
     @patch("ccm_core.tmux_cmd")
     def test_permit_from_model_picker_v2_1_153_footer(self, mock_tmux):
-        """v2.1.153 reworded the `/model` footer:
+        """The `/model` footer since v2.1.153:
             `Enter to set as default · s to use this session only · Esc to cancel`
-        The Enter verb is no longer literally `confirm`. The
-        pre-v2.1.153 regex required `Enter to confirm` and would
-        miss this entirely, leaving `/model` showing as IDLE while
+        The Enter verb is not literally `confirm`. A regex that
+        requires `Enter to confirm` would miss this entirely, leaving `/model` showing as IDLE while
         the user is actually blocked at the picker. The relaxed
         `Enter to \\S[^\\n]*? · ... · Esc to <verb>` shape catches
         this without regressing free-nav slash menus.
@@ -806,10 +792,10 @@ class TestWorkClock:
         `frames` in order (the last one repeats); the resample wait
         is skipped.
 
-        `_sleep` is patched with `create=True` so the harness also runs
-        against code that predates it: a regression test that cannot
-        even set up on the old code fails with AttributeError, which
-        says nothing about the behaviour it claims to pin."""
+        `_sleep` is patched with `create=True` so the harness sets up
+        even where the attribute is missing: a test that cannot set up
+        fails with AttributeError, which says nothing about the
+        behaviour it claims to pin."""
         it = iter(frames)
         last = [frames[0]]
 
@@ -859,8 +845,7 @@ class TestWorkClock:
         """The footer fits its parts one at a time and drops what does
         not fit, so the timer can stand alone: a narrow pane with the
         hint squeezed out, or a wide one in a tool phase that has
-        produced no tokens yet. Requiring the `·` separator read all
-        of those as idle."""
+        produced no tokens yet. A timer alone is a clock."""
         assert self._state(
             mock_tmux, self._frame("(2s)"), at=1000) == "BUSY"
         assert self._state(
@@ -894,9 +879,9 @@ class TestWorkClock:
         """A bare `(2s)` is ordinary in prose and this form has nothing
         else to tell it apart, so off the spinner's line it counts for
         nothing; on it, the seconds must be followed by the closing
-        paren or the line's end. Kept apart from the acceptance cases:
-        together, a regression that loosens the pattern stopped the
-        test at an acceptance assertion before these were reached."""
+        paren or the line's end. Kept apart from the acceptance cases
+        so a loosened pattern fails here on its own, not hidden behind
+        an earlier acceptance assertion."""
         assert ccm_pane_state._work_clock(line) is None
 
     @patch("ccm_core.tmux_cmd")
@@ -1072,10 +1057,8 @@ class TestWorkClock:
     @patch("ccm_core.tmux_cmd")
     def test_retry_backoff_reads_busy_without_a_child(self, mock_tmux):
         """A connection / rate-limit retry replaces the spinner
-        footer (measured: zero spinner-form matches across 75 samples
-        of a 188 s storm), spawns no child, and writes no JSONL — so
-        nothing else marks the session as working while it waits.
-        Verbatim shape from that measurement."""
+        footer, spawns no child, and writes no JSONL — so
+        nothing else marks the session as working while it waits."""
         retry = ("✻ Connection refused — a firewall or proxy may be "
                  "blocking it (ConnectionRefused) · Retrying in 3s · "
                  "attempt 8/10\n"
@@ -1084,8 +1067,8 @@ class TestWorkClock:
 
     @patch("ccm_core.tmux_cmd")
     def test_retry_backoff_clipped_tail_still_reads_busy(self, mock_tmux):
-        """The retry line's tail clips in a narrow pane (measured at
-        100 columns it ended `attemp…`), so the match must not depend
+        """The retry line's tail clips in a narrow pane (at
+        100 columns it can end `attemp…`), so the match must not depend
         on anything past the countdown."""
         retry = ("✻ Connection refused — a firewall or proxy may be "
                  "blocking it (ConnectionRefused) · Retrying in 3s · attemp…\n"
@@ -1118,12 +1101,12 @@ class TestWorkClock:
 
     @patch("ccm_core.tmux_cmd")
     def test_leftover_child_plus_static_clock_releases(self, mock_tmux):
-        """The accept-edits disambiguation asked the same question
+        """The accept-edits disambiguation asks the same question
         the childless branch asks — "is claude working?", not "is
-        anything alive?" — but took any spinner-shaped string as yes.
+        anything alive?" — so a spinner-shaped string alone is not yes.
         A leftover long-lived child (a dev server claude no longer
         owns — the `(bg)` case) keeps that branch reachable after the
-        turn ends, and a static footer on screen pinned raw=BUSY,
+        turn ends, and a static footer on screen must not pin raw=BUSY,
         which has no release path. Same gate, both branches."""
         w = ccm_pane_state.SPINNER_STALE_RELEASE_SEC
         ps = make_ps_lines(
@@ -1221,8 +1204,7 @@ class TestDetectWindowRaw:
     def test_sliver_pane_excluded_from_aggregation(self, mock_tmux):
         """Sliver-pane scenario:
         a 1-row sliver pane held a long-idle claude and false-read
-        BUSY (children present, capture-pane empty so no `❯`). Pre-
-        fix that BUSY infected the whole window; post-fix the
+        BUSY (children present, capture-pane empty so no `❯`). The
         sliver is filtered out and the visible shell pane drives
         the result → SHELL."""
         ps = make_ps_lines(

@@ -93,20 +93,19 @@ HOOK_FRESH_THRESHOLD = 2
 # that a missed Stop does not strand the project in BUSY indefinitely.
 BUSY_HOOK_JSONL_WINDOW = int(os.environ.get("CCM_BUSY_HOOK_JSONL_WINDOW", "600"))
 PERMIT_MAX_TIMEOUT = int(os.environ.get("CCM_PERMIT_MAX_TIMEOUT", "600"))
-# Stale-BUSY release window, split from BUSY_HOOK_JSONL_WINDOW's 600 s.
+# Stale-BUSY release window, shorter than BUSY_HOOK_JSONL_WINDOW's 600 s.
 # This is a FLICKER-PREVENTION window, not an estimate of the longest
 # silent tool: the real safety net against reporting IDLE for a session
 # that is still working lives on the auto-exit side (IDLE_EXIT_TIMEOUT
 # requires 600 s of *sustained* IDLE before anything is killed), so
-# 600 -> 60 only moves the worst-case kill threshold for a silent tool
-# from 1200 s of silence to 660 s. What it buys is large: an
-# Esc-interrupted turn fires no Stop hook and writes no further JSONL,
-# so it used to sit in a false BUSY for ten minutes; it now clears in
-# one. The release requires the CONJUNCTION of raw=IDLE (no ticking
+# the worst-case kill threshold for a silent tool is 660 s of silence.
+# It is how long a turn that ended with no terminal evidence (no
+# Stop hook, no terminal transcript record) reads BUSY with an idle
+# screen. The release requires the CONJUNCTION of raw=IDLE (no ticking
 # work clock on screen — a static footer does not count) and a frozen
 # JSONL — neither alone is trusted, because a single long silent tool
-# freezes the JSONL too, and spinner detection has broken before on
-# upstream reworks (the accept-edits marker, the /model footer verb).
+# freezes the JSONL too, and spinner detection can break on upstream
+# rewording.
 BUSY_STALE_RELEASE_SEC = int(
     os.environ.get("CCM_BUSY_STALE_RELEASE_SEC", "60"))
 # How long an on-screen work clock (the spinner's elapsed-time
@@ -147,11 +146,9 @@ JSONL_HOOK_GAP_TOLERANCE = int(
 # without forming an import cycle.
 JSONL_USER_PENDING = "user_pending"
 # Synthetic `stop_reason` for an Esc-interrupted turn. Claude Code
-# fires no Stop hook on a user interrupt (documented upstream), which
-# is why detection long treated Esc as leaving no trace at all — but
-# it DOES write a transcript record saying so, and that record is the
-# only positive evidence the turn ended (measured: 8
-# occurrences in one session). Treated as terminal so the existing
+# fires no Stop hook on a user interrupt (documented upstream), but it
+# writes a transcript record saying so, and that record is the only
+# positive evidence the turn ended. Treated as terminal so the existing
 # "terminal stop_reason newer than the latest event → release"
 # path in `ccm_activity` picks it up, instead of the session waiting
 # out BUSY_STALE_RELEASE_SEC with an idle screen.
@@ -159,17 +156,14 @@ JSONL_INTERRUPTED = "interrupted"
 # Anchored to the WHOLE record text, with the trailing clause left
 # open. Three spellings are known — "[Request interrupted by user]",
 # "[Request interrupted by user for tool use]" and a rare bare
-# "[Request interrupted]" (the last from a consumer's corpus of ~165) — so
-# the clause is exactly the detail that gets reworded and must not be
-# pinned. What must NOT be loose is the anchoring: a substring test
+# "[Request interrupted]" — so the clause is exactly the detail that
+# gets reworded and must not be pinned. What must NOT be loose is the anchoring: a substring test
 # fires on any message that merely mentions the phrase, and a session
 # discussing interrupts then reads as interrupted — a false IDLE,
 # the dangerous direction, since `ccm send` would deliver into a
 # working session and auto-exit could eventually kill it. Claude's
 # own note is the entire content of its record, so requiring that
-# separates it from every quotation of it. (Measured: a
-# naive substring scan of this very session's transcript returned 41
-# hits for 7 real interrupts. a consumer hit the same contamination.)
+# separates it from every quotation of it.
 JSONL_INTERRUPT_RE = re.compile(r"^\[Request interrupted[^\]]*\]$")
 # How long after the `claude` process starts a `raw=BUSY` reading
 # is treated as MCP-loading startup rather than real work, when no
@@ -186,7 +180,7 @@ STARTUP_GRACE_SEC = int(os.environ.get("CCM_STARTUP_GRACE_SEC", "60"))
 # the pane falsely reads BUSY (has children, no prompt visible).
 SLIVER_HEIGHT_THRESHOLD = int(os.environ.get("CCM_SLIVER_HEIGHT_THRESHOLD", "4"))
 # Attention-marker garbage collection. A `resolved` marker is kept
-# this long so a slow consumer (a consumer's poll) can still see the
+# this long so a slow consumer (another tool's poll) can still see the
 # resolution, then unlinked. A `waiting` marker is dropped past this
 # hard TTL even when nothing resolved it — the safety net for an
 # agent that died mid-wait without firing its resolution hook. Both
@@ -251,25 +245,19 @@ def strip_sgr(text):
 # Running panes show the spinner; AskUserQuestion menu waits do not.
 #
 # Elapsed forms: "59s", "2m 2s", or "3h 11m 16s". Token forms: "8.0k",
-# "8k", or — below 1000 — a bare count with NO k suffix ("557 tokens";
-# observed, a project: a fresh turn streamed for 1m39s showing
-# "(1m 39s · ↓ 557 tokens)" and the then-mandatory `k` made the
-# spinner invisible to raw detection, so an accept-edits pane sat at
-# false IDLE through the whole sub-1k window).
-#
-# The hour component is the same lesson a second time: a turn past
-# the hour mark rendered
-# "(3h 11m 16s · ↓ 8.8k tokens)" and the minutes-only form stopped
-# matching, so the ONE piece of direct on-screen evidence that Claude
-# is working went dark for the rest of that turn). Each unit is
+# "8k", or — below 1000 — a bare count with NO k suffix
+# ("(1m 39s · ↓ 557 tokens)"). A turn past the hour mark renders
+# "(3h 11m 16s · ↓ 8.8k tokens)". Missing either form would hide the
+# ONE piece of direct on-screen evidence that Claude is working, so
+# an accept-edits pane would read IDLE. Each unit is
 # independently optional rather than a fixed "h m s" shape, because
 # nothing guarantees Claude Code keeps printing a zero-valued unit.
 # The segments after the elapsed time are read as opaque. Within one
 # turn the footer passes through several shapes — a bare verb, then
 # `(2s · thinking with max effort)`, then
 # `(5s · ↓ 25 tokens · thought for 3s)`, then `(7s · ↓ 380 tokens)` —
-# and a pattern anchored on `tokens)` matched only the last of them,
-# leaving the pane reading IDLE while Claude was plainly working.
+# and a pattern anchored on `tokens)` would match only the last of
+# them, leaving the pane reading IDLE while Claude is plainly working.
 # What separates a running turn from the finished line beside it
 # (`Crunched for 8s`) is the parenthesised elapsed time, not what
 # follows it, so that is all this asks for.
@@ -357,10 +345,8 @@ PATTERN_THINKING_HINT = re.compile(
 # than it looks: under `prefersReducedMotion` the CLI leaves the
 # footer as drawn, so its elapsed time can stand still through a
 # minute of real work and move only when something else redraws
-# the line (a resize does). Measured against 2.1.278:
-# `● Thinking... (2s · ↓ 40 tokens)` held for over 30 seconds
-# while the turn ran, where the animated footer ticked every
-# second. A clock that does not tick ages out like any other
+# the line (a resize does), as with 2.1.278's
+# `● Thinking... (2s · ↓ 40 tokens)`. A clock that does not tick ages out like any other
 # static one (`SPINNER_STALE_RELEASE_SEC`), so under reduced
 # motion this form holds a turn busy for that window and no
 # longer. The hooks path is what carries such a session; this is
@@ -383,18 +369,17 @@ THINKING_HINT_RESAMPLE_SEC = float(
     os.environ.get("CCM_THINKING_HINT_RESAMPLE_SEC", "0.5"))
 THINKING_HINT_RESAMPLES = 2
 # Connection / rate-limit retries REPLACE the spinner footer with a
-# line of their own — measured against an unreachable endpoint:
+# line of their own, for example:
 #
 #   ✻ Connection refused — a firewall or proxy may be blocking it (ConnectionRefused) · Retrying in 3s · attempt 8/10
 #
-# (75 samples over 188 s and 10 attempts: zero matches for the
-# spinner form; the footer does not come back between attempts.)
+# The spinner footer does not come back between attempts.
 # While it waits, the session has no child process, writes no JSONL,
 # and shows nothing else that moves — so without this line a long
 # backoff reads as idle, the reading auto-exit acts on.
 #
 # Only the countdown is asked for: the tail clips in narrow panes
-# (measured at 100 columns the line ended `attemp…`), and the
+# (at 100 columns the line can end `attemp…`), and the
 # countdown is also the clock — it ticks once a second, which is
 # what lets the staleness check treat the line like the spinner.
 #
@@ -472,17 +457,15 @@ PATTERN_RETRY_BACKOFF = re.compile(
 # whole-tail `.search(pane_text)` in classify_permit_modal, where
 # the footer sits on the LAST line of a multi-line capture. Without
 # MULTILINE the `^` anchor only matches at position 0 of the joined
-# string, so the classifier's footer fallback silently never fired
-# and unrecognized confirm modals fell through to "unknown-permit"
+# string, so the classifier's footer fallback would never fire and
+# unrecognized confirm modals would fall through to "unknown-permit"
 # instead of "confirmation-modal".
 # The third alternative matches the deny option of a permission
-# prompt that has no separate "Esc to cancel · …" footer (observed
-# on a WebFetch permission raised by a background
-# subagent, and again on the Claude-in-Chrome navigation dialog,
-# whose deny line is just `Deny (esc)`). The deny label varies by
-# dialog, so it is matched as a negative word (`No,` / `Deny` /
-# `Decline`) rather than any one wording — fixing the exact string
-# is how the browser dialog was missed.
+# prompt that has no separate "Esc to cancel · …" footer (a WebFetch
+# permission raised by a background subagent, the Claude-in-Chrome
+# navigation dialog, whose deny line is just `Deny (esc)`). The deny
+# label varies by dialog, so it is matched as a negative word (`No,` /
+# `Deny` / `Decline`) rather than any one wording.
 # Two anchors keep this specific to a real
 # dialog: the leading `\d+\.` (an actual numbered option line) AND
 # a trailing inline `(esc)`. The `(esc)` is what disambiguates the
@@ -530,9 +513,8 @@ PATTERN_PERMIT_FOOTER = re.compile(
 # The age expression takes whatever units it needs — `45m old` under the
 # hour, `3h 11m old` over it, `2d 4h old` for a session resumed days
 # later, which `--continue` invites. Spelled as a repeated unit rather
-# than a fixed pair after the same mistake was found in
-# PATTERN_ACTIVE_SPINNER: requiring `\d+h \d+m` silently
-# excluded every session younger than an hour. Days are worth allowing
+# than a fixed pair: requiring `\d+h \d+m` would exclude every
+# session younger than an hour. Days are worth allowing
 # here even though the spinner ignores them — a single turn does not
 # span days, but a resumable session easily does.
 PATTERN_RESUME_MODAL = re.compile(
@@ -619,8 +601,7 @@ _PERMIT_GUIDANCE = {
 # the surrounding window appears send-able. But unlike a regular
 # Claude REPL, typing into the agents TUI dispatches a BRAND-NEW
 # agent-view session rather than landing in an existing conversation.
-# A `ccm send` to that pane would silently spawn an unintended session
-# (Issue 5 in `project_agent_view_findings_2026_05_12`).
+# A `ccm send` to that pane would silently spawn an unintended session.
 #
 # `cmd_send` checks `PATTERN_AGENTS_FOOTER` against the captured pane
 # tail and refuses on match, with a tailored guidance message.
@@ -637,11 +618,8 @@ _PERMIT_GUIDANCE = {
 # footer as NOT the TUI — and `is_agents_tui` returning False there
 # lifts the send refusal, so keystrokes meant for a conversation
 # silently spawn an agent-view session (the dangerous direction).
-# Anchoring `enter to` at line start had the same hole for the
-# chip-prefixed variant: the refusal lifted, and with the pane's
-# dispatch-box ghost correctly passing the dim-draft check, a send
-# flowed straight into the box that spawns a new session.
-# Generalised the same way PATTERN_PERMIT_FOOTER was: the leading
+# Anchoring `enter to` at line start would miss the chip-prefixed
+# variant the same way. As in PATTERN_PERMIT_FOOTER, the leading
 # `enter to <verb>` is opaque and may sit mid-line after a mode
 # chip; the invariants are `enter to <word>` and the closing
 # `? for shortcuts` on the same line, with the literal `?` required
@@ -795,10 +773,9 @@ EXTERNAL_AGENT_COMMANDS = frozenset({
 # Some CLIs are a launcher symlink pointing at a platform-suffixed
 # binary, and tmux reports the RESOLVED name (truncated): Grok Build's
 # `grok` resolves to `grok-macos-aarch64` and arrives as
-# `grok-macos-aarc` (measured). Enumerating every
-# platform/arch spelling — and guessing tmux's truncation width — is
-# the fixed-shape mistake this project keeps paying for, so a matching
-# prefix stands in for the whole family. Prefixes must stay specific
+# `grok-macos-aarc`. Enumerating every platform/arch spelling would
+# also mean guessing tmux's truncation width, so a matching prefix
+# stands in for the whole family. Prefixes must stay specific
 # enough that no unrelated program collides: `grok-` qualifies,
 # a bare `grok` would also swallow `grokking-notes`.
 EXTERNAL_AGENT_PREFIXES = ("grok-",)
@@ -846,8 +823,7 @@ def external_agent_name(command):
 # screen says it at once, so it decides whenever it is legible.
 #
 # Each mark is read where Codex draws it and nowhere else, because the
-# transcript above can quote the same words (a Codex reviewing this
-# very code will):
+# transcript above can quote the same words:
 #   - a dialog's key hint ("Press enter to confirm or esc to cancel",
 #     "enter confirm · esc skip") is the LAST line of the screen;
 #   - the working line ("Working (5m 09s • esc to interrupt) · …")
@@ -1022,9 +998,9 @@ def sidekick_screen_reading(name, lines):
 #: has nothing to resume — a fresh project — but also when the
 #: newest conversation was handed to a live background session, or
 #: when it cannot start for any other reason, and a chained fallback
-#: turned every one of those into a silently new conversation with
-#: the reason hidden. Now the reason stays on screen and the pane
-#: returns to the shell.
+#: would turn every one of those into a silently new conversation
+#: with the reason hidden. Without it the reason stays on screen and
+#: the pane returns to the shell.
 CLAUDE_CMD = "claude --continue"
 CLAUDE_CMD_FRESH = "claude"
 LAUNCH_COMMANDS = (CLAUDE_CMD, CLAUDE_CMD_FRESH)
@@ -1064,7 +1040,7 @@ TERMINAL_STOP_REASONS = frozenset({
 })
 TERMINAL_STOP_REASONS_TUPLE = tuple(sorted(TERMINAL_STOP_REASONS))
 # Detection state icons. Keep in sync with `lib/state_meta.sh` —
-# bash hooks pay a ~50 ms cost per Python cold start, so we cannot
+# bash hooks would pay a Python cold start per event, so we cannot
 # just shell out to Python to resolve icons; the bash side has its
 # own copy in `ccm_state_icon`. Update BOTH when adding / changing
 # a state icon. The extra "COMPLETED" key used by notification

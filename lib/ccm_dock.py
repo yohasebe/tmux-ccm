@@ -214,9 +214,11 @@ def _close():
 
 def request_close():
     """Close the dock from inside it: tmux runs the close, so it can restore
-    the layout after the pane (and the dashboard in it) is gone."""
+    the layout after the pane (and the dashboard in it) is gone. `run-shell`
+    expands tmux formats, so the path goes in literally."""
     ccm = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ccm')
-    ccm_core.tmux_query('run-shell', '-b', f'{shlex.quote(ccm)} dock close')
+    ccm_core.tmux_query('run-shell', '-b',
+                        ccm_core.tmux_literal(f'{shlex.quote(ccm)} dock close'))
 
 
 def toggle(here=None):

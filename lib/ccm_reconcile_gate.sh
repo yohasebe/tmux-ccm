@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # The rate limit of the periodic status pass, kept apart from common.sh
 # so the wrapper can apply it before reading anything else: on most
-# seconds the pass does nothing, and then reading 800 lines of helpers
-# was most of what it cost. Sourced by `ccm` (first) and by common.sh.
+# seconds the pass does nothing, and reading the helpers would be
+# most of what it costs. Sourced by `ccm` (first) and by common.sh.
 
 # Temp directory (user-scoped; overridable for isolation)
 CCM_TMP_DIR="${CCM_TMP_DIR:-${TMPDIR:-/tmp}/ccm-${UID}}"
@@ -10,9 +10,8 @@ CCM_TMP_DIR="${CCM_TMP_DIR:-${TMPDIR:-/tmp}/ccm-${UID}}"
 # Seconds between full status reconciliations. The periodic
 # `#(ccm inject-status)` in status-right fires once per
 # `status-interval` — every second on a config that shows a seconds
-# clock — but a full run costs ~174 ms and spawns ~24 processes
-# (python3 plus 21 tmux clients plus this wrapper), which is how a
-# status bar ends up holding a measurable share of the machine.
+# clock — but a full run spawns python3 and many tmux clients, so
+# running it every second would make the status bar a steady cost.
 # State changes do not need that poll: the hooks already push
 # `inject-status --fast` on every transition, so the periodic pass
 # only has to catch what fires no hook — a git branch switch, a new

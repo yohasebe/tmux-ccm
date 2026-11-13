@@ -276,8 +276,7 @@ class TestApplyActions:
         )
 
     def test_completed_at_cleared_on_idle_to_shell(self, project_dir):
-        """The clear also fires on IDLE→SHELL, covering the claude-crash
-        edge case the rule was added for.
+        """The clear also fires on IDLE→SHELL (claude crashed).
         """
         rule = ccm_rules.Rule(name="t", result="SHELL", action=ccm_rules.Action.DEFAULT)
         ctx = make_ctx(prev_state="IDLE", raw="SHELL", now=12345)
@@ -356,8 +355,8 @@ class TestApplyActions:
 class TestWorkClockAcrossProcesses:
     """The periodic path is a fresh process every time (tmux spawns
     `ccm inject-status` per status-interval), so the tick check's
-    history can only live on the window itself. Regression pin for
-    the audit finding: a frozen spinner frame must release across
+    history can only live on the window itself. A frozen spinner
+    frame must release across
     SEPARATE detection passes that share nothing but the tmux
     options — and it must never refresh its own timestamp."""
 
@@ -948,12 +947,10 @@ class TestDetectWindowStateAutoMode:
     def test_auto_with_empty_events_and_permit_pane_keeps_permit(
         self, mock_events, mock_hook, mock_tmux, monkeypatch
     ):
-        """Scenario: event log file went temporarily
-        missing for 2.7 hours while the pane was actually showing a
-        PERMIT modal. Pre-fix behaviour was derive()→IDLE, auto mode
-        committing IDLE, and `ccm send` happily injecting into the
-        modal. Post-fix: derive returns None, legacy fires raw=PERMIT
-        and the dashboard stays on PERMIT."""
+        """Scenario: the event log is missing while the pane shows a
+        PERMIT modal. derive returns None, legacy fires raw=PERMIT
+        and the dashboard stays on PERMIT — never IDLE, which would let
+        `ccm send` type into the modal."""
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "auto")
         mock_events.return_value = ()  # event log empty / missing
         mock_hook.return_value = None  # no hook signal either
@@ -975,10 +972,9 @@ class TestDetectWindowStateAutoMode:
     ):
         """Scenario: PreToolUse fired
         first (latest event = pretool → derive→BUSY), then the modal
-        appeared, and PermissionRequest had not yet fired. Pre-fix
-        auto mode would have committed BUSY (event-log) and the
-        dashboard would have lost the ⚠ prompt. Post-fix: A' raw=PERMIT
-        override forces PERMIT regardless of latest event."""
+        appeared, and PermissionRequest had not yet fired. The A' raw=PERMIT
+        override forces PERMIT regardless of latest event, so the
+        dashboard keeps the ⚠ prompt."""
         monkeypatch.setenv("CCM_USE_EVENT_LOG", "auto")
         mock_events.return_value = (
             {"ts": int(time.time()), "type": "pretool"},

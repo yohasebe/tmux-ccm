@@ -125,3 +125,46 @@ dock_window() {
     [[ -z "$(dock_window)" ]]
     [[ "$(tmux display -p -t w:0 '#{window_layout}')" == "$L0" ]]
 }
+
+@test "a plugin installed under a path holding tmux formats still docks, follows and closes" {
+    # The install path goes into tmux commands; `#{session_name}` here
+    # would read as `w` if tmux expanded it.
+    local plugin="$BATS_TEST_TMPDIR/plug#{session_name}in"
+    mkdir -p "$plugin"
+    ln -s "$CCM_ROOT/lib" "$plugin/lib"
+    ln -s "$CCM_ROOT/ccm.tmux" "$plugin/ccm.tmux"
+    cat > "$plugin/ccm" <<'CCM'
+#!/bin/sh
+here=$(dirname "$0")
+case "$1" in
+    dock) shift; exec python3 "$here/lib/ccm_dock.py" "$@" ;;
+    dashboard) exec sleep 300 ;;
+esac
+exit 0
+CCM
+    chmod +x "$plugin/ccm"
+    bash "$plugin/ccm.tmux" >/dev/null 2>&1
+    tmux select-window -t w:0
+    python3 "$plugin/lib/ccm_dock.py" toggle "$W0"
+    [[ "$(dock_window)" == "$W0" ]]
+    for _ in $(seq 1 50); do
+        run tmux list-panes -t "$W0" -F '#{@ccm_dock} #{pane_current_command}'
+        [[ "$output" == *"1 sleep"* ]] && break
+        sleep 0.1
+    done
+    [[ "$output" == *"1 sleep"* ]]
+    # The window-switch hook that ccm.tmux installs runs the plugin's ccm.
+    tmux select-window -t w:1
+    for _ in $(seq 1 50); do
+        [[ "$(dock_window)" == "$W1" ]] && break
+        sleep 0.1
+    done
+    [[ "$(dock_window)" == "$W1" ]]
+    # Closing from inside the dock hands the close to tmux's run-shell.
+    python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import ccm_dock; ccm_dock.request_close()" "$plugin/lib"
+    for _ in $(seq 1 50); do
+        [[ -z "$(dock_window)" ]] && break
+        sleep 0.1
+    done
+    [[ -z "$(dock_window)" ]]
+}

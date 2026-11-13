@@ -190,11 +190,7 @@ def isolate_errors_log(tmp_path, monkeypatch):
     error log — any test that exercises a silent-catch path (or has
     a bug in its scaffolding) would append garbage entries to the
     real log that `ccm errors` then shows the user as if they were
-    production failures. This actually happened: a stale
-    `Dashboard.__new__` scaffold in test_silent_exceptions.py was
-    missing the `bg_visible` attribute, and the resulting
-    AttributeError was logged to the real errors.log on every test
-    run, masquerading as a production dashboard bug.
+    production failures.
     """
     import ccm_core
     monkeypatch.setattr(ccm_core, "CCM_ERRORS_LOG",
@@ -210,10 +206,8 @@ def isolate_hook_silence_log(tmp_path, monkeypatch):
     `.markers/` rate-limit dir) away from the user's real data dir
     for every test.
 
-    The firing log is the *evidence dataset* for the canary's
-    default-on promotion — a test-generated record would masquerade
-    as a real-session firing and poison exactly the data the
-    observe-first phase exists to collect. `hook_silence_log_path()`
+    A test-generated record would masquerade as a real-session firing
+    in the user's firing log. `hook_silence_log_path()`
     reads the env var at call time, so setenv is sufficient."""
     monkeypatch.setenv("CCM_HOOK_SILENCE_LOG",
                        str(tmp_path / "hook-silence.log"))

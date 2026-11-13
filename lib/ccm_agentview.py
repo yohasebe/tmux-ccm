@@ -376,10 +376,9 @@ _CONVERSATION_RE = re.compile(r'"type"\s*:\s*"(?:user|assistant)"')
 #: to — never anything relative to a project or to the roster.
 #: Which transcript is newest, whose directory it names, and whether
 #: its hand-off target is in the roster are decided from live stats
-#: and the live roster on every call. A positive answer that
-#: outlived the state it described was the failure this design
-#: replaces; the cost that remains is one stat per transcript per
-#: call, for SHELL projects that have a worker in the roster.
+#: and the live roster on every call, so a positive answer cannot
+#: outlive the state it describes; the cost is one stat per
+#: transcript per call, for SHELL projects that have a worker in the roster.
 #:
 #: Known limits of the (mtime_ns, size) key: a rewrite that keeps
 #: both is not seen, so either parse result — the recorded cwd or

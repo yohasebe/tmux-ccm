@@ -4,6 +4,11 @@
 
 CCM_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CCM_BIN="${CCM_ROOT}/ccm"
+# `run-shell` (typed, from a hook or from a binding) expands tmux formats in
+# its command before the shell sees it, so the install path goes into those
+# commands with every `#` doubled. `display-popup` runs its command as given.
+CCM_RUN_ROOT="${CCM_ROOT//\#/##}"
+CCM_RUN_BIN="${CCM_RUN_ROOT}/ccm"
 
 # User-configurable keybindings (with defaults)
 CCM_KEY_DASHBOARD=$(tmux show-option -gqv @ccm-key-dashboard 2>/dev/null)
@@ -14,7 +19,7 @@ CCM_KEY_SEARCH=$(tmux show-option -gqv @ccm-key-search 2>/dev/null)
 CCM_KEY_DASHBOARD="${CCM_KEY_DASHBOARD:-Tab}"
 
 # Records the session for the popup (used in run-shell for session detection)
-_session_cmd="bash \"${CCM_ROOT}/lib/popup-session.sh\" #{q:session_name}"
+_session_cmd="bash \"${CCM_RUN_ROOT}/lib/popup-session.sh\" #{q:session_name}"
 
 # Coloured "ccm" badge for popup titles. Three pill cells in a
 # muted traffic-light palette (rose / amber / sage) so each
@@ -46,7 +51,7 @@ fi
 # option needs no reload. `#{window_id}` is expanded in the client's
 # context, which is the window the dock belongs in.
 _dock_on='#{||:#{==:#{@ccm-dashboard-dock},top},#{==:#{@ccm-dashboard-dock},bottom}}'
-_dock_toggle="run-shell -b \"$CCM_BIN dock toggle '#{window_id}'\""
+_dock_toggle="run-shell -b \"$CCM_RUN_BIN dock toggle '#{window_id}'\""
 _dashboard_popup="run-shell '$_session_cmd' ; display-popup ${_popup_style}-E -w 80% -h 60% -T ' ${_logo} Dashboard ' '$CCM_BIN dashboard'"
 tmux bind-key "$CCM_KEY_DASHBOARD" if-shell -F "$_dock_on" "$_dock_toggle" "$_dashboard_popup"
 
@@ -91,8 +96,7 @@ tmux bind-key -n MouseDown1Status \
 tmux set-environment -g CLAUDE_CODE_NO_FLICKER 1
 
 # Status-interval drives how often tmux invokes `ccm inject-status`.
-# 5 seconds keeps the steady-state CPU cost negligible (each
-# invocation is ~150-200ms, so 5 s polling is ~3-4% of one core).
+# 5 seconds keeps the steady-state CPU cost negligible.
 # The PERMIT-axis instant path bypasses polling entirely: hooks
 # write @ccm-permit-pending which inject-status promotes on the
 # next tick, so the actionable "user must approve a tool" signal
@@ -111,17 +115,17 @@ tmux bind-key w choose-tree -Zs
 
 # Auto-update hooks on plugin load (idempotent — skips if already up to date)
 # This ensures new hook types added in updates are registered automatically.
-tmux run-shell -b "$CCM_BIN setup-hooks >/dev/null 2>&1 || true"
+tmux run-shell -b "$CCM_RUN_BIN setup-hooks >/dev/null 2>&1 || true"
 
 # Initialize status injection (delayed to let theme plugins finish loading)
 # inject-status auto-detects external status-right changes (by themes etc.)
 # and saves the correct original value before injecting ccm's status.
-tmux run-shell -b "sleep 1 && $CCM_BIN inject-status 2>/dev/null || true"
+tmux run-shell -b "sleep 1 && $CCM_RUN_BIN inject-status 2>/dev/null || true"
 
 # Re-inject status on client attach — theme plugins may overwrite status-right
 # on reattach, removing the #(ccm inject-status) periodic trigger.
 # The delay lets the theme finish re-rendering before ccm re-injects.
-tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_BIN inject-status 2>/dev/null || true'"
+tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_RUN_BIN inject-status 2>/dev/null || true'"
 
 # Reflect the focused project in the status bar immediately on a
 # window switch, instead of waiting up to status-interval for the
@@ -134,27 +138,25 @@ tmux set-hook -g client-attached "run-shell -b 'sleep 1 && $CCM_BIN inject-statu
 # highlight. `--fast` is the point: the per-project states are
 # already cached in `@ccm_prev_state` and a window switch changes
 # only WHICH window is current, so the focus refresh skips the full
-# detection pass (~250 ms) and re-renders from the cache (~10 ms),
-# making the highlight feel instant — exactly the "the info is
+# detection pass and re-renders from the cache, making the highlight feel instant — exactly the "the info is
 # already known, reflect it now" case. The next regular poll tick
 # re-detects. `-ga` appends so a theme/user hook on the same event
 # is preserved; `-b` keeps the switch itself snappy and the inject
 # lockfile prevents pile-up during rapid switching.
 #
 # Append-once guard: re-sourcing .tmux.conf (or reloading TPM) re-runs
-# this script, and a blind `-ga` stacks an identical hook per reload —
-# observed live with two copies firing a double --fast
-# render on every switch. Match on the distinctive command substring
+# this script, and a blind `-ga` stacks an identical hook per reload,
+# each firing its own --fast render on every switch. Match on the distinctive command substring
 # rather than the full string so an install whose path changed (e.g.
 # a symlinked plugin dir) still counts as "already registered" instead
 # of accumulating a second variant.
 if ! tmux show-hooks -g 2>/dev/null | grep "session-window-changed" | grep -q "inject-status --fast"; then
-    tmux set-hook -ga session-window-changed "run-shell -b '$CCM_BIN inject-status --fast 2>/dev/null || true'"
+    tmux set-hook -ga session-window-changed "run-shell -b '$CCM_RUN_BIN inject-status --fast 2>/dev/null || true'"
 fi
 
 # A docked dashboard follows the client to the window it switches to (the
 # window it leaves gets its layout back). Only runs while docking is on.
-_dock_follow="if-shell -F '$_dock_on' \"run-shell -b '$CCM_BIN dock follow #{window_id} 2>/dev/null || true'\""
+_dock_follow="if-shell -F '$_dock_on' \"run-shell -b '$CCM_RUN_BIN dock follow #{window_id} 2>/dev/null || true'\""
 for _hook in session-window-changed client-session-changed; do
     if ! tmux show-hooks -g 2>/dev/null | grep "$_hook" | grep -q "dock follow"; then
         tmux set-hook -ga "$_hook" "$_dock_follow"
@@ -172,7 +174,7 @@ done
 # own that happens to mention it counts as ours, and ccm stays
 # unregistered.
 if ! tmux show-hooks -g 2>/dev/null | grep "client-resized" | grep -q "on-resize.sh"; then
-    tmux set-hook -ga client-resized "run-shell -b '\"${CCM_ROOT}/lib/on-resize.sh\" 2>/dev/null || true'"
+    tmux set-hook -ga client-resized "run-shell -b '\"${CCM_RUN_ROOT}/lib/on-resize.sh\" 2>/dev/null || true'"
 fi
 
 # Pane labels (opt-in: `set -g @ccm-pane-labels on`). Marks, on its
@@ -205,7 +207,7 @@ if [ "$(tmux show-option -gqv @ccm-pane-labels 2>/dev/null)" = "on" ]; then
             tmux set-hook -gwu "$CCM_OLD_HOOK"
         done
     if ! tmux show-hooks -gw 2>/dev/null | grep "pane-focus-in" | grep -q "on-pane-focus.sh"; then
-        tmux set-hook -ga pane-focus-in "run-shell -b '\"${CCM_ROOT}/lib/on-pane-focus.sh\" \"#{hook_pane}\" \"#{pane_id}\"'"
+        tmux set-hook -ga pane-focus-in "run-shell -b '\"${CCM_RUN_ROOT}/lib/on-pane-focus.sh\" \"#{hook_pane}\" \"#{pane_id}\"'"
     fi
 fi
 
@@ -222,14 +224,14 @@ if [[ "$CCM_AUTO_RESTORE" == "on" ]]; then
         # sleep 2 to run after inject-status (sleep 1)
         tmux run-shell -b "
             sleep 2
-            existing=\$(tmux list-windows -a -F '#{window_id} #{@ccm_project}' 2>/dev/null | awk '\$2 != \"\" {print}')
+            existing=\$(tmux list-windows -a -F '##{window_id} ##{@ccm_project}' 2>/dev/null | awk '\$2 != \"\" {print}')
             if [ -z \"\$existing\" ]; then
-                log='$CCM_RESTORE_LOG'
+                log='${CCM_RESTORE_LOG//\#/##}'
                 mkdir -p \"\$(dirname \"\$log\")\" 2>/dev/null
                 # Owner-only like the progress record; an unwritable log
                 # must not prevent the restore itself.
                 { (umask 077; : > \"\$log\") && chmod 600 \"\$log\"; } 2>/dev/null || log=/dev/null
-                $CCM_BIN start _autosave > \"\$log\" 2>&1 || true
+                $CCM_RUN_BIN start _autosave > \"\$log\" 2>&1 || true
             fi
         "
     fi

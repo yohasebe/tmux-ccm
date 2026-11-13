@@ -26,12 +26,10 @@ class TestUpdateWindowNames:
     current state icon. Regression coverage for the same-directory
     dedup interaction: `build_project_list` drops every window after
     the first that shares a canonical directory (`seen_dirs`), so the
-    second window is absent from `projects`. The old
-    `project_states.get(win_target, "IDLE")` default then rewrote
-    that window's name to the IDLE icon every poll cycle regardless
-    of its real state. The fix inherits the state from the same-dir
-    sibling that IS tracked, and skips windows with no state source
-    at all instead of stamping a wrong icon."""
+    second window is absent from `projects`. Its state is
+    inherited from the same-dir sibling that IS tracked, and a window
+    with no state source at all is skipped rather than stamped with a
+    wrong icon."""
 
     def _project(self, win_target, name, directory, state):
         return ccm_core.Project(
@@ -195,8 +193,7 @@ class TestAutoExitIdle:
          long sessions Claude's shutdown can exceed the 0.5 s wait
          window; sending `clear` while Claude is still foreground
          delivers literal text into its input box and submits it as
-         an unintended user prompt (observed live, and
-         retro-explains earlier "test" one-word injections).
+         an unintended user prompt.
       2. Every keystroke must be addressed to the Claude pane
          directly, not to the window's active pane. If the user
          split off a shell pane and left focus on it, `send-keys`
@@ -204,8 +201,7 @@ class TestAutoExitIdle:
          Enter sequence in the shell. In emacs mode that becomes
          `Meta-/` (no-op completion) followed by the literal
          characters `exit` plus Enter, silently killing the user's
-         shell pane some hours after they last touched it (reported
-         on the sample-proj window itself).
+         shell pane some hours after they last touched it.
 
     Coverage:
       - Happy path: shell foreground (`zsh`) → `clear` IS sent.
@@ -229,11 +225,9 @@ class TestAutoExitIdle:
     # `ps_snapshot()` returns the raw stdout string from
     # `ps -eo pid,ppid,pgid,comm,etime`. ccm_runtime splits it into
     # lines via `.strip().split("\n")`; tests therefore mock the
-    # snapshot as a multi-line string, NOT a Python list. Earlier
-    # versions of these tests provided a list directly, which masked
-    # a production bug where ccm_runtime forgot to split the string
-    # (`find_claude_pid` then iterated character-by-character and
-    # returned None for every pane).
+    # snapshot as a multi-line string, NOT a Python list, so a
+    # missing split fails here (`find_claude_pid` would iterate
+    # character by character and return None for every pane).
     DEFAULT_PS_OUTPUT = (
         "1000 999 1000 zsh 00:01:00\n"
         "1001 1000 1001 claude 00:00:30\n"
@@ -426,7 +420,7 @@ class TestAutoExitIdle:
         )
 
     def test_no_auto_exit_when_focused_window_unresolved(self):
-        """Safety guard (adversarial-review finding): if
+        """Safety guard: if
         `display-message` returns empty for the focused session/window
         (query failed / no client context), current_target would be
         ":" and protect no window — letting the focused Claude be
@@ -463,7 +457,7 @@ class TestAutoExitIdle:
         mock_autosave.assert_not_called()
 
     def test_shell_transition_and_autosave_gated_on_exit_success(self):
-        """Side-effect gating (adversarial-review finding):
+        """Side-effect gating:
         the SHELL state write and the autosave must fire ONLY when
         `/exit` actually completed (pane foreground back to a shell).
         On the race path (Claude still foreground) declaring SHELL
@@ -554,11 +548,9 @@ class TestAutoExitIdle:
         process and the pane closes, changing the window's layout —
         auto-exit reclaims an idle process, it does not close panes.
 
-        These panes were unreachable by accident until this fix:
-        the process walk only looked for a child, so they resolved to
-        no-claude and the background-work guard read their versioned
-        command name as live work. Teaching the walk about them
-        removed that cover, so the exclusion is explicit now."""
+        The exclusion is explicit: the process walk finds claude as
+        the pane process itself, so nothing else keeps auto-exit away
+        from these panes."""
         # pane pid 1000 is itself `claude` — no shell in between.
         ps_output = "1000 999 1000 claude 00:05:00\n"
         send_calls = self._run(
@@ -599,10 +591,7 @@ class TestAutoExitIdle:
 class TestAutoExitBackgroundWorkGuard:
     """Auto-exit must leave a window alone while it hosts live
     background work, however long the Claude conversation has been
-    idle. Cost asymmetry: wrongly exiting interrupts running work
-    (incident — a sibling-pane batch job's
-    window went quiet for 10 min and Claude was exited out from
-    under an active project); wrongly keeping costs one idle Claude
+    idle. Cost asymmetry: wrongly exiting interrupts running work; wrongly keeping costs one idle Claude
     process. Two signals, either sufficient:
 
       - a non-Claude pane whose foreground is not a shell (batch,
@@ -628,7 +617,7 @@ class TestAutoExitBackgroundWorkGuard:
                            ps_output=ps_output)
 
     def test_sibling_pane_running_job_skips_exit(self):
-        """The incident shape: batch job (ruby) in the split pane.
+        """A batch job (ruby) in the split pane.
         No keystroke may reach the window."""
         send_calls = self._run(self._panes("ruby"), self.PS_BASE)
         assert send_calls == [], (
@@ -699,9 +688,7 @@ class TestAutoExitBackgroundWorkGuard:
         exiting Claude leaves the editor pane untouched — so the
         guard must not treat it as live work. Without this exemption
         a split-editor workflow silently disables auto-exit for
-        every window (observed: three sessions idle 3-4
-        days with @ccm-idle-timeout 10 set, each with a parked nvim
-        in the second pane)."""
+        every window."""
         for editor in ("nvim", "vim", "emacs", "less"):
             send_calls = self._run(self._panes(editor), self.PS_BASE)
             sent = [c[3] for c in send_calls if len(c) >= 4]
@@ -725,7 +712,7 @@ class TestAutoExitBackgroundWorkGuard:
 class TestAutoExitNotification:
     """A completed auto-exit must announce itself: an unannounced
     exit reads as a crash or a mystery timeout and sends the user
-    hunting for a cause (report). Fired only
+    hunting for a cause. Fired only
     after the shell-foreground gate confirmed the exit landed."""
 
     def test_notify_fired_on_confirmed_exit(self):
@@ -792,9 +779,9 @@ class TestAutoExitEvidenceLog:
     Claude Code reports an auto-exit as `SessionEnd` with reason
     `prompt_input_exit` — the same value a person typing `/exit`
     produces. So the only place the difference can be recorded is
-    here, and without it the question has no answer anywhere: a
-    neighbouring tool read eight such endings in a row and concluded
-    the sessions were crashing.
+    here, and without it the question has no answer anywhere: an
+    auto-exit and a crash look the same to anyone reading the
+    transcripts.
     """
 
     def _isolate(self, monkeypatch, tmp_path):
@@ -939,7 +926,7 @@ class TestAutoExitAgentsView:
 
     def test_slow_exit_is_not_called_a_detach(self):
         """Foreground still `claude`, pane still a conversation: a slow
-        shutdown, as before. Unconfirmed, not declined."""
+        shutdown. Unconfirmed, not declined."""
         TestAutoExitIdle()._run("claude")
         assert self._declined() == []
         assert self._exits() == []

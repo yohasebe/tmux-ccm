@@ -91,8 +91,7 @@ def hooks_log_warning() -> str:
 # `log_caught_exception` records every silent catch in errors.log
 # and is wrapped around hot paths (inject_status, dashboard refresh,
 # build_project_list, autosave). A bug that fires every poll cycle
-# (e.g. the autosave NameError that ran 38 hours undetected before
-# we caught it) writes ~30 entries per minute. Without a canary,
+# writes an entry on every cycle. Without a canary,
 # operators only notice when they happen to run `ccm errors`.
 #
 # The canary scans errors.log itself (no separate counter state to
@@ -212,8 +211,8 @@ def unreadable_settings(projects=None, managed_only=False):
     A file that is absent sets nothing, and that is an answer. A file
     that is present and unreadable is not: whatever it says, this
     side did not see it, so "the flag is not set" is not something
-    the scan can say about it. Overlapping writers have left
-    `~/.claude/settings.json` cut off mid-object before now.
+    the scan can say about it. Overlapping writers can leave
+    `~/.claude/settings.json` cut off mid-object.
     """
     labels = []
     for label, path in _settings_sources(projects):
@@ -471,13 +470,12 @@ def shell_cluster_warnings(projects) -> list:
     return out
 
 
-# ─── Hook-silence canary (opt-in, observe-first) ───
+# ─── Hook-silence canary (opt-in) ───
 #
 # Detects the upstream failure mode where a session's hook event log
 # stops updating while the conversation is demonstrably still active —
 # the #16047-class regression where hooks silently stop firing
-# mid-session (hooks silent through a
-# whole real turn). When that happens ccm's precise event-log path goes
+# mid-session. When that happens ccm's precise event-log path goes
 # blind and detection falls back to the coarser raw+JSONL heuristics,
 # where false BUSY/IDLE become possible. Surfacing this tells the
 # operator "detection is degraded for project X, and it's upstream, not
@@ -496,24 +494,18 @@ def shell_cluster_warnings(projects) -> list:
 #                       "event log exists" requirement excludes it
 #   - idle session   → no fresh JSONL activity, freshness gate excludes
 #
-# OBSERVE-FIRST: default OFF. During calibration the operator opts in
-# with `@ccm-hook-silence on` and watches the dashboard footer; a
-# mis-tuned threshold can then only mislead someone who explicitly
-# asked to see it, never a default user. Promote to default-on in a
-# later release once real-session dogfooding confirms zero false fires.
+# Default OFF: a mis-tuned threshold can then only mislead someone who
+# opted in with `@ccm-hook-silence on`, never a default user.
 
 HOOK_SILENCE_FRESH = int(os.environ.get("CCM_HOOK_SILENCE_FRESH", "90"))
 HOOK_SILENCE_GAP = int(os.environ.get("CCM_HOOK_SILENCE_GAP", "120"))
 _HOOK_SILENCE_OPT = "@ccm-hook-silence"
 
-# ─── Firing log (evidence for the default-on promotion) ───
-# Warnings alone leave no trace: the promotion criteria ("zero false
-# fires across N days of dogfood", "caught at least one real
-# silence") cannot be evaluated from memory. Every firing appends one
-# JSON line so the calibration record survives dashboard restarts and
-# reboots. The log lives under the persistent data dir (NOT
-# $TMPDIR — macOS purges that within days, which would erase exactly
-# the multi-week evidence this exists to collect) and is deliberately
+# ─── Firing log ───
+# Warnings alone leave no trace, so every firing appends one JSON
+# line that survives dashboard restarts and reboots. The log lives
+# under the persistent data dir (NOT $TMPDIR — macOS purges that
+# within days) and is deliberately
 # separate from errors.log so firings can't trip the
 # `errors_log_burst_warning` canary or drown real silent-catch
 # records.
@@ -589,8 +581,7 @@ def _log_hook_silence_firing(project_name, project_dir, state,
 
 def hook_silence_log_count() -> int:
     """Number of firing records in the active log (rotated `.1` not
-    counted). `ccm doctor` shows this so the promotion review has its
-    evidence count one command away. Returns 0 when the log is
+    counted), shown by `ccm doctor`. Returns 0 when the log is
     absent or unreadable."""
     try:
         with open(hook_silence_log_path(), encoding="utf-8") as f:

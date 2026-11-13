@@ -1,9 +1,8 @@
 """`ccm spool` — store-and-forward queue for cross-project messages.
 
 When `ccm send` finds the target BUSY / PERMIT / SHELL (or otherwise
-momentarily undeliverable), the message used to be refused and the
-sender owned the retry loop. The spool takes over that loop: the
-message is written to `$CCM_DATA_DIR/spool/<project>/` and the
+momentarily undeliverable), the message is spooled instead of
+refused, so the sender owns no retry loop: it is written to `$CCM_DATA_DIR/spool/<project>/` and the
 periodic reconciler (the `inject-status` full pass, under its flock)
 delivers it once the target is genuinely ready. No daemon, no LLM
 broker — the mechanism is a directory, a rename, and the detection
@@ -883,8 +882,8 @@ def _cmd_cancel(rest):
 def _cmd_clear_expired(rest):
     """Drop the records of messages that expired undelivered.
 
-    They are kept as evidence and warned about until they age out, and
-    until now there was no way to say "seen". A warning that cannot be
+    They are kept as evidence and warned about until they age out;
+    this is how the reader says "seen". A warning that cannot be
     answered is one the reader learns to scroll past — the same reason
     `ccm errors` has `--clear`. Deleting the evidence is the
     acknowledgement; nothing else is affected, since a queued message

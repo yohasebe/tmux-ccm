@@ -791,7 +791,6 @@ def test_three_turns_preserve_first_lines_on_recoalescing(world):
     pending = pending_notices()
     assert len(pending) == 1 and pending[0]['count'] == 3
     text = notices.body(pending[0])
-    # Also runs on the original implementation as an AssertionError control.
     assert all(head in text for head in heads)
     assert [i['excerpt'] for i in pending[0]['items']] == heads
     assert len({i['id'] for i in pending[0]['items']}) == 3

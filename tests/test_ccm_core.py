@@ -336,9 +336,8 @@ class TestBuildProjectListSubprocessCount:
 
         ccm_core.build_project_list(fast=True)
 
-        # The N+1 bug would have produced 10 list-windows calls
-        # (one per project via _session_id_from_tmux). The fix
-        # makes it exactly 1.
+        # One list-windows call for every project, not one per
+        # project via _session_id_from_tmux.
         list_windows_calls = [c for c in calls if c and c[0] == "list-windows"]
         assert len(list_windows_calls) == 1, (
             f"fast path issued {len(list_windows_calls)} list-windows "
@@ -355,8 +354,8 @@ class TestBuildProjectListSubprocessCount:
         calls = []
         def fake_tmux(*args, **kwargs):
             # The whole argv: the option name is the last argument,
-            # and a per-project `show-option -w -t <target> -qv
-            # @ccm_session_id` was invisible to a prefix-only record.
+            # so a per-project `show-option -w -t <target> -qv
+            # @ccm_session_id` is visible only in the full record.
             calls.append(args)
             if args and args[0] == "list-windows":
                 return windows_out
@@ -659,8 +658,8 @@ class TestRaiseOnDie:
 # ─── _handle_add (CLI dispatch wrapper for `ccm add`) ───
 # These exercise the tty-gated prompt that brings the dashboard's
 # "create-on-missing-dir" affordance to CLI users. The hard
-# contract: non-tty (script / CI) MUST behave exactly like before
-# — no prompt, no surprise mkdir. The tty case prompts the user.
+# contract: non-tty (script / CI) gets no prompt and no surprise
+# mkdir. The tty case prompts the user.
 
 class TestHandleAdd:
     def _args(self, directory, name=""):

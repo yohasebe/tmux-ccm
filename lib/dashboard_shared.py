@@ -2,7 +2,7 @@
 the message an attach shows when it could not start Claude."""
 
 import ccm_window
-from ccm_core import tmux_cmd
+from ccm_core import tmux_cmd, tmux_literal
 
 
 # Color pair IDs (curses-specific, dashboard only)
@@ -37,5 +37,5 @@ def _announce_unlaunched(result):
     that need no action (launched, already running, auto-start off)."""
     if result is not None and result.outcome == ccm_window.UNAVAILABLE:
         tmux_cmd("display-message", "-d", "8000",
-                 "ccm: " + (result.reason or "Claude not auto-started — no pane could be "
-                 "verified as a shell prompt. Start it by hand.").replace("#", "##"))
+                 "ccm: " + tmux_literal(result.reason or "Claude not auto-started — no pane "
+                 "could be verified as a shell prompt. Start it by hand."))

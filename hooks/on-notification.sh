@@ -43,7 +43,7 @@ case "$NOTIFY_TYPE" in
         # delay budget this same hook cites for notifications and with
         # the grace-period style used by CCM_COMPLETION_GRACE_SEC in
         # lib.sh). Signals older than that predate any plausible
-        # idle_prompt lag and are cleared as before.
+        # idle_prompt lag and are cleared.
         SIGNAL_FILE="${HOOK_DIR}/${KEY}"
         NOW=$(date +%s)
         GUARD_SEC="${CCM_IDLE_PROMPT_GUARD_SEC:-60}"

@@ -523,7 +523,7 @@ class TestCmdDoctor:
         self, tmp_path, monkeypatch, capsys
     ):
         """`"".split("\\n")` is `[""]`, which is truthy — so an empty ps
-        snapshot used to wave the guard through with no data.
+        snapshot must not wave the guard through with no data.
 
         Asserting only "no row appears" would pass either way, since a
         scan over `[""]` resolves no claude and prints nothing anyway.
@@ -627,6 +627,39 @@ class TestCmdAdd:
         tag_names = [a[3] for a in batch_args if len(a) > 3]
         assert "@ccm_project" in tag_names
         assert "@ccm_dir" in tag_names
+
+    @patch("ccm_commands._autosave_trigger")
+    @patch("ccm_core.hooks_configured", return_value=True)
+    @patch("ccm_core.tmux_batch")
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.require_session", return_value="main")
+    def test_add_passes_the_directory_to_new_window_as_a_literal(
+            self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
+        """`new-window -c` expands tmux formats, so a `#(...)` in a
+        directory name would run as a shell command when the window
+        opens. Every `#` is doubled for `-c`; the stored `@ccm_dir`
+        (set-option does not expand) keeps the real path."""
+        proj_dir = tmp_path / "proj #(true) #{pane_id}"
+        proj_dir.mkdir()
+        real = os.path.realpath(str(proj_dir))
+
+        def tmux_side_effect(*args, **kwargs):
+            if args[0] == "new-window":
+                return "3"
+            if args[0] == "display-message":
+                return "proj"
+            return ""
+        mock_tmux.side_effect = tmux_side_effect
+
+        ccm_commands.cmd_add(str(proj_dir), "proj")
+
+        new_window = next(c.args for c in mock_tmux.call_args_list
+                          if c.args[0] == "new-window")
+        cwd = new_window[new_window.index("-c") + 1]
+        assert cwd == real.replace("#", "##")
+        assert cwd.replace("##", "#") == real
+        stored = {a[3]: a[4] for a in mock_batch.call_args[0] if len(a) > 4}
+        assert stored["@ccm_dir"] == real
 
     @pytest.mark.parametrize("has_history", [True, False])
     @patch("ccm_commands._autosave_trigger")
@@ -1090,9 +1123,8 @@ class TestDispatcherPassthrough:
 
     @patch("ccm_commands.cmd_capture")
     def test_capture_with_leading_copy_flag(self, mock_capture):
-        # `ccm capture --copy demo` — flag BEFORE positional. The
-        # original bug: argparse rejected `--copy` because it was
-        # not a defined subparser flag.
+        # `ccm capture --copy demo` — a flag BEFORE the positional
+        # reaches the handler too.
         ccm_core.dispatch(["capture", "--copy", "demo"])
         mock_capture.assert_called_once_with(["--copy", "demo"])
 
@@ -1103,10 +1135,8 @@ class TestDispatcherPassthrough:
 
     @patch("ccm_commands.cmd_stop")
     def test_stop_all_reaches_handler(self, mock_stop):
-        # `ccm stop --all` — argparse used to reject `--all` as an
-        # unknown option (exit 2) before cmd_stop ever saw it, so the
-        # documented autosave-on-stop path was unreachable from the
-        # CLI. The stop subcommand now uses the same raw-argv
+        # `ccm stop --all` must reach cmd_stop, not stop at argparse as
+        # an unknown option: the stop subcommand uses the same raw-argv
         # passthrough as capture/send.
         ccm_core.dispatch(["stop", "--all"])
         mock_stop.assert_called_once_with("--all")
@@ -1119,7 +1149,7 @@ class TestDispatcherPassthrough:
 
     @patch("ccm_commands.cmd_stop")
     def test_stop_without_args_reaches_handler(self, mock_stop):
-        # No arg → cmd_stop prints usage and dies (as before).
+        # No arg → cmd_stop prints usage and dies.
         ccm_core.dispatch(["stop"])
         mock_stop.assert_called_once_with("")
 
@@ -1234,7 +1264,7 @@ class TestCmdAttach:
         return auto_start, reset, tmux_mock
 
     def test_attach_goes_through_the_shared_launch_path(self, monkeypatch):
-        """`cmd_attach` no longer inspects processes itself: whether
+        """`cmd_attach` does not inspect processes itself: whether
         a pane already hosts claude is decided by `launch_claude`,
         from a fresh snapshot of every pane, the same way the
         dashboard and `ccm send --start` decide it."""
@@ -1410,13 +1440,9 @@ class TestCmdCapture:
 
 class TestCmdCaptureSplitWindow:
     """`capture-pane -t <window>` delivers only the window's ACTIVE
-    pane, so a split window used to return one pane and silently drop
-    the rest — from inside the window that is the caller's own pane,
-    and from outside it is whichever pane held focus. (The same
-    window-vs-pane flaw the dashboard preview had before
-    `_resolve_preview_pane`.) capture now enumerates the panes and
-    labels each section, so a split window is fully visible and the
-    result no longer depends on focus."""
+    pane. capture enumerates the panes and labels each section, so a
+    split window is fully visible and the result does not depend on
+    focus."""
 
     def _stub(self, monkeypatch, panes, bodies, ignore_map=None):
         """Stub a window whose `list-panes` yields `panes`
@@ -1500,8 +1526,7 @@ class TestCmdCaptureSplitWindow:
         self._stub(
             monkeypatch,
             panes=[("%1", "100", True, "zsh")],
-            # The single-pane path captures the WINDOW target, the
-            # same call the pre-fix code made.
+            # The single-pane path captures the WINDOW target.
             bodies={"main:2": "solo"},
         )
         monkeypatch.setattr(ccm_core, "ps_snapshot", boom)
@@ -1512,8 +1537,8 @@ class TestCmdCaptureSplitWindow:
 
     def test_enumeration_failure_falls_back_to_window(self, monkeypatch,
                                                      capsys):
-        """tmux hiccup → empty enumeration → old window-target
-        capture rather than an empty result."""
+        """tmux hiccup → empty enumeration → window-target capture
+        rather than an empty result."""
         monkeypatch.setattr(ccm_core, "get_session", lambda: "main")
         monkeypatch.setattr(ccm_core, "find_window", lambda s, n: "2")
         monkeypatch.setattr(ccm_core, "list_windows_raw", lambda s: [])
@@ -1819,11 +1844,9 @@ class TestResolveTraceTarget:
         assert (win, d) == ("probe:3", "/tmp/w")
 
     def test_unknown_target_returns_none(self, monkeypatch):
-        # Measured tmux behaviour: `display-message -t %9999` exits 0
-        # and substitutes empty fields, so the reply is the bare ":"
-        # separator rather than "". Anchored on the real response —
-        # an earlier mock returned "" here and let every typo resolve
-        # to a phantom window in live use.
+        # tmux behaviour: `display-message -t %9999` exits 0 and
+        # substitutes empty fields, so the reply is the bare ":"
+        # separator rather than "". The stub returns that response.
         monkeypatch.setattr(ccm_core, "tmux_cmd", self._tmux(display=":"))
         assert ccm_commands._resolve_trace_target("ghost") is None
 
@@ -1840,8 +1863,7 @@ class TestResolveTraceTarget:
     def test_blank_target_returns_none(self, monkeypatch, blank):
         """An empty needle is a substring of every name, so the pass-1
         substring loop would return whichever project is listed first
-        and trace a window the caller never named. Measured before the
-        guard: `ccm debug trace ""` followed the first project."""
+        and trace a window the caller never named."""
         monkeypatch.setattr(
             ccm_core, "tmux_cmd", self._tmux(display="probe:0\t/tmp/p"))
         assert ccm_commands._resolve_trace_target(blank) is None

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 load helpers/tmux_guard.bash
 # The hooks read every payload field with one jq; if that read fails
-# they read each field the old way. Both paths run the real jq here, on
+# they read each field on its own. Both paths run the real jq here, on
 # the same payloads, and must agree.
 
 CCM_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"

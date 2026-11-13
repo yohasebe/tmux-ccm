@@ -169,8 +169,7 @@ renders() {
     # Timed with a real clock rather than bash's `SECONDS`, which
     # counts second boundaries crossed: assigned at .95 past, it reads
     # 1 a few milliseconds later, so `>= 1` is true even with no wait
-    # at all. That is how the first version of this test passed
-    # against a build with the wait removed.
+    # at all.
     export CCM_RESIZE_SETTLE=1
     local start end
     start=$(python3 -c 'import time; print(time.monotonic())')
