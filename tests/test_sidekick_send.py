@@ -538,6 +538,19 @@ class TestSendResult:
         assert (out["outcome"], out["reason"], code) == ("refused", "unsupported_text", 1)
         assert [c for c in calls if c[0] == "send-keys"] == []
 
+    @pytest.mark.parametrize("char", ["\r", "\x1b", "\x03", "\x15"])
+    def test_control_characters_are_refused_before_any_key(
+            self, stub, monkeypatch, capsys, char):
+        """Each would be typed as a key: `\\r` submits, ESC interrupts,
+        `^C` quits, `^U` clears the composer."""
+        import io
+        calls = stub()
+        monkeypatch.setattr(ccm_send.sys, "stdin",
+                            io.StringIO(f"first line\nsecond{char}line"))
+        out, code, _ = self.run_json(["--stdin"], capsys)
+        assert (out["outcome"], out["reason"], code) == ("refused", "unsupported_text", 1)
+        assert [c for c in calls if c[0] == "send-keys"] == []
+
     @pytest.mark.parametrize("breaks_on, outcome", [
         (1, "refused"),             # before the body: no key sent
         (2, "attempted_stopped"),   # before Enter: Enter not sent

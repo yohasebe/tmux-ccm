@@ -57,6 +57,7 @@ capture. Both commands share the typing helpers (`_type_body`,
 """
 
 import os
+import re
 import sys
 import time
 
@@ -367,6 +368,32 @@ def held_after_submit(pane_target, timeout=_SUBMIT_ACCEPT_TIMEOUT_SEC, *, messag
         time.sleep(_SUBMIT_ACCEPT_POLL_SEC)
 
 
+# Characters a message body must never carry. `send-keys -l` types each
+# one as a key: `\r` submits, ESC interrupts, `^C` / `^U` / DEL edit or
+# quit, so a body holding them could submit extra prompts or reach the
+# shell behind the target's Claude. `\n` is the line separator and `\t`
+# is expanded by `clean_message`, so both are left out of the class.
+_CTRL_CHARS = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+
+
+def clean_message(message):
+    """Return `message` with CRLF folded to LF and tabs expanded.
+    Raises ValueError when any other control character remains."""
+    message = message.replace("\r\n", "\n").expandtabs(4)
+    bad = _CTRL_CHARS.search(message)
+    if bad:
+        raise ValueError(
+            f"The message holds control character {bad.group()!r} at "
+            f"offset {bad.start()}, which would be typed as a key — "
+            "refusing before any key.")
+    return message
+
+
+def has_control_chars(text):
+    """True when `text` holds a character `_type_body` refuses to type."""
+    return "\t" in text or bool(_CTRL_CHARS.search(text))
+
+
 def _type_body(win_target, lines, *, checked=False):
     """Type the message body into the target's composer: each
     non-empty line literally, with `M-Enter` (newline-without-submit)
@@ -383,6 +410,12 @@ def _type_body(win_target, lines, *, checked=False):
     bullet was. The delivery check does not catch it when the
     signature it looks for survives in the other lines."""
     options = {"checked": True} if checked else {}
+    # Backstop for every caller: refuse before the first key, so a body
+    # is never half-typed. Callers clean or reject earlier with a
+    # clearer message; this raises rather than exiting so a delivery
+    # pass that reaches it fails one message, not the whole pass.
+    if any(has_control_chars(line) for line in lines):
+        raise ValueError("message holds control characters; refusing to type it")
     for line_i, line in enumerate(lines):
         if line:
             _send_keys(win_target, "-l", "--", line, label=f"line:{line_i}", **options)
@@ -713,6 +746,11 @@ def cmd_send(args):
         skip_confirm = True
     else:
         message = positional_message
+
+    try:
+        message = clean_message(message)
+    except ValueError as e:
+        ccm_core.ccm_die(str(e))
 
     if not message.strip() and not no_enter:
         ccm_core.ccm_die(
@@ -1619,10 +1657,10 @@ def _sidekick_send_message(positional_parts, message_file, use_stdin, no_enter):
     if not message.strip() and not no_enter:
         raise _SidekickRefusal(
             "usage", "Empty message (use --no-enter to send only Enter suppression)")
-    if "\x00" in message:
-        raise _SidekickRefusal(
-            "unsupported_text", "The message holds a NUL character, which "
-            "cannot be typed into a pane — refusing before any key.")
+    try:
+        message = clean_message(message)
+    except ValueError as e:
+        raise _SidekickRefusal("unsupported_text", str(e))
     return message
 
 

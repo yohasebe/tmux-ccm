@@ -735,8 +735,9 @@ ccm sidekick-send --json "Please review request-12.md"
     tell which process runs in the pane), `not_in_tmux`,
     `caller_unverified`, `wrong_direction` (run from the sidekick itself),
     `outside_project`, `project_dir_unavailable`, `file_unreadable`,
-    `stdin_unreadable`, `unsupported_text` (the message holds a NUL
-    character), `observation_failed` (ccm could not look at the sidekick)
+    `stdin_unreadable`, `unsupported_text` (the message holds a control
+    character, such as NUL, a lone carriage return, ESC or Ctrl-C, that
+    would be typed as a key), `observation_failed` (ccm could not look at the sidekick)
     or `usage`.
   - `attempted_seen`: the keys were tried and a fragment of the message
     is visible in the pane. The fragment may be an earlier one; it does
