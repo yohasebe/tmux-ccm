@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **Auto-restore at tmux start skips when managed windows already exist.**
+- **A Claude whose process is named by its path is found on macOS**, so its window no longer reads as SHELL.
 
 ### Security
 

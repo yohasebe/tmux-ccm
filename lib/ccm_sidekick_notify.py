@@ -244,7 +244,7 @@ def agent_process_identity(pane_pid, agent, lines):
     for line in lines:
         fields = line.split()
         if len(fields) >= 4:
-            parents[fields[0]], commands[fields[0]] = fields[1], os.path.basename(fields[3])
+            parents[fields[0]], commands[fields[0]] = fields[1], fields[3]
     children = {str(pane_pid)}
     while True:
         more = {pid for pid, parent in parents.items() if parent in children}

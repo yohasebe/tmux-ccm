@@ -16,9 +16,9 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import ccm_core
 import ccm_activity
+import ccm_pane_state
 import ccm_commands
 import ccm_detection
-import ccm_pane_state
 import ccm_render
 import ccm_rules
 import ccm_canaries
@@ -176,12 +176,35 @@ class TestNonUtf8Output:
     def test_ps_snapshot_survives_truncated_multibyte(self, mock_run):
         # `⌘` is U+2318 → bytes \xe2\x8c\x98. macOS ps truncated the
         # comm column mid-codepoint, leaving an orphan \xe2\x8c.
-        bad_bytes = b"100 1 100 /Applications/\xe2\x8c    01:17:15\n"
+        bad_bytes = b"100 1 100 01:17:15 /Applications/\xe2\x8c\n"
         mock_run.return_value = MagicMock(returncode=0, stdout=bad_bytes)
         out = ccm_core.ps_snapshot()
-        # Should not raise; replacement chars are fine because comm
-        # column is only used for prefix matching, not display.
-        assert "100 1 100" in out
+        # Should not raise; the name is only matched, never displayed.
+        assert out.startswith("100 1 100 ")
+
+    @patch("subprocess.run")
+    def test_ps_snapshot_keeps_the_process_name(self, mock_run, tmp_path):
+        """`comm` is asked last, where macOS does not cut it, and only
+        the name is kept: a Claude started by its full path reads
+        `claude`, a login shell its shell, a name with spaces stays one
+        column, and a process with no name stays in the tree."""
+        claude = tmp_path / "bin" / "claude"
+        app = tmp_path / "Some App.app" / "Some App"
+        mock_run.return_value = MagicMock(returncode=0, stdout=(
+            "  PID  PPID  PGID ELAPSED COMM\n"
+            f"  101   100   101   05:00 {claude}\n"
+            "  100     1   100   06:00 -/bin/zsh\n"
+            f"  102     1   102   07:00 {app}\n"
+            "  103   101   103   01:00 \n").encode())
+        lines = ccm_core.ps_snapshot().splitlines()
+        assert mock_run.call_args[0][0] == ["ps", "-eo", "pid,ppid,pgid,etime,comm"]
+        assert lines[1:] == ["101 100 101 claude 05:00",
+                             "100 1 100 zsh 06:00",
+                             "102 1 102 Some_App 07:00",
+                             "103 101 103 ? 01:00"]
+        assert ccm_pane_state.find_claude_pid("100", lines) == "101"
+        assert ccm_core.find_process_age("101", lines) == 300
+        assert ccm_pane_state.has_children("101", lines, own_pgid="0")
 
     @patch("subprocess.run")
     def test_tmux_cmd_survives_invalid_utf8(self, mock_run):

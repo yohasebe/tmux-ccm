@@ -257,34 +257,46 @@ def tmux_batch(*commands):
         pass
 
 
+def process_name(comm):
+    """`zsh` from `zsh`, `-zsh`, `/bin/zsh` or `-/bin/zsh`: macOS `ps`
+    reports the executable's path where Linux reports its name."""
+    return os.path.basename(comm.lstrip("-")).lstrip("-")
+
+
 def ps_snapshot():
     """Single ps call for scan cycle.
 
-    Output columns: pid ppid pgid comm etime. `etime` is appended at
-    the end so the existing `parts[0..3]` positions for pid / ppid /
-    pgid / comm are unchanged — all process-tree helpers
-    (find_claude_pid, has_children) parse by index without
-    modification. `etime` is consumed only by `find_process_age`
-    below, which distinguishes Claude's startup window from
+    Output lines: pid ppid pgid name etime, split by whitespace. `name`
+    is `process_name` of the process's `comm`, so a Claude started by
+    its full path reads `claude` like any other; whitespace inside a
+    name becomes `_` so the columns stay in place. `etime` is read only
+    by `find_process_age`, which tells Claude's startup window from
     steady-state operation.
 
-    macOS `ps` truncates the `comm` column at a fixed byte width,
-    which can slice a multi-byte UTF-8 character in half (e.g. an
-    app named `⌘英かな`). Decoding the raw bytes with
-    `errors="replace"` keeps the line intact (truncated names are
-    only used for prefix matching, not displayed) instead of
-    raising and crashing the entire detection cycle.
+    `ps` is asked for `comm` as its last column, where macOS does not
+    cut it to a fixed byte width. The output is decoded with
+    `errors="replace"`, so a name that is not valid UTF-8 cannot stop
+    the detection cycle.
     """
     try:
         r = subprocess.run(
-            ["ps", "-eo", "pid,ppid,pgid,comm,etime"],
+            ["ps", "-eo", "pid,ppid,pgid,etime,comm"],
             capture_output=True, timeout=5,
         )
         if r.returncode != 0:
             return ""
-        return r.stdout.decode("utf-8", errors="replace")
+        out = r.stdout.decode("utf-8", errors="replace")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
+    lines = []
+    for line in out.splitlines():
+        f = line.split(None, 4)
+        if len(f) >= 4:
+            # A process with an empty name is kept as `?`: its place in
+            # the tree still counts.
+            name = "_".join(process_name(f[4]).split()) if len(f) == 5 else ""
+            lines.append(f"{f[0]} {f[1]} {f[2]} {name or '?'} {f[3]}")
+    return "\n".join(lines) + "\n" if lines else ""
 
 
 def _parse_etime(etime: str) -> int:
