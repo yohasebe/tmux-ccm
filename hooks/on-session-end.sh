@@ -4,10 +4,14 @@
 # Installed by: ccm setup-hooks
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ccm_src="${BASH_SOURCE[0]}"; [[ "$_ccm_src" == */* ]] || _ccm_src="./$_ccm_src"
+SCRIPT_DIR="$(cd "${_ccm_src%/*}" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 ccm_hook_init || exit 0
 
 ccm_append_event "$HOOK_DIR" "$KEY" "session_end"
+rm -f "$HOOK_DIR/$KEY.stop-bg" "$HOOK_DIR/$KEY.stop-bg-tasks" 2>/dev/null || true
+# Subagent requests still waiting end with the session.
+rm -f "$HOOK_DIR/$KEY".agent-permit "$HOOK_DIR/$KEY".agent-permit.* 2>/dev/null || true
 ccm_write_signal "$HOOK_DIR" "$KEY" "SHELL" "$CWD"

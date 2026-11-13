@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Dispatch-level and filesystem end-to-end tests for `ccm spool` —
 # the CLI is tmux-free (queue inspection / withdrawal), so these run
 # the real bash → python path against an isolated data dir. Delivery

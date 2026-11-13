@@ -254,13 +254,10 @@ def _project(name, directory):
 
 
 class TestSettingsScanScope:
-    """These canaries used to read one file and report a bare tick.
-
-    The tick is the dangerous part: it is produced by a scan that ran
-    correctly, so it is believed. `allowManagedHooksOnly` is
-    documented as an administrator setting, which made the single file
-    being read the one place the deployment it warns about would never
-    put it.
+    """A bare tick from reading one file would be believed, because it
+    comes from a scan that ran correctly. `allowManagedHooksOnly` is
+    documented as an administrator setting, so a single user file is
+    the one place the deployment it warns about would never put it.
     """
 
     def _isolate(self, monkeypatch, tmp_path):
@@ -310,9 +307,9 @@ class TestSettingsScanScope:
     def test_the_warning_does_not_key_on_a_spelling(self, tmp_path,
                                                      monkeypatch):
         """The managed label is displayed AND compared against, so the
-        two must be one definition. When they were two, renaming the
-        display stopped the warning firing — a canary going quiet, the
-        one direction it must never fail in."""
+        two must be one definition: two copies would let a renamed
+        display stop the warning firing — a canary going quiet, the one
+        direction it must never fail in."""
         self._isolate(monkeypatch, tmp_path)
         managed = tmp_path / "managed-settings.json"
         managed.write_text('{"allowManagedHooksOnly": true}')
@@ -762,8 +759,7 @@ class TestHookSilenceCanary:
 
     The signature it detects: fresh JSONL real-activity whose timestamp
     leads the newest hook event by a wide margin — real work the hook
-    log never recorded (#16047-class silence). Mirrors the
-    incident where hooks went silent through a whole real turn.
+    log never recorded (#16047-class silence).
     """
 
     NOW = 1_000_000
@@ -932,7 +928,7 @@ class TestHookSilenceCanary:
 
 
 class TestHookSilenceFiringLog:
-    """Evidence log for the default-on promotion review: every canary
+    """The firing log: every canary
     firing appends one JSON record, rate-limited per project so the
     ~2 s warning-surface polls do not turn one episode into a flood.
     The log path is sandboxed per-test by the autouse
@@ -1019,3 +1015,82 @@ class TestHookSilenceFiringLog:
         monkeypatch.setenv("CCM_HOOK_SILENCE_LOG", "/dev/null/impossible/x.log")
         msgs = self._fire(monkeypatch, self.NOW)
         assert len(msgs) == 1
+
+
+class TestManagedLockValues:
+    _isolate = TestSettingsScanScope._isolate
+    _project_with = TestSettingsScanScope._project_with
+    @pytest.mark.parametrize("value,locked", [
+        (True, True), (False, False), ("true", True), ("false", False),
+        (None, False), (1, True), (0, True), ("yes", True),
+        ("", True), ("TRUE", True), ([], True), ({}, True),
+    ])
+    def test_managed_hooks_values(self, tmp_path, monkeypatch, value, locked):
+        self._isolate(monkeypatch, tmp_path)
+        path = tmp_path / "managed.json"
+        path.write_text(json.dumps({"allowManagedHooksOnly": value}))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(path))
+        msg = ccm_canaries.managed_hooks_only_warning()
+        assert bool(msg) is locked
+        assert ccm_canaries._flag_source("allowManagedHooksOnly") == (
+            ccm_canaries.MANAGED_SOURCE_LABEL if locked else "")
+        if locked:
+            assert "managed-settings.json" in msg
+            assert "user-scope hooks" in msg
+            if value is not True:
+                assert "non-boolean" in msg
+                assert "2.1.282" in msg
+                assert "`allowManagedHooksOnly: true` is set" not in msg
+
+    @pytest.mark.parametrize("value", ["true", "false", 1, 0, "yes", "", None, [], {}])
+    def test_invalid_managed_disable_is_reported(self, tmp_path, monkeypatch, value):
+        self._isolate(monkeypatch, tmp_path)
+        path = tmp_path / "managed.json"
+        path.write_text(json.dumps({"disableAllHooks": value}))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(path))
+        msg = ccm_canaries.disable_all_hooks_warning()
+        assert "non-boolean" in msg
+        assert "managed-settings.json" in msg
+        assert "ignored" in msg
+        assert "ALL hooks" not in msg
+        assert ccm_canaries._flag_source("disableAllHooks") == ""
+
+    @pytest.mark.parametrize("value", ["true", "false", 1, 0, "yes", "", None, [], {}])
+    @pytest.mark.parametrize("scope", ["user", "project", "local"])
+    def test_nonmanaged_values_unchanged(self, tmp_path, monkeypatch, value, scope):
+        self._isolate(monkeypatch, tmp_path)
+        body = json.dumps({"disableAllHooks": value, "allowManagedHooksOnly": value})
+        projects = []
+        if scope == "user":
+            path = tmp_path / "user.json"
+            path.write_text(body)
+            monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(path))
+        else:
+            projects = [self._project_with(tmp_path,
+                "settings.local.json" if scope == "local" else "settings.json", body)]
+        assert ccm_canaries.disable_all_hooks_warning(projects) == ""
+        assert ccm_canaries.managed_hooks_only_warning(projects) == ""
+
+
+    @pytest.mark.parametrize("data", [{}, {"disableAllHooks": False}, {"disableAllHooks": True}])
+    def test_valid_managed_disable(self, tmp_path, monkeypatch, data):
+        self._isolate(monkeypatch, tmp_path)
+        path = tmp_path / "managed.json"
+        path.write_text(json.dumps(data))
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(path))
+        msg = ccm_canaries.disable_all_hooks_warning()
+        assert bool(msg) is (data.get("disableAllHooks") is True)
+        if msg:
+            assert "managed-settings.json" in msg and "statusLine" in msg
+            assert "non-boolean" not in msg
+
+    def test_invalid_managed_disable_does_not_hide_user_lock(self, tmp_path, monkeypatch):
+        self._isolate(monkeypatch, tmp_path)
+        managed = tmp_path / "managed.json"
+        managed.write_text('{"disableAllHooks": "true"}')
+        user = tmp_path / "user.json"
+        user.write_text('{"disableAllHooks": true}')
+        monkeypatch.setattr(ccm_canaries, "MANAGED_SETTINGS_DEFAULT", str(managed))
+        monkeypatch.setattr(ccm_canaries, "CLAUDE_SETTINGS_FILE", str(user))
+        msg = ccm_canaries.disable_all_hooks_warning()
+        assert "user settings" in msg and "ALL hooks" in msg

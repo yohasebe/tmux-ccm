@@ -54,20 +54,16 @@ class TestJsonlFreshness:
     def test_slug_simple(self):
         assert ccm_jsonl._project_slug("/Users/ann/code/foo") == "-Users-ann-code-foo"
 
-    def test_slug_with_tilde(self):
-        # ~ should expand; trailing slash and structure preserved
+    def test_slug_with_tilde(self, monkeypatch):
+        # ~ should expand; trailing slash and structure preserved. HOME
+        # is pinned: a real one may hold characters the slug also dashes.
+        monkeypatch.setenv("HOME", "/h/tester")
         slug = ccm_jsonl._project_slug("~/code/foo")
-        home = os.path.expanduser("~")
-        assert slug == (home + "/code/foo").replace("/", "-")
+        assert slug == "-h-tester-code-foo"
 
     def test_slug_non_ascii_chars_each_become_dash(self):
         """Claude Code dashes EVERY non-alphanumeric character, one
-        dash per char — including multi-byte CJK. ccm used to replace
-        only `/`, which missed the JSONL for any non-ASCII project
-        path entirely: an unresolvable JSONL means a trailing `stop`
-        event cannot be confirmed terminal, producing an indefinite
-        false BUSY that even combined-stale cannot release (it needs
-        a valid jsonl_age). The placeholder path below is fictional
+        dash per char — including multi-byte CJK. The placeholder path below is fictional
         (hoge/fuga/piyo dummies); it exercises pure hiragana, a
         CJK+digit segment (digits survive), and a CJK+ASCII segment."""
         assert ccm_jsonl._project_slug(
@@ -225,9 +221,8 @@ class TestJsonlRealActivityFilter:
         assert 195 <= age <= 210
 
     def test_skips_multiple_trailing_system_records(self, tmp_path, monkeypatch):
-        """Real captured tail had stop_hook_summary + turn_duration +
-        away_summary all stacked at the tail before the assistant
-        record. Walk past all of them."""
+        """A tail with stop_hook_summary + turn_duration +
+        away_summary all stacked before the assistant record. Walk past all of them."""
         f = self._setup_project(tmp_path, monkeypatch)
         now = time.time()
         write_jsonl(f, [
@@ -488,8 +483,8 @@ class TestJsonlTailStopReason:
         <local-command-caveat> (isMeta: true). None triggers an
         assistant turn, so NONE must promote to user_pending —
         otherwise running a slash command while idle falsely shows
-        BUSY for ~10 min. This mirrors the exact real-world /model
-        sequence observed."""
+        BUSY for ~10 min. This is the record sequence `/model`
+        writes."""
         f = self._setup_project(tmp_path, monkeypatch)
         now = time.time()
         write_jsonl(f, [
@@ -725,7 +720,7 @@ class TestSlugCollision:
 
     def test_a_transcript_naming_another_directory_is_never_used(
             self, tmp_path, monkeypatch):
-        """The reported bug in full: this project's transcript says
+        """The whole collision: this project's transcript says
         nothing (an older format, or its directory sits behind a long
         run of housekeeping), while the colliding project's names
         itself. Taking the newest would hand back the one file that
@@ -805,10 +800,11 @@ class TestJsonlFromSessionInfo:
     def test_found_by_session_id_when_the_directory_is_not_the_slug(
             self, tmp_path, monkeypatch):
         """The directory name is not always the sanitised cwd — a host
-        can name it itself, and the sanitising rule has been read
-        wrong before. Losing the transcript loses the terminal
-        stop_reason that releases a held BUSY, and that failure has no
-        timeout. The session id identifies the file either way."""
+        can name it itself, and a sanitising rule can be read wrong.
+        Losing the transcript loses the terminal stop_reason that
+        releases a held BUSY at once, leaving only the slower release
+        by the event's age. The session id identifies the file either
+        way."""
         monkeypatch.setattr(ccm_jsonl, "CLAUDE_SESSIONS_DIR",
                             str(tmp_path / "sessions"))
         monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR",
@@ -959,11 +955,8 @@ class TestReadSessionVersions:
 class TestJsonlEscInterruptRecord:
     """Esc-interrupt notes in the transcript.
 
-    Claude Code fires no Stop hook on a user interrupt — long taken to
-    mean an interrupted turn leaves no trace at all, which is why
-    detection had to wait out an aging guard with an idle screen. It
-    does leave a trace: a `user` record reading "[Request interrupted
-    by user…]" (measured, 8 occurrences in one session).
+    Claude Code fires no Stop hook on a user interrupt, but it leaves a
+    trace: a `user` record reading "[Request interrupted by user…]".
     Read correctly it is the missing terminal; read naively it is
     worse than nothing, because it is NEWER than the assistant turn it
     cut short and would promote to `user_pending`.
@@ -1054,17 +1047,14 @@ class TestJsonlEscInterruptRecord:
     ])
     def test_a_message_merely_mentioning_the_phrase_is_a_prompt(
             self, tmp_path, monkeypatch, text):
-        """Matching as a substring released working sessions.
+        """Matching as a substring would release working sessions.
 
         Claude's note is the ENTIRE content of its record, so anything
         with the phrase embedded in a longer message is a human
         talking about interrupts, not an interrupt. Getting this wrong
         is a false IDLE — the dangerous direction: `ccm send` would
         deliver into a working session and auto-exit could eventually
-        kill it. Not hypothetical: a naive substring scan of the
-        session that built this feature returned 41 hits for 7 real
-        interrupts, all the extras being its own discussion of the
-        marker (independently hit downstream)."""
+        kill it."""
         f = self._setup_project(tmp_path, monkeypatch)
         now = time.time()
         write_jsonl(f, [
@@ -1079,8 +1069,7 @@ class TestJsonlEscInterruptRecord:
 
     def test_bare_interrupt_variant_is_recognised(
             self, tmp_path, monkeypatch):
-        """A third spelling, "[Request interrupted]", appears in
-        a consumer's corpus of ~165. The trailing clause is the part that
+        """A third spelling, "[Request interrupted]". The trailing clause is the part that
         gets reworded, so it is left open while the anchoring is
         not."""
         f = self._setup_project(tmp_path, monkeypatch)
@@ -1091,3 +1080,135 @@ class TestJsonlEscInterruptRecord:
         ])
         _age, stop = ccm_jsonl.read_jsonl_tail_info("/p/q")
         assert stop == ccm_constants.JSONL_INTERRUPTED
+
+
+
+class TestValidatedSessionInfoIsPassedThrough:
+    """The detection cycle validates `~/.claude/sessions/<pid>.json`
+    against the live process (pid-reuse defence) and then resolves the
+    JSONL. The resolver must use that validated record — not read the
+    file again without the check, and not fall back to an exact path
+    it cached from a record the caller has since rejected."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        projects = tmp_path / "projects"
+        slug = ccm_jsonl._project_slug(str(tmp_path / "proj"))
+        (projects / slug).mkdir(parents=True)
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        ccm_jsonl._jsonl_path_cache.clear()
+        exact = projects / slug / "exact-session.jsonl"
+        exact.write_text('{"type":"user","cwd":"%s"}\n' % (tmp_path / "proj"))
+        newest = projects / slug / "newer-by-scan.jsonl"
+        newest.write_text('{"type":"user","cwd":"%s"}\n' % (tmp_path / "proj"))
+        os.utime(exact, (1000, 1000)); os.utime(newest, (2000, 2000))
+        return str(tmp_path / "proj"), str(exact), str(newest)
+
+    def test_validated_record_is_used_without_a_second_read(self, tmp_path, monkeypatch):
+        proj, exact, _ = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(ccm_jsonl, "read_session_info",
+                            lambda *a, **k: pytest.fail("registry read twice"))
+        info = {"kind": "interactive", "sessionId": "exact-session", "cwd": proj}
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42, session_info=info) == exact
+
+    def test_rejected_record_does_not_come_back_unvalidated(self, tmp_path, monkeypatch):
+        """The caller rejected the pid's record (pid reuse): the
+        resolver must not read the registry itself and adopt it."""
+        proj, exact, newest = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(ccm_jsonl, "read_session_info",
+                            lambda *a, **k: pytest.fail("registry read after rejection"))
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42, session_info=None) == newest
+
+    def test_rejected_record_ignores_a_cached_exact_path(self, tmp_path, monkeypatch):
+        """Cycle 1 validated the record and cached its exact path;
+        cycle 2 rejects it (the pid now belongs to another process).
+        The cached exact path is the rejected session's file."""
+        proj, exact, newest = self._setup(tmp_path, monkeypatch)
+        info = {"kind": "interactive", "sessionId": "exact-session", "cwd": proj}
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42, session_info=info) == exact
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42, session_info=None) == newest
+
+    def test_unchecked_caller_keeps_the_old_behaviour(self, tmp_path, monkeypatch):
+        proj, exact, _ = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(ccm_jsonl, "read_session_info",
+                            lambda pid, ps_lines=None: {"kind": "interactive",
+                                                       "sessionId": "exact-session", "cwd": proj})
+        assert ccm_jsonl._find_newest_jsonl(proj, claude_pid=42) == exact
+
+
+
+class TestCwdProbeBudget:
+    """`JSONL_CWD_PROBE_BYTES` bounds what the probe reads, in bytes,
+    regardless of line structure."""
+
+    def _reads(self, monkeypatch):
+        sizes = []
+        real_open = open
+
+        class Counting:
+            def __init__(self, f): self.f = f
+            def read(self, n=-1):
+                data = self.f.read(n); sizes.append(len(data)); return data
+            def __enter__(self): return self
+            def __exit__(self, *a): self.f.close()
+
+        def counting_open(path, mode="r", *a, **k):
+            f = real_open(path, mode, *a, **k)
+            return Counting(f) if "b" in mode else f
+        monkeypatch.setattr("builtins.open", counting_open)
+        return sizes
+
+    def test_a_giant_first_line_is_not_read_in_full(self, tmp_path, monkeypatch):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"x","pad":"' + b"x" * (8 * 1024 * 1024) + b'"}\n'
+                      + b'{"type":"user","cwd":"/w"}\n')
+        sizes = self._reads(monkeypatch)
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None
+        assert sum(sizes) <= ccm_jsonl.JSONL_CWD_PROBE_BYTES + 1
+
+    def test_cwd_within_budget_is_found(self, tmp_path, monkeypatch):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"x"}\n{"type":"user","cwd":"/w"}\n' + b"y" * (2 * 1024 * 1024))
+        sizes = self._reads(monkeypatch)
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) == ccm_jsonl._canonical("/w")
+        assert sum(sizes) <= ccm_jsonl.JSONL_CWD_PROBE_BYTES + 1
+
+    def test_line_cut_by_the_budget_is_not_interpreted(self, tmp_path, monkeypatch):
+        """A `cwd` record that straddles the budget boundary is
+        unknown, not a guess from its readable half."""
+        p = tmp_path / "t.jsonl"
+        filler = b'{"type":"x","pad":"' + b"x" * (ccm_jsonl.JSONL_CWD_PROBE_BYTES - 40) + b'"}\n'
+        p.write_bytes(filler + b'{"type":"user","cwd":"/straddles-the-budget-boundary-here"}\n')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None
+
+    def test_budget_is_bytes_not_characters(self, tmp_path):
+        """Multi-byte text: a character budget would admit more bytes
+        than the constant says."""
+        p = tmp_path / "t.jsonl"
+        wide = ("\u3042" * (ccm_jsonl.JSONL_CWD_PROBE_BYTES // 3 + 64)).encode("utf-8")
+        p.write_bytes(b'{"type":"x","pad":"' + wide + b'"}\n{"type":"user","cwd":"/w"}\n')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None
+
+    def test_short_file_without_cwd(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"x"}\n')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) is None
+
+    def test_answer_on_the_first_line_stops_the_read_early(self, tmp_path, monkeypatch):
+        """The budget is a ceiling. A large transcript whose first
+        line names the directory is read only as far as that line's
+        chunk, not to the budget."""
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"user","cwd":"/w"}\n' + b"y" * (1024 * 1024))
+        sizes = self._reads(monkeypatch)
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) == ccm_jsonl._canonical("/w")
+        assert sum(sizes) <= ccm_jsonl._CWD_PROBE_CHUNK
+
+    def test_last_line_without_newline_is_read_at_eof(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"type":"x"}\n{"type":"user","cwd":"/w"}')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) == ccm_jsonl._canonical("/w")
+
+    def test_non_string_cwd_values_are_not_directories(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_bytes(b'{"cwd":["/w"]}\n{"cwd":7}\n{"cwd":""}\n{"cwd":{"a":1}}\n{"type":"user","cwd":"/w"}\n')
+        assert ccm_jsonl._jsonl_recorded_cwd(str(p)) == ccm_jsonl._canonical("/w")

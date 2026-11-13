@@ -82,7 +82,7 @@ def notify(state, project, detail=""):
     # looking action ccm just took, and transparency about that must
     # not depend on the user having predicted the event and added it
     # to @ccm-notify. Without it an auto-exit reads as a crash or a
-    # mystery timeout (report).
+    # mystery timeout.
     if (state not in ("AUTOEXIT", "SPOOLEXPIRED")
             and setting != "all" and state_lower not in setting):
         return
@@ -131,6 +131,16 @@ def notify(state, project, detail=""):
     # one. terminal-notifier respects -group; osascript does not.
     group_id = f"ccm-{project}"
 
+    _desktop(title, body, group_id, sound)
+
+
+def sidekick_attention(agent, pane):
+    """Attention's separate channel; caller honours its toggle and wait ID."""
+    _desktop(f"ccm: {agent} needs a decision", "Review the sidekick's approval dialog yourself.",
+             f"ccm-sidekick-{pane}", "")
+
+
+def _desktop(title, body, group_id, sound):
     tn_path = _terminal_notifier_path()
     if tn_path:
         # Intentionally NO `-sender com.apple.Terminal`. Specifying
@@ -180,8 +190,7 @@ def clear_notifications():
 
     Scopes the removal to ccm by enumerating `-list ALL` and
     deleting only group ids prefixed with `ccm-` (the convention
-    `notify()` uses). `-remove ALL` was tempting but would also
-    delete notifications a user has sent via terminal-notifier
+    `notify()` uses). `-remove ALL` would also delete notifications a user has sent via terminal-notifier
     from unrelated scripts (deploy alerts, monitoring, …). The
     enumerate-then-filter approach pays one extra subprocess but
     keeps the user's other notifications intact.

@@ -23,8 +23,8 @@ the file (records are written at message completion, not during
 generation). A stale mtime does not imply IDLE — only fresh mtime
 is actionable. Detection uses this as a positive BUSY signal only.
 
-Slug rule (verified empirically against ~/.claude/projects/):
-  `/Users/alice/code/myproject` → `-Users-alice-code-myproject`
+Slug rule:
+  `/work/code/myproject` → `-work-code-myproject`
 Claude Code uses the *literal* cwd at session start (no realpath
 resolution), so we must NOT resolve symlinks here.
 """
@@ -82,18 +82,18 @@ JSONL_LOCAL_COMMAND_PREFIXES = (
     "<local-command-caveat>",
 )
 
-# Tail size (bytes) read from each JSONL when looking for the most
-# recent real activity record. Needs to accommodate a single large
-# tool_result record (Read of 2000 lines, long shell output, ...)
-# plus several trailing system records — any tool-result record alone
-# can easily exceed 8 KB. 32 KB covers that comfortably while
-# remaining trivially cheap per detection cycle.
+# Reverse reads stop at the first sufficient activity evidence. Each changed
+# file costs at most 1 MiB of I/O and 200 non-empty record parses; a single
+# record is also bounded by that byte budget. Unchanged files use the LRU.
 JSONL_TAIL_BYTES = 32768
-
-# Safety cap on how many lines from the tail we will JSON-parse.
+JSONL_TAIL_MAX_BYTES = 1024 * 1024
 JSONL_TAIL_MAX_LINES = 200
 
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+#: Longest slug the CLI writes as-is. A longer one is cut here and a
+#: hash of the path appended; ccm does not reproduce the hash, so a
+#: directory whose slug exceeds this is one ccm cannot look up.
+PROJECT_SLUG_MAX = 200
 CLAUDE_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 JSONL_CACHE_TTL = int(os.environ.get("CCM_JSONL_CACHE_TTL", "60"))
 
@@ -121,17 +121,14 @@ _SESSION_INFO_AGE_DRIFT_SEC = int(
 _jsonl_path_cache: dict = {}
 
 # Cache for _parse_jsonl_tail. Key: jsonl path. Value:
-# ((mtime_int, size_int), (real_activity_ts_or_None, last_stop_reason_or_None)).
+# ((mtime_ns, size_int), (real_activity_ts_or_None, last_stop_reason_or_None)).
 # The cache hits on every detection cycle as long as the JSONL file hasn't
 # been written, so the cost of tail-reading + JSON parsing is paid only
 # when the file actually changes.
 #
-# Why (mtime, size) and not just mtime: int(mtime) has 1-second
-# precision, so two writes within the same wall-clock second would
-# share the same int(mtime) and collide. JSONL files are append-only
-# during a session, so the size is monotonic and any new write
-# changes it — adding size to the key catches sub-second writes that
-# bare mtime would miss.
+# Nanosecond mtime detects same-size rewrites; size also detects appends
+# even on filesystems with coarse timestamp resolution. Rewrites preserving
+# both signature fields remain indistinguishable from unchanged files.
 #
 # OrderedDict + bounded eviction: a new JSONL file is created on every
 # `claude --continue` or `/compact`, so the cache would otherwise grow
@@ -171,15 +168,11 @@ def read_session_info(claude_pid, ps_lines=None):
     """
     if not claude_pid:
         return None
-    path = os.path.join(CLAUDE_SESSIONS_DIR, f"{claude_pid}.json")
+    from ccm_agentview import read_registry_record
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        data = read_registry_record(claude_pid)
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict):
-        return None
-
     if ps_lines is not None:
         # Cross-check `startedAt` (unix ms Claude recorded at session
         # start) against the live process's etime-derived start time.
@@ -241,31 +234,36 @@ def _project_slug(project_dir: str) -> str:
     Claude Code replaces EVERY non-alphanumeric character with `-`
     (not just `/`): `/ほげ/ふが2000` becomes
     `------2000` (one dash per CJK char, digits survive) and
-    `test_project` becomes `test-project`. ccm used to replace only
-    `/`, which silently missed the JSONL for any project whose path
-    contains non-ASCII (incident: with the JSONL
-    unresolvable, a trailing `stop` event could not be confirmed
-    terminal, the pause-class branch stayed conservative, and the
-    dashboard held a false BUSY indefinitely — the combined-stale
-    release also needs a valid jsonl_age, so nothing ever expired it).
-    Rule verified against every existing slug directory in
-    ~/.claude/projects (ASCII paths are unaffected: `/` and `-` both
-    map to `-`). Tilde is expanded but symlinks are NOT resolved
-    (Claude Code records the cwd as-given).
+    `test_project` becomes `test-project`. A wrong slug hides the
+    transcript, so a trailing `stop` cannot be confirmed terminal.
+    Tilde is expanded but symlinks are NOT resolved (Claude Code
+    records the cwd as-given).
     """
     expanded = os.path.expanduser(project_dir)
     return re.sub(r"[^A-Za-z0-9]", "-", expanded)
 
 
-def _jsonl_from_session_info(claude_pid):
+#: Default for the `session_info` parameters below: the caller has not
+#: consulted the session registry, so the resolver reads it itself
+#: (without the pid-reuse check, which needs a `ps` snapshot the
+#: resolver does not have). A caller that has consulted it passes the
+#: validated record, or None when it found nothing usable — and then
+#: the registry is not read again here: a record the caller rejected
+#: as another process's must not come back through this door.
+UNCHECKED = object()
+
+
+def _jsonl_from_session_info(claude_pid, session_info=UNCHECKED):
     """Resolve the exact JSONL path via ~/.claude/sessions/{pid}.json.
 
     Returns the path to the session's JSONL file, or None if the
     runtime session file is missing or does not point at an existing
     JSONL. Skips non-interactive sessions (e.g. `claude -p` headless
     runs) — they are not user-facing and ccm should ignore them.
+
+    `session_info`: see `UNCHECKED`.
     """
-    info = read_session_info(claude_pid)
+    info = read_session_info(claude_pid) if session_info is UNCHECKED else session_info
     if not info:
         return None
     if info.get("kind") != "interactive":
@@ -273,6 +271,15 @@ def _jsonl_from_session_info(claude_pid):
     session_id = info.get("sessionId")
     cwd = info.get("cwd")
     if not session_id or not cwd:
+        return None
+    return jsonl_path_for_session(cwd, session_id)
+
+
+def jsonl_path_for_session(cwd: str, session_id: str) -> Optional[str]:
+    """The transcript path for one session id, or None when no such
+    file exists: `<slug(cwd)>/<session_id>.jsonl` first, then any
+    project directory that holds `<session_id>.jsonl` — see below."""
+    if not cwd or not ccm_core.is_safe_session_id(session_id):
         return None
     # Same sanitisation as _project_slug — Claude Code dashes every
     # non-alphanumeric character, not just `/`.
@@ -317,6 +324,70 @@ JSONL_CWD_PROBE_BYTES = 512 * 1024
 CWD_MINE, CWD_FOREIGN, CWD_SILENT = "mine", "foreign", "silent"
 
 
+def _jsonl_recorded_cwd(path: str) -> Optional[str]:
+    """The (canonical) directory this transcript records as its own,
+    or None when it names none within the probe window or cannot be
+    read. A property of the file alone — what a caller compares it
+    against is the caller's business, so this is what may be cached.
+    """
+    # Bytes are read in bounded chunks and interpreted a complete
+    # line at a time, stopping at the first record that names a
+    # directory: most transcripts answer within their first line,
+    # and the budget is a ceiling, not an amount to read. Iterating
+    # lines instead would read a whole line before its length could
+    # be checked, so one multi-megabyte record at the head would be
+    # read in full. A line cut off by the budget is not interpreted —
+    # it may be a `cwd` record, but that is unknown, and unknown
+    # reads as "names none".
+    buf = b""
+    read = 0
+    try:
+        with open(path, "rb") as f:
+            while read < JSONL_CWD_PROBE_BYTES:
+                chunk = f.read(min(_CWD_PROBE_CHUNK, JSONL_CWD_PROBE_BYTES - read))
+                if not chunk:
+                    # EOF: a final line without a newline is complete.
+                    cwd = _cwd_of_record(buf)
+                    return cwd
+                read += len(chunk)
+                buf += chunk
+                while True:
+                    nl = buf.find(b"\n")
+                    if nl < 0:
+                        break
+                    line, buf = buf[:nl], buf[nl + 1:]
+                    cwd = _cwd_of_record(line)
+                    if cwd is not None:
+                        return cwd
+    except OSError:
+        return None
+    return None  # budget reached with the answer not yet seen
+
+
+_CWD_PROBE_CHUNK = 64 * 1024
+
+
+def _cwd_of_record(raw: bytes) -> Optional[str]:
+    """The canonical `cwd` a transcript record names, or None. Only a
+    non-empty string counts; anything else the record carries under
+    that key is not a directory."""
+    if b'"cwd"' not in raw:
+        return None
+    try:
+        cwd = json.loads(raw.decode("utf-8", errors="replace")).get("cwd")
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if isinstance(cwd, str) and cwd:
+        return _canonical(cwd)
+    return None
+
+
+def _claim_from_cwd(recorded: Optional[str], want: str) -> str:
+    if recorded is None:
+        return CWD_SILENT
+    return CWD_MINE if recorded == want else CWD_FOREIGN
+
+
 def _jsonl_cwd_claim(path: str, want: str) -> str:
     """Whether this transcript claims `want`, claims somewhere else,
     or says nothing.
@@ -325,27 +396,10 @@ def _jsonl_cwd_claim(path: str, want: str) -> str:
     directory is evidence against itself, and treating that the same
     as silence is what lets the wrong project's transcript through.
     """
-    read = 0
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                read += len(line)
-                if read > JSONL_CWD_PROBE_BYTES:
-                    break
-                if '"cwd"' not in line:
-                    continue
-                try:
-                    cwd = json.loads(line).get("cwd")
-                except (ValueError, TypeError):
-                    continue
-                if cwd:
-                    return CWD_MINE if _canonical(cwd) == want else CWD_FOREIGN
-    except OSError:
-        return CWD_SILENT
-    return CWD_SILENT
+    return _claim_from_cwd(_jsonl_recorded_cwd(path), want)
 
 
-def _find_newest_jsonl(project_dir: str, claude_pid=None):
+def _find_newest_jsonl(project_dir: str, claude_pid=None, session_info=UNCHECKED):
     """Return the path to the newest *.jsonl file for this project,
     or None if there is none.
 
@@ -354,19 +408,30 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     Falls back to slug-based directory scanning for older Claude Code
     versions or when the pid mapping cannot be resolved.
 
+    `session_info` (see `UNCHECKED`): a validated registry record from
+    the caller, or None when the caller consulted the registry and
+    found nothing usable. In the latter case the exact mapping is
+    skipped — and so is a cached exact path, which may have been
+    resolved from the record the caller has since rejected.
+
     Result is cached for JSONL_CACHE_TTL seconds; the file's mtime is
     read live each call.
     """
     now = time.time()
 
     # Fast path: runtime session file gives us the exact JSONL.
-    if claude_pid:
-        exact = _jsonl_from_session_info(claude_pid)
+    if claude_pid and session_info is not None:
+        exact = _jsonl_from_session_info(claude_pid, session_info)
         if exact:
-            _jsonl_path_cache[project_dir] = (exact, now + JSONL_CACHE_TTL)
+            _jsonl_path_cache[project_dir] = (exact, now + JSONL_CACHE_TTL, "exact")
             return exact
 
     cached = _jsonl_path_cache.get(project_dir)
+    if cached and session_info is None and cached[2] == "exact":
+        # The caller consulted the registry and found nothing usable
+        # for this pid; an exact path cached from an earlier record
+        # is exactly what it may have just rejected.
+        cached = None
     if cached and now < cached[1]:
         path = cached[0]
         if path is None:
@@ -375,12 +440,45 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
             return path
         # cached path vanished — fall through to re-scan
 
+    chosen = scan_newest_jsonl(project_dir)
+    _jsonl_path_cache[project_dir] = (chosen, now + JSONL_CACHE_TTL, "scan")
+    return chosen
+
+
+def scan_newest_jsonl(project_dir: str, exclude_stems=frozenset(),
+                      prefer_claim=True, claim_cache=None):
+    """Scan the project's slug directory and return the newest
+    transcript that belongs to it, or None. Uncached; the mtime and
+    cwd probe run on every call, so callers on a polling path go
+    through `_find_newest_jsonl`.
+
+    `exclude_stems` drops transcripts by session id (the filename
+    stem) before the newest is chosen — a caller that knows some
+    files in the directory are not candidates for what it is asking
+    (a background worker's own transcript, say) names them here
+    rather than re-implementing the scan.
+
+    `prefer_claim` is the detection policy: a transcript that names
+    this directory beats a newer one that names none. A caller
+    predicting what `claude --continue` will pick wants plain mtime
+    order among the non-foreign files instead — the CLI does not
+    demote a silent transcript — and passes False.
+
+    `claim_cache`, when given, is a dict the caller keeps across
+    calls: path → (mtime_ns, size, recorded cwd). A file whose mtime
+    and size are unchanged reuses the directory it recorded instead
+    of re-reading its head, so a caller that scans often pays one
+    stat per file. What is cached is the file's own statement; the
+    comparison against `project_dir` is made on every call, so two
+    projects that share a slug directory (`a-b` and `a_b` do) never
+    see each other's answer. The scan itself is never cached — which
+    file is newest is decided from live stats every time.
+    """
     slug = _project_slug(project_dir)
     session_dir = os.path.join(CLAUDE_PROJECTS_DIR, slug)
     try:
         entries = os.listdir(session_dir)
     except OSError:
-        _jsonl_path_cache[project_dir] = (None, now + JSONL_CACHE_TTL)
         return None
 
     # The slug is lossy: every non-alphanumeric character becomes a
@@ -397,12 +495,24 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     for entry in entries:
         if not entry.endswith(".jsonl"):
             continue
+        if entry[:-len(".jsonl")] in exclude_stems:
+            continue
         full = os.path.join(session_dir, entry)
         try:
-            mt = os.path.getmtime(full)
+            st = os.stat(full)
         except OSError:
             continue
-        claim = _jsonl_cwd_claim(full, want)
+        mt = st.st_mtime
+        if claim_cache is None:
+            claim = _jsonl_cwd_claim(full, want)
+        else:
+            hit = claim_cache.get(full)
+            if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+                recorded = hit[2]
+            else:
+                recorded = _jsonl_recorded_cwd(full)
+                claim_cache[full] = (st.st_mtime_ns, st.st_size, recorded)
+            claim = _claim_from_cwd(recorded, want)
         if claim == CWD_MINE:
             if mt > mine_mtime:
                 mine_mtime, mine = mt, full
@@ -416,9 +526,9 @@ def _find_newest_jsonl(project_dir: str, claude_pid=None):
     # release a BUSY that is still running — and auto-exit acts on
     # that one. Silence is not disqualifying; a claim to somewhere
     # else is.
-    chosen = mine or quiet
-    _jsonl_path_cache[project_dir] = (chosen, now + JSONL_CACHE_TTL)
-    return chosen
+    if not prefer_claim and quiet is not None and quiet_mtime > mine_mtime:
+        return quiet
+    return mine or quiet
 
 
 # ─── JSONL tail parser ───
@@ -493,6 +603,32 @@ def _is_interrupt_user_record(rec: dict) -> bool:
     return isinstance(text, str) and bool(JSONL_INTERRUPT_RE.match(text.strip()))
 
 
+def _reverse_tail_lines(path):
+    """Yield complete lines newest first, without rereading expanded windows.
+
+    A line crossing the byte limit is discarded: a suffix is not a record.
+    Buffers and JSON decoding are bounded by JSONL_TAIL_MAX_BYTES.
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            pos = f.tell()
+            remaining = JSONL_TAIL_MAX_BYTES
+            pending = b""
+            while pos and remaining:
+                count = min(pos, remaining, JSONL_TAIL_BYTES)
+                pos -= count
+                remaining -= count
+                f.seek(pos)
+                parts = (f.read(count) + pending).split(b"\n")
+                pending = parts[0]
+                yield from reversed(parts[1:])
+            if pos == 0 and pending:
+                yield pending
+    except OSError:
+        return
+
+
 def _parse_jsonl_tail(
     path: str, mtime: int, size: int
 ) -> Tuple[Optional[int], Optional[str]]:
@@ -517,9 +653,15 @@ def _parse_jsonl_tail(
 
     Cached by (path, mtime, size): the second call with an unchanged
     mtime AND size returns the cached tuple without re-reading the
-    file. A new write changes the size (JSONL is append-only during
-    a session), so cache invalidation is reliable even within the
-    same wall-clock second.
+    file; `mtime` is in nanoseconds, so a rewrite is noticed even
+    within one second. Transcripts are mostly appended, but they can
+    also be rewritten: Claude Code removes a retracted message either
+    by truncating the file at its line and writing the lines after it
+    back, or by rewriting the whole file without it. A read between a
+    truncation and its write-back may see an incomplete tail, and that
+    parse is cached until mtime or size changes. What it does to the
+    activity and stop-reason readings depends on the records the read
+    happened to see.
     """
     key = (mtime, size)
     cached = _jsonl_activity_cache.get(path)
@@ -533,25 +675,8 @@ def _parse_jsonl_tail(
     last_stop_reason: Optional[str] = None
     interrupt_seen = False
 
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            actual_size = f.tell()
-            f.seek(max(0, actual_size - JSONL_TAIL_BYTES))
-            tail_bytes = f.read()
-    except OSError:
-        _cache_jsonl_activity(path, key, (None, None))
-        return (None, None)
-
-    tail = tail_bytes.decode("utf-8", errors="ignore")
-    lines = tail.split("\n")
-    # When we read mid-file, the first chunk line is potentially partial.
-    # Drop it unless we read the entire file in one shot.
-    if size > JSONL_TAIL_BYTES and len(lines) > 1:
-        lines = lines[1:]
-
     parsed = 0
-    for line in reversed(lines):
+    for line in _reverse_tail_lines(path):
         if parsed >= JSONL_TAIL_MAX_LINES:
             break
         line = line.strip()
@@ -614,8 +739,7 @@ def _parse_jsonl_tail(
             if isinstance(sr, str) and sr:
                 last_stop_reason = sr
         # Stop scanning once we have everything we need.
-        if (real_ts is not None and latest_user_ts is not None
-                and latest_assistant_ts is not None):
+        if real_ts is not None and latest_assistant_ts is not None:
             break
 
     # Promote to JSONL_USER_PENDING when a user record is newer than
@@ -651,7 +775,8 @@ def _cache_jsonl_activity(path: str, key: Tuple[int, int],
 
 # ─── Public read API ───
 
-def read_jsonl_tail_info(project_dir: str, claude_pid=None) -> Tuple[int, Optional[str]]:
+def read_jsonl_tail_info(project_dir: str, claude_pid=None,
+                         session_info=UNCHECKED) -> Tuple[int, Optional[str]]:
     """Return `(age_seconds, last_assistant_stop_reason)` for the project's
     newest JSONL file.
 
@@ -675,17 +800,21 @@ def read_jsonl_tail_info(project_dir: str, claude_pid=None) -> Tuple[int, Option
 
     When claude_pid is provided, the exact session file is resolved
     via `~/.claude/sessions/{pid}.json` (authoritative, no slug guess).
+    A caller that already read and validated that file passes it as
+    `session_info` (see `UNCHECKED`) so it is neither read twice nor
+    read without the validation.
     """
     if not project_dir:
         return -1, None
-    newest = _find_newest_jsonl(project_dir, claude_pid=claude_pid)
+    newest = _find_newest_jsonl(project_dir, claude_pid=claude_pid,
+                                session_info=session_info)
     if newest is None:
         return -1, None
     try:
         st = os.stat(newest)
     except OSError:
         return -1, None
-    real_ts, stop_reason = _parse_jsonl_tail(newest, int(st.st_mtime), st.st_size)
+    real_ts, stop_reason = _parse_jsonl_tail(newest, st.st_mtime_ns, st.st_size)
     if real_ts is None:
         return -1, stop_reason
     return int(time.time() - real_ts), stop_reason
@@ -705,15 +834,15 @@ def read_jsonl_tail_info_for_session(project_dir: str, session_id: str
     it against that session's event log) would cross-contaminate and
     misfire. Scoping the JSONL read to the same session_id keeps the
     comparison honest. Returns `(-1, None)` when the file is absent."""
-    if not project_dir or not session_id:
+    path = jsonl_path_for_session(os.path.expanduser(project_dir), session_id) \
+        if project_dir and session_id else None
+    if path is None:
         return -1, None
-    path = os.path.join(CLAUDE_PROJECTS_DIR,
-                        _project_slug(project_dir), f"{session_id}.jsonl")
     try:
         st = os.stat(path)
     except OSError:
         return -1, None
-    real_ts, stop_reason = _parse_jsonl_tail(path, int(st.st_mtime), st.st_size)
+    real_ts, stop_reason = _parse_jsonl_tail(path, st.st_mtime_ns, st.st_size)
     if real_ts is None:
         return -1, stop_reason
     return int(time.time() - real_ts), stop_reason

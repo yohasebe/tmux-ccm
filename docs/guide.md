@@ -1,5 +1,7 @@
 # ccm User Guide
 
+[Getting started](#getting-started) · [Troubleshooting](#troubleshooting) · [Diagnostics](diagnostics.md)
+
 ## How ccm fits into tmux
 
 tmux organizes your terminal into a hierarchy. ccm works within this structure:
@@ -46,7 +48,7 @@ tmux new-session -s work
 ccm add ~/code/my-project
 ```
 
-This creates a new tmux window, changes to the project directory, and launches Claude Code with `claude --continue` (so you can pick up the most recent conversation in that directory if one exists).
+This creates a new tmux window, changes to the project directory, and launches Claude Code — with `claude --continue` (so you pick up the most recent conversation in that directory), or plain `claude` when ccm can see that the directory has no conversation yet: the CLI's config home is the default, no custom transcript-directory name (`CLAUDE_CODE_PROJECT_DIR_NAME`) is set in ccm's environment or in the tmux environment the new window's shell inherits, and the transcript directory for the path is absent or empty. Whatever ccm cannot check resolves to `--continue`. The check covers what ccm's and tmux's environments show; a shell startup file that moves the transcript location is outside it, so with such a file `ccm add` can open a new conversation for a directory whose conversation lives at that other location.
 
 ### 3. Add more projects
 
@@ -65,7 +67,7 @@ ccm attach 2             # by number
 ```
 
 > [!TIP]
-> When you switch to a project window where Claude Code isn't running, ccm automatically starts it with `claude --continue` to resume your last conversation.
+> When you switch to a project window where Claude Code isn't running, ccm automatically starts it with `claude --continue` — always, for a shell that already exists: that shell may keep its transcripts somewhere ccm cannot see (its own exports are invisible from outside), so ccm never claims it has nothing to resume. Only `ccm add`, whose window ccm creates itself, types plain `claude` for a directory with no conversation yet. There is no fallback chained behind `--continue`: if it cannot resume — there was nothing to resume after all (a project added with auto-start off, say), or its newest conversation was handed to a live background session — its message stays on screen and the pane returns to the shell, so you decide what to open next.
 
 ### 5. Check status
 
@@ -94,6 +96,9 @@ information as a `{mode}` badge after the project name, omitted for the
 everyday `manual` mode to keep rows quiet. A mid-session mode change
 (shift+tab) updates on the next hook firing.
 
+For agents and scripts, `ccm status --json` returns each window's state
+and its sidekicks' as JSON (see [Machine-readable Output](#machine-readable-output)).
+
 ## The Dashboard
 
 Open with `prefix + Tab`. This is the primary interface for managing projects. You can also bind a single key (e.g. `F1`) for prefix-free toggle — see the [Keybindings section in README](../README.md#keybindings) for details.
@@ -110,7 +115,7 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 >   #7  ■ SHELL   docs-site                  ~/code/docs-site
 >
 > [↑↓/jk] select [Enter] attach [p]review [a]dd [n]ame [r]emove
-> e[x]it all [s]ave [t]ree [m]enu [q] quit
+> e[x]it all [s]ave [t]ree [?/m] actions & settings [q] quit
 > Hooks: ON
 > ```
 
@@ -126,16 +131,84 @@ Open with `prefix + Tab`. This is the primary interface for managing projects. Y
 | `n` | Rename | Change the selected project's name |
 | `g` | Register | Tag an existing tmux window as a ccm project |
 | `r` | Remove | Choose [u]nregister (keep window) or [d]elete (kill window; asks y/N). Listed in the menu (`m` / `?`) too |
-| `i` | Ignore | Toggle CCM_IGNORE on the selected project (hide/restore it — see "Running a second model" below) |
-| `x` | Exit all | Exit all idle Claude Code sessions to free resources |
+| `i` | Ignore | Toggle CCM_IGNORE on the selected project. Hiding requires `y` / `Y` + Enter; Enter alone, Esc or any other answer cancels. Restoring needs no confirmation (see "Running a second model" below) |
+| `x` | Exit all | Review names and states, then exit Claude after screen checks; keep windows |
 | `/` | Filter | Live incremental search: type to narrow, `↑↓`/`C-p`/`C-n` to select, `Enter` to attach, `C-u` to clear, `Esc` to cancel. Unicode-safe — Japanese project names match on Japanese substrings |
 | `t` | Tree | Switch to tree view |
-| `m` | Menu | Switch to interactive menu |
+| `m` / `?` | Menu | Logout preparation, continue restore, checkpoints, reset and Claude exit |
+| `u` | Undelivered messages | Open expired / held records; also available in the menu (`m` / `?`) |
 | `q` / `Esc` | Quit | Close the dashboard |
 
 The dashboard refreshes on a hybrid cadence: full state detection runs every 2 seconds, and in between, a lightweight fast tick (4×/second) watches the state channel the Claude Code hooks write to — so a hook-driven change (a permission prompt appearing, a prompt submitted) shows up in ~0.3 seconds rather than waiting out the full poll. The status bar gets the same treatment: on a state transition, the hook re-renders the bar immediately instead of waiting for the next `status-interval` tick. Navigation keys (`↑↓/jk`) respond instantly without waiting for any refresh.
 
 The row order is decided when the dashboard opens (projects needing attention first) and then held stable while it stays open — a project changing state updates its icon in place but does not jump to a new position, so your selection never lands on the wrong project mid-interaction. Close and reopen the dashboard to re-sort by current state.
+
+### Menu help preview
+
+In the `m` / `?` menu, an enabled preview shows help for the selected item. Right placement requires at least 80 columns; bottom placement requires at least 20 rows. It uses the same dimensions as the project preview. When disabled or too small, only the menu appears. Descriptions wrap within the panel and follow selection changes; setting items also show their current values. Set `set -g @ccm-lang "ja"` in `~/.tmux.conf` for Japanese menu descriptions (`en` is the default; unsupported values use English). Reload the configuration and reopen the menu to apply it. Only the description body changes; labels and other screens remain English. Matching dashboard shortcuts appear as dim `[key]` hints at the right edge; narrow menus omit hints to preserve item names.
+
+Items are grouped under Actions, Settings and Navigate. Setting values are colored (`on` green, `off` dim, others cyan), and the preview highlights the equivalent CLI command and the current value. Press `/` in the menu to filter items as you type, as in the project list: matching is case-insensitive on item names and on the first line of each description in the current `@ccm-lang` language, so `ログアウト` finds the logout items when descriptions are Japanese. `↑↓` / `C-p` / `C-n` select, `Enter` runs the selected item, `C-u` clears and `Esc` returns to the full menu with that item still selected.
+
+The following items complement the checkpoint, logout and recovery actions described in the next section.
+
+| Menu item | Purpose |
+|---|---|
+| Add project | Choose a directory and name for a new project. |
+| Unregister project | Keep its window while removing ccm management. |
+| Delete project | Choose a project and confirm closing its window. |
+| Ignore / unignore project | Hide or restore a project in tracking. |
+| Undelivered messages | Review messages that expired or need inspection. |
+| Save snapshot | Choose a name and save the current layout. |
+| Status bar mode | Choose how much the status bar displays. |
+| Auto-restore | Choose whether tmux startup restores the autosave. |
+| Idle timeout | Set the wait before idle Claude sessions exit. |
+| Preview panel | Show or hide project previews and menu help. |
+| Preview position | Place the preview on the right or below the list. |
+| Dashboard display | Show the dashboard as a popup, or docked at the top or bottom. |
+| Close dock after opening a project | When docked, choose whether opening a project closes the dock. |
+| Background sessions | Show or hide background sessions on the dashboard. |
+| Auto-start Claude | Choose whether opening a shell project starts Claude. |
+| Notifications | Choose which changes generate a notification. |
+| Notification sound | Enable or disable sounds (macOS). |
+| Sound name | Choose and preview a sound (macOS). |
+| Dashboard | Return to the project list. |
+| Tree view | Open the session/window/pane hierarchy. |
+| Quit | Close the dashboard. |
+
+### Logout, restoration and recovery
+
+Open the menu with `m` or `?`. These actions have no new single-key shortcut.
+
+| Menu item | Action |
+|-----------|--------|
+| Prepare for logout | Save and protect `_autosave` through `ccm prepare-logout`. If projects are BUSY or PERMIT, their names appear and `[y/N]` defaults to No |
+| Cancel logout protection | Confirm releasing protection while keeping the saved checkpoint |
+| Continue restore | Continue the checkpoint recorded by an incomplete restoration. If it cannot be identified, choose from saved checkpoints |
+| Finish restore (keep what is restored) | End an incomplete restoration with the projects restored so far, through `ccm finish-restore`. Shows how many projects would no longer be restored and asks `[y/N]` |
+| Saved checkpoints (load / delete) | Select by name, creation time, project count, v1/v2 and protection status. Enter loads; `d` asks `[y/N]` before deleting; Esc returns. `_autosave.prev` is excluded, and protected `_autosave` cannot be deleted |
+| Reset selected project's runtime state | Confirm clearing its runtime signals and caches using `ccm reset`. Conversation files, running processes, windows and checkpoints remain |
+| Exit Claude in selected project | Confirm `ccm exit <name>`. Its window, shell and sidekicks remain |
+
+Preparation and restoration temporarily leave the curses screen so progress and prompts are visible. On return, the full result, failure reason and sidekick guidance stay in a scrollable view: `↑↓` / `jk` / `PgUp` / `PgDn` scroll; Enter / Esc / `q` returns. An incomplete restoration or protected checkpoint also shows an actionable line above the project list. The menu scrolls when the terminal is small.
+
+Confirm with `y` or `Y` and Enter. `N`, Enter alone and Esc cancel. `x` now shows the projects and states before confirming a batch exit, using the same checks as a single exit. In PERMIT, Escape rejects the pending tool call; this is stated before confirmation. A project that becomes BUSY/PERMIT after an IDLE confirmation is refused and can be reviewed again.
+
+`ccm exit <name>` exits Claude while retaining the window; `ccm stop <name>` closes the window. CLI exit refuses BUSY/PERMIT unless `-y` / `--yes` is supplied. Exit checks the Claude pane, excludes ignored panes and requires a shell underneath Claude. Ambiguous Claude panes need a reserved primary pane. It sends no keys when the agent view is open or the screen cannot be read, and reports failure unless the foreground returns to a shell. If exit detaches into agent view, it reports that result without sending further keys. These screen checks are shared with idle auto-exit.
+
+### Handling undelivered messages
+
+Press `u` to open expired records (never delivered) and held records (last seen in the recipient's input box). Each row shows the sender, destination, age and beginning of the message.
+
+| Key | Action in the list |
+|-----|--------------------|
+| `↑↓` / `jk` | Select a record |
+| `Enter` | Read the full text. Long lines wrap; scroll with `↑↓` / `jk` / `PgUp` / `PgDn`. Return to the list with `q` / `Esc` / `Enter` |
+| `r` | Resend an expired record as a new message, after confirmation. If Claude is stopped, asks whether to start it and send. Clears the original record only on success; on failure, shows the reason and keeps it |
+| `d` | Confirm deletion of the selected record only. Deleting a held record does not change the recipient's input box |
+| `o` | Open the destination's existing project without typing keys or automatically starting Claude. Use it to inspect the input box or start Claude manually |
+| `q` / `Esc` | Return to the dashboard |
+
+Held records have no resend action: use `o` to inspect the recipient's input box first, avoiding a duplicate copy. Resend and discard default to No; cancelling does nothing. The list is read on opening and after an action, preserving the order of existing records and the selected record when it still exists. New records are appended. Reopen the list to see external changes.
 
 ### Direct-to-filter shortcut
 
@@ -167,6 +240,27 @@ set -g @ccm-key-dashboard-noprefix "F1"   # F1 alone (no prefix) → dashboard
 
 Goes through the same `display-popup` invocation as the prefix binding, so the coloured ccm logo on the popup title is preserved. Writing your own `bind-key -n F1 display-popup …` instead works mechanically but won't carry the logo unless you replicate the full `-T` format string.
 
+### Docked dashboard
+
+```tmux
+set -g @ccm-dashboard-dock top        # top or bottom; off (default) keeps the popup
+set -g @ccm-dashboard-dock-size 40    # percent of the window height, 10-80 (default 40)
+set -g @ccm-dashboard-dock-close-on-open on   # close the dock after opening a project (default off)
+set -g @ccm-dashboard-dock-edge 179    # colour of the line on the side facing your work: a 256-colour number, or off
+```
+
+Both can also be changed from the dashboard menu (`Dashboard display`, and `Close dock after opening a project` while docked); the menu saves them to `~/.tmux.conf`.
+
+With docking on, `prefix + Tab` (and `@ccm-key-dashboard-noprefix`) opens the dashboard as a full-width pane in the current window instead of a popup, so it stays in view while you work in the panes beside it. The option is read on every key press; no reload is needed.
+
+- The same key closes it. Pressed in another window, it brings the pane there.
+- Switching windows by any means moves the pane to the window you switch to. The window it leaves gets its previous layout back.
+- Opening a project from the dashboard keeps it open and it moves along with you, unless `@ccm-dashboard-dock-close-on-open` is on. `q` or `Esc` closes it.
+- A docked dashboard shows the ccm logo on its first line, as the popup does in its title (on its second when docked at the bottom, below the edge line).
+- It draws a coloured line along the side that faces the panes you work in (its last row when docked at the top, its first when at the bottom), so the boundary stays clear whatever your tmux border settings. `@ccm-dashboard-dock-edge off` gives that row back to the dashboard.
+- The pane is never less than 10 rows high, the smallest the dashboard draws in, plus one for the edge line when it is on. A pane shrunk below that drops the line rather than the list.
+- The pane is ccm's own: the logout checkpoint records each window as it is without it, and Claude is never started in it. Menu, tree and filter keys still open popups.
+
 ## The Tree View
 
 Open with `prefix + T`. Shows the full tmux hierarchy:
@@ -190,6 +284,31 @@ Open with `prefix + T`. Shows the full tmux hierarchy:
 ## Sending Prompts Between Projects
 
 `ccm send` dispatches a prompt to another project's Claude Code session, so you can hand off work between projects without leaving your current pane.
+
+When calling `ccm send` from a sidekick or a sandboxed tool, run it outside
+the sandbox so it can reach tmux's Unix socket. Network restrictions can
+block that socket even when `TMUX` is set. A connection failure includes
+tmux's error and guidance to retry outside the sandbox; it does not mean
+the project is missing or that the caller is outside tmux.
+
+Queued messages use the caller pane's registered project when the pane's
+process is an ancestor of the sending command. Changing directories, even
+into another project, preserves that sender and pane identity. If ancestry
+cannot be confirmed (including when process inspection fails), ccm checks
+whether the pane's registered directory contains the command's working
+directory. Both paths are resolved through symlinks; subdirectories count,
+sibling name prefixes do not. If that check fails, ccm uses the working
+directory only if exactly one registered window contains it. Nested or duplicate
+registrations are ambiguous; linked copies of the same window count once.
+Otherwise the sender is `unknown`, and the delivered header asks the recipient
+to confirm the reply destination instead of suggesting `ccm send unknown`.
+
+The unique-window fallback identifies a project, not a specific caller pane.
+Self-send checks and the `--start` pane exclusion use a verified pane hint.
+`sidekick-send` and `ignore` / `unignore` without a project argument refuse an
+unverified hint; run those commands from a registered project pane. When
+ancestry cannot be confirmed, the directory check cannot distinguish stale
+hints between panes registered to the same directory.
 
 ```bash
 # Simple positional message (confirmed interactively if run from a TTY)
@@ -215,9 +334,17 @@ ccm send demo --no-enter "TODO: "
 |---|---|---|---|---|
 | **IDLE** | Send immediately | Send immediately | — | — |
 | **BUSY** | Queued for later delivery | Refused | Sent now into the input buffer (mixes with the current turn) | — |
-| **SHELL** (Claude not running) | Queued — delivered once Claude is running and idle | Refused | — | Launches Claude, polls for IDLE (up to `CCM_START_WAIT_SEC`, default 10s), then sends |
+| **SHELL** (Claude not running) | Queued — delivered once Claude is running and idle | Refused | — | Launches Claude, polls for IDLE and a ready, empty input box (`CCM_START_WAIT_SEC` polling deadline, default 10s), then sends |
 | **PERMIT** (permission dialog open) | Queued — delivered after the dialog is resolved | **Refused** | Still queued — a dialog is never typed into, even with `--force` | — |
 | **IGNORED** (every Claude pane hidden) | **Refused** — never queued | Refused | Refused | Refused — Claude is never launched into a window ccm cannot see. The refusal points at `ccm unignore <project>` |
+
+A PERMIT that comes only from a subagent's request (the main conversation has not asked for anything) does not hold a message back: the main conversation's input box is not covered by that request. ccm reads the target's screen instead and follows the IDLE or BUSY row for what it shows. A dialog on that screen, or a screen it cannot read, is still PERMIT, and so is a screen it cannot read again just before typing.
+
+`--start` waits for an empty input box in the launch pane, with that condition and IDLE persisting for one second, before typing the body. If readiness is not established by the polling deadline, it reports failure with exit code 1 without typing the body or its submit Enter. This also applies when the launch command exits straight back to the shell. State detection and screen capture time can extend beyond the configured polling deadline.
+
+After launching, ccm types the body once and sends the submit Enter only if the whole body is visible in the input box. It checks immediately, then reads again every 0.1 seconds for up to 2 seconds without sending any keys, proceeding as soon as the whole body appears. Screen capture time can extend beyond this polling deadline. If only part appears, nothing appears, or the input box cannot be read by the deadline, it stops with exit code 1 without clearing, retyping, or submitting. Check the recipient's input box and clear any leftover text before deciding whether to send again. The same check applies to short messages and `--no-enter`. A body that looks taller than the input box can show (about half the pane height less five rows, counting wrapped lines; an estimate, so emoji sequences or tabs can tip it either way) could not be seen whole, so ccm does not type it: it stops with exit code 1 before typing, leaving Claude running. Send it again without `--start`, or put the text in a file and send a short line pointing to it. An empty input box and IDLE do not guarantee that a newly launched application accepts every keystroke; screen confirmation is not proof of model receipt.
+
+After the submit Enter, ccm checks the input box again. A hold notice, or the submitted message's beginning staying at the start of the input box throughout the check, produces an unsent error with exit code 1 instead of `Sent`. ccm does not press Enter again automatically. Inspect the recipient's input box before deciding what to do. This is a screen-based check: it cannot fully distinguish cases such as an unreadable screen or a new draft with the same beginning typed immediately after acceptance.
 
 ### The spool (store-and-forward)
 
@@ -225,21 +352,55 @@ When the target cannot take a message right now, `ccm send` no longer fails by d
 
 Delivery is deliberately conservative:
 
-- **One message per project per pass.** A second message sent back-to-back would land in the input buffer of the turn the first just started, so the queue drains one per idle transition.
+- **One prompt per idle moment.** Typing a second message right after the first would land it in the turn the first just started. So when several messages are waiting for the same project, they go out together as one prompt, oldest first, each under its own envelope header: up to 5 messages and 16 KB of message text, and no more than the input box shows whole (a taller prompt would hide its own start, which is what tells a prompt left in the box from one taken). The oldest message always goes, alone if it is large; the rest wait for the next idle moment. A project that works in long turns is often idle only for a few seconds between them, and with one message per idle moment the others can run out their time.
 - **Re-checked at delivery time.** The pane's raw state is re-detected right before typing, and a composer holding a draft defers the message rather than merging into it.
-- **TTL.** A queued instruction goes stale — delivered an hour late it is no longer the instruction you meant. Messages older than `CCM_SPOOL_TTL_SEC` (default 60 min) move to `expired/` and surface in `ccm status` / `ccm doctor` instead of delivering. Queued messages never start a Claude session on their own.
+- **TTL.** A queued instruction goes stale — delivered an hour late it is no longer the instruction you meant. Messages older than `CCM_SPOOL_TTL_SEC` (default 60 min) move to `expired/` and surface in `ccm status` / `ccm doctor` instead of delivering. Time the target spends waiting on a permission prompt does not count, and neither does time no delivery pass can run (the Mac asleep, no tmux client attached): a message waiting behind a prompt you have left open on purpose is delivered once the target is idle again. Any message older than `CCM_SPOOL_MAX_AGE_SEC` (default 24 hours) expires regardless. Queued messages never start a Claude session on their own.
+- **Hand-back.** When a message expires, its sender is told: ccm queues a notice for the sending project (from `ccm`, needing no reply) saying where to read the message and how to send it again, and the sender decides. Once that notice is delivered, the expired record no longer counts as undelivered in `ccm status`, `ccm doctor` or the dashboard. A sender ccm cannot reach (unknown, or not a project in this session) is not told, and the record stays listed.
 - **At-least-once.** A crash mid-delivery re-delivers on the next pass rather than losing the message; the envelope line lets the receiver tell a duplicate apart.
 
-Delivered messages arrive under an envelope header — `[from: <project> · queued 14:03 · delivered 15:02 — reply with `ccm send <project> "…"`]` — so the receiver knows who sent it, how long it waited, and how to answer.
+Delivered messages arrive under an envelope header — `[from: <project> · queued 14:03 · delivered 15:02 · delivery 3fa29c 1/2 — reply with `ccm send <project> "…"`]` — so the receiver knows who sent it, how long it waited, and how to answer. `delivery` names the prompt with a mark chosen when it is typed, and gives the message's place among those it carries. A line inside a message that looks like a header but carries no mark, a different mark, or a count that does not add up is part of the message, not another one. A message queued on an earlier day shows the date with both times (`queued 2026-10-15 18:50 · delivered 2026-10-16 09:12`).
 
 Queued counts show on `ccm status`, `ccm doctor`, and the dashboard (`✉N` by the project name). To inspect or withdraw:
 
 ```bash
-ccm spool list                 # all pending messages, with age and preview
+ccm spool list                   # pending, held and expired messages with previews
 ccm spool clear-expired           # acknowledge messages that never arrived
+ccm spool clear-held [project]    # acknowledge messages a session was holding
 ccm spool cancel <id> <project>   # withdraw one (a queued mis-send is cancellable)
 ccm spool cancel --all <project>  # clear the project's queue
+ccm spool show <expired|held> <id> <project>
+ccm spool discard <expired|held> <id> <project> [--yes]
+ccm spool resend expired <id> <project> [--start] [--yes]
 ```
+
+Expired messages were never delivered. `ccm spool list [project]` shows each record's id, saved sender label, time since it was queued, and the first nonblank line (up to 60 characters). Unknown filenames show unknown sender/time; unreadable bodies show `(unreadable)` without hiding the record. For each expired record, the list prints a command to read the full text and a `ccm send --file …` command to use **only after reviewing whether the request is still needed**. If it needs updating, send revised text instead. These displayed commands do not run automatically.
+
+Using the listed `ccm send --file …` command is a **new send**: if queued, it gets a new id and queue time, with the current sender in the delivery envelope. A ready target receives it directly through the usual send path. A SHELL target stays queued; the suggested command does not use `--start`. The old expired record remains until the normal seven-day retention expires or you acknowledge it. After reviewing **all** expired records for a project, `ccm spool clear-expired <project>` deletes those records only; it sends nothing. Without a project argument, it clears expired records across all projects. Neither listing nor clearing records retries delivery.
+
+To handle one record directly, use `show` to read its full text or `discard` to delete only that record. `resend expired` sends the saved body now as a **new send**, clearing the original record only after the send check succeeds. If the target cannot receive it now, for example while BUSY, it fails without queueing a new copy and keeps the original record. Add `--start` to start Claude before sending if it is stopped. To revise the body, send the updated text separately with `ccm send`.
+
+`discard` and `resend` ask for confirmation. After reviewing the record, use `--yes` (`-y`) to skip that prompt; this explicit flag is required in non-interactive use. Held records cannot be resent with `resend`. `discard held` deletes only the record, leaving the recipient's input box untouched. The dashboard's `u` view uses these same operations.
+
+The dashboard's `u` list and full-text titles distinguish **Message** from
+**Completion notice**. They share these labels with `ccm doctor`'s nonzero
+undelivered counts; stored kinds, IDs and CLI selectors stay unchanged:
+
+| Label | Meaning / next action |
+|---|---|
+| `Expired before delivery` | Read the record. Only ordinary expired messages can be sent anew after review. |
+| `Waiting in input box` | Check the recipient's input box; do not send another copy. |
+| `Delivery unconfirmed` | Check the conversation and input box. Automatic notices are never resent. |
+| `Not sent: hourly limit` | Read the sidekick's result; the notice was not delivered. |
+| `Cancelled before delivery` | Check the sidekick's result if still needed. |
+| `Queued; not delivered yet` | Still waiting to deliver; not a delivery confirmation. |
+
+Queued automatic notices appear only in detailed doctor output. Unrecognized
+record kinds show `Unrecognized record; review diagnostic details.` in `u`,
+with no record operations offered; the record is kept. Discarding a known
+record leaves the conversation and input box unchanged. Opening a project
+from `u` does not type or resend anything.
+
+A message the target session says it did not take — Claude Code holds a prompt it rewrote until its user confirms it, and says so above the input box — is not queued again: once that user presses Enter on the copy in the composer, or clears it away, the box looks the same either way, so retrying would type the whole message a second time. The same applies when the submitted message's beginning stays in the input box without a hold notice. These messages are recorded as held, `ccm spool list` shows them, and you deal with them in the recipient's window. `ccm spool clear-held` then says so; it sends and withdraws nothing.
 
 The state check is not the only gate. State detection cannot see a half-typed draft in the target's composer (an `❯` prompt holding text still reads IDLE), so immediately before typing, `ccm send` reads the composer line itself and — while a draft is present — queues the message like any other undeliverable state (`--now` refuses instead). Otherwise the message would merge into text you are still writing, and the Enter would submit the garbled mix. Claude Code's own next-prompt suggestion (drawn dim in the composer when a turn ends) is distinguished from a real draft via the capture's SGR attributes and does not block a send — it vanishes on the first keystroke, so there is nothing to protect.
 
@@ -252,7 +413,7 @@ The state check is not the only gate. State detection cannot see a half-typed dr
 | `--no-enter` | Send the text without the final Enter (useful for prefilling a prompt) |
 | `--now` | Fail instead of queueing when the target cannot take the message now |
 | `--force` | Allow sending to a BUSY target (queues into Claude's input buffer) |
-| `--start` | Auto-launch Claude if the target is in SHELL state |
+| `--start` | Auto-launch Claude if the target is in SHELL state. The launch re-reads the window first: nothing is typed when a pane already hosts Claude (the message is then delivered to it) or when no pane can be verified as a shell prompt (the send is refused with the reason) |
 | `-y`, `--yes` | Skip the interactive confirmation prompt |
 | `--` | End of flag parsing (for messages that start with `-`) |
 
@@ -276,48 +437,43 @@ Install hooks for the best detection accuracy:
 ccm setup-hooks
 ```
 
-This adds hooks to `~/.claude/settings.json`:
+See [hook diagnostics](diagnostics.md#claude-code-hooks-recommended) for events, signal lifetimes, and settings checks.
 
-| Hook | Signal | Detects |
-|------|--------|---------|
-| `UserPromptSubmit` | BUSY | Prompt submitted → Claude is processing (including text generation) |
-| `PreToolUse` | BUSY | Tool execution starting (solves multi-turn detection gap) |
-| `PostToolUse` | BUSY | Tool execution completed — keeps BUSY held across post-permission gaps |
-| `PostToolUseFailure` | BUSY | Tool execution failed |
-| `SubagentStart` / `SubagentStop` | BUSY | Subagent execution start/end (parent agent still working) |
-| `PreCompact` / `PostCompact` | BUSY | Context compaction is busy work |
-| `Stop` / `StopFailure` | clears BUSY | Claude finished responding (signal file deleted) |
-| `PermissionRequest` | PERMIT | Tool requires user permission |
-| `Notification` | PERMIT / clears signal | Permission prompt or MCP elicitation dialog shown / idle notification (matchers: `permission_prompt`, `elicitation_dialog`, `idle_prompt`) |
-| `SessionEnd` | SHELL | Claude Code session ended (/exit, Ctrl+D, etc.) |
-| `PermissionDenied` | PERMIT | Auto mode denied an action (check `/permissions` to retry) |
+Hook status is shown in the dashboard footer (Hooks: ON/OFF). `ccm status` shows Hooks: OFF when hooks are unavailable and retains diagnostic warnings; the normal Hooks: ON line is omitted. If hooks are already installed, `ccm setup-hooks` does not reinstall them; it only brings the timeout of ccm's own hooks in line with `CCM_HOOK_CMD_TIMEOUT`. If you reinstall ccm to a different path, `ccm setup-hooks` installs hooks from the new path and names the ones at the old path, which you delete by hand (see [hook diagnostics](diagnostics.md#claude-code-hooks-recommended)).
 
-> [!NOTE]
-> Hook signals are written to `$TMPDIR/ccm-$UID/hooks/`. BUSY is cleared by `Stop`/`SessionEnd` or by process exit; if both the BUSY hook and the JSONL stay silent beyond `CCM_BUSY_HOOK_JSONL_WINDOW` (default 10 min), ccm stops trusting the stale signal and lets the state fall back to IDLE, so a missed `Stop` cannot strand a project in BUSY. PERMIT is released the same way: resolving a permission fires no hook upstream, so if a permit event is the newest one, the pane shows no modal, and the session log stays frozen beyond `CCM_PERMIT_MAX_TIMEOUT` (default 10 min), ccm stops trusting it and falls back to IDLE. A dialog still on screen is read from the pane directly and stays PERMIT no matter how long it waits. A BUSY left by an Esc interrupt (no `Stop` hook, the log frozen mid-tool) is released sooner: with an idle prompt on screen and the log frozen past `CCM_BUSY_STALE_RELEASE_SEC` (default 60 s), ccm defers to IDLE.
+Run `ccm doctor` to see issues and next steps.
 
-Hook status is shown in the dashboard footer and `ccm status` output (Hooks: ON/OFF). If hooks are already installed, `ccm setup-hooks` will skip re-installation. If you reinstall ccm to a different path, it will automatically update hook paths.
-
-To remove: `ccm remove-hooks`
+To remove: `ccm remove-hooks` (removes ccm's own hooks only)
 
 ### How each state is detected
 
-| State | Method | Details |
-|-------|--------|---------|
-| **SHELL** | Process check | No `claude` process found among window's child processes |
-| **IGNORED** | Pane option + process check | Every pane hosting `claude` is excluded via `@ccm_ignore` and no visible pane hosts one — ccm deliberately cannot see the window's Claude, so SHELL/DOWN ("Claude is not running") would be a claim without basis. Not a rung of the PERMIT > BUSY > IDLE > SHELL ladder but a visibility verdict, checked before SHELL/DOWN is allowed to stand. Renders `⊘` (dim). `ccm send` is refused and points at `ccm unignore`; auto-exit never acts on it (it only ever acts on IDLE) |
-| **BUSY** | Event log + JSONL stop_reason | Primary: the per-session event log (`hooks/<sessionId>.events.jsonl`, keyed on Claude Code's session UUID) appended by every BUSY-class hook (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart`/`Stop`, `PreCompact`/`PostCompact`). `derive_state_from_events` evaluates the tail as a pure function and returns BUSY while the most recent entry is start-class. Hook silence is bridged by JSONL `stop_reason`: a fresh `tool_use` keeps BUSY across the tool-turn Stop boundary; an `end_turn` / `max_tokens` / `stop_sequence` newer than the latest event releases to IDLE within seconds. Claude Code housekeeping records (`system/away_summary`, `turn_duration`, `attachment/task_reminder`, `permission-mode`, `file-history-snapshot`, `last-prompt`) are filtered from JSONL activity so recap and startup housekeeping do not register as fresh activity |
-| **IDLE** | Event log + capture-pane | The event log's most recent entry is end-class (`stop`, `notify_idle`, `notify_permit`-resolved), the input prompt `❯ ` is visible, and no PERMIT footer matches. With hooks disabled the legacy fallback uses process tree + prompt visibility only |
-| **PERMIT** | Hook + capture-pane fallback | Primary: `PermissionRequest` / `PermissionDenied` / `Notification` (permission_prompt) hooks. Fallback: capture-pane match on the modal footer (`Esc to cancel · Tab to amend` for permission dialogs; `Enter to confirm · Esc to <verb>` for confirmation modals, including the v2.1.144 `/model` form `Enter to confirm · d to set as default for new sessions · Esc to cancel` where intermediate `· <action key>` segments are tolerated) — catches sessions where hooks have stopped firing |
-| **Completion (`* elapsed`)** | Display layer | Transient marker: shown for 30s after BUSY/PERMIT → IDLE transition, then clears. Asterisk renders green (drawing the eye to the just-completed transition); the elapsed time is dim |
-| **Multi-pane (`[N]`)** | Window inspection | Marker on every renderer (dashboard, status bar, `ccm status`) when a window holds more than one tmux pane (Agent Teams, casual splits, leftover orphan panes). Brackets dim, digit cyan. Lets you spot windows whose aggregated state may belong to a non-active pane. See "Using with Agent Teams" below for related details (sliver protection and PERMIT auto-focus) |
-| **Permission mode (`{mode}`)** | Hook payload | Display-only badge from the `permission_mode` field Claude Code attaches to hook payloads; the newest value is shown as the `MODE` column in `ccm status` and a `{mode}` badge after the project name in the dashboard (`{accept}`, `{plan}`, `{auto}`, `{dontAsk}`, `{bypass}`). The everyday `manual` mode is suppressed in the dashboard. `{bypass}` renders in warning color. Modes that auto-resolve dialogs never produce PERMIT — the badge preempts misreading that silence as broken detection. Never consulted by state detection |
-| **Ignored (`⊘`)** | Pane option | Dim `⊘` on the dashboard and `ccm status` row when the window has a `CCM_IGNORE`'d pane — a session ccm deliberately does not track (see "Running a second model as a sidekick" below). Present-but-untracked; not a state |
+See the [diagnostics reference](diagnostics.md#how-each-state-is-detected).
 
 ### Detection without hooks
 
 Without hooks, ccm falls back to process tree inspection with prompt pattern matching. This means:
 - Text generation (no tool use) appears as IDLE, not BUSY
 - Completion detection relies on BUSY→IDLE transition heuristics
+
+### Which pane answered last (unread mark)
+
+With several agents in split panes, it stops being obvious which one replied last. Opt in with:
+
+```bash
+set -g @ccm-pane-labels on     # in ~/.tmux.conf, before ccm is loaded
+```
+
+ccm then marks a pane's border with `◆ new` when a reply completes in it while you are looking elsewhere, and removes the mark once you have been looking at that pane for a few seconds, or when you send it the next prompt. The few seconds are `@ccm-unread-linger` (default `5`): tmux reports focus to a pane the moment you switch to its window or bring the terminal back to the front, which is how you go and look, so a mark cleared on that event would be gone before you saw it. A pane you only pass through keeps its mark. "Looking at it" means a terminal that has focus is showing the pane as its active one — tmux reports focus only with `set -g focus-events on`. While ccm's dashboard popup is open nothing under it counts as looked at; a popup from another tool cannot be seen from here, so a reply that finishes under one goes unmarked. Focus held for that long is the only stand-in ccm has for reading.
+
+The mark follows the completion notice: it appears once the reply has stayed finished for `CCM_COMPLETION_GRACE_SEC` (a tool boundary in a multi-step turn does not count), and not at all while background tasks are still running. It needs the hooks, so it covers Claude Code sessions; a sidekick CLI without hooks never gets one.
+
+This turns on tmux's pane border line (`pane-border-status top`) and puts the mark in front of your `pane-border-format`. If your own configuration sets `pane-border-format` after ccm is loaded, it replaces ccm's; add the mark to your format yourself:
+
+```
+#{?@ccm_unread,#[fg=colour209]◆ new#[default] ,}
+```
+
+Turning the option off stops new marks at once, but what was set up while it was on — the border line, the format, the focus hook — stays until tmux restarts or you reset it.
 
 ### Completion tracking
 
@@ -406,7 +562,14 @@ Adds a second status bar line below the main bar, showing all projects including
 
 ## Snapshots
 
-Save your project layout to restore it later.
+To carry windows, splits, working directories and pane roles across logout:
+
+1. Before logout, run `ccm prepare-logout`. If projects are PERMIT or BUSY, review their names and confirm with `y` and Enter to save.
+2. After login, open tmux and run `ccm start _autosave`. Windows and panes return as inactive shells.
+3. Open the windows you need with `ccm attach <name>` or the dashboard. When `@ccm-auto-start` is on, Claude resumes in the reserved primary pane, or an eligible shell if readable reservations contain no primary. Unreadable or conflicting roles prevent automatic launch.
+4. Resume sidekicks manually using the restore output or `ccm roles`. For Codex, run `codex resume --last` in that cwd to resume the latest conversation there, or `codex resume` to choose one. The latest is not necessarily the one you were using (another Codex in the same directory, for example), so choose with `codex resume` when in doubt; ccm does not start or select a conversation itself. Note that `codex continue` starts a new conversation with "continue" as its prompt (Codex 0.163.0).
+
+Running conversation state, approval waits and agent processes are not restored. Interrupted projects appear after restoring a sealed checkpoint; cached BUSY entries in ordinary autosaves do not. Do not layer tmux-resurrect restoration onto the same environment.
 
 ### Save
 
@@ -414,41 +577,197 @@ Save your project layout to restore it later.
 ccm snapshot save my-workspace
 ```
 
+Saving supports one managed session. v2 retains windows, horizontal/vertical splits, cwd, roles, ignore intent, selected panes and zoom. Floating panes (tmux 3.8) cannot be saved: while a project window has one, saving stops with an error and the last checkpoint stays as it was.
+
 ### Restore
 
 ```bash
 ccm start my-workspace
+ccm roles                    # Current pane's role and guidance
+ccm roles @7                 # All panes in a window
+ccm roles %12 --clear        # Release a repurposed pane's role reservation
+ccm unignore                 # Clear current pane's ignore intent and live marker
 ```
+
+Smaller screens scale the layout proportionally; if the panes cannot fit, that window is held back and the others are restored. When roles are readable and there is no primary reservation, opening a window chooses the active eligible shell, or the only eligible shell if the active pane is not eligible. Sidekick, reserved-ignore and explicitly cleared panes are excluded. Multiple eligible shells with no eligible active shell are left for manual selection. A unique primary reservation is never replaced by another pane if its pane cannot be used. Unreadable, malformed or conflicting reservations block automatic launch and exit; inspect `ccm roles`. Clearing a reservation records a manual-only role, retained by snapshots and restores; automatic launch and exit leave that pane alone. `roles --clear` does not change live ignore markers; use `unignore` to release those too.
+
+While a window's panes are being split it keeps the size they were planned for, so a terminal changing size meanwhile (going full screen just after login, say) does not hold it back. Once published, the window follows the terminal again. A window held back keeps that size until Continue restore or Finish restore deals with it, so it does not follow the terminal in the meantime. If tmux cannot release the size of a published window, a last try is made when the restore or Finish restore completes; if that fails too, the output names the window with the `tmux set-option -wu -t <window> window-size` command that releases it.
+
+A successfully read empty role means **no reservation**. This can be a newly split pane or a pane whose reservation an older version removed; `ccm roles` shows `reserved`, `no reservation`, or `invalid role` without guessing its origin. An unreserved pane does not block the window. While a known external agent such as Codex is running there, it is excluded from launch, exit and idle-exit candidates. Without a primary, an unreserved shell follows normal shell selection and an unreserved Claude follows normal exit rules. With a unique primary, only that primary can be launched or exited. Live ignore markers still exclude panes. Observation does not write a reservation into an unreserved pane: after the external agent stops, its shell can be eligible again. Saving a snapshot while the external agent is running records it as a sidekick.
+
+Existing registered windows with matching names and base cwd are retained without changing splits or roles. Overlapping unregistered window names/cwd and missing saved directories stop restoration before creation. Inspect and explicitly register or resolve the overlap, then retry. An unregistered control window in a saved project's cwd also counts as a conflict.
+
+Each window is published (named, registered and released for Claude) as soon as its own checks pass, so a problem with one project never keeps the others from starting. A window that cannot be restored now (its directory is missing, it conflicts with another window, its shell startup does not settle, or it was moved, linked or changed outside the restore) is held back and named with the reason; the rest are restored. While any window is held back, the restore is incomplete: the checkpoint stays protected and autosave paused, so the windows not yet restored are not dropped from it. The dashboard shows `Restore incomplete: N window(s) need attention`. Resolve the cause and rerun the same `ccm start <name>` (or Menu → Continue restore) to retry only the windows held back; windows already published are yours and are not changed again. A problem that is not one window's (the session is gone, tmux or the process list cannot be read, the progress record cannot be saved) still stops the whole restore, and windows published before it stay as they are.
+
+Restoration starts your login shell: tmux's `default-shell`, then `$SHELL`, then `/bin/sh`, accepting only executable absolute paths with a recognized shell name. It bypasses `default-command`. Shell startup files run normally. At each layout step ccm waits up to 10 seconds for a shell foreground to settle. If rc starts an agent or another persistent foreground process, restoration pauses without killing or restarting it; inspect the pane and retry after it returns to the shell. Already completed panes are not restarted on retry.
 
 ### Auto-save
 
-The `_autosave` snapshot is updated automatically every 2 minutes while ccm projects exist, and is also written when you run `ccm stop --all`:
+`_autosave` is checked every 2 minutes and after project operations. Identical or empty inventories, protected checkpoints and incomplete restorations leave it intact. Restored shells retain their roles and ignore intent in the next save.
+
+### Protect a checkpoint
 
 ```bash
-# Stop all projects (auto-saves)
-ccm stop --all
-
-# Next day, restore
-ccm start _autosave
+ccm prepare-logout
+ccm prepare-logout -y          # --yes: skip PERMIT/BUSY confirmation
+ccm doctor --verbose
+ccm prepare-logout --cancel    # Unseal without deleting the checkpoint
 ```
 
-#### Auto-restore on tmux start
+The prompt is `Save anyway? [y/N]`. `y` and Enter save; N, Enter alone, Esc, EOF and Ctrl-C exit nonzero without saving. Non-interactive use with PERMIT/BUSY requires `-y`. Changes to configuration or states during confirmation also refuse the save and ask for a retry.
 
-To automatically restore the last `_autosave` snapshot when tmux starts, add to `~/.tmux.conf`:
+### Finish an incomplete restore
+
+```bash
+ccm finish-restore             # asks before changing anything
+ccm finish-restore -y          # --yes: no confirmation
+```
+
+When windows stay held back and cannot be fixed now (a project directory was deleted, say), `ccm finish-restore` ends the restore with the projects restored so far. It names the projects that will no longer be restored and asks first. For `_autosave` it then keeps the full checkpoint as `_autosave-held-back-<id>` (one per restore, never replacing an earlier one; restore it later with `ccm start _autosave-held-back-<id>`), removes ccm's restore marks from the held-back windows it created (their shells keep running as plain tmux windows), and saves the projects in use as `_autosave`; with no project in use, `_autosave` is removed instead, so the abandoned checkpoint is not restored at the next start. A named snapshot is left unchanged, and loading it again restores all its projects. Finally the restore is released. If `_autosave` is also protected for logout, autosave stays paused until `ccm prepare-logout --cancel`, and the command says so. Each step is recorded first, so if it stops part way, running it again completes it without asking again; the dashboard then shows `Finishing the restore stopped part way`. Non-interactive use requires `-y`.
+
+Windows and agents keep running after protection. Run prepare again after configuration changes. Protection survives logout and is released automatically only after a complete restore. Prepare/cancel refuse while restoration is incomplete; finish the same snapshot restore first. `ccm stop --all` closes windows even if saving fails, so confirm a successful prepare first when you need a confirmed save.
+
+#### Auto-restore on tmux start
 
 ```tmux
 set -g @ccm-auto-restore "on"    # default: off
 ```
 
-> [!NOTE]
-> This loads `_autosave` via TPM on startup. If ccm projects are already loaded, the restore is skipped.
+TPM startup loads `_autosave`, skipping when managed windows already exist. The location follows `CCM_SNAPSHOT_DIR`, otherwise under `CCM_DATA_DIR`. The run's output, including any failure reason, is kept in `state/auto-restore.log` under `CCM_DATA_DIR`.
+
+While a restore runs, the tmux status area shows it too, without opening the dashboard: a `⟳ ccm restore` badge with `12/45: alpha · about 50s left` for each window, then `✔ ccm restore` with `restored 45/45 window(s) · …`, `⚠ ccm restore` with `restored 43/45 · 2 need attention · dashboard menu: Continue restore` when windows were held back, or `✖ ccm restore` with `stopped at 12/45 · dashboard menu: Continue restore · <reason>`. Missing windows are all created first, so their shells start together; meanwhile the notice reads `0/45: creating alpha`. The badge is blue, green or red in muted tones, followed by a dark band so the notice stands apart from the status bar. These are temporary messages for every client attached to the restored session, renewed per window; panes keep updating while they show, and a key press dismisses one early. They need tmux 3.6 or later (`display-message -C`); older tmux shows no notice, and nothing is shown while no client is attached to the restored session. The dashboard shows the same progress, for example `Restoring 12/45: alpha · about 50s left`; the estimate appears after three windows have been rebuilt. If it stops, the dashboard shows `Restore stopped:` with the reason; retry with Menu → Continue restore or the same snapshot. Starting a restore while another is running waits for it, prints its progress and then its result, and does not restore again. When that run's result cannot be confirmed, the waiting restore continues itself; windows already restored are kept.
 
 ### Manage snapshots
 
 ```bash
-ccm snapshot list          # see all snapshots
-ccm snapshot delete old    # remove a snapshot
+ccm snapshot list
+ccm snapshot delete old
 ```
+
+The fixed `_autosave.prev` backup is absent from the list. To use it, copy it in the snapshot directory to an unused name such as `recovery.json`, set its mode to 0600, then run `ccm start recovery`. Inspect an existing incomplete restore before switching checkpoints. See [format, protection, backup and conflict details](diagnostics.md#snapshot-checkpoints).
+
+## Machine-readable Output
+
+Agents and scripts can read ccm's answers as JSON instead of the text
+tables. Each run prints one JSON object on stdout, failures included.
+
+### `ccm status --json`
+
+```bash
+ccm status --json             # every registered window
+ccm status --json my-project  # the window registered as my-project
+ccm status --json self        # the window this command runs in
+```
+
+```json
+{
+  "schema": 1,
+  "ccm_version": "0.13.0",
+  "generated_at": 1794261478,
+  "hooks": {"configured": true},
+  "warnings": [],
+  "spool": {"pending": 0, "held": 0, "expired": 0},
+  "projects": [
+    {
+      "window_id": "@12",
+      "name": "my-project",
+      "dir": "/projects/my-project",
+      "dir_raw": "/projects/my-project",
+      "state": "IDLE",
+      "bg": false,
+      "permission_mode": "default",
+      "completed_at": 1794261400,
+      "branch": "main",
+      "sidekicks": [
+        {"agent": "codex", "pane": "%34", "state": "BUSY",
+         "state_source": "screen", "keys": "free"}
+      ]
+    }
+  ]
+}
+```
+
+- `projects` holds one record per tmux window. A window linked into
+  several sessions counts once, and two windows on the same directory
+  both appear (the text table shows only the first).
+- `state` is the window's state: `PERMIT`, `BUSY`, `IDLE`, `SHELL`,
+  `IGNORED` or `DOWN`.
+- `dir` is the resolved absolute path, `null` when it cannot be resolved;
+  `dir_raw` is the directory as registered. A directory does not identify
+  a window; `window_id` does.
+- `permission_mode` is the mode as Claude Code reports it (`default`,
+  `acceptEdits`, `plan`, `auto`, …), `null` when none is known.
+- `completed_at` is when the last turn completed (epoch seconds), `null`
+  when none has.
+- `hooks.configured` is `null` when the settings cannot be read.
+- Each `sidekicks` entry is a sidekick pane of the window:
+  - `state` is `PERMIT`, `BUSY` or `IDLE`, or `null` when ccm cannot
+    tell. `null` does not mean idle.
+  - `state_source` says where the state came from: `screen`, `hook`
+    (Codex's hook record, used while its screen is unreadable) or
+    `marker` (a waiting marker from Kimi, Grok or a second Claude), and
+    is `null` when the state is.
+  - `keys` is `held` when a dialog or a view would take typed keys, `free`
+    when ccm saw the composer in front, and `null` when it cannot tell.
+    `free` is not a promise that a message will be accepted.
+- On failure the object has `error.code` and `error.message`, and the exit
+  code is 1. The codes are `usage`, `no_match`, `ambiguous` (several
+  windows have that name; none is chosen), `self_unresolved` and
+  `tmux_unavailable`. `ccm status --json --help` returns the usage as
+  `help`.
+
+### `ccm sidekick-send --json`
+
+```bash
+ccm sidekick-send --json "Please review request-12.md"
+```
+
+```json
+{"schema": 1, "outcome": "attempted_seen", "reason": null,
+ "agent": "codex", "pane": "%34", "enter_requested": true,
+ "enter_sent": true, "message": "Typed into sidekick codex (%34); …"}
+```
+
+- `outcome` says what happened:
+  - `refused`: no key was sent. `reason` says why: `dialog` or `view`
+    (the sidekick would take the keys), `no_sidekick`,
+    `multiple_sidekicks`, `pane_changed`, `pane_unidentified` (ccm cannot
+    tell which process runs in the pane), `not_in_tmux`,
+    `caller_unverified`, `wrong_direction` (run from the sidekick itself),
+    `outside_project`, `project_dir_unavailable`, `file_unreadable`,
+    `stdin_unreadable`, `unsupported_text` (the message holds a control
+    character, such as NUL, a lone carriage return, ESC or Ctrl-C),
+    `observation_failed` (ccm could not look at the sidekick) or `usage`.
+  - `attempted_seen`: the keys were tried and a fragment of the message
+    is visible in the pane. The fragment may be an earlier one; it does
+    not prove that this message arrived, arrived whole, or was accepted.
+  - `attempted_unseen`: the keys were tried but no fragment appeared.
+  - `attempted_unchecked`: the keys were tried; the message was too short
+    to look for.
+  - `attempted_stopped`: the message was typed, but before `Enter` a
+    dialog appeared (`dialog`), a view took the keys (`view`), the
+    pane could not be confirmed to be the same sidekick of this window
+    any more (`pane_changed`), or ccm could not look at it again
+    (`observation_failed`), so `Enter` was not sent. The text may be
+    in the sidekick's input box.
+  - `attempted_failed`: tmux failed part-way (`typing_failed`,
+    `enter_failed`); what reached the pane is unknown.
+- `enter_sent` is `false` when `Enter` was not tried, `true` when tmux took
+  it, and `null` when it was tried and the result is unknown. `true` does
+  not mean the sidekick accepted the message.
+- The exit code stays as before: 0 for `attempted_seen` and
+  `attempted_unchecked`, 1 otherwise. Neither proves delivery: check with
+  `ccm capture` before resending, and never resend on an `outcome` alone.
+- `--json` counts only as a flag: after `--` it is part of the message, and
+  as the value of `--file` it is a file name. `message` repeats the text
+  line, which also goes to stderr on failure.
+
+### Compatibility
+
+Within `"schema": 1`, fields and values are only added. A reader should
+ignore fields it does not know, treat a value it does not know as
+unknown, and never act or resend on one. A reader that does not support
+the `schema` it gets should not use the output.
 
 ## Tips
 
@@ -519,7 +838,20 @@ ccm detects TCP ports that processes in your project directory are listening on.
 
 Port detection results are cached for 30 seconds to minimize overhead.
 
+### Turn off `←` opening the agent list
+
+In Claude Code, pressing `←` on an empty prompt opens the agent view and hands the current conversation to a background session; the pane then shows the agent view. In a regular interactive session with the default settings of Claude Code 2.1.304, a single press does it, unless you emptied the prompt within the last two seconds, when it asks you to press `←` again. So it is easy to do by accident, and the background session it leaves can stop `claude --continue` from resuming that project later (see [Using with agent view](#using-with-agent-view-background-sessions)). With ccm you move between projects with tmux, so you may prefer to turn it off: in Claude Code, open `/config` and switch **`← opens agents`** off. It is a user-wide setting, so one change covers every project; `/background` and `claude agents` still work. (Checked with Claude Code 2.1.304.)
+
+The Codex CLI has a similar shortcut: `←` on an empty composer opens its agent list (the conversation stays where it is, and Esc returns to it); the list offers `enter open` and `n new`. To turn the shortcut off, add this to `~/.codex/config.toml` (or, if it already has a `[tui.keymap.global]` table, add the `open_agents` line there); Codex shows no `← for agents` hint then, `←` does nothing, and the list stays available as `codex agents`. It applies to Codex sessions started afterwards. (Checked with Codex 0.163.0.)
+
+```toml
+[tui.keymap.global]
+open_agents = []
+```
+
 ## Troubleshooting
+
+Start with `ccm doctor` for issues and next steps. Use the [diagnostics reference](diagnostics.md) for a detailed investigation.
 
 ### Dashboard won't open
 
@@ -567,41 +899,23 @@ ccm reset my-project      # clears hook signals, event log, and cached state opt
 
 `ccm reset` does not touch the conversation, snapshots, or the running `claude` process — it only wipes the ephemeral runtime artefacts that detection reads. The next scan re-resolves state from scratch. For ordinary "Claude is hung" situations, `/exit` inside the pane is still the right answer.
 
+### Settings that stop hooks
+
+Start with `ccm doctor` and Claude Code's `/status`; ask your administrator to correct managed settings.
+
+See the [diagnostics reference](diagnostics.md#settings-that-stop-hooks).
+
 ### Detection has gone quiet (hook-silence canary)
 
-Claude Code sometimes stops firing hooks partway through a session. ccm's
-precise detection depends on them, so when they stop it falls back to coarser
-signals and states can lag or stick. The cause is upstream, not ccm, but from
-the outside the two look identical.
+Restarting the affected Claude session restores hooks that have stopped firing.
 
-An opt-in canary reports the difference:
-
-```tmux
-set -g @ccm-hook-silence on
-```
-
-It warns in `ccm status`, `ccm doctor` and the dashboard footer when a
-session's transcript shows recent activity that its hook log never recorded —
-work that happened with the hooks asleep. Off by default: a threshold tuned
-wrong can only mislead someone who asked to watch it.
-
-Thresholds are `CCM_HOOK_SILENCE_FRESH` (how recent the transcript activity
-must be, default 90 s) and `CCM_HOOK_SILENCE_GAP` (how far the hook log must
-lag it, default 120 s). Each firing is also appended to
-`~/.local/share/ccm/state/hook-silence.log`, rate-limited per project, and
-`ccm doctor` reports the count.
-
-Restarting the affected Claude session restores the hooks.
+See the [diagnostics reference](diagnostics.md#detection-has-gone-quiet-hook-silence-canary).
 
 ### Every project frozen at the same state
 
-If **all** projects are stuck at the same state (e.g. all BUSY, no longer updating after refresh), the detection cycle itself may have hit a silent exception. Check the log:
+Start by checking the records with `ccm errors`.
 
-```bash
-ccm errors
-```
-
-Each line is a previously-swallowed exception with timestamp, scope, and traceback. An empty log (`No silent-caught errors logged.`) means the cycle is healthy. If entries keep accumulating, the most recent traceback identifies the failing call site. `ccm errors --clear` removes both the active log and the rotated `errors.log.1`.
+See the [diagnostics reference](diagnostics.md#every-project-frozen-at-the-same-state).
 
 ## Using with Agent Teams
 
@@ -622,7 +936,7 @@ This means ccm's dashboard and status bar give you visibility into Agent Teams a
 
 **Sliver protection.** Panes shorter than `SLIVER_HEIGHT_THRESHOLD` (4 rows by default — see Environment Variables below) are excluded from state aggregation. Tiny pseudo-panes — typically a leftover 1-row strip from an earlier split — cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a busy pane and they false-read BUSY. Excluding them prevents an invisible sliver from infecting the whole window's reported state. If you have a legitimate small Agent Teams pane and want it to count, raise the threshold via `CCM_SLIVER_HEIGHT_THRESHOLD`.
 
-**Auto-focus on attach.** When you attach to a window via ccm (dashboard or `ccm attach`), if any teammate pane is waiting on a permission modal (`⚠ PERMIT`) and the active pane is not, ccm automatically switches focus to the PERMIT pane. Saves a manual `prefix + arrow` after every attach to a project that needs your input. PERMIT only — BUSY teammates are interesting to monitor but do not require user input, so focus is not stolen.
+**Auto-focus on attach.** When you attach to a window via ccm (dashboard or `ccm attach`), if any teammate pane is waiting on a permission modal (`⚠ PERMIT`) and the active pane is not, ccm automatically switches focus to the PERMIT pane. Saves a manual `prefix + arrow` after every attach to a project that needs your input. PERMIT only — BUSY teammates are interesting to monitor but do not require user input, so focus is not stolen. When no Claude pane waits but a sidekick does (the `▸ <name> ⚠` badge), the sidekick pane gets the focus instead, whether Claude is idle or busy; a waiting Claude pane still comes first, and `w` / `@ccm-sidekick-attention off` leaves the focus alone.
 
 ### No conflicts
 
@@ -666,7 +980,7 @@ ccm unignore <project>  # restore a project
 
 or press `i` on a project in the dashboard.
 
-**If you forget.** Nothing goes wrong silently. A window with two visible Claude sessions aggregates both, and `ccm send` refuses to guess between them rather than typing into the wrong conversation — the refusal points back at `CCM_IGNORE` and the `i` key. `ccm doctor` also lists such windows under *multi-claude windows*. Neither is phrased as a warning, because the same window shape is a normal Agent Teams split, where both sessions must stay visible so that either one's PERMIT reaches you. They name both readings and leave the choice where it belongs.
+**If you forget.** Nothing goes wrong silently. A window with two visible Claude sessions aggregates both, and `ccm send` refuses to guess between them rather than typing into the wrong conversation — the refusal points back at `CCM_IGNORE` and the `i` key. `ccm doctor --verbose` also lists such windows under *multi-claude windows*. Neither is phrased as a warning, because the same window shape is a normal Agent Teams split, where both sessions must stay visible so that either one's PERMIT reaches you. They name both readings and leave the choice where it belongs.
 
 **Make the ignore visible on the pane itself** (optional): ccm sets a `⊘ ccm-ignored` pane title, which tmux shows only if you enable pane borders. Opt in with `tmux set -g @ccm-ignore-pane-border on` — ccm then turns on `pane-border-status` when a session is ignored (a global tmux change, so it happens only with this explicit opt-in). Without it, the dashboard `⊘` remains the cue.
 
@@ -676,18 +990,18 @@ or press `i` on a project in the dashboard.
 
 ![How ccm sees a window with a sidekick: the Claude Code pane is tracked and its state becomes the window's, while a second agent CLI in a split pane gets only a presence badge. The two exchange messages directly — the sidekick reports back with ccm send, and Claude messages it with ccm sidekick-send after checking it with ccm capture.](../assets/sidekick-model.svg)
 
-You can run an agent CLI other than Claude Code in a split pane of a project window and let the two agents exchange messages without a human relaying text. ccm stays Claude-centric: it only shows a dim `▸<name>` presence badge when a known external agent CLI runs in a pane (display only — it does not track that agent's state), and `ccm capture` shows every pane so either side can read the other.
+You can run an agent CLI other than Claude Code in a split pane of a project window and let the two agents exchange messages without a human relaying text. ccm stays Claude-centric: it only shows a dim `▸ <name>` presence badge when a known external agent CLI runs in a pane (display only — it does not track that agent's state), and `ccm capture` shows every pane so either side can read the other.
 
 The conventions that make the relay work:
 
 - **Other agent → Claude**: the other agent runs `ccm send <project> "<message>"`. State gating applies (never into PERMIT), and the message lands as Claude's next turn — no one needs to watch.
-- **Claude → the sidekick in its own window**: run `ccm sidekick-send "<message>"` from a pane of the project window. ccm cannot state-gate a non-Claude pane, so check the peer is ready with `ccm capture <its own project>` first. The command then does what the hand procedure used to leave to your attention: it finds the sidekick pane from tmux metadata (a known external-agent CLI whose working directory belongs to this project), refuses when there is no sidekick or more than one, types the body literally (`send-keys -l --`), waits 0.3 s before sending `Enter` separately, and captures the pane afterwards to confirm a fragment of the message actually landed — exiting non-zero when it cannot confirm.
+- **Claude → the sidekick in its own window**: run `ccm sidekick-send "<message>"` from a pane of the project window. Check the peer is ready with `ccm capture <its own project>` first. The command refuses when it can see the sidekick waiting for a key: a dialog on a Codex or Antigravity screen, Codex's hook record of an approval while its screen cannot be read, or a waiting marker from Kimi or Grok (answer it first). It also refuses for Codex when text is selected in its pane, since the keys would go to the selection (clear it first), and when it cannot tell which process runs in the pane. Just before `Enter` it looks again and leaves `Enter` unsent if a wait appeared or the sidekick was restarted. It still sends when it cannot tell what the sidekick is doing. The command then does what the hand procedure used to leave to your attention: it finds the sidekick pane from tmux metadata (a known external-agent CLI whose working directory belongs to this project), refuses when there is no sidekick or more than one, types the body literally (`send-keys -l --`), waits 0.3 s before sending `Enter` separately, and captures the pane afterwards to confirm a fragment of the message actually landed — exiting non-zero when it cannot confirm.
 
   The pieces it packages still matter if you ever type into a foreign TUI by hand. `-l` sends the text literally; without it tmux resolves arguments as key *names*, so a word like `Space` or `Enter` inside the message silently becomes that keystroke. Newline keys differ between CLIs (Claude uses `M-Enter`), so multi-line bodies are typed line by line with the peer's newline key between them — `ccm sidekick-send` uses `M-Enter`.
 
   **The pause before `Enter` is load-bearing, and it is the failure you are most likely to hit by hand.** Chain the body and the `Enter` with `&&` and the peer's TUI can still be digesting the inserted text when `Enter` arrives, and take it as a *newline* instead of a submit. The body then sits in the composer, unsent, looking exactly like a message that went through. Measured against Kimi K3: no gap fails every time, 0.3 s and 1 s both submit. Claude Code's own composer tolerates a zero gap — which is why `ccm send` needs no pause and why this bites only when the peer is something else.
 
-  **Confirm the send, don't assume it.** `ccm sidekick-send` does this itself (the post-send capture above). By hand, `ccm capture` after `Enter` and look at the peer's input box: *empty* means submitted, *your text still sitting there* means it was not — visible text is proof of failure, not proof of delivery.
+  **Check the conversation and input box.** `sidekick-send` only checks whether a message fragment is visible; it cannot confirm acceptance. Short messages report delivery unconfirmed. `--no-enter` reports that submit Enter was not sent (also for `ccm send`); other sidekick sends report that Enter was attempted. When the report says delivery is unconfirmed, or before relying on the reply, check with `ccm capture`: do not resend if received, and resolve leftover text before deciding whether to resend. An empty input box alone does not prove receipt.
   **It does not read the peer's composer, so check it yourself.** `ccm send`
   refuses to type into a Claude pane whose composer already holds a half-typed
   draft, because the committing Enter would submit the mixture. There is no
@@ -706,7 +1020,7 @@ The conventions that make the relay work:
 
 ## Sidekick attention: knowing when it needs you
 
-A sidekick's approval dialog is easy to miss: ccm deliberately reads no state from a non-Claude pane, so a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships:
+A sidekick's approval dialog is easy to miss: without its hooks, a Kimi blocked on *"Run this command?"* looks exactly like a Kimi working — a dim `▸ kimi` either way. Rather than parse each product's screen (formats differ per CLI and change without notice), ccm lets the sidekick *report itself*, through the hook system the sidekick's own vendor ships. Codex and Antigravity are the exceptions, described below: Codex's hooks cannot say when an approval is answered, so ccm also reads its screen, and Antigravity's have no approval event at all, so ccm reads only its screen.
 
 ```bash
 ccm setup-sidekick-hooks kimi     # writes [[hooks]] entries into ~/.kimi-code/config.toml
@@ -715,7 +1029,7 @@ ccm remove-sidekick-hooks kimi    # removes them (backup kept either way)
 
 Takes effect in **new** Kimi sessions only — Kimi loads its config at session start, so restart the sidekick pane's `kimi` once after installing.
 
-From then on, when the sidekick hits a permission prompt its hook drops an attention marker keyed to its tmux pane, and ccm reacts on every surface at once: the `▸kimi` badge turns PERMIT-yellow on the dashboard, `ccm status` and the status bar, and a desktop notification fires with the tool it is asking about. When you (or the buddy Claude) answer the dialog, the resolution hook clears the wait and the badge dims again. The window's own state never changes — PERMIT still means *Claude* needs you; a yellow `▸` means the *sidekick* does.
+From then on, when the sidekick hits a permission prompt its hook drops an attention marker keyed to its tmux pane, and ccm reacts on every surface at once: the `▸ kimi` badge turns PERMIT-yellow on the dashboard, `ccm status` and the status bar, and a desktop notification fires with the tool it is asking about. Answer approval dialogs yourself in the original sidekick pane; do not ask Claude to approve on your behalf. When you answer the dialog, the resolution hook clears the wait and the badge dims again. The window's own state never changes — PERMIT still means *Claude* needs you; a yellow `▸` means the *sidekick* does.
 
 Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-sidekick-attention off` (markers are still written when off — only ccm's display and notification go quiet, so other local consumers of the marker directory keep working).
 
@@ -724,11 +1038,164 @@ Toggle it with `w` in the dashboard, or persistently with `tmux set -g @ccm-side
 > [!NOTE]
 > Support for non-Claude agents is **exploratory**, and `ccm setup-sidekick-hooks` is deliberately absent from the CLI table for now. Each vendor's hook contract is young and still moving — measuring three of them turned up an undocumented event type, a platform-suffixed binary name, and a product whose hooks load but never fire. Expect this section to change; the Claude-sidekick path above depends on none of it.
 
-Installable for **Kimi Code** and **Grok Build**, both verified against a running pane. Kimi is the precise one — its hook set has `PermissionRequest` *and* `PermissionResult`, so waits open and close exactly. Grok has neither: its permission wait arrives as `Notification` with `notificationType: "permission_prompt"`, carries no tool details (the summary falls back to Grok's own "Tool permission requested"), and closes on the next activity event.
+Installable for **Kimi Code** and **Grok Build**, both verified against a running pane, and for **Codex** (described below). Kimi is the precise one — its hook set has `PermissionRequest` *and* `PermissionResult`, so waits open and close exactly. Grok has neither: its permission wait arrives as `Notification` with `notificationType: "permission_prompt"`, carries no tool details (the summary falls back to Grok's own "Tool permission requested"), and closes on the next activity event.
 
-Two agents cannot be supported at all, both for upstream reasons: **Codex CLI** has no approval-time hook ([openai/codex#11808](https://github.com/openai/codex/issues/11808)), and **Antigravity CLI** (Gemini CLI's successor) loads hooks without ever firing them — measured against 1.1.10, where a real approval dialog produced nothing from any of its six events. `ccm setup-sidekick-hooks` refuses an unsupported agent by name and says which case applies.
+**Antigravity CLI** (`agy`) needs no installer: ccm reads its pane's screen (see *Antigravity working and waiting* below), and `ccm setup-sidekick-hooks` refuses it by name. An `agy` pane is recognised as a sidekick (the `▸ agy` badge, kept out of launch and exit, saved as a sidekick).
+
+**Codex attention and completion notifications.** Install the adapter separately
+from enabling Claude notifications:
+
+```bash
+ccm setup-sidekick-hooks codex
+# Review and trust the installed hooks in Codex /hooks.
+# Optional per-window override; prefer the persistent global setting below.
+tmux set-option -w -t <window> @ccm-sidekick-notify on
+# Optional settings (defaults: 20 deliveries/hour, excerpt on):
+tmux set-option -w -t <window> @ccm-sidekick-notify-limit 20
+tmux set-option -w -t <window> @ccm-sidekick-notify-excerpt off
+# Stop completion notifications:
+tmux set-option -w -t <window> @ccm-sidekick-notify off
+ccm remove-sidekick-hooks codex
+```
+
+For all sidekick windows, put `set -g @ccm-sidekick-notify on` in `~/.tmux.conf` (recommended), then reload the configuration. A command entered only into the running server is not persistent. This enables delivery when matching Codex hooks are installed and trusted; it does not install or trust hooks.
+
+All three notification options resolve in this order: explicit window value (`set -w`), global window value (`set -gw`), global session value (`set -g`), built-in default. A window's `off` overrides global `on`. If both global tables are set, `-gw` wins; prefer using only `-g` in the configuration. Empty values act as unset. Use `tmux set -wu -t <window> @ccm-sidekick-notify` to remove a window override. A failed query stops resolution and disables notification/excerpt delivery for that read.
+
+`ccm doctor --verbose` shows the effective notification, hourly limit and excerpt values with their sources (`window`, `global (-gw)`, `global (-g)`, `default`, or `unavailable` on query failure). Enabled windows without observed Codex hooks still produce a warning. Hook creation, delivery, diagnostics and dashboard notice previews share the same resolver.
+
+Snapshots v1/v2 are unchanged: they do not save notification overrides. Global configuration applies to newly restored windows. A window-only override is lost when its window is recreated; reapply exceptions before starting sidekicks. If notifications or excerpts must stay disabled after restart, set the corresponding global option to `off` in `~/.tmux.conf`.
+
+
+The installer merges only this installation's hook entries into Codex's
+`hooks.json` (under `CODEX_HOME`, or `~/.codex`), keeps a `.ccm-bak`, and preserves
+other hooks. A reinstall updates ccm's entries where they are, so other hooks keep
+their positions and Codex does not ask to review them again; only removing a
+duplicate ccm entry, or one for an event ccm no longer uses, moves the hooks after it. Invalid JSON and installation paths containing spaces are refused.
+It does not edit trust records or `config.toml`. New or changed hooks need the
+user's trust review; installation alone does not establish that they run.
+Removal disables loaded ccm hooks and cancels pending notices; restart/review
+Codex as appropriate. Reinstalling restores the adapter; window preferences
+remain as configured. Refresh `ccm setup-claude-md` for the recipient guidance.
+
+Only the hook payload's cwd identifies the project: exactly one registered
+window must contain it, and that window must host exactly one Codex pane.
+Linked copies of a window count once; nested or duplicate registrations are
+ambiguous. Ignored Codex panes still count as physical sidekicks. The first
+session observed for that live Codex process is bound automatically. An event
+from a new session, or a changed process identity, rebinds it, whether or not a
+SessionStart arrived; late events from a session the process already left are
+ignored. The internal `@ccm-sidekick-binding` window option records this
+association; do not edit it. Another session using the same cwd (for example
+Codex running outside tmux) is indistinguishable and takes over the binding
+when it sends events. This is a heuristic, so read the named pane before acting.
+SessionStart may not arrive until the first turn. The hook's own pane variable
+and process ancestry are not used for routing.
+
+**Codex working and waiting.** The `▸ codex` badge shows three states:
+`▸ codex ⚠` in PERMIT's yellow while a Codex dialog waits for a key (an approval,
+or the hook review at start-up), `▸ codex ◉` in BUSY's colour while Codex works on
+a turn, and a dim `▸ codex` otherwise. The window's own state is unaffected.
+Codex's hooks report when a turn starts and ends and when it asks for approval,
+but nothing fires when the approval is answered: the next event comes when the
+approved command finishes, minutes later for a long one. So ccm reads the Codex
+pane's screen, which shows the answer at once: the dialog's key hint on the
+last line means waiting, and the working line just above the input box
+(`Working (… • esc to interrupt)` and its other wordings) means working, even
+when the last line holds the key hint of text selected in the pane (unless the
+input box holds a numbered draft, which reads as a dialog's option). When
+the screen shows neither (an overlay, a scrolled view), the hooks' last record
+for that pane decides, for up to 30 minutes after its last event. `w` and
+`@ccm-sidekick-attention off` hide both states.
+
+Permission requests use the existing attention marker, badge and desktop
+notification, controlled by `@ccm-sidekick-attention`. Desktop notices run on
+the next full refresh and omit waits already resolved. They do **not** send a
+message to Claude. Only a uniquely matched tool completion or a matching turn
+interrupt/end clears the wait; an unrelated tool does not. Neither ccm nor
+Claude answers approval dialogs, returns hook approval decisions, changes
+permissions, or bypasses hook trust. The user handles the original approval UI.
+
+With completion notifications enabled, Stop queues a short automatic notice
+for the window's sole non-ignored Claude pane. It waits for IDLE, an empty
+composer and a readable capture; ordinary queued messages take priority.
+There is no auto-launch or forced delivery. Unless excerpts are off, each event
+quotes the final message's first line, limited to 400 characters after redacting
+the full message. A cut line is marked as truncated; read the source pane for the
+full text and location. Sanitization removes
+terminal/control/bidirectional formatting; it cannot guarantee removal of all
+secrets or malicious instructions. Excerpts are data, not authorization.
+Notifications do not suggest a `ccm send` reply. Do not acknowledge merely to
+acknowledge or automatically delegate another task.
+
+Unexpired pending completions for the same session/binding retain their event IDs
+and first lines in order when combined. Each notice holds up to 8 events and
+4 KiB of UTF-8 text, including JSON quoting and fixed instructions; overflow stays
+in separate pending notices. Only combined notices show a count. They use the
+normal spool TTL (60 minutes by default, `CCM_SPOOL_TTL_SEC`); a combined notice
+keeps the earliest expiry, so later events never extend it. Expired notices remain visible. The rolling hourly limit
+is per window; excess notices are recorded rather than delivered, and capacity
+returns as earlier attempts age out. There is no minimum interval, permanent
+pause or lifetime quota. Each delivered notice can consume a Claude turn.
+An explicit `ccm send` does not suppress the automatic completion notice.
+
+A changed source/recipient, opt-out or session end cancels pending delivery.
+If delivery might have begun, ccm records an uncertain result and never retries
+automatically; a crash just before typing can therefore lose a notice. Held
+input is also not resent. Dashboard `u` and `ccm doctor` expose expired,
+rate-limited, cancelled, held and uncertain notices. Read or discard them there;
+automatic notices cannot be resent. `ccm doctor --verbose` also shows installation,
+reception, per-window preferences and binding. Reception is not proof of current
+hook trust. Evidence and duplicate IDs are retained for seven days.
+
+Enabling notifications sends excerpts to Claude’s conversation history and outside your machine. Redaction is best-effort. Disable excerpts with `tmux set -w @ccm-sidekick-notify-excerpt off`; Claude can still read the source pane, and that content also enters its conversation history and is sent outside your machine.
+
+This completion path currently supports Codex only. Kimi, Grok and ignored
+Claude sidekicks retain their existing attention behavior. Approval-wait and
+resolution messages to Claude, and `codex queue` transport, are not included.
+
+**Antigravity working and waiting.** The `▸ agy` badge shows the same three
+states as Codex's, read from the agy pane's screen alone, because Antigravity's
+hooks have no event for an approval. A menu (an approval, the folder-trust
+question) means waiting, and so does a subagent's approval box just above the
+input box while the agent list below it shows that agent `Blocked` (when the
+list is folded past it, the wait is not shown);
+`esc to cancel` on the last line means working. While the main agent only waits
+for its subagents, agy shows itself idle, and so does the badge. When the screen
+shows none of these (an overlay, a scrolled view), the badge shows no mark;
+there is no hook record to fall back on. Antigravity gets no attention marker,
+desktop notice or completion notice. `w` and `@ccm-sidekick-attention off` hide
+both states.
+
+With several sidekicks in one window, each name on the badge carries its own
+state's mark and colour, so `▸ codex ◉,agy ⚠` reads as Codex working and
+Antigravity waiting.
+
 
 Grok Build gets its own hook file (`~/.grok/hooks/ccm-sidekick-attention.json`) instead of an edit to your config, so removing it is an unlink and nothing of yours is ever merged with.
+
+<a id="sidekick-completion-v1"></a>
+### Completion reporting (`sidekick-completion v1`)
+
+When assigning work to a sidekick, the requester specifies the completion route
+(automatic notification or explicit send) and where to leave the result.
+For automatic notification, do not add a `ccm send` just to announce completion:
+start the final message with one line containing the request number, completion,
+and result location. For explicit send, report to the specified recipient as
+usual, and keep the result location in the final message. If the instructions
+are unclear, ask the requester; do not guess that reporting can be omitted.
+Approval dialogs are always handled by the user in the original UI.
+
+Combined notifications preserve each event's first line, including earlier result
+locations; overflow waits in separate notices. Existing records that already lost
+an excerpt cannot recover it. Reporting can still miss a location when hooks do
+not run, a notice expires or cannot be delivered, or redaction or the 400-character
+line limit removes it. Truncated locations require checking the source pane;
+when excerpts are off, locations are not included. Specify
+explicit send when notifications are off, the CLI is unsupported, or the route
+is uncertain. ccm does not track outstanding completion reports. Check the
+sidekick's result when a report is missing; expired, limited, held or uncertain
+notices must not trigger an automatic resend through another route.
 
 ## Using with agent view (background sessions)
 
@@ -742,11 +1209,11 @@ Off by default — agent-view non-users see no clutter. There are three ways to 
 - Set `@ccm-bg-section "always"` in `~/.tmux.conf` — keeps it visible across opens.
 - Toggle the `Background sessions: …` row in the dashboard menu (`m`) — writes the same option back to `~/.tmux.conf`.
 
-The section appears below the project list and lists each active worker with its short ID, normalised state (`✽ WORKING` / `✻ NEEDS` / `● IDLE` / `✓ DONE` / `✕ FAILED`), human-readable name, age, and working directory.
+The section appears below the project list and lists each active worker with its short ID, normalised state (`✽ WORKING` / `✻ NEEDS` / `● IDLE` / `✓ DONE` / `✕ FAILED` / `■ STOPPED`), human-readable name, age, and working directory. A blocked session — the CLI's word for one whose next step belongs to you: a reply or an approval it waits for, or a condition to act on or wait out (a login, a usage limit, a rate limit) — reads `✻ NEEDS`, and what it waits for is shown in place of the directory. A session ended with `claude stop` reads `■ STOPPED`: neither finished nor failed.
 
 ### Attaching from the dashboard
 
-Navigate to a bg row with `↑/↓` (selection moves seamlessly between projects and bg) and press `Enter`. ccm opens a new tmux window in the current session and runs `claude attach <short>` into it. The window's working directory matches the bg session when available, and its name is `bg-<short>` so it's easy to find with `prefix + w` (choose-tree).
+Navigate to a bg row with `↑/↓` (selection moves seamlessly between projects and bg) and press `Enter`. ccm opens a new tmux window in the current session and runs `claude attach <short>` into it. The window's working directory matches the bg session when available, and its name is `bg-<short>` so it's easy to find with `prefix + w` (choose-tree). The window is also tagged with the session's short id (`@ccm_bg_short`), so pressing `Enter` on the same row again switches to that window instead of opening another one — every extra `claude attach` is another client drawing the same conversation, and enough of them garble it. The tag is what is matched, not the name, and only while the window still hosts claude; once the attach has ended, the next `Enter` opens a fresh window. If two such windows are live, or ccm cannot tell (the window list, the process table, or a window's panes could not be read), no window is opened and the message says why. Only the current tmux session is searched.
 
 The new window is **not** registered as a ccm project — it has no `@ccm_project` / `@ccm_dir` tags, so ccm's `auto_start_claude` never races your attach with a `claude --continue` injection. This is the structural workaround for the attach/auto-start conflict; without it, attaching to a bg session from inside a ccm window would deliver `claude attach <short>` as a user message to the already-running `claude --continue` instead of as a shell command. Close the window with `prefix + &` after you detach from claude.
 
@@ -763,238 +1230,85 @@ claude stop <short>           # terminate a session
 
 Outside the dashboard, `ccm bg list` prints the same data as a coloured table for shell use.
 
+### When `claude --continue` starts fresh
+
+Sending a session to the background with `/bg` leaves a hand-off record at the end of its transcript. `claude --continue` walks a directory's transcripts newest first, and when the newest one hands off to a session the CLI still counts as live, it resumes nothing: a notice names the background session and a fresh session starts. The CLI can still count a background worker as live after its task is `done` so the launch command ccm types on attach can produce an empty session for a project whose conversation is intact on disk. (`claude --resume`'s picker hides the handed-off transcript too; `claude --resume <full session id>` still opens it.)
+
+ccm checks three things, cheapest first: the daemon's roster must list a worker for the project (necessary, not sufficient — the roster outlives the daemon, so after a crash or reboot every worker is still listed with a dead pid), the newest transcript's tail must hand off to that worker's session, and then the CLI's own session registry (`~/.claude/sessions/<pid>.json`, one record per running process — the list `claude --continue` consults) must hold a live, non-interactive record for that session — live on the CLI's own terms: the process exists and its start time still matches the record's `procStart`. Where the CLI would not commit to a set (a record it cannot read, or a live record missing its kind or session id), `claude --continue` walks past the hand-off, and so the notice is withheld; it is also withheld when ccm cannot verify what the CLI verifies (no readable start time, a record from another pid domain), and when `CLAUDE_CONFIG_DIR` moves the CLI's home away from `~/.claude`, where ccm reads transcripts and registry. The notice appears wherever the launch is about to happen or has just happened:
+
+- a `⚠` line on the dashboard and in `ccm status`, naming the project, the background session, its state, and the exits — for projects in SHELL state only, since a window already running Claude (often the background session itself, attached) has no launch coming;
+- a `bg hand-off` row in `ccm doctor`;
+- on the tmux message line right after `ccm attach` or a dashboard attach types the launch command, and in the output of `ccm attach` and `ccm send --start`.
+
+The exits are the CLI's own: `claude attach <short>` opens the background conversation (it holds the work done since the hand-off), `claude stop <short>` releases the hand-off so `--continue` / `--resume` move on, `claude rm <short>` removes a finished session from the roster. This notice never runs any of them for you — the check is read-only (the dashboard's `Enter` on a bg row, which types `claude attach`, is a separate, explicit action). A newer interactive session in the directory clears the notice on the next refresh.
+
 ### Data sources
 
-The reader joins two files, both written by the daemon (read-only on the ccm side):
-
-- `~/.claude/daemon/roster.json` — currently-active workers (pid, sessionId, cwd, cliVersion, dispatch metadata). Sessions are removed from this file after ~1 hour idle (`settled (done)`), matching what `claude agents` itself shows.
-- `~/.claude/jobs/<short>/state.json` — per-session live state (`working` / `needs_input` / `idle` / `done` / `failed`), tempo, in-flight task counts, and an auto-generated name.
-
-Missing files, malformed JSON, or a daemon-down state all gracefully resolve to "no background sessions" — agent view's absence never crashes the dashboard.
+See the [diagnostics reference](diagnostics.md#data-sources).
 
 ## Environment Variables
 
-ccm exposes several tuning knobs via environment variables. Defaults are chosen to work well for most users; adjust only if you observe a specific problem. Set them in your shell rc file (e.g. `~/.zshrc`) before tmux starts.
+See the [diagnostics reference](diagnostics.md#environment-variables).
 
 ### Detection timing
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CCM_BUSY_HOOK_JSONL_WINDOW` | `600` (seconds) | Combined-stale fallback window in the event-log path: when both the latest event AND the JSONL are older than this, derive defers to the legacy fallback (which resolves to IDLE). Catches abandoned sessions and other long-tail upstream silences |
-| `CCM_JSONL_HOOK_GAP_TOLERANCE` | `60` (seconds) | Recap-phantom discriminator (legacy `hook_fresh_busy` rule). A BUSY hook that fired more than this many seconds AFTER the last real conversation activity is rejected as phantom (e.g. upstream `away_summary` recap). Same window also gates the Esc-release / silent-completion freshness check in derive |
-| `CCM_COMPLETED_AT_TIMEOUT` | `30` (seconds) | How long the `* elapsed` "recently completed" marker stays visible in the dashboard after a BUSY/PERMIT → IDLE transition |
-| `CCM_COMPLETION_GRACE_SEC` | `3` (seconds) | Grace period between a Stop hook firing and the COMPLETED desktop notification. Claude Code fires Stop at every turn boundary (including mid-tool-use); ccm waits this long before alerting so a subsequent PreToolUse / UserPromptSubmit can cancel the pending notification. Lower = faster alerts but higher risk of notifying mid-conversation |
-| `CCM_PERMIT_MAX_TIMEOUT` | `600` (seconds) | Stale-permit release: when a permit event is the newest one, the pane shows **no** modal, and the session log has been frozen this long, ccm stops trusting the permit and lets the state fall back to IDLE. Resolving a permission fires no hook upstream, so without this a permission answered (or dismissed with Esc) minutes ago could hold `⚠ PERMIT` forever. A modal still **on screen** is detected from the pane itself and is never released, however long you leave it |
-| `CCM_BUSY_STALE_RELEASE_SEC` | `60` (seconds) | Stale-BUSY release: how long a session interrupted with Esc mid-tool (no `Stop` hook, session log frozen at `tool_use`, idle prompt on screen) may stay `BUSY` before ccm defers to IDLE. A flicker-prevention window — the safety net for a genuinely working session with a frozen log (e.g. a long silent build) is `CCM_IDLE_EXIT_TIMEOUT`, which requires 10 minutes of sustained IDLE before auto-exit |
-| `CCM_SPINNER_STALE_RELEASE_SEC` | `30` (seconds) | How long the spinner's elapsed-time footer may stand still before ccm stops believing it marks a running turn. A live footer ticks every second; a frozen frame (session hung after rendering) and a transcript line quoting a footer are static, and past this window they stop holding the window `BUSY` — which matters because raw `BUSY` has no other release path |
-| `CCM_IDLE_EXIT_TIMEOUT` | `600` (seconds) | How long a Claude Code session can be IDLE before `x` (exit all) targets it, and how long before auto-exit triggers |
-| `CCM_IDLE_PROMPT_GUARD_SEC` | `60` (seconds) | Guard in `on-notification.sh` for the `idle_prompt` Notification: idle_prompt arrives 10–60+ s late (anthropics/claude-code#5186), so a BUSY signal younger than this may have been written by work that started AFTER the notification was generated — deleting it would drop an actively working session to IDLE (and feed auto-exit's kill path). Signals younger than the guard are kept; older ones are cleared as before. Set to `0` to opt out and restore the old always-delete behaviour |
-| `CCM_IGNORE` | unset | Launch-time flag, not a tunable: `CCM_IGNORE=1 claude` starts a session that ccm ignores entirely (see "Running a second model as a sidekick"). Toggle an already-running session with `ccm ignore` / `ccm unignore` instead |
-| `CCM_STARTUP_GRACE_SEC` | `60` (seconds) | Window during which the legacy `startup_transient_raw_busy` rule demotes raw=BUSY to IDLE when no hook signal is present — covers Claude's MCP-loading phase after `claude --continue`, which typically completes in 10–30 s |
-| `CCM_SLIVER_HEIGHT_THRESHOLD` | `4` (rows) | Minimum tmux pane height for a pane to participate in window-state aggregation. Panes shorter than this cannot render Claude's `❯` prompt, so capture-pane–based detection cannot tell them apart from a genuinely BUSY pane. Raise if you have legitimate small Agent Teams panes that should still count; lower (down to 1) to disable the filter entirely |
-| `CCM_HOOK_CMD_TIMEOUT` | `5000` (ms) | Timeout Claude Code applies to each ccm hook invocation. ccm's hooks each do one signal-file write — comfortably within any reasonable value. Lower if you are debugging a hook hang; the default is generous enough that you will only notice it during a Claude Code or filesystem stall |
-| `CCM_SPOOL_TTL_SEC` | `3600` (seconds) | How long a message queued by `ccm send` (store-and-forward) stays deliverable. Past the TTL it moves to `expired/` and shows up in `ccm status` / `ccm doctor` instead of arriving — a stale instruction delivered late executes out of context. See "The spool" under the send section |
-| `CCM_START_WAIT_SEC` | `10` (seconds) | How long `ccm send --start` polls a SHELL-state target for IDLE after sending `claude --continue`, before refusing the send. Tuned for the two real cases: a normal resume reaches IDLE in 1-5 s, while an auto-`/compact` on a long-session resume can keep BUSY for 10-60+ s — no reasonable wait gets the message through anyway, so refusing at 10 s gives the operator a useful response time. Progress is printed once per second when run interactively so the wait is visible. Raise if your environment routinely needs more |
+See the [diagnostics reference](diagnostics.md#detection-timing).
 
 ### Runtime directories
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CCM_TMP_DIR` | `${TMPDIR:-/tmp}/ccm-$UID` | Per-user runtime directory: hook signals, notification markers, port/git caches, popup-session marker. Override to isolate a demo / test session from your normal ccm runtime |
-| `CCM_DATA_DIR` | `~/.local/share/ccm` | Snapshot files and other persistent state. Override paired with `CCM_TMP_DIR` for fully isolated environments |
+See the [diagnostics reference](diagnostics.md#runtime-directories).
 
 ### Canary thresholds
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CCM_HOOKS_LOG_WARN_BYTES` | `104857600` (100 MB) | Size threshold for the `~/.claude/hooks.log` bloat canary. Claude Code does not rotate this file and bloated logs silently disable hook firing (anthropics/claude-code#16047) |
-| `CCM_SHELL_CLUSTER_COUNT` | `3` | How many SHELL transitions within the window triggers the silent-exit canary (anthropics/claude-code#48069) |
-| `CCM_SHELL_CLUSTER_WINDOW` | `600` (seconds) | Time window for counting SHELL transitions |
-| `CCM_ERRORS_BURST_THRESHOLD` | `20` | How many `errors.log` records within the burst window triggers the silent-fail-loop canary. A poll-cycle bug (e.g. an exception fired by every `inject_status` refresh) accumulates roughly 30 records/min, so this threshold reliably distinguishes a runaway loop from one-off noise |
-| `CCM_HOOK_SILENCE_FRESH` | `90` (seconds) | Opt-in hook-silence canary: how recent a session's transcript activity must be before a lagging hook log counts as silence |
-| `CCM_HOOK_SILENCE_GAP` | `120` (seconds) | How far the hook log must lag that activity before the canary fires |
-| `CCM_HOOK_SILENCE_LOG_INTERVAL` | `600` (seconds) | Minimum gap between logged firings for one project, so a long episode reads as a few lines rather than hundreds |
-| `CCM_HOOK_SILENCE_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap on the firing log before it rotates |
-| `CCM_ERRORS_BURST_WINDOW` | `300` (seconds) | Time window for counting silent-fail records |
+See the [diagnostics reference](diagnostics.md#canary-thresholds).
 
 ### Debug tracing
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CCM_DEBUG_TRACE` | (unset) | Path to a JSONL trace file. When set, every slow-path detection scan (`inject-status`, dashboard, `ccm status`) appends a record with the full `DetectionContext`, matched rule, and resolved state. See [Detection-behaviour debugging](#detection-behaviour-debugging). Remember to set it via `tmux set-environment -g`, not shell `export`, so the tmux-spawned subprocesses see it |
-| `CCM_SEND_TRACE` | (unset) | When truthy, appends every `tmux send-keys` call `ccm send` / `ccm sidekick-send` makes to `$CCM_TMP_DIR/send-trace.log`, for diagnosing a delivery a recipient says never arrived |
-| `CCM_TRACE_MAX_BYTES` | `104857600` (100 MB) | Size cap for the `CCM_DEBUG_TRACE` log. Once exceeded, a single `{"event":"trace_cap_reached", ...}` sentinel is written and subsequent appends are skipped, so a forgotten trace cannot fill the disk |
-| `CCM_TRACE_ONLY_DIFF` | (unset) | When set to a truthy value, restricts `CCM_DEBUG_TRACE` writes to rows where the legacy and event-log derivations disagree. Lets long-running traces stay small. No effect when `CCM_USE_EVENT_LOG=off` (no event-log state to diff against) |
-| `CCM_USE_EVENT_LOG` | `auto` | `auto` (default) commits the event-log state when [`derive_state_from_events`](../lib/ccm_activity.py) returns a non-`None` answer; otherwise legacy `DETECTION_RULES` (in [`lib/ccm_rules.py`](../lib/ccm_rules.py)) takes over. `off` (or `0` / `no` / `false`) is the diagnostic kill-switch — legacy-only, no event-log read. Anything else resolves to `auto` |
+See the [diagnostics reference](diagnostics.md#debug-tracing).
 
 ### Cache TTLs
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CCM_CACHE_TTL` | `30` (seconds) | Git branch / port detection cache lifetime |
-| `CCM_JSONL_CACHE_TTL` | `30` (seconds) | JSONL path resolution cache lifetime |
+See the [diagnostics reference](diagnostics.md#cache-ttls).
 
 ### Display and observability
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `CCM_ATTENTION_WAITING_TTL_SEC` | `3600` (seconds) | How long a sidekick's unanswered attention marker survives before ccm drops it, for the case where the agent exits without resolving it |
-| `CCM_ATTENTION_RESOLVED_GC_SEC` | `300` (seconds) | How long a resolved marker is kept before collection, so a slow consumer still sees it |
-| `CCM_AMBIGUOUS_WIDTH` | `1` | Fallback for `@ccm-ambiguous-width`, for running ccm outside tmux. Prefer the tmux option: an environment variable reaches only one of the two parents that render the bar — see [Ambiguous glyph width](#ambiguous-glyph-width). Read once per process |
-| `CCM_ERRORS_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap for `$TMPDIR/ccm-$UID/errors.log` (the silent-exception log). At the cap, the active log rotates to `errors.log.1` and a fresh log starts (total disk use ~2 × cap). View with `ccm errors`; clear with `ccm errors --clear` |
-| `CCM_SESSION_INFO_AGE_DRIFT_SEC` | `10` (seconds) | Drift tolerance for the session_info pid-reuse check. When `read_session_info` is given a `ps` snapshot, it cross-checks Claude Code's recorded `startedAt` against the live process's etime-derived start time; a discrepancy beyond this tolerance means the json file is from a recycled pid's prior session and is rejected (caller falls through to legacy detection). 10 s comfortably covers normal clock drift / NTP corrections / the few-second gap between fork and Claude writing session_info |
-| `CCM_STATUS_INTERVAL` | `5` (seconds) | Target tmux `status-interval` — how often the status bar re-renders. On plugin load, ccm lowers `status-interval` to this value if your current setting is higher (it never raises it). Set via `tmux set-environment -g` before the plugin loads, not shell `export` — see [Status refresh interval](#status-refresh-interval) |
-| `CCM_RECONCILE_INTERVAL` | `20` (seconds) | How often the periodic status pass does a **full** run. tmux fires `#(ccm inject-status)` once per `status-interval` — every second if you show a seconds clock — and a full pass costs ~24 processes, so the invocations in between are rate-limited to a shell fork. State changes do not wait for it: the hooks push an immediate refresh on every transition. This only paces what fires no hook — a git branch switch, a new listening port, a stale-BUSY release crossing its window. Keep it below `CCM_BUSY_STALE_RELEASE_SEC`, since that release is a threshold crossing that nothing re-evaluates until a reconciliation runs |
-| `CCM_RESIZE_SETTLE` | `0.4` (seconds) | How long after the last `client-resized` event ccm waits before re-laying the status bar. The bar's layout is baked from the terminal width at render time, so a resize leaves it laid out for the old width until something re-renders; tmux fires the event for every step of a drag, and this window collapses the burst into one render at the size the drag ended on. Raise it if your terminal emits resize events slowly enough that the bar re-lays mid-drag |
-| `CCM_AUTO_EXIT_LOG` | `$CCM_DATA_DIR/state/auto-exit.log` | Where ccm records the sessions it closed itself. Claude Code reports an auto-exit as `SessionEnd` with reason `prompt_input_exit`, which is exactly what a person typing `/exit` produces — so this file is the only place the two can be told apart afterwards. One JSON record per exit: timestamp, project, session id, idle seconds. `ccm doctor` shows the count |
-| `CCM_AUTO_EXIT_LOG_MAX_BYTES` | `1048576` (1 MB) | Size cap for the auto-exit log; at the cap it rotates to `auto-exit.log.1`. One record per auto-exit puts the cap decades away — it exists so a pathological loop cannot fill the disk |
-
-**Reaching every reader.** ccm runs from three places with different environments: tmux's `#()`, the hooks Claude Code spawns, and your own shell. A variable set only in your shell is read by `ccm status` and the dashboard but not by the status bar, so the same window can be described two ways at once. Put anything that changes how state is computed or drawn into tmux's environment (`tmux set-environment -g NAME value`, then restart the bar) rather than a shell profile — or, where a tmux option exists for it, use that instead.
+See the [diagnostics reference](diagnostics.md#display-and-observability).
 
 ### Tuning examples
 
-```bash
-# Longer "* elapsed" marker visibility after completion
-export CCM_COMPLETED_AT_TIMEOUT=60
-
-# Earlier hooks.log bloat warning (10 MB)
-export CCM_HOOKS_LOG_WARN_BYTES=10485760
-
-# Lower polling cost on slow / battery-bound machines (tmux env, read on plugin load)
-tmux set-environment -g CCM_STATUS_INTERVAL 10
-
-# Diagnostic kill-switch: bypass the event-log path entirely
-export CCM_USE_EVENT_LOG=off
-```
+See the [diagnostics reference](diagnostics.md#tuning-examples).
 
 ### Interactions with Claude Code's own environment variables
 
-A few undocumented Claude Code env vars overlap with ccm's behavior. If you set both, be aware of the interaction:
-
-| Claude Code env | Interaction with ccm |
-|-----------------|----------------------|
-| `CLAUDE_CODE_EXIT_AFTER_STOP_DELAY` | Makes Claude Code exit itself some seconds after a Stop event. This duplicates `CCM_IDLE_EXIT_TIMEOUT` — pick one path. If both are set, whichever fires first wins, and the other becomes a no-op on a SHELL-state window |
-| `CLAUDE_CODE_IDLE_THRESHOLD_MINUTES`, `CLAUDE_CODE_IDLE_TOKEN_THRESHOLD` | Claude Code's own idle detection. When it fires, your SessionEnd hook runs and ccm observes the window transition to SHELL (no conflict, just additional auto-exit paths you may not expect) |
-| `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` | Upper bound Claude Code gives the SessionEnd hook (ccm's `on-session-end.sh`). ccm's hook is one signal-file write — comfortably within any reasonable value |
-| `CLAUDE_CODE_NO_FLICKER` | Already handled by ccm. Preview capture falls back to `tmux capture-pane -a` when the pane uses the alternate screen buffer |
-| `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` | No conflict. If you dislike Claude Code rewriting your tmux window title, set this to `1` in your shell rc — ccm's own window naming (state icons) takes precedence either way |
-| `DISABLE_UPDATES` | No conflict. Blocks all Claude Code update paths including manual `claude update` (stricter than `DISABLE_AUTOUPDATER`). Useful if you pin Claude Code versions in snapshots and want to avoid surprise upgrades mid-session |
-| `CLAUDE_CODE_HIDE_CWD` | No conflict. Hides the working directory in Claude Code's startup logo. ccm already displays the directory under each project in `ccm status` and the dashboard, so you can safely hide it from the in-pane logo to reduce visual redundancy |
-
-These are not required for ccm to work. They are listed only so that users who customize Claude Code can predict overlaps.
+See the [diagnostics reference](diagnostics.md#interactions-with-claude-codes-own-environment-variables).
 
 ## Known Limitations
 
 ### tmux-resurrect / tmux-continuum
 
-ccm's window options (`@ccm_project`, `@ccm_dir`) are not automatically preserved by session restoration plugins. After a tmux restore, use `ccm start _autosave` to re-register projects from the last autosave snapshot. Alternatively, enable `@ccm-auto-restore "on"` to handle this automatically on tmux startup.
+ccm's window options (`@ccm_project`, `@ccm_dir`) are not preserved by session restoration plugins. Do not restore the same environment with both tmux-resurrect and ccm. If windows that ccm does not manage share a project's name or directory, `ccm start` stops before creating anything; close those windows or register them with `ccm register`, then run it again.
 
 ### Status refresh interval
 
-ccm's status bar updates are driven by tmux's `status-interval`. On load, the plugin automatically lowers it to 5 seconds (from tmux's default of 15) if your current setting is higher — it only ever lowers the value, never raises it. To use a different target, set `CCM_STATUS_INTERVAL` in tmux's environment before the plugin loads:
+See the [diagnostics reference](diagnostics.md#status-refresh-interval).
 
-```bash
-tmux set-environment -g CCM_STATUS_INTERVAL 10   # poll every 10 seconds instead
-```
+### Narrow panes, long thinking, reduced motion
 
-Lower values increase CPU usage slightly.
+Narrow panes or reduced motion can make active work appear IDLE and lead to auto-exit. Keep hooks installed and raise `@ccm-idle-timeout` or set it to `0` to disable auto-exit.
+
+See the [diagnostics reference](diagnostics.md#narrow-panes-long-thinking-reduced-motion).
 
 ### Ambiguous glyph width
 
-Box drawing characters, geometric shapes, and every Nerd Font icon draw one column or two depending on the terminal and its font. Unicode calls them "Ambiguous" and does not say which; private use characters cannot say at all, since the codepoint carries no width and only the font knows.
-
-Not knowing is expensive in mode 1's left placement. tmux positions `status-right` counting these as one column, so if the terminal draws them as two, `status-left` runs past where tmux placed it and paints over the first entry — the highest-priority one, which is exactly what left placement exists to show. So by default ccm reserves room for the worse case.
-
-On a terminal that draws them narrow, that reservation is never used, and in left placement the unused columns stay on screen as empty space after `status-left` — around 12 columns with a theme that uses such glyphs freely.
-
-If you know what your terminal does, say so and the reservation stops:
-
-```bash
-tmux set -g @ccm-ambiguous-width 1   # drawn narrow (most non-CJK terminals)
-tmux set -g @ccm-ambiguous-width 2   # drawn wide (CJK locale terminals)
-```
-
-Setting `1` is not the same as leaving it unset even though both count a glyph as one column. Unset means "unknown", and ccm hedges; `1` means "narrow", and it stops.
-
-The change takes effect from the next render, not the current one: each render resolves the answer once and keeps it, so a bar already on screen was drawn with the previous value. Wait a tick before judging whether it worked — and longer after `source-file`, which drops the bar back to your theme's own `status-right` until ccm re-injects, up to `CCM_RECONCILE_INTERVAL` later. What you see right after a reload is not the new setting failing; it is ccm not having drawn yet.
-
-Use the tmux option rather than the `CCM_AMBIGUOUS_WIDTH` environment variable, which is kept only for running ccm outside tmux. The status bar is rendered by two different parents — tmux's `#()` and the hooks, which Claude Code spawns — and an environment variable set with `tmux set-environment` reaches the first but not the second. Since the hook-driven render is the one that is never rate-limited, a declaration made that way is mostly overruled, and the bar alternates between two layouts. A tmux option answers the same to whoever asks. If both are set, the option wins.
-
-To find out which your terminal does, put a box drawing character next to a plain one and see whether the columns line up — or simply set `1`, and if the first entry loses a character, set `2` instead.
+See the [diagnostics reference](diagnostics.md#ambiguous-glyph-width).
 
 ### Debugging
 
-To check ccm's current state:
-
-```bash
-ccm status                    # show all projects with state
-ccm tree                      # show full hierarchy
-tmux show-option -gv status-right   # inspect status-right content
-tmux show-option -gqv @ccm-status-line  # current mode (0/1/2)
-```
+See the [diagnostics reference](diagnostics.md#debugging).
 
 #### Detection-behaviour debugging
 
-If a project shows BUSY when you expect IDLE (or vice-versa), use one of the two tracers:
-
-**Live, per-project trace** — read-only, does not modify state:
-
-```bash
-# In a separate pane, then reproduce the problematic event in the main pane
-ccm debug trace <project-name>           # default 0.3 s interval
-ccm debug trace <project-name> 0.5       # or specify interval
-```
-
-The target can also be a tmux pane, window, or `session:index` that ccm does
-not manage, which is how you observe a throwaway session started for an
-experiment:
-
-```bash
-ccm debug trace %42                      # a pane
-ccm debug trace @7                       # a window
-ccm debug trace probe:0                  # session:index
-```
-
-Prefer this over reading the hook event logs by hand. Those files are keyed on
-Claude Code's session id, so a glob such as `$TMPDIR/ccm-$UID/hooks/*.events.jsonl`
-sums every session running at that moment and silently attributes another
-session's events to the one under test. Tracing the pane keeps the observation
-scoped to a single session. A registered project name always wins over a tmux
-target, so existing commands keep their meaning.
-
-Each line shows the full detection context, the rule that matched, and the resolved state:
-
-```
-19:48:55  raw=IDLE  prev=IDLE  hook=-,-  pid_age=653  jsonl=6883,end_turn  default[-] → IDLE [WRITE]
-```
-
-The `rule_name[phase]` column shows the matched rule and its session-lifecycle phase (`shell` / `startup` / `midturn` / `between_tools` / `idle` / `permit`, or `-` for genuine catch-all passthroughs like `default`). Ctrl-C to stop. Safe to run alongside the live dashboard.
-
-**Whole-pipeline trace** — env var, captures every detection scan across all projects:
-
-```bash
-# Set on the tmux SERVER (not just your shell). inject-status runs as
-# a subprocess of tmux and inherits environment from the server at
-# its start — plain `export` in your shell won't reach it.
-tmux set-environment -g CCM_DEBUG_TRACE /tmp/ccm-trace.jsonl
-# Wait one status-interval tick, then reproduce the event.
-# Slice with jq by window target or state:
-jq -c 'select(.target=="0:20")' /tmp/ccm-trace.jsonl | tail -50
-jq -c 'select(.state=="BUSY")' /tmp/ccm-trace.jsonl | tail -20
-# Remove the env var when done — the file grows with every scan.
-# (The log also auto-suspends at 100 MB; override with
-#  CCM_TRACE_MAX_BYTES if you need a larger cap.)
-tmux set-environment -gu CCM_DEBUG_TRACE
-```
-
-Both tracers record the same fields so output is interchangeable between them. Note that `CCM_DEBUG_TRACE` captures only the slow path (the decisions that actually write `@ccm_prev_state`); the statusline fast path is read-only and not traced.
-
-To reset ccm state completely:
-
-```bash
-rm -rf "${TMPDIR:-/tmp}/ccm-$(id -u)"
-tmux source-file ~/.tmux.conf
-```
+See the [diagnostics reference](diagnostics.md#detection-behaviour-debugging).
 
 ## FAQ
 
@@ -1029,7 +1343,7 @@ Yes. Run `claude` once in a regular terminal to complete the initial authenticat
 
 ### Can I use ccm across multiple tmux sessions?
 
-ccm manages projects as windows within a single tmux session. The dashboard and status bar show projects from all sessions, but `ccm add` creates windows in your current session. If you need separate project sets, use named snapshots (`ccm snapshot save work`, `ccm snapshot save personal`).
+ccm manages projects as windows within a single tmux session. The dashboard and status bar show projects from all sessions, but `ccm add` creates windows in your current session. Snapshot saving supports managed projects in one session and refuses inventories spanning multiple sessions.
 
 ### Can I view two projects side by side?
 
@@ -1054,17 +1368,19 @@ Do **not** close the tmux window directly (e.g., `prefix + &` or `exit` in the s
 
 In most cases, you don't need to manually stop Claude Code at all — idle auto-exit handles it automatically after 10 minutes.
 
-**Auto-exit skips windows with live background work.** Before exiting, ccm checks the whole window: if any sibling pane is running an autonomous non-shell command (a batch job, a dev server, `tail -f`), or Claude itself still has a running Bash job (foreground or background task), the window is left alone no matter how long the conversation has been idle. The trade-off is deliberate: a window that permanently hosts a dev server will effectively never auto-exit — wrongly exiting interrupts real work, while wrongly keeping costs one idle process. Parked editors and pagers (vim/nvim/emacs/less/man/…) are exempt from this guard: actively using them refreshes the idle timer on its own, and exiting Claude leaves the sibling pane untouched — so a split-editor workflow does not disable auto-exit. When auto-exit does fire, a desktop notification announces it (silenced only by `@ccm-notify off`), so an exited session never reads as a mystery crash; the conversation always restores on the next attach via `claude --continue`.
+**Auto-exit skips windows with live background work.** Before exiting, ccm checks the whole window: if any sibling pane is running an autonomous non-shell command (a batch job, a dev server, `tail -f`), or Claude itself still has a running Bash job (foreground or background task), the window is left alone no matter how long the conversation has been idle. The same holds while the window shows `IDLE (bg)`: Claude Code reported background work still outstanding when its turn ended, such as a background agent or command, or a scheduled loop. The trade-off is deliberate: a window that permanently hosts a dev server will effectively never auto-exit — wrongly exiting interrupts real work, while wrongly keeping costs one idle process. Parked editors and pagers (vim/nvim/emacs/less/man/…) are exempt from this guard: actively using them refreshes the idle timer on its own, and exiting Claude leaves the sibling pane untouched — so a split-editor workflow does not disable auto-exit. When auto-exit does fire, a desktop notification announces it (silenced only by `@ccm-notify off`), so an exited session never reads as a mystery crash; the conversation always restores on the next attach via `claude --continue`.
 
-**Auto-exit leaves a record.** Claude Code reports it as `SessionEnd` with reason `prompt_input_exit` — the same value a person typing `/exit` produces — so afterwards nothing distinguishes the two. ccm therefore writes one line per auto-exit to `$CCM_DATA_DIR/state/auto-exit.log` (timestamp, project, session id, idle seconds), and `ccm doctor` shows the count. If you ever wonder whether something has been closing your sessions, that file answers it; the session id makes the record joinable with whatever else observed the same session end.
+**Auto-exit leaves a record.** Claude Code reports it as `SessionEnd` with reason `prompt_input_exit` — the same value a person typing `/exit` produces — so afterwards nothing distinguishes the two. ccm therefore writes one line per auto-exit to `$CCM_DATA_DIR/state/auto-exit.log` (timestamp, project, session id, idle seconds), and `ccm doctor --verbose` shows the count. If you ever wonder whether something has been closing your sessions, that file answers it; the session id makes the record joinable with whatever else observed the same session end.
+
+**Auto-exit looks before it types.** IDLE says the conversation is at rest; it does not say the screen takes a slash command. A session sent to the background (`/background`, `←` on an empty prompt, or `/exit` inside an attached background session, which detaches rather than exits) leaves the pane on the agent view, where text typed into the input box can start a new session and Escape moves between views rather than cancelling input. So auto-exit captures the target pane first and types nothing when it shows the agent view or cannot be read; and when the pane shows the agent view after `/exit` — what an attached background session does when told to exit: it detaches, and the worker keeps running — it does not treat that as an exit: no SHELL state, no autosave, no completion notice, no further keys. Only the screen is observed, so the record says what was seen, not why. Both are recorded in `$CCM_DATA_DIR/state/auto-exit-declined.log` (outcome and identifiers only, rate-limited per project and outcome), kept apart from `auto-exit.log` so that file keeps counting only real exits. `ccm doctor --verbose` shows both counts. Attached background sessions are, in short, not something auto-exit ends: the worker keeps running either way, and stopping it is `claude stop <short>`'s job.
 
 ### What is the difference between `_autosave` and named snapshots?
 
 | | `_autosave` | Named snapshots |
 |---|---|---|
 | **Created by** | Automatically every 2 minutes | Manually via dashboard `s` key |
-| **Content** | Always mirrors the current project list | Frozen at the time of save |
-| **Overwritten** | Yes, every 2 minutes | Never (unique date-based name) |
+| **Content** | Last complete capture | Configuration at save time |
+| **Overwritten** | When changed, unless protected | When saved again under the same name |
 | **Used by auto-restore** | Yes | No (must load manually with `ccm start <name>`) |
 
-**Tip:** If you're about to shut down and want to ensure all projects are preserved, save a named snapshot from the dashboard (`s` key). This creates a checkpoint like `save-20260331-1230` that won't be overwritten. You can restore it later with `ccm start save-20260331-1230`.
+**Tip:** Use `ccm prepare-logout` to protect a checkpoint before shutting down. Release protection with `ccm prepare-logout --cancel`.

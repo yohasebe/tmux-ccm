@@ -26,6 +26,7 @@ evaluator still scans rules in priority order — but it makes
 about scope.
 """
 
+import os
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -97,6 +98,14 @@ class DetectionContext:
     # `~/.claude/sessions/<pid>.json`. None when no live claude is
     # running, or when session_info has not been written yet.
     session_id: Optional[str] = None
+    # A parked display client whose activity session cannot be identified.
+    session_unresolved: bool = False
+    # Consecutive idle-screen observations for an unresolved display client.
+    unresolved_idle_since: int = 0
+    unresolved_idle_seconds: int = 0
+    unresolved_idle_max_gap: int = 0
+    unresolved_idle_record: str = ""
+    prev_unresolved_idle_record: str = ""
     # The work clock this window's panes show now (first
     # clock-showing pane's, e.g. "(7s · ↓ 380 tokens)" or
     # "Retrying in 3s"), or None when no pane shows one. Detection
@@ -107,13 +116,23 @@ class DetectionContext:
     # previous detection pass, or None when nothing is stored.
     # Compared against `work_clock` by the tick check.
     prev_work_clock: Optional[Tuple[str, int]] = None
+    # Time of a subagent's newest hook event, or 0. Keeps an
+    # unfinished main call fresh when the transcript is unreadable.
+    agent_ts: int = 0
+    # Time of a subagent's open permission request, or 0.
+    agent_permit_ts: int = 0
+    # The main conversation's latest Stop reported background work
+    # still outstanding (a background agent or command, or a
+    # scheduled cron). Never decides the state: it adds the `(bg)`
+    # suffix beside IDLE and keeps auto-exit away from the window.
+    background_work: bool = False
 
 
 class Action(Enum):
     """Side effect to execute when a rule matches.
 
     DEFAULT         — set @ccm_prev_state to resolved state
-    HOLD_NO_WRITE   — do not touch tmux state (preserve prior state)
+    HOLD_NO_WRITE   — preserve committed state; observation history may change
     """
     DEFAULT = "default"
     HOLD_NO_WRITE = "hold_no_write"
@@ -298,12 +317,9 @@ DETECTION_RULES: Tuple[Rule, ...] = (
         # would normally cover this (PreToolUse, etc.) may not have
         # fired yet — claude is still thinking, not yet calling tools.
         # Bounded by the same window the event-log path gives itself
-        # before it stops claiming a turn is running. It used to be
-        # ten times longer, so a turn the event log had already given
-        # up on was re-asserted here — an Esc that landed before the
-        # answer began writes no terminal record for either path to
-        # see, and the pane sat BUSY for ten minutes with nothing
-        # running. Sharing the shorter window is safe now that a
+        # before it stops claiming a turn is running: an Esc that lands
+        # before the answer begins writes no terminal record for
+        # either path to see. The shorter window is safe because a
         # childless working turn reads raw=BUSY on its own: thinking,
         # generation, and retry backoffs all show a ticking work
         # clock, and a ticking clock never reaches this rule.
@@ -368,11 +384,20 @@ def build_fast_context(prev_state, project_dir,
     """Build a DetectionContext for the read-only statusline path.
 
     Does not call ps/capture-pane/tmux queries for process tree info.
-    Derives `raw` from prev_state and reads the hook signal only.
+    Derives `raw` from prev_state and reads the hook signal and the
+    transcript tail.
 
     `session_id` may be passed in (cached value from the same tmux
     query that built the project list) to avoid an O(N) tmux
-    subprocess per fast-path refresh.
+    subprocess per fast-path refresh. It also names the transcript:
+    with it, the session's own file is read directly (one stat and
+    one bounded tail scan), and the hook signal and the transcript describe
+    the same session. A missing named file stays unknown. With None,
+    the newest transcript in the
+    directory is used — a scan whose cost grows with the number of
+    past conversations there, and which can pick another session's
+    file when several share the directory. An explicit empty string
+    disables discovery, matching the hook reader's no-identity contract.
     """
     import ccm_jsonl   # deferred — see top-of-file note
     import ccm_signals
@@ -394,10 +419,13 @@ def build_fast_context(prev_state, project_dir,
             else:
                 hook_age = now - hook_ts
 
+    jsonl_age, jsonl_last_stop_reason = -1, None
     if project_dir:
-        jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(project_dir)
-    else:
-        jsonl_age, jsonl_last_stop_reason = -1, None
+        if session_id:
+            jsonl_age, jsonl_last_stop_reason = (
+                ccm_jsonl.read_jsonl_tail_info_for_session(project_dir, session_id))
+        elif session_id is None:
+            jsonl_age, jsonl_last_stop_reason = ccm_jsonl.read_jsonl_tail_info(project_dir)
 
     return DetectionContext(
         raw=raw,

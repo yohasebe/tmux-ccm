@@ -30,6 +30,7 @@ import os
 import time
 
 import ccm_constants
+import ccm_roles
 import ccm_core
 import ccm_detection
 import ccm_notify
@@ -92,6 +93,56 @@ def update_window_names(projects):
 
 # ─── Auto-exit idle sessions ───
 
+# macOS `ps` cuts a `comm` column that is not the last one to this many
+# bytes, so `/opt/homebrew/bin/zsh` reads `/opt/homebrew/bi`.
+_PS_COMM_WIDTH = 16
+
+
+def _process_name(comm):
+    """`zsh` from `zsh`, `-zsh`, `/bin/zsh` or `-/bin/zsh`: macOS `ps`
+    reports a full path where Linux reports the name."""
+    return os.path.basename(comm.lstrip("-")).lstrip("-")
+
+
+def _full_commands(pids):
+    """The untruncated `comm` of each live pid, or None when `ps` could
+    not be asked. A pid that has exited is simply absent."""
+    import subprocess
+    try:
+        r = subprocess.run(["ps", "-o", "comm=", "-p", ",".join(pids)],
+                           capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = r.stdout.decode("utf-8", errors="replace")
+    # ps exits 1 with no output when none of the pids is alive; any
+    # other failure says something on stderr.
+    if r.returncode != 0 and (out.strip() or r.stderr.strip()):
+        return None
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _has_shell_child(claude_pid, ps_lines):
+    """True when the Claude process has a live shell child (a Bash tool
+    job). A cut path that might name a shell is asked of `ps` again in
+    full; when that fails the answer is True (keep the window)."""
+    unsure = []
+    for line in ps_lines:
+        p = line.split()
+        if len(p) < 4 or p[1] != str(claude_pid):
+            continue
+        if _process_name(p[3]) in ccm_constants.SHELL_FOREGROUND_COMMANDS:
+            return True
+        if "/" in p[3] and len(p[3].encode()) >= _PS_COMM_WIDTH:
+            unsure.append(p[0])
+    if not unsure:
+        return False
+    names = _full_commands(unsure)
+    if names is None:
+        return True
+    return any(_process_name(n) in ccm_constants.SHELL_FOREGROUND_COMMANDS
+               for n in names)
+
+
 def _window_has_background_work(panes_raw, ps_lines):
     """True when any pane in the window shows live background work,
     meaning auto-exit must leave the window alone.
@@ -112,9 +163,8 @@ def _window_has_background_work(panes_raw, ps_lines):
          on its own, and exiting Claude leaves the sibling pane
          untouched — so the exemption cannot interrupt anything.
          Without it, a split-editor workflow silently disables
-         auto-exit for every window (observed: three
-         sessions idle for 3-4 days with `@ccm-idle-timeout 10` set,
-         each with a parked nvim in the second pane).
+         auto-exit for every window that keeps an editor in a
+         second pane.
 
       2. The Claude pane's process has a live SHELL child. Claude
          spawns a shell per Bash tool invocation, and that shell
@@ -138,7 +188,8 @@ def _window_has_background_work(panes_raw, ps_lines):
     `find_claude_pid` process-tree walk detection uses, and the
     foreground-command check applies only to the remaining panes.
     Login-shell names carry a leading dash ("-zsh"); strip it before
-    the shell-set membership test.
+    the shell-set membership test. macOS `ps` reports a process by its
+    path (`/bin/zsh`), cut at 16 bytes (`_has_shell_child`).
     """
     for line in (panes_raw or "").split("\n"):
         parts = line.split("\t")
@@ -153,12 +204,8 @@ def _window_has_background_work(panes_raw, ps_lines):
         pane_cmd = parts[2] if len(parts) >= 3 else ""
         claude_pid = ccm_pane_state.find_claude_pid(pane_pid, ps_lines)
         if claude_pid:
-            for pl in ps_lines:
-                p = pl.split()
-                if (len(p) >= 4 and p[1] == str(claude_pid)
-                        and p[3].lstrip("-")
-                        in ccm_constants.SHELL_FOREGROUND_COMMANDS):
-                    return True
+            if _has_shell_child(claude_pid, ps_lines):
+                return True
         else:
             cmd = pane_cmd.lstrip("-") if pane_cmd else ""
             if (cmd
@@ -212,6 +259,77 @@ def _log_auto_exit(project_name, session_id, idle_timeout, now) -> None:
             f.write(json.dumps(record) + "\n")
     except Exception:
         pass
+
+
+#: Where auto-exit records the exits it declined or could not confirm
+#: as clean. Separate from `auto-exit.log`, whose count answers "has
+#: ccm been closing my sessions?" and must not absorb non-exits.
+AUTO_EXIT_DECLINED_LOG_INTERVAL = int(
+    os.environ.get("CCM_AUTO_EXIT_DECLINED_LOG_INTERVAL", "600")
+)
+
+#: Outcomes recorded in the declined log.
+DECLINED_AGENTS_VIEW = "agents_view"            # pane shows the agent view; nothing typed
+DECLINED_CAPTURE_UNREADABLE = "capture_unreadable"  # pane could not be read; nothing typed
+DECLINED_AGENTS_VIEW_AFTER = "agents_view_after_exit"  # `/exit` was typed; the pane shows the agent view after
+
+
+def auto_exit_declined_log_path() -> str:
+    return os.environ.get(
+        "CCM_AUTO_EXIT_DECLINED_LOG",
+        os.path.join(ccm_core.CCM_DATA_DIR, "state", "auto-exit-declined.log"),
+    )
+
+
+def _log_auto_exit_declined(project_name, session_id, outcome, now) -> None:
+    """Record an auto-exit that did not happen, or did not end in a
+    shell — rate-limited per project and outcome so a window that
+    stays in the same state is recorded once per interval, not once
+    per poll. Best-effort like the exit log; never raises. Records
+    carry the outcome and identifiers only, never pane content."""
+    try:
+        path = auto_exit_declined_log_path()
+        marker_dir = path + ".markers"
+        os.makedirs(marker_dir, exist_ok=True)
+        marker = os.path.join(
+            marker_dir, ccm_core.md5_hash(f"{project_name}\n{outcome}"))
+        try:
+            if now - os.path.getmtime(marker) < AUTO_EXIT_DECLINED_LOG_INTERVAL:
+                return
+        except OSError:
+            pass
+        try:
+            if os.path.getsize(path) >= AUTO_EXIT_LOG_MAX_BYTES:
+                os.replace(path, path + ".1")
+        except OSError:
+            pass
+        record = {
+            "ts": int(now),
+            "project": project_name,
+            "session": session_id or "",
+            "outcome": outcome,
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(str(int(now)))
+    except Exception:
+        pass
+
+
+def auto_exit_declined_log_count() -> int:
+    """Records in the active declined log. Returns 0 when absent."""
+    try:
+        with open(auto_exit_declined_log_path(), encoding="utf-8") as f:
+            return sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+
+
+def _pane_tail(pane) -> str:
+    """The last lines of the pane, or "" when they cannot be read."""
+    tail = ccm_core.tmux_cmd("capture-pane", "-t", pane, "-p", "-S", "-10")
+    return tail if isinstance(tail, str) else ""
 
 
 def auto_exit_log_count() -> int:
@@ -269,18 +387,55 @@ def auto_exit_idle(projects):
     activity_raw = ccm_core.tmux_cmd(
         "list-windows", "-a", "-F",
         "#{session_name}:#{window_index}\t#{@ccm_project}\t#{@ccm_prev_state}\t#{@ccm_completed_at}\t#{window_activity}\t#{@ccm_session_id}"
+        f"\t#{{{ccm_roles.PENDING_OPTION}}}\t#{{@ccm_bg_active}}"
     )
     if not activity_raw:
         return
 
+    # A window past the timeout whose Claude stays (a guard holds it) is
+    # looked at again every poll. What it needs from tmux and ps is read
+    # once and shared while windows are only looked at, not once per
+    # window: ps alone costs tens of milliseconds. Acting on a window
+    # (the exit waits, and other Claudes may end meanwhile) discards
+    # them, so no later decision rests on a list taken before it.
+    shared = {}
+    # Panes acted on in this pass, by pane pid: a linked window lists
+    # the same pane under each of its names.
+    acted = set()
+
+    def ps_lines_once():
+        if "ps" not in shared:
+            shared["ps"] = ccm_core.ps_snapshot().strip().split("\n")
+        return shared["ps"]
+
+    def panes_of(target):
+        if "panes" not in shared:
+            listing = ccm_core.tmux_cmd(
+                "list-panes", "-a",
+                "-F", "#{session_name}:#{window_index}\t#{pane_index}\t#{pane_pid}"
+                "\t#{pane_current_command}\t#{@ccm_ignore}\t#{@ccm_dock}"
+            ) or ""
+            grouped = {}
+            for row in listing.split("\n"):
+                if row:
+                    owner, _, rest = row.partition("\t")
+                    grouped.setdefault(owner, []).append(rest)
+            shared["panes"] = grouped
+        return "\n".join(shared["panes"].get(target, []))
+
     for line in activity_raw.split("\n"):
         parts = line.split("\t")
-        while len(parts) < 6:
+        while len(parts) < 8:
             parts.append("")
         (win_target, project, prev_state, completed_at_str,
-         win_activity_str, session_id) = parts[:6]
+         win_activity_str, session_id, restore_pending, bg_active) = parts[:8]
 
         if not project or prev_state != "IDLE":
+            continue
+        # IDLE (bg): the conversation waits for the user, but work it
+        # started goes on (a background agent, a process it spawned).
+        # Exiting would end that work.
+        if bg_active and bg_active != "0":
             continue
         if win_target == current_target:
             continue
@@ -309,6 +464,8 @@ def auto_exit_idle(projects):
 
         idle_duration = now - idle_since
         if idle_duration >= idle_timeout:
+            if restore_pending == "1":
+                continue
             # Target the Claude pane specifically, NOT `win_target`
             # (which routes send-keys to the window's currently
             # active pane). If the user split off a shell pane and
@@ -333,26 +490,22 @@ def auto_exit_idle(projects):
             # `p_comm` explicitly), so the process-tree path stays
             # correct across installs while string-matching the
             # foreground command would silently mis-fire.
-            panes_raw = ccm_core.tmux_cmd(
-                "list-panes", "-t", win_target,
-                "-F", "#{pane_index}\t#{pane_pid}\t#{pane_current_command}"
-                "\t#{@ccm_ignore}"
-            )
+            panes_raw = panes_of(win_target)
+            # The docked dashboard's python is not the project's work.
+            panes_raw = "\n".join(
+                line for line in (panes_raw or "").split("\n")
+                if not ccm_core.is_dock_field(line.split("\t"), 4))
             # `ps_snapshot()` returns the raw stdout string; the
             # process-tree helpers iterate over lines, so split here.
             # Without this `find_claude_pid` walks one character at a
-            # time and never matches anything, which is what made the
-            # first cut of this fix silently no-op forever.
-            ps_lines = ccm_core.ps_snapshot().strip().split("\n")
+            # time and never matches anything.
+            ps_lines = ps_lines_once()
 
             # Background-work guard: a window that still hosts live
             # work must not have its Claude exited, no matter how
             # long the CONVERSATION has been idle. The cost asymmetry
             # decides this: wrongly exiting interrupts running work
-            # and surprises the user — a sibling-pane batch job's window went
-            # quiet, the 10-min timer fired, and Claude was exited
-            # out from under a project the user considered active),
-            # while wrongly keeping costs one idle Claude process.
+            # and surprises the user, while wrongly keeping costs one idle Claude process.
             # Checked only here — inside the already-rare timeout
             # branch — so the steady-state poll cycle pays nothing.
             if _window_has_background_work(panes_raw, ps_lines):
@@ -366,6 +519,21 @@ def auto_exit_idle(projects):
             # enough to trip the timeout has all its teammates idle too.
             # The shell-foreground gate below means the window is only
             # marked SHELL once the targeted Claude has actually exited.
+            role_panes = []
+            for line in (panes_raw or "").split("\n"):
+                fields = line.split("\t")
+                if len(fields) < 2:
+                    continue
+                role_panes.append(ccm_pane_state.PaneInfo(
+                    f"{win_target}.{fields[0]}", fields[1], False,
+                    fields[2] if len(fields) > 2 else "",
+                    bool(len(fields) > 3 and fields[3] and fields[3] != "0"), None))
+            choice = ccm_roles.selection(win_target, role_panes)
+            if choice.state == ccm_roles.SelectionState.BLOCKED:
+                continue
+            allowed = choice.eligible
+            if choice.state == ccm_roles.SelectionState.PRIMARY:
+                allowed = allowed & {choice.primary}
             claude_pane = None
             for line in (panes_raw or "").split("\n"):
                 parts = line.split("\t")
@@ -374,6 +542,8 @@ def auto_exit_idle(projects):
                 # Never target a CCM_IGNORE'd pane for exit — the whole
                 # point of ignore is that ccm keeps its hands off it.
                 if len(parts) >= 4 and parts[3] and parts[3] != "0":
+                    continue
+                if f"{win_target}.{parts[0]}" not in allowed:
                     continue
                 claude_pid = ccm_pane_state.find_claude_pid(
                     parts[1], ps_lines)
@@ -388,16 +558,10 @@ def auto_exit_idle(projects):
                 # exists to reclaim an idle process, not to close panes,
                 # and the difference is invisible from the state model,
                 # so the shape has to be excluded here.
-                #
-                # Such panes were unreachable by accident until
-                #: `find_claude_pid` only looked for a child,
-                # so they resolved to None and the background-work guard
-                # above read their versioned command name as live work.
-                # Teaching the walk about them (3a1534b) removed that
-                # accidental cover, which is what makes this explicit.
                 if str(claude_pid) == str(parts[1]):
                     continue
                 claude_pane = f"{win_target}.{parts[0]}"
+                claude_pane_pid = parts[1]
                 break
             if not claude_pane:
                 # No pane currently hosts a Claude process — the
@@ -406,34 +570,18 @@ def auto_exit_idle(projects):
                 # Defensive skip; the next polling cycle re-evaluates.
                 continue
 
-            # Cancel any partial input, then cleanly exit Claude Code.
-            ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "Escape")
-            time.sleep(0.1)
-            ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "/exit", "Enter")
-            time.sleep(0.5)
-            # Confirm `/exit` actually completed before committing any
-            # side effect. `/exit` can take longer than the 0.5 s wait
-            # on sessions with heavy conversation history (Claude's
-            # shutdown is context-size sensitive), or be swallowed
-            # entirely if Claude is parked at a confirmation modal. A
-            # ccm-launched Claude always runs as a child of the pane's
-            # shell, so a SUCCESSFUL exit returns the pane's foreground
-            # to that shell; anything else (still `claude`, the version-
-            # string masking, or "" from a failed/timed-out query) means
-            # the exit has not landed. Gate all three side effects on
-            # that positive shell evidence:
-            #   - `clear`: otherwise it lands as literal text in Claude's
-            #     input box and submits as a stray user prompt.
-            #   - SHELL state write: otherwise we declare SHELL while
-            #     Claude is still alive (a one-cycle state lie that the
-            #     next detection pass would have to undo) and fire a
-            #     spurious autosave against it.
-            # When the exit hasn't completed, do nothing this cycle; the
-            # window keeps its real state and the next poll re-evaluates.
-            current_cmd = ccm_core.tmux_cmd(
-                "display-message", "-t", claude_pane, "-p", "#{pane_current_command}"
-            )
-            if current_cmd in ccm_constants.SHELL_FOREGROUND_COMMANDS:
+            if claude_pane_pid in acted:
+                continue
+            acted.add(claude_pane_pid)
+            from ccm_exit import exit_pane
+            try:
+                outcome = exit_pane(claude_pane, capture=_pane_tail, sleep=time.sleep)
+            finally:
+                shared.clear()
+            if outcome in (DECLINED_CAPTURE_UNREADABLE, DECLINED_AGENTS_VIEW):
+                _log_auto_exit_declined(project, session_id, outcome, now)
+                continue
+            if outcome == 'exited':
                 ccm_core.tmux_cmd("send-keys", "-t", claude_pane, "clear", "Enter")
                 ccm_detection._set_win_state(win_target, "SHELL")
                 # Force autosave after auto-exit to preserve project in snapshot.
@@ -441,7 +589,7 @@ def auto_exit_idle(projects):
                 # Tell the user WHAT happened and THAT nothing is
                 # lost. An unannounced exit reads as a crash or a
                 # mystery timeout and sends the user hunting for a
-                # cause (report); one
+                # cause; one
                 # notification removes the entire investigation.
                 # Fired only here — after the shell-foreground gate
                 # confirmed the exit actually landed — so it can
@@ -453,6 +601,17 @@ def auto_exit_idle(projects):
                 # Written after the same gate as the notification, so
                 # the log can never claim an exit that did not land.
                 _log_auto_exit(project, session_id, idle_timeout, now)
+            elif outcome == DECLINED_AGENTS_VIEW_AFTER:
+                # The pane shows the agent view after `/exit` — what
+                # an attached background session does when told to
+                # exit (it detaches; the worker keeps running), though
+                # only the screen is observed here, not the cause. Not
+                # an exit either way — no SHELL write, no autosave, no
+                # success notification, and no further keys into that
+                # view. Recorded so the silence has an explanation;
+                # the pre-send check above keeps the next poll off it.
+                _log_auto_exit_declined(
+                    project, session_id, DECLINED_AGENTS_VIEW_AFTER, now)
 
 
 # ─── Autosave ───

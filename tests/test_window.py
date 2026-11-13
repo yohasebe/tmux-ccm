@@ -9,12 +9,20 @@ file owns the auto-focus pane-selection logic.
 
 from unittest.mock import patch
 
+import os
 import pytest
+import sys
 
 import ccm_core
 import ccm_window
 
 from conftest import make_ps_lines
+
+
+@pytest.fixture(autouse=True)
+def ordinary_roles(monkeypatch):
+    # These launch tests use ordinary windows; restored reads have their own suite.
+    monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
 
 
 class TestAutoFocusAttentionPane:
@@ -185,7 +193,12 @@ class TestAutoStartClaudeLaunchPane:
     pane_id \\t pane_pid \\t pane_active \\t current_command \\t @ccm_ignore.
     """
 
-    def _run(self, monkeypatch, panes_raw, auto_start="on"):
+    # A process snapshot in which every pane pid is a plain shell.
+    SHELL_PS = "100 1 100 zsh 00:05\n200 1 200 zsh 00:05\n300 1 300 bash 00:05\n"
+
+    def _run(self, monkeypatch, panes_raw, auto_start="on", ps_output=SHELL_PS):
+        """Returns the launch keystrokes sent (the copy-mode cancel
+        that precedes a launch is not counted) and the result."""
         sent = []
 
         def fake_tmux(*args):
@@ -193,13 +206,13 @@ class TestAutoStartClaudeLaunchPane:
                 return auto_start
             if args[0] == "list-panes":
                 return panes_raw
-            if args[0] == "send-keys":
+            if args[0] == "send-keys" and "-X" not in args:
                 sent.append(args)
             return ""
 
         monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
-        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "")
-        ccm_window.auto_start_claude("0:5")
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: ps_output)
+        self.result = ccm_window.auto_start_claude("0:5")
         return sent
 
     def test_active_shell_pane_receives_launch(self, monkeypatch):
@@ -244,18 +257,483 @@ class TestAutoStartClaudeLaunchPane:
         )
         assert sent == []
 
-    def test_enumeration_failure_falls_back_to_window_target(
-        self, monkeypatch
-    ):
-        """tmux error → empty enumeration → preserve the old
-        defensive fallback (send to the window target), matching
-        `_resolve_delivery_pane`'s policy of skipping the guard when
-        pane info is unavailable."""
+    def test_enumeration_failure_sends_nothing(self, monkeypatch):
+        """tmux error → the panes could not be listed. "Could not
+        look" is not "nothing there": no launch, and the outcome says
+        why. A window-target fallback would type into whatever pane is
+        active."""
         sent = self._run(monkeypatch, "")
+        assert sent == []
+        assert self.result.outcome == ccm_window.UNAVAILABLE
+
+    def test_pane_hosting_claude_sends_nothing(self, monkeypatch):
+        """The caller's SHELL verdict is stale: by now a pane hosts
+        claude (an update relaunching in place, a hand start). A
+        second `claude --continue` would open the same conversation
+        twice, so nothing is typed."""
+        sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t",
+                         ps_output="100 1 100 zsh 00:05\n200 100 200 claude 00:01\n")
+        assert sent == []
+        assert self.result.outcome == ccm_window.ALREADY_RUNNING
+
+    def test_ps_failure_sends_nothing_even_with_a_shell_pane(self, monkeypatch):
+        """`ps_snapshot` returns "" when ps fails. Without the
+        snapshot every pane reads as claude-less, so a launch would
+        double-start a window that does host claude. No snapshot, no
+        launch — no copy-mode cancel either."""
+        sent = self._run(monkeypatch,
+                         "%1\t100\t1\tzsh\t\n%2\t200\t0\tclaude\t",
+                         ps_output="")
+        assert sent == []
+        assert self.result.outcome == ccm_window.UNAVAILABLE
+
+    def test_excluded_pane_is_never_typed_into(self, monkeypatch):
+        """`ccm send` passes its own pane; when that is the only shell
+        pane, nothing is launched rather than launching into the
+        sender's composer."""
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return "on"
+            if args[0] == "list-panes":
+                return "%0\t100\t1\tzsh\t"
+            if args[0] == "send-keys":
+                sent.append(args)
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: self.SHELL_PS)
+        result = ccm_window.launch_claude("0:5", exclude_pane="%0")
+        assert sent == [] and result.outcome == ccm_window.UNAVAILABLE
+        result = ccm_window.launch_claude("0:5", exclude_pane="%9")
+        assert result.outcome == ccm_window.LAUNCHED and result.pane == "%0"
+
+    def test_launch_outcome_names_the_pane(self, monkeypatch):
+        sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t")
+        assert self.result.outcome == ccm_window.LAUNCHED
+        assert self.result.pane == "%0"
         assert len(sent) == 1
-        assert sent[0][:3] == ("send-keys", "-t", "0:5")
 
     def test_auto_start_setting_off_sends_nothing(self, monkeypatch):
         sent = self._run(monkeypatch, "%0\t100\t1\tzsh\t",
                          auto_start="off")
         assert sent == []
+
+
+class TestAutoStartHandoffNotice:
+    """After typing the launch command, `auto_start_claude` names the
+    background session that will make `claude --continue` start
+    fresh — on the tmux message line, and as its return value for
+    callers with a stdout."""
+
+    def _run(self, monkeypatch, blocker):
+        import ccm_agentview
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return "on"
+            if args[:2] == ("show-option", "-wqv"):
+                return {"@ccm_dir": "/w/proj", "@ccm_project": "proj"}.get(args[-1], "")
+            if args[0] == "list-panes":
+                return "%0\t100\t1\tzsh\t"
+            if args[0] in ("send-keys", "display-message") and "-X" not in args:
+                sent.append(args)
+            return ""
+
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
+        def fake_blocker(project_dir, bg_sessions=None):
+            sent.append(("continue_blocker", project_dir))
+            return blocker
+
+        monkeypatch.setattr(ccm_agentview, "continue_blocker", fake_blocker)
+        return ccm_window.auto_start_claude("0:5").notice, sent
+
+    def test_nothing_blocking_is_silent(self, monkeypatch):
+        notice, sent = self._run(monkeypatch, None)
+        assert notice is None
+        assert [a[0] for a in sent] == ["continue_blocker", "send-keys"]
+
+    def test_blocker_is_announced_after_launch(self, monkeypatch):
+        import ccm_agentview
+        bg = ccm_agentview.BgSession(
+            short="0b900000", pid=1, cwd="/w/proj", name="n", state="DONE",
+            raw_state="done", tempo="", cli_version="",
+            session_id="0b900000-0000-4000-8000-000000000001",
+            created_at=None, updated_at=None, source="slash")
+        notice, sent = self._run(monkeypatch, bg)
+        assert notice and notice.startswith("proj: ")
+        assert "claude stop 0b900000" in notice
+        # Judged BEFORE the launch is typed (the new session's own
+        # transcript would otherwise be the newest one), announced
+        # after.
+        assert [a[0] for a in sent] == [
+            "continue_blocker", "send-keys", "display-message"]
+        assert sent[0][1:] == ("/w/proj",)
+        assert sent[2][1:3] == ("-d", str(ccm_window.CONTINUE_NOTICE_MS))
+        assert sent[2][-1] == "ccm: " + notice
+
+    def test_display_message_text_has_formats_escaped(self, monkeypatch):
+        """tmux expands `#{...}` and runs `#(...)` inside the
+        display-message argument; a project name is not guaranteed
+        free of `#`, so it must arrive doubled."""
+        import ccm_agentview
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return "on"
+            if args[:2] == ("show-option", "-wqv"):
+                return {"@ccm_dir": "/w/proj", "@ccm_project": "p#{session_name}q"}.get(args[-1], "")
+            if args[0] == "list-panes":
+                return "%0\t100\t1\tzsh\t"
+            if args[0] == "display-message":
+                sent.append(args[-1])
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
+        bg = ccm_agentview.BgSession(
+            short="0b900000", pid=1, cwd="/w/proj", name="n", state="DONE",
+            raw_state="done", tempo="", cli_version="",
+            session_id="0b900000-0000-4000-8000-000000000001",
+            created_at=None, updated_at=None, source="slash")
+        monkeypatch.setattr(ccm_agentview, "continue_blocker", lambda *a, **kw: bg)
+        notice = ccm_window.auto_start_claude("0:5").notice
+        assert notice.startswith("p#{session_name}q: ")
+        assert sent == ["ccm: " + notice.replace("#", "##")]
+        assert "#{" not in sent[0].replace("##", "")
+
+    def test_no_launch_no_notice(self, monkeypatch):
+        """No shell pane to type into → nothing launched, nothing
+        announced, no keys sent. The foreground check is the last
+        step before the keys, after the (cheap) notice judgment."""
+        import ccm_agentview
+        sent = []
+        monkeypatch.setattr(ccm_agentview, "continue_blocker",
+                            lambda *a, **kw: None)
+
+        def fake_tmux(*a):
+            if a[:2] == ("show-option", "-gqv"):
+                return "on"
+            if a[0] == "list-panes":
+                return "%0\t100\t1\tvim\t"
+            if a[0] in ("send-keys", "display-message"):
+                sent.append(a)
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 vim 00:05\n")
+        result = ccm_window.auto_start_claude("0:5")
+        assert result.outcome == ccm_window.UNAVAILABLE and result.notice is None
+        assert sent == []
+
+
+
+class TestLaunchCommandChoice:
+    """`claude --continue` exits 1 when it has nothing to resume, so a
+    new project's first launch must type plain `claude`; every launch
+    into an existing shell types `--continue` with no fallback, so a
+    failure to resume stays on screen instead of becoming a new
+    conversation. Plain `claude` is typed only into a window ccm has
+    just created, and only when ccm has looked everywhere the CLI
+    would and found nothing — not when it could not look."""
+
+    @pytest.fixture(autouse=True)
+    def _default_cli_home(self, monkeypatch):
+        import ccm_jsonl
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_PROJECT_DIR_NAME", raising=False)
+        # The temporary directory's length must not decide a verdict;
+        # the test of a slug past the limit sets its own.
+        monkeypatch.setattr(ccm_jsonl, "PROJECT_SLUG_MAX", sys.maxsize)
+        # tmux environments that set nothing relevant, unless a test
+        # replaces them.
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "PATH=/usr/bin\n-UNSET_ONE" if a[0] == "show-environment" else "")
+
+    def _projects_dir(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        projects = tmp_path / "projects"
+        projects.mkdir()
+        monkeypatch.setattr(ccm_jsonl, "CLAUDE_PROJECTS_DIR", str(projects))
+        ccm_jsonl._jsonl_path_cache.clear()
+        return projects
+
+    def _transcript(self, projects, directory, name="s.jsonl", cwd=None):
+        import ccm_jsonl
+        slug = projects / ccm_jsonl._project_slug(str(directory)); slug.mkdir(exist_ok=True)
+        (slug / name).write_text('{"type":"user","cwd":"%s"}\n' % (cwd or directory))
+        return slug
+
+    def test_no_conversation_means_a_fresh_launch(self, tmp_path, monkeypatch):
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.NO_HISTORY
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD_FRESH
+
+    def test_an_empty_transcript_directory_is_no_history(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        (projects / ccm_jsonl._project_slug(str(proj))).mkdir()
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD_FRESH
+
+    def test_a_conversation_means_resume(self, tmp_path, monkeypatch):
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        self._transcript(projects, proj)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.HISTORY
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    def test_a_transcript_claiming_elsewhere_still_means_resume(self, tmp_path, monkeypatch):
+        """The CLI picks by mtime within the directory and does not read
+        the recorded cwd, so a transcript that names another directory
+        is still something `--continue` will open."""
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        self._transcript(projects, proj, cwd="/elsewhere/entirely")
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    def test_no_directory_means_resume(self, tmp_path, monkeypatch):
+        self._projects_dir(tmp_path, monkeypatch)
+        assert ccm_window.conversation_history("", "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command("", "main") == ccm_window.CLAUDE_CMD
+
+    @pytest.mark.parametrize("var", ["CLAUDE_CODE_PROJECT_DIR_NAME", "CLAUDE_CONFIG_DIR"])
+    def test_a_transcript_location_variable_in_ccms_environment_means_resume(
+            self, tmp_path, monkeypatch, var):
+        """With either variable the CLI keeps transcripts somewhere ccm
+        does not derive; nothing under the slug is no evidence of
+        nothing."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setenv(var, "custom-name")
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    @pytest.mark.parametrize("scope", ["-g", "-t"])
+    @pytest.mark.parametrize("var", ["CLAUDE_CODE_PROJECT_DIR_NAME", "CLAUDE_CONFIG_DIR"])
+    def test_a_transcript_location_variable_in_the_tmux_environment_means_resume(
+            self, tmp_path, monkeypatch, scope, var):
+        """ccm's own environment is clean, but the new window's shell
+        inherits tmux's global or session environment, and that one
+        sets the variable."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        seen = []
+
+        def fake_tmux(*args):
+            seen.append(args)
+            if args[0] == "show-environment" and args[1] == scope:
+                return f"PATH=/usr/bin\n{var}=custom"
+            return "PATH=/usr/bin"
+        monkeypatch.setattr(ccm_core, "tmux_query", fake_tmux)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+        assert ("show-environment", "-t", "main") in seen
+
+    def test_an_unset_marker_in_the_tmux_environment_is_not_a_setting(self, tmp_path, monkeypatch):
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setattr(ccm_core, "tmux_query",
+                            lambda *a: "-CLAUDE_CONFIG_DIR\n-CLAUDE_CODE_PROJECT_DIR_NAME")
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD_FRESH
+
+    def test_an_unreadable_tmux_environment_means_resume(self, tmp_path, monkeypatch):
+        """A failed query (None) is not an empty environment."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: None)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    def test_an_empty_tmux_environment_is_no_setting(self, tmp_path, monkeypatch):
+        """A session environment can legitimately be empty; that is an
+        answer, not a failure."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: "")
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.NO_HISTORY
+
+    def test_the_tmux_environment_is_read_with_a_failure_aware_query(self, tmp_path, monkeypatch):
+        """`tmux_cmd` answers "" for both an empty listing and a failed
+        one; the environment must be read through `tmux_query`, whose
+        failure is None."""
+        self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        monkeypatch.setattr(ccm_core, "tmux_cmd",
+                            lambda *a: pytest.fail("environment read through tmux_cmd"))
+        monkeypatch.setattr(ccm_core, "tmux_query", lambda *a: None)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+
+    def test_an_unreadable_transcript_directory_means_resume(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        slug = projects / ccm_jsonl._project_slug(str(proj)); slug.mkdir()
+        real_listdir = os.listdir
+
+        def denied(path):
+            if str(path) == str(slug):
+                raise PermissionError(13, "denied", str(path))
+            return real_listdir(path)
+        monkeypatch.setattr(os, "listdir", denied)
+        assert ccm_window.conversation_history(str(proj), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(proj), "main") == ccm_window.CLAUDE_CMD
+
+    def test_a_slug_the_cli_would_hash_means_resume(self, tmp_path, monkeypatch):
+        import ccm_jsonl
+        self._projects_dir(tmp_path, monkeypatch)
+        deep = tmp_path / "deep"; deep.mkdir()
+        monkeypatch.setattr(ccm_jsonl, "PROJECT_SLUG_MAX",
+                            len(ccm_jsonl._project_slug(str(deep))) - 1)
+        assert ccm_window.conversation_history(str(deep), "main") == ccm_window.UNKNOWN
+        assert ccm_window.launch_command(str(deep), "main") == ccm_window.CLAUDE_CMD
+
+    def test_a_conversation_under_the_resolved_path_means_resume(self, tmp_path, monkeypatch):
+        """The shell may report the directory through a symlink or
+        resolved; the transcript directory may be under either
+        spelling."""
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        real = tmp_path / "real"; real.mkdir()
+        link = tmp_path / "link"; link.symlink_to(real)
+        self._transcript(projects, real)
+        assert ccm_window.conversation_history(str(link), "main") == ccm_window.HISTORY
+        assert ccm_window.launch_command(str(link), "main") == ccm_window.CLAUDE_CMD
+
+    @pytest.mark.parametrize("has_history", [True, False])
+    def test_launch_into_an_existing_shell_always_resumes(self, tmp_path, monkeypatch, has_history):
+        """An existing shell's exports are invisible from here, so ccm
+        never claims it has nothing to resume: `--continue` with no
+        fallback, whatever the default transcript directory holds."""
+        projects = self._projects_dir(tmp_path, monkeypatch)
+        proj = tmp_path / "proj"; proj.mkdir()
+        if has_history:
+            self._transcript(projects, proj)
+        sent = []
+
+        def fake_tmux(*args):
+            if args[:2] == ("show-option", "-gqv"):
+                return "on"
+            if args[:2] == ("show-option", "-wqv"):
+                return {"@ccm_dir": str(proj), "@ccm_project": "proj"}.get(args[-1], "")
+            if args[0] == "list-panes":
+                return "%0\t100\t1\tzsh\t"
+            if args[0] == "send-keys" and "-X" not in args:
+                sent.append(args)
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake_tmux)
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "100 1 100 zsh 00:05\n")
+        import ccm_agentview
+        monkeypatch.setattr(ccm_agentview, "continue_blocker", lambda *a, **k: None)
+        result = ccm_window.launch_claude("0:5")
+        assert result.outcome == ccm_window.LAUNCHED
+        assert sent == [("send-keys", "-t", "%0", ccm_window.CLAUDE_CMD, "Enter")]
+        assert "||" not in ccm_window.CLAUDE_CMD and "2>" not in ccm_window.CLAUDE_CMD
+
+
+class TestAutoFocusWaitingSidekick:
+    """When no Claude pane waits, attaching focuses a sidekick pane
+    that waits for a person — the pane the `▸ ⚠` badge points at."""
+
+    APPROVAL = ("• Running curl -sI https://example.com\n"
+                "  Would you like to run the following command?\n"
+                "› 1. Yes, proceed (y)\n"
+                "  3. No, and tell Codex what to do differently (esc)\n"
+                "  Press enter to confirm or esc to cancel\n")
+    IDLE_CODEX = ("› Ask Codex to do anything\n"
+                  "  ← for agents · ? for shortcuts\n")
+
+    def _world(self, monkeypatch, *, claude_screen="❯ ", codex_screen=None,
+               codex_active=False, claude_ps="claude", toggle="", agent="codex"):
+        """%0 runs Claude, %1 runs Codex (or `agent`). Returns the
+        select-pane calls."""
+        ps = make_ps_lines(
+            (100, 1, 100, "zsh"), (101, 100, 100, claude_ps),
+            (200, 1, 200, "zsh"), (201, 200, 200, agent),
+        )
+        monkeypatch.setattr(ccm_core, "ps_snapshot", lambda: "\n".join(ps))
+        codex_screen = self.APPROVAL if codex_screen is None else codex_screen
+        selected = []
+
+        def fake(*args, **kw):
+            if args[:2] == ("show-option", "-wqv") and args[-1] == "@ccm_dir":
+                return "/tmp/proj"
+            if args[:2] == ("show-option", "-gqv") and args[-1] == "@ccm-sidekick-attention":
+                return toggle
+            if args[0] == "list-panes" and "-a" in args:
+                return ("main:5\t100\t%0\tclaude\t{}\t40\t\t\n"
+                        "main:5\t200\t%1\t{}\t{}\t40\t\t").format(
+                            "0" if codex_active else "1", agent,
+                            "1" if codex_active else "0")
+            if args[0] == "list-panes":
+                return ("100\t%0\tclaude\t{}\t40\n200\t%1\t{}\t{}\t40"
+                        .format("0" if codex_active else "1", agent,
+                                "1" if codex_active else "0"))
+            if args[0] == "display-message":
+                return "main:5"
+            if args[0] == "capture-pane":
+                return codex_screen if args[args.index("-t") + 1] == "%1" else claude_screen
+            if args[0] == "select-pane":
+                selected.append(args[-1])
+            return ""
+        monkeypatch.setattr(ccm_core, "tmux_cmd", fake)
+        monkeypatch.setattr(ccm_core, "_read_attention_markers", lambda *a: {})
+        return selected
+
+    def test_waiting_codex_is_focused_when_claude_is_idle(self, monkeypatch):
+        selected = self._world(monkeypatch)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%1"]
+
+    def test_waiting_codex_is_focused_when_claude_is_busy(self, monkeypatch):
+        # No prompt and no footer on Claude's screen: it is working.
+        selected = self._world(monkeypatch, claude_screen="· Thinking…")
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%1"]
+
+    def test_waiting_claude_comes_first(self, monkeypatch):
+        selected = self._world(monkeypatch, codex_active=True,
+                               claude_screen="Esc to cancel · Tab to amend")
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%0"]
+
+    def test_focus_already_on_the_waiting_sidekick(self, monkeypatch):
+        selected = self._world(monkeypatch, codex_active=True)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == []
+
+    AGY_RULE = "─" * 80
+    AGY_APPROVAL = (f"{AGY_RULE}\nRequesting permission for:\n   make check\n"
+                    "Run this command?\n> 1. Yes, run command\n  2. No, cancel\n"
+                    "  ↑/↓ Navigate · tab Amend\nesc to cancel        Example Model\n")
+    AGY_IDLE = f"{AGY_RULE}\n>\n{AGY_RULE}\n? for shortcuts        Example Model\n"
+
+    def test_waiting_agy_is_focused(self, monkeypatch):
+        selected = self._world(monkeypatch, agent="agy", codex_screen=self.AGY_APPROVAL)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%1"]
+
+    def test_idle_agy_is_not_focused(self, monkeypatch):
+        selected = self._world(monkeypatch, agent="agy", codex_screen=self.AGY_IDLE)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == []
+
+    def test_idle_sidekick_is_not_focused(self, monkeypatch):
+        selected = self._world(monkeypatch, codex_screen=self.IDLE_CODEX)
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == []
+
+    def test_attention_display_off_leaves_focus(self, monkeypatch):
+        selected = self._world(monkeypatch, toggle="off")
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == []
+
+    def test_marker_waiting_sidekick_is_focused(self, monkeypatch):
+        # A Kimi-style sidekick waits through its attention marker.
+        selected = self._world(monkeypatch, codex_screen=self.IDLE_CODEX)
+        monkeypatch.setattr(ccm_core, "external_agent_name",
+                            lambda cmd: "kimi" if cmd == "codex" else "")
+        monkeypatch.setattr(ccm_core, "_read_attention_markers",
+                            lambda *a: {"%1": {"agent": "kimi", "state": "waiting"}})
+        ccm_window.auto_focus_attention_pane("5")
+        assert selected == ["%1"]

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+load helpers/tmux_guard.bash
 # Dispatch-level tests for `ccm sidekick-send` — the bash wrapper must
 # forward the subcommand to the Python side, and the help surfaces
 # must list it. Identity/refusal behaviour itself is covered by
@@ -23,4 +24,26 @@ teardown() {
     run bash "$CCM_ROOT/ccm" help
     [ "$status" -eq 0 ]
     [[ "$output" == *"ccm sidekick-send"* ]]
+}
+
+@test "setup guidance distinguishes unconfirmed delivery from non-delivery" {
+    source "$CCM_ROOT/lib/common.sh"
+    run _ccm_claude_md_section
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *'delivery unconfirmed'* ]]
+    [[ "$output" == *'conversation and input'* ]]
+    [[ "$output" == *'do not resend if received'* ]]
+    [[ "$output" != *'treat that as "not delivered"'* ]]
+}
+
+@test "sidekick-send: --json --help answers with the usage as JSON" {
+    run bash "$CCM_ROOT/ccm" sidekick-send --json --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == '{"schema": 1, "help": "Usage: ccm sidekick-send'* ]]
+}
+
+@test "sidekick-send: --json without a message is a refusal as JSON" {
+    run bash -c 'bash "$1" sidekick-send --json 2>/dev/null' _ "$CCM_ROOT/ccm"
+    [ "$status" -eq 1 ]
+    [[ "$output" == '{"schema": 1, "outcome": "refused", "reason": "usage"'* ]]
 }

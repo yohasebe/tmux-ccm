@@ -16,17 +16,20 @@ import ccm_core
 import ccm_snapshot
 
 
+@pytest.fixture(autouse=True)
+def ordinary_roles(monkeypatch):
+    monkeypatch.setattr(ccm_core, "tmux_query", lambda *a, **kw: "")
+
+
 class TestUpdateWindowNames:
     """`update_window_names` rewrites tmux window names to carry the
     current state icon. Regression coverage for the same-directory
     dedup interaction: `build_project_list` drops every window after
     the first that shares a canonical directory (`seen_dirs`), so the
-    second window is absent from `projects`. The old
-    `project_states.get(win_target, "IDLE")` default then rewrote
-    that window's name to the IDLE icon every poll cycle regardless
-    of its real state. The fix inherits the state from the same-dir
-    sibling that IS tracked, and skips windows with no state source
-    at all instead of stamping a wrong icon."""
+    second window is absent from `projects`. Its state is
+    inherited from the same-dir sibling that IS tracked, and a window
+    with no state source at all is skipped rather than stamped with a
+    wrong icon."""
 
     def _project(self, win_target, name, directory, state):
         return ccm_core.Project(
@@ -190,8 +193,7 @@ class TestAutoExitIdle:
          long sessions Claude's shutdown can exceed the 0.5 s wait
          window; sending `clear` while Claude is still foreground
          delivers literal text into its input box and submits it as
-         an unintended user prompt (observed live, and
-         retro-explains earlier "test" one-word injections).
+         an unintended user prompt.
       2. Every keystroke must be addressed to the Claude pane
          directly, not to the window's active pane. If the user
          split off a shell pane and left focus on it, `send-keys`
@@ -199,8 +201,7 @@ class TestAutoExitIdle:
          Enter sequence in the shell. In emacs mode that becomes
          `Meta-/` (no-op completion) followed by the literal
          characters `exit` plus Enter, silently killing the user's
-         shell pane some hours after they last touched it (reported
-         on the sample-proj window itself).
+         shell pane some hours after they last touched it.
 
     Coverage:
       - Happy path: shell foreground (`zsh`) → `clear` IS sent.
@@ -224,19 +225,22 @@ class TestAutoExitIdle:
     # `ps_snapshot()` returns the raw stdout string from
     # `ps -eo pid,ppid,pgid,comm,etime`. ccm_runtime splits it into
     # lines via `.strip().split("\n")`; tests therefore mock the
-    # snapshot as a multi-line string, NOT a Python list. Earlier
-    # versions of these tests provided a list directly, which masked
-    # a production bug where ccm_runtime forgot to split the string
-    # (`find_claude_pid` then iterated character-by-character and
-    # returned None for every pane).
+    # snapshot as a multi-line string, NOT a Python list, so a
+    # missing split fails here (`find_claude_pid` would iterate
+    # character by character and return None for every pane).
     DEFAULT_PS_OUTPUT = (
         "1000 999 1000 zsh 00:01:00\n"
         "1001 1000 1001 claude 00:00:30\n"
     )
 
+    # What `capture-pane` returns by default: an ordinary conversation
+    # with the input prompt visible. Tests about the agent view pass
+    # their own sequence (one entry per capture; the last repeats).
+    DEFAULT_CAPTURES = ["\u276f \n"]
+
     @staticmethod
     def _build_tmux_side_effect(post_exit_cmd, panes_listing,
-                               self_session_id=SESSION_ID):
+                               self_session_id=SESSION_ID, captures=None):
         """Wire `tmux_cmd` so it returns the right value for each
         query auto_exit_idle makes during a single past-timeout pass.
 
@@ -249,8 +253,15 @@ class TestAutoExitIdle:
                                     `post_exit_cmd` (parameterised:
                                     zsh / "claude" / empty / version)
         - send-keys / set-option  → ""  (side effects only)
+        - capture-pane            → `captures` (default: an ordinary
+                                    conversation prompt)
         """
+        captures = list(captures if captures is not None
+                        else TestAutoExitIdle.DEFAULT_CAPTURES)
+
         def side_effect(*args):
+            if args[0] == "capture-pane":
+                return captures.pop(0) if len(captures) > 1 else captures[0]
             if args[:2] == ("show-option", "-gqv"):
                 return ""
             if args[:2] == ("display-message", "-p"):
@@ -264,6 +275,9 @@ class TestAutoExitIdle:
                 if fmt == "#{pane_current_command}":
                     return post_exit_cmd
             if args[0] == "list-panes":
+                # One listing of every pane, each row led by its window.
+                if "-a" in args:
+                    return "\n".join(f"main:1\t{row}" for row in panes_listing.split("\n") if row)
                 return panes_listing
             if args[0] == "list-windows":
                 # Single ccm window at main:1 (NOT main:0 → not focused),
@@ -275,13 +289,14 @@ class TestAutoExitIdle:
         return side_effect
 
     def _run(self, post_exit_cmd, panes_listing=None, ps_output=None,
-             return_side_effects=False):
+             return_side_effects=False, captures=None):
         if panes_listing is None:
             panes_listing = self.DEFAULT_PANES_LISTING
         if ps_output is None:
             ps_output = self.DEFAULT_PS_OUTPUT
         send_calls = []
-        tmux_se = self._build_tmux_side_effect(post_exit_cmd, panes_listing)
+        tmux_se = self._build_tmux_side_effect(post_exit_cmd, panes_listing,
+                                               captures=captures)
 
         def tmux_recorder(*args):
             if args and args[0] == "send-keys":
@@ -298,6 +313,74 @@ class TestAutoExitIdle:
         if return_side_effects:
             return send_calls, mock_set_state, mock_autosave, mock_notify
         return send_calls
+
+    def _run_windows(self, windows, ps_output=None, pane_pid=None):
+        """auto_exit_idle over several expired windows; returns
+        (send-keys calls, ps_snapshot mock, tmux calls). `pane_pid`
+        gives every window the same pane, as a linked window does."""
+        calls, sends = [], []
+        base = self._build_tmux_side_effect("zsh", self.DEFAULT_PANES_LISTING)
+
+        def tmux(*args):
+            calls.append(args)
+            if args[0] == "send-keys":
+                sends.append(args)
+            if args[0] == "list-windows":
+                return "\n".join(
+                    f"main:{w[0]}\tdemo{w[0]}\tIDLE\t1\t1\t{self.SESSION_ID}\t{w[1]}"
+                    + (f"\t{w[2]}" if len(w) > 2 else "")
+                    for w in windows)
+            if args[0] == "list-panes" and "-a" in args:
+                pid = pane_pid if isinstance(pane_pid, dict) else {}
+                return "\n".join(f"main:{w[0]}\t0\t{pid.get(w[0], pane_pid or 1000)}"
+                                  for w in windows)
+            return base(*args)
+
+        with patch("ccm_core.tmux_cmd", side_effect=tmux), \
+             patch("ccm_core.ps_snapshot",
+                   return_value=ps_output or self.DEFAULT_PS_OUTPUT) as ps, \
+             patch("ccm_detection._set_win_state"), \
+             patch("ccm_runtime._force_autosave"), \
+             patch("ccm_runtime.ccm_notify"), \
+             patch("ccm_runtime.time.sleep"):
+            ccm_runtime.auto_exit_idle([])
+        return sends, ps, calls
+
+    def test_a_window_waiting_for_restore_is_left_alone(self):
+        sends, ps, calls = self._run_windows([("1", "1")])
+        assert sends == []
+        assert not any(c[:2] == ("show-option", "-wqv") for c in calls)
+
+    def test_a_window_with_background_work_is_left_alone(self):
+        # IDLE (bg): a background agent still works for the conversation.
+        sends, ps, calls = self._run_windows([("1", "", "1")], pane_pid="1000")
+        assert sends == []
+
+    def test_the_same_window_without_background_work_exits(self):
+        # Control for the test above.
+        sends, ps, calls = self._run_windows([("1", "", "")], pane_pid="1000")
+        assert any("/exit" in c for c in sends)
+
+    def test_windows_only_looked_at_share_one_ps_and_one_pane_listing(self):
+        # No Claude in any of them: each is looked at and left.
+        sends, ps, calls = self._run_windows(
+            [("1", ""), ("2", ""), ("3", "")], ps_output="1000 999 1000 zsh 00:01:00\n")
+        assert sends == []
+        assert ps.call_count == 1
+        assert sum(1 for c in calls if c[0] == "list-panes") == 1
+
+    def test_acting_on_a_window_rereads_before_the_next_decision(self):
+        # The exit waits, and another Claude may end meanwhile: no later
+        # window may be judged from a list taken before an exit.
+        sends, ps, calls = self._run_windows([("1", ""), ("2", "")], pane_pid="1000")
+        exits = [c for c in sends if "/exit" in c]
+        assert len(exits) == 1                           # both names, one pane
+        two = ("2001 999 2001 zsh 00:01:00\n2002 2001 2002 claude 00:00:30\n"
+               "3001 999 3001 zsh 00:01:00\n3002 3001 3002 claude 00:00:30\n")
+        sends, ps, calls = self._run_windows(
+            [("1", ""), ("2", "")], ps_output=two, pane_pid={"1": "2001", "2": "3001"})
+        assert len([c for c in sends if "/exit" in c]) == 2
+        assert ps.call_count == 2
 
     def test_clear_sent_when_shell_foreground(self):
         """Happy path: `/exit` completed, pane returned to zsh, so
@@ -337,7 +420,7 @@ class TestAutoExitIdle:
         )
 
     def test_no_auto_exit_when_focused_window_unresolved(self):
-        """Safety guard (adversarial-review finding): if
+        """Safety guard: if
         `display-message` returns empty for the focused session/window
         (query failed / no client context), current_target would be
         ":" and protect no window — letting the focused Claude be
@@ -352,6 +435,8 @@ class TestAutoExitIdle:
             if args[0] == "list-windows":
                 return "main:1\tdemo\tIDLE\t1\t1"
             if args[0] == "list-panes":
+                if "-a" in args:
+                    return "\n".join(f"main:1\t{row}" for row in self.DEFAULT_PANES_LISTING.split("\n") if row)
                 return self.DEFAULT_PANES_LISTING
             if args and args[0] == "send-keys":
                 send_calls.append(args)
@@ -372,7 +457,7 @@ class TestAutoExitIdle:
         mock_autosave.assert_not_called()
 
     def test_shell_transition_and_autosave_gated_on_exit_success(self):
-        """Side-effect gating (adversarial-review finding):
+        """Side-effect gating:
         the SHELL state write and the autosave must fire ONLY when
         `/exit` actually completed (pane foreground back to a shell).
         On the race path (Claude still foreground) declaring SHELL
@@ -463,11 +548,9 @@ class TestAutoExitIdle:
         process and the pane closes, changing the window's layout —
         auto-exit reclaims an idle process, it does not close panes.
 
-        These panes were unreachable by accident until this fix:
-        the process walk only looked for a child, so they resolved to
-        no-claude and the background-work guard read their versioned
-        command name as live work. Teaching the walk about them
-        removed that cover, so the exclusion is explicit now."""
+        The exclusion is explicit: the process walk finds claude as
+        the pane process itself, so nothing else keeps auto-exit away
+        from these panes."""
         # pane pid 1000 is itself `claude` — no shell in between.
         ps_output = "1000 999 1000 claude 00:05:00\n"
         send_calls = self._run(
@@ -508,10 +591,7 @@ class TestAutoExitIdle:
 class TestAutoExitBackgroundWorkGuard:
     """Auto-exit must leave a window alone while it hosts live
     background work, however long the Claude conversation has been
-    idle. Cost asymmetry: wrongly exiting interrupts running work
-    (incident — a sibling-pane batch job's
-    window went quiet for 10 min and Claude was exited out from
-    under an active project); wrongly keeping costs one idle Claude
+    idle. Cost asymmetry: wrongly exiting interrupts running work; wrongly keeping costs one idle Claude
     process. Two signals, either sufficient:
 
       - a non-Claude pane whose foreground is not a shell (batch,
@@ -537,7 +617,7 @@ class TestAutoExitBackgroundWorkGuard:
                            ps_output=ps_output)
 
     def test_sibling_pane_running_job_skips_exit(self):
-        """The incident shape: batch job (ruby) in the split pane.
+        """A batch job (ruby) in the split pane.
         No keystroke may reach the window."""
         send_calls = self._run(self._panes("ruby"), self.PS_BASE)
         assert send_calls == [], (
@@ -571,6 +651,36 @@ class TestAutoExitBackgroundWorkGuard:
             f"claude: {send_calls}"
         )
 
+    @pytest.mark.parametrize("comm", ["/bin/zsh", "-/bin/zsh", "/bin/bash", "-zsh"])
+    def test_a_shell_child_named_by_its_path_skips_exit(self, comm):
+        """macOS `ps` names a process by its path."""
+        ps = self.PS_BASE + f"1002 1001 1002 {comm} 00:05:00\n"
+        assert self._run(self._panes("zsh"), ps) == []
+
+    @pytest.mark.parametrize("full, exits", [
+        (["/opt/homebrew/bin/zsh"], False),
+        (["/Users/example/mcp-server"], True),
+        ([], True),      # the cut child has exited since
+        (None, False),   # ps could not be asked: keep the window
+    ])
+    def test_a_cut_path_is_asked_in_full(self, monkeypatch, full, exits):
+        """A path `ps` cut at 16 bytes might be a shell."""
+        asked = []
+        monkeypatch.setattr(ccm_runtime, "_full_commands",
+                            lambda pids: asked.append(pids) or full)
+        ps = self.PS_BASE + "1002 1001 1002 /opt/homebrew/bi 00:05:00\n"
+        send_calls = self._run(self._panes("zsh"), ps)
+        sent = [c[3] for c in send_calls if len(c) >= 4]
+        assert asked == [["1002"]]
+        assert ("/exit" in sent) == exits
+
+    def test_short_paths_are_not_asked_again(self, monkeypatch):
+        monkeypatch.setattr(ccm_runtime, "_full_commands",
+                            lambda pids: pytest.fail("asked ps again"))
+        ps = self.PS_BASE + "1003 1001 1003 /usr/bin/node 02:00:00\n"
+        sent = [c[3] for c in self._run(self._panes("zsh"), ps) if len(c) >= 4]
+        assert "/exit" in sent
+
     def test_parked_editor_sibling_still_exits(self):
         """A parked nvim in the split pane is ambient tooling, not
         background work. Active editing refreshes window_activity
@@ -578,9 +688,7 @@ class TestAutoExitBackgroundWorkGuard:
         exiting Claude leaves the editor pane untouched — so the
         guard must not treat it as live work. Without this exemption
         a split-editor workflow silently disables auto-exit for
-        every window (observed: three sessions idle 3-4
-        days with @ccm-idle-timeout 10 set, each with a parked nvim
-        in the second pane)."""
+        every window."""
         for editor in ("nvim", "vim", "emacs", "less"):
             send_calls = self._run(self._panes(editor), self.PS_BASE)
             sent = [c[3] for c in send_calls if len(c) >= 4]
@@ -604,7 +712,7 @@ class TestAutoExitBackgroundWorkGuard:
 class TestAutoExitNotification:
     """A completed auto-exit must announce itself: an unannounced
     exit reads as a crash or a mystery timeout and sends the user
-    hunting for a cause (report). Fired only
+    hunting for a cause. Fired only
     after the shell-foreground gate confirmed the exit landed."""
 
     def test_notify_fired_on_confirmed_exit(self):
@@ -671,9 +779,9 @@ class TestAutoExitEvidenceLog:
     Claude Code reports an auto-exit as `SessionEnd` with reason
     `prompt_input_exit` — the same value a person typing `/exit`
     produces. So the only place the difference can be recorded is
-    here, and without it the question has no answer anywhere: a
-    neighbouring tool read eight such endings in a row and concluded
-    the sessions were crashing.
+    here, and without it the question has no answer anywhere: an
+    auto-exit and a crash look the same to anyone reading the
+    transcripts.
     """
 
     def _isolate(self, monkeypatch, tmp_path):
@@ -731,3 +839,200 @@ class TestAutoExitEvidenceLog:
         ccm_runtime._log_auto_exit("demo", "abc", 600, 1)
         assert (tmp_path / "state" / "auto-exit.log.1").exists()
         assert len(self._records()) == 1
+
+
+AGENTS_VIEW_TAIL = (
+    "Claude Code v9.9.9 \u00b7 nothing running\n"
+    "Your conversation moved to the background \u2014 enter opens it "
+    "\u00b7 esc returns to it \u00b7 ctrl+c twice quits\n"
+    "enter to open \u00b7 space to reply \u00b7 ctrl+x to delete \u00b7 ? for shortcuts\n"
+)
+
+
+class TestAutoExitAgentsView:
+    """IDLE says the conversation is at rest; it does not say the
+    screen takes a slash command. A pane showing the agent view —
+    where a session lands after `/background`, `\u2190 \u2190`, or
+    `/exit` inside an attached background session — can start a new
+    session from typed text, and Escape there moves between views.
+    Auto-exit therefore looks before it types, and records why it
+    did not.
+    """
+
+    def _declined(self):
+        try:
+            with open(ccm_runtime.auto_exit_declined_log_path(),
+                      encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except OSError:
+            return []
+
+    def _exits(self):
+        try:
+            with open(ccm_runtime.auto_exit_log_path(), encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        except OSError:
+            return []
+
+    def test_agent_view_before_send_types_nothing(self):
+        """Escape included: it would return the conversation to the
+        foreground, and `/exit` after it would detach it again."""
+        send_calls, set_state, autosave, notify = TestAutoExitIdle()._run(
+            "claude", return_side_effects=True, captures=[AGENTS_VIEW_TAIL])
+        assert send_calls == []
+        set_state.assert_not_called()
+        autosave.assert_not_called()
+        notify.notify.assert_not_called()
+        records = self._declined()
+        assert [r["outcome"] for r in records] == [ccm_runtime.DECLINED_AGENTS_VIEW]
+        assert records[0]["project"] == TestAutoExitIdle.PROJECT_NAME
+        assert records[0]["session"] == TestAutoExitIdle.SESSION_ID
+        assert self._exits() == []
+
+    def test_unreadable_pane_types_nothing(self):
+        """"Cannot read the pane" is not "an ordinary conversation":
+        an autonomous keystroke needs a positive reason."""
+        for blank in ("", "   \n"):
+            send_calls = TestAutoExitIdle()._run("zsh", captures=[blank])
+            assert send_calls == [], repr(blank)
+        assert [r["outcome"] for r in self._declined()] == [
+            ccm_runtime.DECLINED_CAPTURE_UNREADABLE]
+
+    def test_ordinary_conversation_still_exits(self):
+        send_calls = TestAutoExitIdle()._run("zsh")
+        assert any("/exit" in c for c in send_calls)
+        assert self._declined() == []
+        assert len(self._exits()) == 1
+
+    def test_agent_view_after_send_is_recorded_and_nothing_else_happens(self):
+        """The foreground stays `claude` and the pane shows the agent
+        view after `/exit` — what an attached background session does
+        (it detaches). Not an exit — no SHELL write, no clear, no
+        autosave, no success notification, no further keys — but
+        recorded as what was seen."""
+        send_calls, set_state, autosave, notify = TestAutoExitIdle()._run(
+            "claude", return_side_effects=True,
+            captures=["\u276f \n", AGENTS_VIEW_TAIL])
+        sent = [c[3] for c in send_calls if len(c) >= 4]
+        assert "/exit" in sent and "clear" not in sent
+        keys = [c for c in send_calls if '-X' not in c]
+        assert len(keys) == 2  # Escape, /exit — nothing after
+        set_state.assert_not_called()
+        autosave.assert_not_called()
+        notify.notify.assert_not_called()
+        assert [r["outcome"] for r in self._declined()] == [
+            ccm_runtime.DECLINED_AGENTS_VIEW_AFTER]
+        assert self._exits() == []
+
+    def test_slow_exit_is_not_called_a_detach(self):
+        """Foreground still `claude`, pane still a conversation: a slow
+        shutdown. Unconfirmed, not declined."""
+        TestAutoExitIdle()._run("claude")
+        assert self._declined() == []
+        assert self._exits() == []
+
+    def test_declined_records_are_rate_limited_per_project_and_outcome(self):
+        runner = TestAutoExitIdle()
+        runner._run("claude", captures=[AGENTS_VIEW_TAIL])
+        runner._run("claude", captures=[AGENTS_VIEW_TAIL])
+        assert len(self._declined()) == 1
+        runner._run("zsh", captures=[""])
+        assert [r["outcome"] for r in self._declined()] == [
+            ccm_runtime.DECLINED_AGENTS_VIEW, ccm_runtime.DECLINED_CAPTURE_UNREADABLE]
+        assert ccm_runtime.auto_exit_declined_log_count() == 2
+
+    def test_declined_records_carry_no_pane_content(self):
+        TestAutoExitIdle()._run("claude", captures=[AGENTS_VIEW_TAIL + "SECRET-LINE\n"])
+        raw = open(ccm_runtime.auto_exit_declined_log_path(), encoding="utf-8").read()
+        assert "SECRET" not in raw and "enter to open" not in raw
+        assert set(json.loads(raw)) == {"ts", "project", "session", "outcome"}
+
+    def test_an_unwritable_declined_log_does_not_break_the_pass(self, monkeypatch):
+        monkeypatch.setenv("CCM_AUTO_EXIT_DECLINED_LOG", "/proc/nonexistent/x.log")
+        TestAutoExitIdle()._run("claude", captures=[AGENTS_VIEW_TAIL])  # must not raise
+
+
+@pytest.mark.parametrize('kind', ['manual', 'sidekick', 'missing', 'unreadable', 'primary', 'shell'])
+def test_idle_exit_obeys_restored_roles(monkeypatch, kind):
+    import ccm_roles
+    def query(*a):
+        if a[-1] == ccm_roles.MANAGED_OPTION:
+            return '1'
+        if kind == 'missing':
+            return ''
+        if kind == 'unreadable':
+            return None
+        return json.dumps({'role': kind, 'agent': 'claude' if kind == 'primary' else None,
+                           'ignore': False})
+    monkeypatch.setattr(ccm_core, "tmux_query", query)
+    calls = TestAutoExitIdle()._run('zsh')
+    assert bool(calls) is (kind in ('primary', 'shell', 'missing'))
+
+
+@pytest.mark.parametrize('has_primary', [False, True])
+@pytest.mark.parametrize('command', ['zsh', 'claude', 'codex'])
+def test_idle_exit_handles_unreserved_pane(monkeypatch, has_primary, command):
+    import ccm_roles
+    def query(*a):
+        if a[-1] == ccm_roles.MANAGED_OPTION:
+            return '1'
+        target = a[a.index('-t') + 1]
+        if target.endswith('.1') and has_primary:
+            return json.dumps({'role': 'primary', 'agent': 'claude', 'ignore': False})
+        return ''
+    monkeypatch.setattr(ccm_core, 'tmux_query', query)
+    calls = TestAutoExitIdle()._run(
+        'zsh', panes_listing=f'0\t1000\t{command}\n1\t2000\tzsh',
+        ps_output='1000 999 1000 zsh 01:00:00\n1001 1000 1001 claude 00:30:00\n'
+                  '2000 999 2000 zsh 01:00:00\n')
+    assert bool(calls) is (not has_primary and command != 'codex')
+
+
+@pytest.mark.parametrize('has_primary', [False, True])
+@pytest.mark.parametrize('command', ['zsh', 'codex'])
+def test_idle_exit_with_unreserved_sibling_respects_background_work(monkeypatch, has_primary, command):
+    import ccm_roles
+    def query(*a):
+        if a[-1] == ccm_roles.MANAGED_OPTION:
+            return '1'
+        target = a[a.index('-t') + 1]
+        if target.endswith('.0') and has_primary:
+            return json.dumps({'role': 'primary', 'agent': 'claude', 'ignore': False})
+        return ''
+    monkeypatch.setattr(ccm_core, 'tmux_query', query)
+    calls = TestAutoExitIdle()._run(
+        'zsh', panes_listing=f'0\t1000\tclaude\n1\t2000\t{command}',
+        ps_output='1000 999 1000 zsh 01:00:00\n1001 1000 1001 claude 00:30:00\n'
+                  f'2000 999 2000 {command} 01:00:00\n')
+    # A running sibling agent still triggers the independent live-work guard.
+    assert any(a[3] == '/exit' and a[2].endswith('.0') for a in calls) is (command == 'zsh')
+
+
+class TestFullCommands:
+    """`ps -o comm= -p` as macOS answers it: a dead pid is left out
+    (exit 0 when another lives, exit 1 with no output when none does);
+    an error says so on stderr."""
+
+    def _ps(self, monkeypatch, rc, out, err=b""):
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, rc, out, err))
+
+    def test_names_of_live_pids(self, monkeypatch):
+        self._ps(monkeypatch, 0, b"/opt/homebrew/bin/zsh\n")
+        assert ccm_runtime._full_commands(["5", "6"]) == ["/opt/homebrew/bin/zsh"]
+
+    def test_none_alive(self, monkeypatch):
+        self._ps(monkeypatch, 1, b"")
+        assert ccm_runtime._full_commands(["5"]) == []
+
+    def test_an_error_is_unknown(self, monkeypatch):
+        self._ps(monkeypatch, 1, b"", b"ps: process id too large: 999999\n")
+        assert ccm_runtime._full_commands(["999999"]) is None
+
+    def test_ps_missing_is_unknown(self, monkeypatch):
+        import subprocess
+
+        def missing(*a, **k):
+            raise FileNotFoundError("ps")
+        monkeypatch.setattr(subprocess, "run", missing)
+        assert ccm_runtime._full_commands(["5"]) is None

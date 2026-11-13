@@ -4,7 +4,8 @@
 # Installed by: ccm setup-hooks
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ccm_src="${BASH_SOURCE[0]}"; [[ "$_ccm_src" == */* ]] || _ccm_src="./$_ccm_src"
+SCRIPT_DIR="$(cd "${_ccm_src%/*}" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 ccm_hook_init || exit 0
@@ -42,7 +43,7 @@ case "$NOTIFY_TYPE" in
         # delay budget this same hook cites for notifications and with
         # the grace-period style used by CCM_COMPLETION_GRACE_SEC in
         # lib.sh). Signals older than that predate any plausible
-        # idle_prompt lag and are cleared as before.
+        # idle_prompt lag and are cleared.
         SIGNAL_FILE="${HOOK_DIR}/${KEY}"
         NOW=$(date +%s)
         GUARD_SEC="${CCM_IDLE_PROMPT_GUARD_SEC:-60}"
