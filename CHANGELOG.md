@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Security
 
 - **Text that holds `#` reaches tmux literally:** a project directory opened by `ccm add`, v1 snapshot loading or the dashboard's attach window, a project name or branch in the status bar, and the plugin's install path.
-- **Messages cannot press keys.** `ccm send`, the message queue and `ccm sidekick-send` refuse a message holding a control character (a lone carriage return, ESC, Ctrl-C, Ctrl-U, DEL, ...) before any key is typed, since each would be typed into the target pane as a key. Windows line endings are folded and tabs become four spaces. A message already queued with one is retired to `expired/` unsent.
+- **A message holding a control character is refused before any key** by `ccm send`, the message queue and `ccm sidekick-send`; one already queued moves to `expired/` unsent. Windows line endings are folded and tabs become spaces.
 
 ## [0.13.0] - 2026-11-05
 

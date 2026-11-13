@@ -736,10 +736,9 @@ ccm sidekick-send --json "request-12.md をレビューしてください"
     どのプロセスが動いているか分からない）、`not_in_tmux`、
     `caller_unverified`、`wrong_direction`（サイドキック側から実行した）、
     `outside_project`、`project_dir_unavailable`、`file_unreadable`、
-    `stdin_unreadable`、`unsupported_text`（メッセージに、キーとして入力
-    されてしまう制御文字（NUL、単独の CR、ESC、Ctrl-C など）が
-    ある）、`observation_failed`（ccm がサイドキックの様子を確かめられ
-    なかった）、`usage` のいずれかです。
+    `stdin_unreadable`、`unsupported_text`（メッセージに制御文字（NUL、
+    単独の CR、ESC、Ctrl-C など）がある）、`observation_failed`（ccm が
+    サイドキックの様子を確かめられなかった）、`usage` のいずれかです。
   - `attempted_seen`: キーを送ろうとし、メッセージの断片がペインに見えて
     います。断片は以前のものかもしれず、今回のメッセージが届いたこと、
     全文が届いたこと、受け取られたことの証明にはなりません。

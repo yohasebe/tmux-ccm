@@ -551,6 +551,15 @@ class TestSendResult:
         assert (out["outcome"], out["reason"], code) == ("refused", "unsupported_text", 1)
         assert [c for c in calls if c[0] == "send-keys"] == []
 
+    def test_a_lone_carriage_return_in_a_message_file_is_refused(
+            self, stub, capsys, tmp_path):
+        calls = stub()
+        path = tmp_path / "body.txt"
+        path.write_bytes(b"first\rsecond")
+        out, code, _ = self.run_json(["--file", str(path)], capsys)
+        assert (out["outcome"], out["reason"], code) == ("refused", "unsupported_text", 1)
+        assert [c for c in calls if c[0] == "send-keys"] == []
+
     @pytest.mark.parametrize("breaks_on, outcome", [
         (1, "refused"),             # before the body: no key sent
         (2, "attempted_stopped"),   # before Enter: Enter not sent

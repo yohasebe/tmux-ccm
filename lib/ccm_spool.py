@@ -624,14 +624,16 @@ def _deliver(project, pdir, msg_names):
             parsed = _parse_msg_name(name)
             queued, sender = parsed if parsed else (None, "unknown")
             with open(os.path.join(pdir, name + ".delivering"),
-                      encoding="utf-8") as f:
+                      encoding="utf-8", newline="") as f:
                 body = f.read()
-            if ccm_send.has_control_chars(body):
-                # Queued before enqueue refused control characters, or
-                # written into the spool by hand. Typing it would press
-                # keys the sender never meant, and putting it back would
-                # retry it every pass: retire it unsent, where `ccm spool
-                # list` shows it, and deliver the rest.
+            try:
+                body = ccm_send.clean_message(body)
+            except ValueError:
+                # A body that `enqueue` did not check (written into the
+                # spool by hand or by an earlier version). Typing it would
+                # press keys the sender never meant, and putting it back
+                # would retry it every pass: retire it unsent, where
+                # `ccm spool list` shows it, and deliver the rest.
                 os.makedirs(os.path.join(pdir, "expired"), exist_ok=True)
                 os.rename(os.path.join(pdir, name + ".delivering"),
                           os.path.join(pdir, "expired", name))

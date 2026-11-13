@@ -2209,16 +2209,32 @@ class TestControlCharacters:
         with pytest.raises(ValueError, match="control character"):
             ccm_send.clean_message(f"first\nsecond{char}third")
 
+    def test_tabs_expand_to_the_next_four_column_stop(self):
+        assert ccm_send.clean_message("a\tb\nabc\tc\n\td") == "a   b\nabc c\n    d"
+
+    def test_a_lone_carriage_return_in_a_message_file_is_refused(
+            self, monkeypatch, capsys, tmp_path):
+        path = tmp_path / "body.txt"
+        path.write_bytes(b"first\rsecond")
+        def no_tmux(*a, **k):
+            pytest.fail("cmd_send reached tmux with a control character")
+        monkeypatch.setattr(ccm_core, "tmux_cmd", no_tmux)
+        monkeypatch.setattr(ccm_send, "_send_keys", no_tmux)
+        with pytest.raises(SystemExit):
+            ccm_send.cmd_send(["demo", "--file", str(path)])
+        assert "control character" in capsys.readouterr().err
+
     def test_clean_message_keeps_ordinary_text(self):
         text = "line one\r\nline\ttwo\n日本語 ✅ zero​width"
         assert ccm_send.clean_message(text) == (
             "line one\nline    two\n日本語 ✅ zero​width")
 
-    def test_type_body_refuses_before_the_first_key(self, monkeypatch):
+    @pytest.mark.parametrize("line", ["then\x1b[2Jgone", "a\tb"])
+    def test_type_body_refuses_before_the_first_key(self, monkeypatch, line):
         keys = []
         monkeypatch.setattr(ccm_send, "_send_keys", lambda *a, **k: keys.append(a))
         with pytest.raises(ValueError):
-            ccm_send._type_body("%1", ["fine", "then\x1b[2Jgone"])
+            ccm_send._type_body("%1", ["fine", line])
         assert keys == []
 
     @pytest.mark.parametrize("body", ["one\rtwo", "stop\x03\x03now", "esc\x1b"])

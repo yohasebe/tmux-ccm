@@ -377,7 +377,8 @@ _CTRL_CHARS = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
 
 
 def clean_message(message):
-    """Return `message` with CRLF folded to LF and tabs expanded.
+    """Return `message` with CRLF folded to LF and tabs expanded to the
+    next multiple of four columns.
     Raises ValueError when any other control character remains."""
     message = message.replace("\r\n", "\n").expandtabs(4)
     bad = _CTRL_CHARS.search(message)
@@ -387,11 +388,6 @@ def clean_message(message):
             f"offset {bad.start()}, which would be typed as a key — "
             "refusing before any key.")
     return message
-
-
-def has_control_chars(text):
-    """True when `text` holds a character `_type_body` refuses to type."""
-    return "\t" in text or bool(_CTRL_CHARS.search(text))
 
 
 def _type_body(win_target, lines, *, checked=False):
@@ -414,8 +410,8 @@ def _type_body(win_target, lines, *, checked=False):
     # is never half-typed. Callers clean or reject earlier with a
     # clearer message; this raises rather than exiting so a delivery
     # pass that reaches it fails one message, not the whole pass.
-    if any(has_control_chars(line) for line in lines):
-        raise ValueError("message holds control characters; refusing to type it")
+    if any(clean_message(line) != line for line in lines):
+        raise ValueError("The message is not cleaned; refusing before any key.")
     for line_i, line in enumerate(lines):
         if line:
             _send_keys(win_target, "-l", "--", line, label=f"line:{line_i}", **options)
@@ -732,7 +728,8 @@ def cmd_send(args):
 
     if message_file:
         try:
-            with open(message_file, encoding="utf-8") as f:
+            # newline="": line endings reach `clean_message` as written.
+            with open(message_file, encoding="utf-8", newline="") as f:
                 message = f.read()
         except OSError as e:
             ccm_core.ccm_die(f"Failed to read message file: {e}")
@@ -1641,7 +1638,8 @@ def _sidekick_send_message(positional_parts, message_file, use_stdin, no_enter):
             "usage", "Provide exactly one of: positional message, --file, or --stdin")
     if message_file is not None:
         try:
-            with open(message_file, encoding="utf-8") as f:
+            # newline="": line endings reach `clean_message` as written.
+            with open(message_file, encoding="utf-8", newline="") as f:
                 message = f.read()
         except (OSError, UnicodeDecodeError) as e:
             raise _SidekickRefusal(

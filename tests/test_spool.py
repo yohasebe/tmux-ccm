@@ -386,24 +386,42 @@ class TestReconcileDelivery:
         assert len(os.listdir(held_dir)) == 1
         assert ccm_spool.spool_summary()["held"] == 1
 
+    @pytest.mark.parametrize("bad_body", [
+        "looks fine\x1b\x03\x03then a shell command",
+        "first\rsecond"])
     def test_a_queued_body_with_control_characters_is_retired_unsent(
-            self, spool_root, monkeypatch):
-        """A body queued before enqueue refused control characters (or
-        written into the spool by hand) is never typed — it would press
+            self, spool_root, monkeypatch, bad_body):
+        """A body that `enqueue` did not check (written into the spool by
+        hand or by an earlier version) is never typed — it would press
         keys the sender never wrote — and never put back, which would
         retry it every pass. It moves to `expired/`; the rest deliver."""
         typed, _keys = self._stub_delivery(monkeypatch)
         pdir = os.path.join(spool_root, "demo")
         os.makedirs(pdir)
         bad = f"{int(time.time() * 1000) - 5}-tester.msg"
-        with open(os.path.join(pdir, bad), "w", encoding="utf-8") as f:
-            f.write("looks fine\x1b\x03\x03then a shell command")
+        with open(os.path.join(pdir, bad), "w", encoding="utf-8", newline="") as f:
+            f.write(bad_body)
         ccm_spool.enqueue("demo", "tester", "the good one")
         for _ in range(2):
             ccm_spool.reconcile_spools([_project(state="IDLE")])
         assert any("the good one" in ln for ln in typed)
-        assert not any("\x1b" in ln or "\x03" in ln for ln in typed)
+        assert not any(c in ln for ln in typed for c in "\x1b\x03\r")
+        assert not any("second" in ln for ln in typed)
         assert os.listdir(os.path.join(pdir, "expired")) == [bad]
+        assert _pending(spool_root) == []
+
+    def test_a_queued_body_with_tabs_or_crlf_is_cleaned_and_delivered(
+            self, spool_root, monkeypatch):
+        typed, _keys = self._stub_delivery(monkeypatch)
+        pdir = os.path.join(spool_root, "demo")
+        os.makedirs(pdir)
+        name = f"{int(time.time() * 1000) - 5}-tester.msg"
+        with open(os.path.join(pdir, name), "w", encoding="utf-8", newline="") as f:
+            f.write("rule:\r\n\tmake all")
+        ccm_spool.reconcile_spools([_project(state="IDLE")])
+        assert any("    make all" in ln for ln in typed)
+        assert not any("\t" in ln or "\r" in ln for ln in typed)
+        assert not os.path.exists(os.path.join(pdir, "expired"))
         assert _pending(spool_root) == []
 
     def test_a_held_record_is_listed_and_can_be_acknowledged(
