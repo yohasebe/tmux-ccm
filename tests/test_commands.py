@@ -628,6 +628,39 @@ class TestCmdAdd:
         assert "@ccm_project" in tag_names
         assert "@ccm_dir" in tag_names
 
+    @patch("ccm_commands._autosave_trigger")
+    @patch("ccm_core.hooks_configured", return_value=True)
+    @patch("ccm_core.tmux_batch")
+    @patch("ccm_core.tmux_cmd")
+    @patch("ccm_core.require_session", return_value="main")
+    def test_add_passes_the_directory_to_new_window_as_a_literal(
+            self, mock_session, mock_tmux, mock_batch, mock_hooks, mock_auto, tmp_path):
+        """`new-window -c` expands tmux formats, so a `#(...)` in a
+        directory name would run as a shell command when the window
+        opens. Every `#` is doubled for `-c`; the stored `@ccm_dir`
+        (set-option does not expand) keeps the real path."""
+        proj_dir = tmp_path / "proj #(true) #{pane_id}"
+        proj_dir.mkdir()
+        real = os.path.realpath(str(proj_dir))
+
+        def tmux_side_effect(*args, **kwargs):
+            if args[0] == "new-window":
+                return "3"
+            if args[0] == "display-message":
+                return "proj"
+            return ""
+        mock_tmux.side_effect = tmux_side_effect
+
+        ccm_commands.cmd_add(str(proj_dir), "proj")
+
+        new_window = next(c.args for c in mock_tmux.call_args_list
+                          if c.args[0] == "new-window")
+        cwd = new_window[new_window.index("-c") + 1]
+        assert cwd == real.replace("#", "##")
+        assert cwd.replace("##", "#") == real
+        stored = {a[3]: a[4] for a in mock_batch.call_args[0] if len(a) > 4}
+        assert stored["@ccm_dir"] == real
+
     @pytest.mark.parametrize("has_history", [True, False])
     @patch("ccm_commands._autosave_trigger")
     @patch("ccm_core.hooks_configured", return_value=True)

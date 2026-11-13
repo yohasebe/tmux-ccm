@@ -166,9 +166,12 @@ def cmd_add(directory, name="", start_claude=True, _loading=False,
         if directory == real_existing:
             ccm_core.ccm_die(f"Directory already registered as project '{_proj}': {existing_dir}")
 
-    # Create new window
+    # Create new window. `-c` expands tmux formats even as a single argv
+    # value, so a `#(...)` in the directory name would run as a shell
+    # command: double every `#` so tmux reads the path literally.
     win_idx = ccm_core.tmux_cmd("new-window", "-P", "-F", "#{window_index}",
-                                "-t", f"{session}:", "-n", name, "-c", directory)
+                                "-t", f"{session}:", "-n", name,
+                                "-c", directory.replace("#", "##"))
     if not win_idx:
         ccm_core.ccm_die("Failed to create tmux window — check `tmux info` for server status")
 
