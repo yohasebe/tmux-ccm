@@ -105,6 +105,23 @@ _request_payload() {
     [[ "$output" != *"-sender"* ]]
 }
 
+@test "notification goes through osascript when the transport says so" {
+    cat > "${STUB_BIN}/tmux" <<'EOS'
+#!/usr/bin/env bash
+[[ "$1 $3" == "show-option @ccm-notify-transport" ]] && printf osascript
+exit 0
+EOS
+    cat > "${STUB_BIN}/osascript" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${SANDBOX}/osascript.log"
+EOS
+    chmod +x "${STUB_BIN}/tmux" "${STUB_BIN}/osascript"
+    _request_payload | bash "$SCRIPT" kimi
+    [[ ! -f "${SANDBOX}/notified.log" ]]
+    run cat "${SANDBOX}/osascript.log"
+    [[ "$output" == *"kimi needs a decision"* ]]
+}
+
 @test "notification is suppressed when the toggle is off, marker still written" {
     _request_payload | STUB_TOGGLE=off bash "$SCRIPT" kimi
     [[ ! -f "${SANDBOX}/notified.log" ]]

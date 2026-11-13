@@ -40,6 +40,29 @@ from conftest import (
 # Backward-compat alias used by some tests.
 _iso_ts = iso_ts
 
+class TestTransportOption:
+    """`@ccm-notify-transport osascript` reaches every desktop
+    notification, including a sidekick's."""
+
+    def _run(self, monkeypatch, transport):
+        monkeypatch.setattr(ccm_notify, "_terminal_notifier_path", lambda: "/fake/tn")
+        monkeypatch.setattr(
+            ccm_core, "tmux_cmd",
+            lambda *a: transport if a[-1] == "@ccm-notify-transport" else "")
+        spawned = []
+        monkeypatch.setattr(ccm_notify.subprocess, "Popen",
+                            lambda args, **k: spawned.append(args[0]))
+        ccm_notify.sidekick_attention("codex", "%3")
+        return spawned
+
+    def test_osascript_skips_terminal_notifier(self, monkeypatch):
+        assert self._run(monkeypatch, "osascript") == ["osascript"]
+
+    @pytest.mark.parametrize("transport", ["", "auto"])
+    def test_otherwise_terminal_notifier_is_used(self, monkeypatch, transport):
+        assert self._run(monkeypatch, transport) == ["/fake/tn"]
+
+
 class TestClearNotificationsScope:
     def test_returns_minus_one_when_terminal_notifier_missing(self, monkeypatch):
         monkeypatch.setattr(ccm_notify, "_terminal_notifier_path", lambda: None)

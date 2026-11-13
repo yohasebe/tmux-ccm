@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **`ccm status --json`.** Agents and scripts can read each window's state, its sidekicks' states and the queued messages as one JSON object, for all windows, one by name, or `self`.
+- **`@ccm-notify-transport osascript`** sends macOS notifications through `osascript` even when `terminal-notifier` is installed, for a Mac where `terminal-notifier` cannot post.
 - **`ccm sidekick-send --json`.** The result of a send comes back as one JSON object: refused before any key, or attempted, with whether a fragment of the message appeared and whether Enter was sent.
 
 ### Changed

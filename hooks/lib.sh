@@ -13,6 +13,8 @@ _ccm_src="${BASH_SOURCE[0]}"
 _CCM_HOOK_LIB_DIR="$(cd "${_ccm_src%/*}" && pwd)"
 # shellcheck source=../lib/state_meta.sh
 source "${_CCM_HOOK_LIB_DIR}/../lib/state_meta.sh"
+# shellcheck source=../lib/ccm_notify_transport.sh
+source "${_CCM_HOOK_LIB_DIR}/../lib/ccm_notify_transport.sh"
 
 # Run the boilerplate preamble common to every on-*.sh hook: sets up
 # HOOK_DIR, consumes Claude Code's JSON payload from stdin into
@@ -801,16 +803,7 @@ _ccm_instant_notify() {
     # notification flows under terminal-notifier's own bundle id,
     # which the user authorises once and is independent of which
     # terminal emulator they actually use.
-    # @ccm-notify-transport: force a transport. Default (unset/"auto")
-    # keeps the prefer-terminal-notifier order below. Set to "osascript"
-    # where terminal-notifier can't be authorized to send — newer macOS
-    # refuses the authorization request outright for ad-hoc-signed
-    # binaries ("Notifications are not allowed for this application"),
-    # while osascript posts under an already-authorized Apple-signed
-    # bundle.
-    local notify_transport
-    notify_transport=$(tmux show-option -gqv @ccm-notify-transport 2>/dev/null)
-    if [[ "$notify_transport" != "osascript" ]] && command -v terminal-notifier &>/dev/null; then
+    if ccm_use_terminal_notifier; then
         local tn_args=(-message "$body" -title "$title"
                        -group "ccm-${project}")
         if [[ "$sound_setting" == "on" ]]; then
