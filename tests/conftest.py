@@ -84,6 +84,19 @@ def isolate_runtime_state(tmp_path, monkeypatch):
     user's data by forgetting to ask.
     """
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    # Claude Code's configuration home follows CLAUDE_CONFIG_DIR, and
+    # without it is ~/.claude: either way the user's real settings. Both
+    # point at an empty test home; tests that exercise them set their own.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Defaults some modules fix from HOME when imported follow it here,
+    # so a test sees one default home.
+    import ccm_agentview
+    import ccm_canaries
+    claude_home = os.path.expanduser("~/.claude")
+    monkeypatch.setattr(ccm_agentview, "DEFAULT_CLAUDE_HOME", claude_home)
+    monkeypatch.setattr(ccm_canaries, "CLAUDE_HOOKS_LOG",
+                        os.path.join(claude_home, "hooks.log"))
     monkeypatch.setenv("CCM_AUTO_EXIT_LOG",
                        str(tmp_path / "state" / "auto-exit.log"))
     monkeypatch.setenv("CCM_AUTO_EXIT_DECLINED_LOG",

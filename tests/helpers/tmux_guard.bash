@@ -1,5 +1,11 @@
 # All Bats files load this before defining setup/teardown. Mocks may
 # precede the guard; any fallback to a real executable must pass it.
+
+# Claude Code's configuration home follows CLAUDE_CONFIG_DIR; a
+# developer's own value would point ccm's setup commands at their real
+# settings. Tests that exercise it set it themselves.
+unset CLAUDE_CONFIG_DIR
+
 setup_file() {
     export CCM_TEST_REAL_TMUX="${CCM_TEST_REAL_TMUX-$(type -P tmux || true)}"
     export CCM_TEST_GUARD_DIR="${BATS_FILE_TMPDIR}/tmux-guard"

@@ -32,6 +32,7 @@ import os
 import sys
 import time
 
+import ccm_claude_home
 import ccm_core  # late-bound for tmux_cmd
 from ccm_settings import read_settings as _read_settings_file
 
@@ -148,12 +149,13 @@ def errors_log_burst_warning() -> str:
 
 
 # ─── Settings flags canary ───
-# Detect configuration in ~/.claude/settings.json that silently
+# Detect configuration in the user settings (`ccm_claude_home`) that silently
 # disables ccm's fast-path signals. Without these checks, state
 # detection degrades with no obvious error and the user sees the
 # symptom (sluggish state changes) without the cause.
 
-CLAUDE_SETTINGS_FILE = os.path.expanduser("~/.claude/settings.json")
+# Resolved when read (`ccm_claude_home`); tests set a path here.
+CLAUDE_SETTINGS_FILE = None
 
 # Where an administrator's settings live. Claude Code reads one of
 # these depending on the platform, and it outranks everything the user
@@ -201,7 +203,7 @@ def _settings_sources(projects=None):
                os.path.join(directory, ".claude", "settings.local.json"))
         yield (f"{name}'s settings",
                os.path.join(directory, ".claude", "settings.json"))
-    yield ("user settings", CLAUDE_SETTINGS_FILE)
+    yield ("user settings", CLAUDE_SETTINGS_FILE or ccm_claude_home.user_settings_file())
 
 
 def unreadable_settings(projects=None, managed_only=False):

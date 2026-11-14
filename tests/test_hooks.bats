@@ -55,6 +55,47 @@ teardown() {
     [[ "$hook_count" -eq 1 ]]
 }
 
+@test "setup-hooks: writes to CLAUDE_CONFIG_DIR when it is set" {
+    export CLAUDE_CONFIG_DIR="${MOCK_DIR}/cfg"
+    run ccm_setup_hooks
+    [ "$status" -eq 0 ]
+    [ -f "${MOCK_DIR}/cfg/settings.json" ]
+    [ ! -e "${MOCK_DIR}/.claude/settings.json" ]
+    [[ "$output" == *"${MOCK_DIR}/cfg/settings.json"* ]]
+    run ccm_hooks_configured
+    [ "$status" -eq 0 ]
+}
+
+@test "setup-hooks: refuses a CLAUDE_CONFIG_DIR that is not an absolute path" {
+    export CLAUDE_CONFIG_DIR="relative-cfg"
+    run ccm_setup_hooks
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"not an absolute path"* ]]
+    [ ! -e "${MOCK_DIR}/.claude/settings.json" ]
+    [ ! -e "relative-cfg" ]
+}
+
+@test "remove-hooks: removes from CLAUDE_CONFIG_DIR when it is set" {
+    export CLAUDE_CONFIG_DIR="${MOCK_DIR}/cfg"
+    ccm_setup_hooks >/dev/null
+    run ccm_remove_hooks
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"${MOCK_DIR}/cfg/settings.json"* ]]
+    run ccm_hooks_configured
+    [ "$status" -ne 0 ]
+}
+
+@test "setup-claude-md: writes to CLAUDE_CONFIG_DIR when it is set" {
+    export CLAUDE_CONFIG_DIR="${MOCK_DIR}/cfg"
+    run bash -c 'source "$1/lib/common.sh"; echo y | ccm_setup_claude_md' _ "$CCM_ROOT"
+    [ "$status" -eq 0 ]
+    grep -qF "<!-- ccm:begin -->" "${MOCK_DIR}/cfg/CLAUDE.md"
+    [ ! -e "${MOCK_DIR}/.claude/CLAUDE.md" ]
+    run bash -c 'source "$1/lib/common.sh"; ccm_remove_claude_md' _ "$CCM_ROOT"
+    [ "$status" -eq 0 ]
+    ! grep -qF "<!-- ccm:begin -->" "${MOCK_DIR}/cfg/CLAUDE.md"
+}
+
 @test "setup-hooks: preserves existing settings" {
     echo '{"permissions":{"allow":["Read"]}}' > "${MOCK_DIR}/.claude/settings.json"
     run ccm_setup_hooks

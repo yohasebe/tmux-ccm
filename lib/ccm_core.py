@@ -1477,8 +1477,10 @@ HOOK_TIMEOUT_WARN_ABOVE = 120
 
 
 def _read_user_settings():
-    """~/.claude/settings.json parsed, or None when it cannot be read."""
-    return read_settings(os.path.expanduser("~/.claude/settings.json"))
+    """Claude Code's user settings parsed (`ccm_claude_home`), or None
+    when they cannot be read."""
+    import ccm_claude_home
+    return read_settings(ccm_claude_home.user_settings_file())
 
 
 def _hook_entries_by_owner():

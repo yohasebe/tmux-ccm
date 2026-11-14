@@ -641,8 +641,11 @@ class TestContinueBlocker:
     def test_config_home_unset_or_same_realpath_is_default(self, monkeypatch, tmp_path):
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         assert ccm_agentview.claude_config_home_is_default() is True
+        default = os.path.expanduser("~/.claude")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", default)
+        assert ccm_agentview.claude_config_home_is_default() is True
         link = tmp_path / "link"
-        os.symlink(ccm_agentview.DEFAULT_CLAUDE_HOME, link)
+        os.symlink(default, link)
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(link))
         assert ccm_agentview.claude_config_home_is_default() is True
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "elsewhere"))

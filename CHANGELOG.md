@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`ccm setup-hooks`, `remove-hooks`, `setup-claude-md` and `remove-claude-md` edit `settings.json` and `CLAUDE.md` under `CLAUDE_CONFIG_DIR`** when it is an absolute path in the shell they run from, and refuse an empty or relative value; `ccm doctor` checks the same files and warns about such a value. Run `ccm setup-hooks` yourself with that value, also after updating ccm.
 - **`ccm sidekick-send` stops for more waits.** It refuses a sidekick whose wait it learns from Codex's hooks or a Kimi or Grok marker, not only from the screen, and one whose process it cannot identify or whose observation fails; it looks again before Enter and leaves Enter unsent if a wait appeared or the sidekick was restarted.
 
 ### Fixed

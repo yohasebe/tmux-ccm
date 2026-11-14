@@ -35,6 +35,7 @@ import ccm_core  # late-bound for tmux_cmd / ccm_die / build_project_list / etc.
 import ccm_window
 import ccm_agentview
 import ccm_canaries
+import ccm_claude_home
 import ccm_commands
 import ccm_presentation
 import ccm_detection
@@ -891,6 +892,13 @@ def cmd_doctor(verbose=False):
             "add `set -g focus-events on` to ~/.tmux.conf")
 
     section("Setup")
+    # Claude Code's configuration home, from the environment `ccm doctor`
+    # runs in. An unusable CLAUDE_CONFIG_DIR is reported; the rows below
+    # then read `~/.claude`.
+    home_problem = ccm_claude_home.problem()
+    if home_problem:
+        row(WARN, "Claude Code home", home_problem)
+    settings_label = ccm_core.shorten_home(ccm_claude_home.user_settings_file())
     # `hooks_configured` checks complete registrations, not ownership;
     # a ccm at a previous path satisfies it too. So an install
     # with none of the entries in this ccm's hooks directory is not
@@ -901,7 +909,7 @@ def cmd_doctor(verbose=False):
         # file that does not parse, and Claude Code cannot load hooks
         # from it either. `ccm setup-hooks` refuses to write over it.
         row(WARN, "Hooks",
-            "~/.claude/settings.json cannot be read as JSON, so Claude "
+            f"{settings_label} cannot be read as JSON, so Claude "
             "Code is loading no hooks from it; repair it (ccm keeps a "
             "copy at settings.json.bak when it writes)")
     elif not ccm_core.hooks_configured():
@@ -911,7 +919,7 @@ def cmd_doctor(verbose=False):
         row(WARN, "Hooks", "could not inspect hook ownership — check settings.json and retry")
     elif own_entries == 0:
         row(WARN, "Hooks not from this ccm",
-            "ccm's hook script names are in ~/.claude/settings.json, but none "
+            f"ccm's hook script names are in {settings_label}, but none "
             "is in this ccm's hooks directory — run `ccm setup-hooks`")
     else:
         row(OK, "Hooks installed")
@@ -923,7 +931,8 @@ def cmd_doctor(verbose=False):
         row(WARN, "Other hooks", lookalikes,
             brief="Hooks from another installation were left unchanged. "
                   "See `ccm doctor --verbose` before removing them.")
-    claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
+    claude_md = ccm_claude_home.user_claude_md()
+    md_label = ccm_core.shorten_home(claude_md)
     if os.path.exists(claude_md):
         try:
             with open(claude_md, encoding="utf-8") as f:
@@ -931,15 +940,15 @@ def cmd_doctor(verbose=False):
         except (OSError, UnicodeError):
             has_ccm = None
         if has_ccm is None:
-            row(WARN, "~/.claude/CLAUDE.md",
+            row(WARN, md_label,
                 "could not read — check file permissions and encoding")
         elif has_ccm:
-            row(OK, "~/.claude/CLAUDE.md", "ccm section present")
+            row(OK, md_label, "ccm section present")
         else:
-            row(WARN, "~/.claude/CLAUDE.md",
+            row(WARN, md_label,
                 "ccm section absent — run `ccm setup-claude-md`")
     else:
-        row(WARN, "~/.claude/CLAUDE.md", "missing — run `ccm setup-claude-md`")
+        row(WARN, md_label, "missing — run `ccm setup-claude-md`")
 
     section("Runtime canaries")
     hooks_warn = ccm_canaries.hooks_log_warning()

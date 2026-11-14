@@ -454,6 +454,8 @@ This adds hooks to `~/.claude/settings.json` that signal state changes:
 - **SessionEnd** → SHELL when Claude Code session ends (/exit, Ctrl+D, etc.)
 - **PermissionDenied** → PERMIT when auto mode denies an action (check `/permissions` to retry)
 
+When `CLAUDE_CONFIG_DIR` is set to an absolute path in the shell you run them from, `ccm setup-hooks`, `ccm remove-hooks`, `ccm setup-claude-md` and `ccm remove-claude-md` edit `settings.json` and `CLAUDE.md` in that directory instead of `~/.claude`, as Claude Code does, and refuse a value that is empty or relative. `ccm doctor` checks the same two files, and warns about such a value and checks `~/.claude` instead. Session history, transcripts and `hooks.log` are still read from `~/.claude`. The hooks are installed automatically from tmux's environment, which usually does not have the variable: run `ccm setup-hooks` yourself with the value your Claude sessions use, and again after updating ccm.
+
 A subagent's permission request also shows as PERMIT, including a background agent's. It stays until that agent goes on (its tool runs or fails, or the agent ends), even while you carry on in the main conversation, because the request is still waiting. A request older than 10 minutes stops counting once the screen is idle, in case its answer was never reported. When another tool's hook answers permission requests outside the terminal, the dialog may not be on screen at all; answer it where that tool asks.
 
 ccm has hook-independent fallbacks so detection keeps working when Claude Code stops firing hooks mid-session:

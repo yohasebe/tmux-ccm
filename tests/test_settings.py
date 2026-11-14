@@ -17,7 +17,7 @@ import ccm_settings
 def test_unreadable_settings_are_unknown(tmp_path, monkeypatch, content):
     path = tmp_path / "settings.json"
     path.write_bytes(content)
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(ccm_canaries, "_settings_sources",
                         lambda projects: [("user settings", str(path))])
     assert ccm_settings.read_settings(path) is None
@@ -113,7 +113,7 @@ def test_descriptor_closed_after_read(tmp_path, monkeypatch, content):
 
 def test_hook_names_must_appear_in_hook_commands(tmp_path, monkeypatch):
     path = tmp_path / "settings.json"
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     path.write_text(json.dumps({"notes": list(ccm_core.HOOK_SCRIPTS)}))
     assert not ccm_core.hooks_configured()
     complete = json.loads((Path(__file__).parent / "fixtures/hooks-complete.json").read_text())

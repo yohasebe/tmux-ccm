@@ -130,7 +130,7 @@ class TestFindProcessAge:
 
 class TestHooksConfigured:
     def test_unknown_when_no_settings(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "missing"))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-home"))
         assert ccm_core.hooks_configured() is None
 
 
@@ -872,8 +872,7 @@ class TestHookTimeoutWarning:
         import json
         path = tmp_path / "settings.json"
         path.write_text(json.dumps(settings))
-        monkeypatch.setattr("os.path.expanduser",
-                            lambda p: str(path) if p.endswith("settings.json") else p)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         return ccm_core.hook_timeout_warning()
 
     @staticmethod
@@ -946,8 +945,7 @@ class TestHookTimeoutWarning:
         assert self._settings(tmp_path, monkeypatch, self._hooks(self._ccm_hook("5000"))) == ""
 
     def test_missing_settings_file_stays_quiet(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("os.path.expanduser",
-                            lambda p: str(tmp_path / "nope.json"))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-home"))
         assert ccm_core.hook_timeout_warning() == ""
 
 
@@ -959,8 +957,7 @@ class TestHookLookalikeWarning:
         import json
         path = tmp_path / "settings.json"
         path.write_text(json.dumps(settings))
-        monkeypatch.setattr("os.path.expanduser",
-                            lambda p: str(path) if p.endswith("settings.json") else p)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         return ccm_core.hook_lookalike_warning()
 
     @staticmethod
@@ -1000,7 +997,7 @@ class TestHookLookalikeWarning:
         assert self._warn(tmp_path, monkeypatch, self._stop(own, "/peer/independent.sh")) == ""
 
     def test_missing_settings_file_stays_quiet(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "nope.json"))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-home"))
         assert ccm_core.hook_lookalike_warning() == ""
 
 
@@ -1009,8 +1006,7 @@ class TestOwnHookEntryCount:
     def _count(self, tmp_path, monkeypatch, settings):
         path = tmp_path / "settings.json"
         path.write_text(json.dumps(settings))
-        monkeypatch.setattr("os.path.expanduser",
-                            lambda p: str(path) if p.endswith("settings.json") else p)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         return ccm_core.own_hook_entry_count()
 
     def test_counts_registrations_of_this_ccm_s_hooks_only(self, tmp_path, monkeypatch):
@@ -1026,7 +1022,7 @@ class TestOwnHookEntryCount:
         assert self._count(tmp_path, monkeypatch, settings) == 0
 
     def test_unreadable_settings_are_unknown_not_zero(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "nope.json"))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "no-home"))
         assert ccm_core.own_hook_entry_count() is None
 
 

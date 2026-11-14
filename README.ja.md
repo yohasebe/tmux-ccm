@@ -460,6 +460,8 @@ ccm setup-hooks
 - **SessionEnd** → セッション終了時にSHELL（/exit、Ctrl+D等）
 - **PermissionDenied** → autoモードで拒否時にPERMIT（`/permissions`で再試行）
 
+実行するシェルで `CLAUDE_CONFIG_DIR` が絶対パスに設定されていれば、`ccm setup-hooks`、`ccm remove-hooks`、`ccm setup-claude-md`、`ccm remove-claude-md` は、Claude Code と同じく `~/.claude` の代わりにそのフォルダの `settings.json` と `CLAUDE.md` を書き換えます。空や相対パスの値は拒否します。`ccm doctor` は同じ 2 つのファイルを確かめ、そのような値には警告を出して `~/.claude` を確かめます。会話の履歴、トランスクリプト、`hooks.log` は引き続き `~/.claude` から読みます。フックの自動インストールは tmux の環境で動き、通常そこにはこの変数がありません。Claude のセッションと同じ値で `ccm setup-hooks` を自分で実行し、ccm を更新したあとも実行し直してください。
+
 サブエージェントの権限要求も、裏で動くものを含めて PERMIT と表示します。要求はそのエージェントが先へ進む（ツールが実行される・失敗する、エージェントが終わる）まで残り、本体の会話を続けている間も消えません。要求はまだ答えを待っているからです。ただし、要求から 10 分を超え、そのとき画面が待機中なら、その要求は答えが届かなかった場合に備えて数えなくなります。権限要求に端末の外で答える別のツールの hook を入れている場合は、ダイアログが画面に出ないことがあります。そのツールが尋ねる場所で答えてください。
 
 ccm はフック非依存のフォールバックを備えており、Claude Code がセッション途中でフック発火を停止しても検出が継続します:

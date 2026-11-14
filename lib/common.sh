@@ -321,6 +321,13 @@ _ccm_hooks_dir() {
     printf '%s\n' "${CCM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/hooks"
 }
 
+# Claude Code's configuration home, where its user settings and the user
+# CLAUDE.md are (lib/ccm_claude_home.py): $CLAUDE_CONFIG_DIR, or
+# ~/.claude. Prints the reason and returns 1 for an unusable value.
+ccm_claude_home() {
+    "$CCM_PYTHON" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ccm_claude_home.py"
+}
+
 # lib/ccm_hook_owner.py holds the one definition of which hooks are ccm's,
 # shared with `ccm doctor`; mutations use stdin and the installation
 # probe passes a path for the common reader.
@@ -343,7 +350,7 @@ _ccm_sync_hook_timeouts() {
 
 # Print a warning naming hooks that share a ccm script's name but are not
 # ccm's, so they were left in place. $1 is the hooks directory, $2 the
-# settings JSON.
+# settings JSON, $3 the settings file.
 _ccm_warn_lookalike_hooks() {
     local lookalikes
     lookalikes=$(printf '%s' "$2" | _ccm_hook_owner lookalikes "$1" 2>/dev/null) || return 0
@@ -351,7 +358,7 @@ _ccm_warn_lookalike_hooks() {
     ccm_warn "Left in place: hooks named like ccm's outside ${1}:"
     printf '%s\n' "$lookalikes" | sed 's/^/    /'
     echo "  ccm edits only hooks in its own directory. If these are left over from a ccm"
-    echo "  that was moved or removed, delete them from ~/.claude/settings.json by hand."
+    echo "  that was moved or removed, delete them from ${3} by hand."
 }
 
 # Keep a copy of the settings about to be replaced. Called only once
@@ -404,12 +411,16 @@ _ccm_version_ge() {
 ccm_hooks_configured() {
     # Exit 0: complete, 1: incomplete, 2: unreadable. Read the path in
     # Python, so a pipe cannot block a shell-side cat before the probe.
-    _ccm_hook_owner configured "${HOME}/.claude/settings.json"
+    local home
+    home=$(ccm_claude_home 2>/dev/null) || return 2
+    _ccm_hook_owner configured "${home}/settings.json"
 }
 
 # Install Claude Code hooks for improved state detection
 ccm_setup_hooks() {
-    local settings_file="${HOME}/.claude/settings.json"
+    local home settings_file
+    home=$(ccm_claude_home) || exit 1
+    settings_file="${home}/settings.json"
     local hooks_dir="${CCM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/hooks"
 
     if [[ ! -f "${hooks_dir}/on-prompt-submit.sh" ]]; then
@@ -447,12 +458,12 @@ ccm_setup_hooks() {
             if [[ "$(printf '%s' "$current" | jq -S .)" != "$(printf '%s' "$synced" | jq -S .)" ]]; then
                 _ccm_backup_settings "$settings_file"
                 _ccm_write_settings "$settings_file" "$synced"
-                ccm_info "Updated ccm's hook timeouts to ${CCM_HOOK_CMD_TIMEOUT}s."
+                ccm_info "Updated ccm's hook timeouts to ${CCM_HOOK_CMD_TIMEOUT}s in ${settings_file}."
             else
-                ccm_info "Claude Code hooks are already installed."
+                ccm_info "Claude Code hooks are already installed in ${settings_file}."
                 echo "  To reinstall: ccm remove-hooks && ccm setup-hooks"
             fi
-            _ccm_warn_lookalike_hooks "$hooks_dir" "$synced"
+            _ccm_warn_lookalike_hooks "$hooks_dir" "$synced" "$settings_file"
             return 0
         fi
         ccm_warn "ccm's hooks in ${hooks_dir} are incomplete or missing; installing them..."
@@ -546,7 +557,7 @@ ccm_setup_hooks() {
     _ccm_backup_settings "$settings_file"
     _ccm_write_settings "$settings_file" "$new_settings"
     ccm_info "Claude Code hooks installed successfully."
-    _ccm_warn_lookalike_hooks "$hooks_dir" "$new_settings"
+    _ccm_warn_lookalike_hooks "$hooks_dir" "$new_settings" "$settings_file"
     echo "  Settings: ${settings_file}"
     if [[ -n "$claude_ver" ]]; then
         echo "  Claude Code: ${claude_ver}"
@@ -565,7 +576,9 @@ ccm_setup_hooks() {
 
 # Remove ccm hooks from Claude Code settings
 ccm_remove_hooks() {
-    local settings_file="${HOME}/.claude/settings.json"
+    local home settings_file
+    home=$(ccm_claude_home) || exit 1
+    settings_file="${home}/settings.json"
 
     if [[ ! -f "$settings_file" && ( -e "$settings_file" || -L "$settings_file" ) ]]; then
         ccm_die "${settings_file} exists but is not a readable file (a broken symlink?)"
@@ -585,8 +598,8 @@ ccm_remove_hooks() {
 
     _ccm_backup_settings "$settings_file"
     _ccm_write_settings "$settings_file" "$new_settings"
-    ccm_info "ccm hooks removed from Claude Code settings."
-    _ccm_warn_lookalike_hooks "$hooks_dir" "$new_settings"
+    ccm_info "ccm hooks removed from ${settings_file}."
+    _ccm_warn_lookalike_hooks "$hooks_dir" "$new_settings" "$settings_file"
     echo "  Restart Claude Code to apply changes."
 }
 
@@ -706,10 +719,12 @@ SECTION
 }
 
 ccm_setup_claude_md() {
-    local claude_md="${HOME}/.claude/CLAUDE.md"
+    local home claude_md
+    home=$(ccm_claude_home) || exit 1
+    claude_md="${home}/CLAUDE.md"
 
     # Ensure directory exists
-    mkdir -p "${HOME}/.claude"
+    mkdir -p "$home"
 
     # Check if section already present
     if [[ -f "$claude_md" ]] && grep -qF "$_CCM_MD_BEGIN" "$claude_md"; then
@@ -742,7 +757,9 @@ ccm_setup_claude_md() {
 }
 
 ccm_remove_claude_md() {
-    local claude_md="${HOME}/.claude/CLAUDE.md"
+    local home claude_md
+    home=$(ccm_claude_home) || exit 1
+    claude_md="${home}/CLAUDE.md"
 
     if [[ ! -f "$claude_md" ]]; then
         ccm_warn "No file found at ${claude_md}"
