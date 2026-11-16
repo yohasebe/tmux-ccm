@@ -373,15 +373,27 @@ THINKING_HINT_RESAMPLES = 2
 #
 #   ✻ Connection refused — a firewall or proxy may be blocking it (ConnectionRefused) · Retrying in 3s · attempt 8/10
 #
+# From 2.1.326 the countdown is lower case, and while the next attempt
+# runs it reads `retrying…` with no countdown:
+#
+#   … · retrying in 3s · attempt 8/10
+#   … · retrying… · attempt 8/10
+#
 # The spinner footer does not come back between attempts.
 # While it waits, the session has no child process, writes no JSONL,
 # and shows nothing else that moves — so without this line a long
 # backoff reads as idle, the reading auto-exit acts on.
 #
-# Only the countdown is asked for: the tail clips in narrow panes
-# (at 100 columns the line can end `attemp…`), and the
-# countdown is also the clock — it ticks once a second, which is
-# what lets the staleness check treat the line like the spinner.
+# The notice's own ` · ` must come right before it, so a reply that
+# mentions retrying is not taken for one; the separator is not part
+# of the matched clock.
+#
+# Only the countdown (or `retrying…`) is required: the tail clips in
+# narrow panes (at 100 columns the line can end `attemp…`). The
+# matched text is also the clock — the countdown ticks once a second,
+# which is what lets the staleness check treat the line like the
+# spinner — so the attempt count is taken in when it is there: it is
+# all that moves while `retrying…` stands.
 #
 # The units are optional the same way the spinner's elapsed units
 # are: backoff grows with every attempt, so a seconds-only pattern
@@ -392,7 +404,8 @@ THINKING_HINT_RESAMPLES = 2
 # unobserved anywhere upstream, and the footer's own elapsed is
 # integer seconds.
 PATTERN_RETRY_BACKOFF = re.compile(
-    r"Retrying in (?:\d+h\s+)?(?:\d+m\s+)?\d+s"
+    r"(?<= \u00b7 )[Rr]etrying(?: in (?:\d+h\s+)?(?:\d+m\s+)?\d+s|\u2026)"
+    r"(?: \u00b7 attempt \d+/\d+)?"
 )
 # Modal-dialog footer markers. Matches any Claude Code UI that is
 # blocked awaiting a user keypress response. Observed forms:

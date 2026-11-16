@@ -1089,15 +1089,50 @@ class TestWorkClock:
                  "❯ \n")
         assert self._state(mock_tmux, retry, at=1000) == "BUSY"
 
+    @pytest.mark.parametrize("tail", [
+        "retrying in 3s · attempt 8/10",
+        "retrying in 1m 5s · attempt 9/10",
+        "retrying… · attempt 8/10",
+        "retrying in 3s · attemp…",
+    ])
+    @patch("ccm_core.tmux_cmd")
+    def test_the_lower_case_retry_line_reads_busy(self, mock_tmux, tail):
+        """2.1.326 writes the countdown in lower case, and `retrying…`
+        while the next attempt runs."""
+        retry = ("✻ Connection refused — a firewall or proxy may be "
+                 f"blocking it (ConnectionRefused) · {tail}\n"
+                 "❯ \n")
+        assert self._state(mock_tmux, retry, at=1000) == "BUSY"
+
+    @pytest.mark.parametrize("reply", [
+        "⏺ The status text says retrying… when the connection drops.\n",
+        "⏺ The UI uses retrying… during a request.\n"
+        "  It uses retrying in 3s during backoff.\n",
+        "⏺ Retrying in 3s is what older versions showed.\n",
+    ])
+    @patch("ccm_core.tmux_cmd")
+    def test_a_reply_that_mentions_retrying_reads_idle(self, mock_tmux, reply):
+        """Only the notice, with its ` · ` before the word, is a clock."""
+        assert self._state(mock_tmux, reply + "❯ \n", at=1000) == "IDLE"
+
+    def test_the_attempt_count_is_part_of_the_retry_clock(self):
+        """While `retrying…` stands, only the attempt count moves."""
+        p = ccm_pane_state.PATTERN_RETRY_BACKOFF
+        assert p.search(" · retrying… · attempt 3/10").group(0) == "retrying… · attempt 3/10"
+        assert p.search(" · retrying… · attempt 4/10").group(0) != p.search(
+            " · retrying… · attempt 3/10").group(0)
+        assert p.search(" · retrying in 3s · attemp…").group(0) == "retrying in 3s"
+
     def test_retry_backoff_units_required_shape(self):
         """Decimal seconds and bare minutes are not matched:
         unobserved upstream, and the footer's own elapsed is integer
         seconds — the pattern must not grow past what is known."""
         p = ccm_pane_state.PATTERN_RETRY_BACKOFF
-        assert p.search("Retrying in 45s")
-        assert p.search("Retrying in 1m 5s")
-        assert not p.search("Retrying in 1.5s")
-        assert not p.search("Retrying in 2m")
+        assert not p.search("Retrying in 45s")   # the notice's separator is required
+        assert p.search(" · Retrying in 45s")
+        assert p.search(" · Retrying in 1m 5s")
+        assert not p.search(" · Retrying in 1.5s")
+        assert not p.search(" · Retrying in 2m")
 
     @patch("ccm_core.tmux_cmd")
     def test_leftover_child_plus_static_clock_releases(self, mock_tmux):
@@ -1151,7 +1186,7 @@ class TestWorkClock:
                  "blocking it (ConnectionRefused) · Retrying in 3s · "
                  "attempt 8/10\n"
                  "❯ \n")
-        stored = ("Retrying in 3s", 1000)
+        stored = ("Retrying in 3s · attempt 8/10", 1000)
         assert self._state(mock_tmux, retry, at=1000) == "BUSY"
         assert self._state(mock_tmux, retry, at=1000 + w + 1,
                            stored=stored) == "IDLE"

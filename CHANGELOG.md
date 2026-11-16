@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Auto-restore at tmux start skips when managed windows already exist.**
 - **A Claude whose process is named by its path is found on macOS**, so its window no longer reads as SHELL.
 - **A Claude session outside tmux on a project's directory no longer changes that window's state** or sends its completion notification.
+- **A session retrying a failed request reads BUSY on Claude Code 2.1.326**, which shows the retry in lower case and as `retrying…` during an attempt.
 
 ### Security
 
