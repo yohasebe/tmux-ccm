@@ -171,6 +171,20 @@ class TestClassifyPermitModal:
         cat, _ = ccm_constants.classify_permit_modal(text)
         assert cat == "confirmation-modal"
 
+    def test_confirmation_modal_model_picker_title_only(self):
+        """Since v2.1.327 the `/model` subtitle no longer says `Switch
+        between Claude models`; the `Select model` title alone must
+        still classify the picker as a safe confirmation modal."""
+        text = (
+            "Select model\n"
+            "Your pick is the default for new sessions. For other models, use --model.\n"
+            "❯ 1. Default (recommended) ✔  Opus 4.7 with 1M context\n"
+            "  2. Sonnet                   Sonnet 4.6\n"
+            "←/→ to adjust · s to use this session only · Enter to save · Esc to cancel"
+        )
+        cat, _ = ccm_constants.classify_permit_modal(text)
+        assert cat == "confirmation-modal"
+
     def test_ask_user_question_menu_footer_is_a_permit_footer(self):
         """The footer of a live `AskUserQuestion` choice menu.
 
